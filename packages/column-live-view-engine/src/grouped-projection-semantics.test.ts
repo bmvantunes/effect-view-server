@@ -1,5 +1,10 @@
 import { describe, expect, it } from "@effect/vitest";
-import { defineViewServerConfig, type GroupedQuery, viewSchema } from "@effect-view-server/config";
+import {
+  ViewServerId,
+  defineViewServerConfig,
+  type GroupedQuery,
+  viewSchema,
+} from "@effect-view-server/config";
 import { BigDecimal, Effect, Schema } from "effect";
 import { createColumnLiveViewEngine } from "./index";
 import {
@@ -25,7 +30,7 @@ class Sentinel extends Schema.Class<Sentinel>("Sentinel")({
 viewSchema.admitClass(Sentinel);
 
 const GroupedSemanticRow = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   venue: Venue,
   sentinel: Sentinel,
   amount: Schema.BigDecimal,
@@ -47,7 +52,6 @@ const groupedSemanticViewServer = defineViewServerConfig({
   topics: {
     groupedSemanticRows: {
       schema: GroupedSemanticRow,
-      key: "id",
     },
   },
 });

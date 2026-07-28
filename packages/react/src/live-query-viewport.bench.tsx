@@ -9,6 +9,7 @@ import type {
   ViewServerLiveSubscription,
 } from "@effect-view-server/client";
 import {
+  ViewServerId,
   defineViewServerConfig,
   type ExactLiveQueryInputForTopic,
   type GroupedQuery,
@@ -24,7 +25,7 @@ import { Effect, Fiber, Queue, Schema, Stream } from "effect";
 import { makeLiveQueryViewport, type LiveQueryViewportChrome } from "./live-query-viewport";
 
 const Order = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   price: Schema.Number,
 });
 
@@ -32,7 +33,6 @@ const viewServer = defineViewServerConfig({
   topics: {
     orders: {
       schema: Order,
-      key: "id",
     },
   },
 });

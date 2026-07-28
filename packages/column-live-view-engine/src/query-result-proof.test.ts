@@ -1,3 +1,4 @@
+import { ViewServerId } from "@effect-view-server/config";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Option, Schema } from "effect";
 import {
@@ -211,7 +212,7 @@ describe("ColumnLiveViewEngine query result proof", () => {
   it.effect("rejects metadata whose public schema does not match its hidden provenance", () =>
     Effect.gen(function* () {
       const numericSchema = Schema.Struct({ id: Schema.Number });
-      const stringSchema = Schema.Struct({ id: Schema.String });
+      const stringSchema = Schema.Struct({ id: ViewServerId });
       const forgedMetadata = {
         ...rawQueryCompilerMetadata(numericSchema),
         schema: stringSchema,
@@ -263,7 +264,7 @@ describe("ColumnLiveViewEngine query result proof", () => {
   it.effect("rejects mismatched or unauthenticated typed query witnesses", () =>
     Effect.gen(function* () {
       const numericSchema = Schema.Struct({ id: Schema.Number });
-      const stringSchema = Schema.Struct({ id: Schema.String });
+      const stringSchema = Schema.Struct({ id: ViewServerId });
       const numericMetadata = rawQueryCompilerMetadata(numericSchema);
       const stringMetadata = rawQueryCompilerMetadata(stringSchema);
       const numericRawQuery = { select: ["id"] } as const;
@@ -370,7 +371,7 @@ describe("ColumnLiveViewEngine query result proof", () => {
   );
 
   it("freezes every public object in the schema-backed proof graph", () => {
-    const stringMetadata = rawQueryCompilerMetadata(Schema.Struct({ id: Schema.String }));
+    const stringMetadata = rawQueryCompilerMetadata(Schema.Struct({ id: ViewServerId }));
     const numberMetadata = rawQueryCompilerMetadata(Schema.Struct({ id: Schema.Number }));
     const stringFieldSemantics = stringMetadata.valueSemantics.field("id");
     const numberFieldSemantics = numberMetadata.valueSemantics.field("id");
@@ -505,7 +506,7 @@ describe("ColumnLiveViewEngine query result proof", () => {
 
 it.effect("freezes raw and grouped compiled proof carriers", () =>
   Effect.gen(function* () {
-    const stringSchema = Schema.Struct({ id: Schema.String });
+    const stringSchema = Schema.Struct({ id: ViewServerId });
     const numberSchema = Schema.Struct({ id: Schema.Number });
     const stringMetadata = rawQueryCompilerMetadata(stringSchema);
     const numberMetadata = rawQueryCompilerMetadata(numberSchema);

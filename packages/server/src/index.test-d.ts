@@ -1,6 +1,10 @@
 import { describe, expectTypeOf, it } from "@effect/vitest";
 import type { ViewServerRuntimeLiveClient } from "@effect-view-server/client";
-import { defineViewServerConfig, type ValidatedRuntimeQuery } from "@effect-view-server/config";
+import {
+  ViewServerId,
+  defineViewServerConfig,
+  type ValidatedRuntimeQuery,
+} from "@effect-view-server/config";
 import { Effect, Schema } from "effect";
 import type {
   ViewServerAuth,
@@ -16,9 +20,8 @@ const viewServer = defineViewServerConfig({
   topics: {
     orders: {
       schema: Schema.Struct({
-        id: Schema.String,
+        id: ViewServerId,
       }),
-      key: "id",
     },
   },
 });

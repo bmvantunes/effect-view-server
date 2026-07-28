@@ -14,7 +14,7 @@ import {
   type GrpcAdapterFailure,
   type GrpcSourceDefinitionClient,
 } from "./model";
-import type { SourceDefinitionAdapter } from "@effect-view-server/source-adapter";
+import type { SourceDefinitionAdapter } from "effect-view-server/source-adapter";
 import {
   grpcBindingPlan,
   grpcServerLayerFromBindingPlan,

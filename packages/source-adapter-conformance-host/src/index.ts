@@ -1,5 +1,5 @@
 import { expect, it as vitestIt, layer as vitestLayer, type Vitest } from "@effect/vitest";
-import { defineViewServerConfig } from "@effect-view-server/config";
+import { ViewServerId, defineViewServerConfig } from "@effect-view-server/config";
 import { makeViewServerRuntimeCore } from "@effect-view-server/runtime-core";
 import {
   SourceAdapterConformanceDriver,
@@ -38,6 +38,11 @@ export type SourceAdapterPackageConformanceOptions = {
   readonly inspection: SourceAdapterPackageInspectionOptions;
   readonly behavioral: SourceAdapterConformanceSuiteOptions;
 };
+
+const SourceAdapterConformanceConfigRow = Schema.Struct({
+  ...SourceAdapterConformanceRow.fields,
+  id: ViewServerId,
+});
 
 const materializedTarget = (
   lane: "primary" | "sibling" = "primary",
@@ -141,7 +146,7 @@ const openRuntime = Effect.fn("SourceAdapterConformanceHost.runtime.open")(funct
   const config = defineViewServerConfig({
     topics: {
       rows: {
-        schema: SourceAdapterConformanceRow,
+        schema: SourceAdapterConformanceConfigRow,
         source,
       },
     },
@@ -166,7 +171,7 @@ const applicationValue = Schema.String.pipe(
 );
 
 const applicationRow = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   region: Schema.String,
   value: applicationValue,
 });
@@ -1200,7 +1205,7 @@ const registerLeasedSharingConformance = (
         const config = defineViewServerConfig({
           topics: {
             rows: {
-              schema: SourceAdapterConformanceRow,
+              schema: SourceAdapterConformanceConfigRow,
               source: definition.source,
             },
           },
@@ -1278,7 +1283,7 @@ const registerLeasedCompleteDeliveryConformance = (
         const config = defineViewServerConfig({
           topics: {
             rows: {
-              schema: SourceAdapterConformanceRow,
+              schema: SourceAdapterConformanceConfigRow,
               source: definition.source,
             },
           },

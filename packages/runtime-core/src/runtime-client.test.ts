@@ -1,11 +1,15 @@
 import { describe, expect, it } from "@effect/vitest";
 import { createColumnLiveViewEngineInternal } from "@effect-view-server/column-live-view-engine/internal";
 import { Deferred, Effect, Fiber, Stream, Tracer } from "effect";
-import { healthFromEngine } from "./health";
 import { makeViewServerRuntimeCoreInternal } from "./internal";
 import { createViewServerRuntimeCore, makeViewServerRuntimeCore } from "./index";
 import { makeRuntimeCoreClient } from "./runtime-client";
-import { makeRecordingTracer, order, viewServer } from "./test-support/runtime-test-fixtures";
+import {
+  makeRecordingTracer,
+  order,
+  sourceFreeViewServerHealth,
+  viewServer,
+} from "./test-support/runtime-test-fixtures";
 
 describe("Runtime Core client", () => {
   it.effect("starts a new fresh health read after a completed mutation", () =>
@@ -17,7 +21,7 @@ describe("Runtime Core client", () => {
       const readFreshHealth = Effect.gen(function* () {
         const readNumber = readCount + 1;
         readCount = readNumber;
-        const health = healthFromEngine(yield* engine.health());
+        const health = sourceFreeViewServerHealth(yield* engine.health());
         if (readNumber === 1) {
           yield* Deferred.succeed(firstReadStarted, undefined);
           yield* Deferred.await(releaseFirstRead);

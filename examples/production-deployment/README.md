@@ -1,75 +1,56 @@
 # Production Deployment Example
 
-This example is a deployment recipe, not a runnable TanStack app. The runnable
-source-specific examples live beside it. Use this when wiring a real production
-service with:
+This is a deployment recipe. The runnable source-specific applications live in
+the sibling example directories.
 
-- one View Server runtime instance
-- one unique Kafka consumer group per deployment
-- runtime configuration from Effect `Config`
-- browser URL injection at deploy time
-- Kubernetes health probes
-- Prometheus metrics scraping
-
-## Runtime Entrypoint
+## Runtime entrypoint
 
 ```ts
 import { NodeRuntime } from "@effect/platform-node";
-import { runViewServerRuntime } from "effect-view-server/runtime";
 import { Config, Effect } from "effect";
+import { grpcNode } from "effect-view-server/grpc/node";
+import { kafkaNode } from "effect-view-server/kafka/node";
+import { runViewServerRuntime } from "effect-view-server/runtime";
 import { viewServer } from "./view-server.config";
+
+const KafkaLive = kafkaNode.layerConfig(viewServer, {
+  consumerGroupPrefix: Config.string("KAFKA_GROUP_PREFIX"),
+  regions: {
+    usa: { bootstrapServers: Config.string("KAFKA_USA_BOOTSTRAP") },
+    london: { bootstrapServers: Config.string("KAFKA_LONDON_BOOTSTRAP") },
+  },
+});
+const GrpcLive = grpcNode.layerConfig(viewServer, {
+  orders: { baseUrl: Config.string("ORDERS_GRPC_URL") },
+  strategies: { baseUrl: Config.string("STRATEGIES_GRPC_URL") },
+});
 
 const program = Effect.gen(function* () {
   const websocketPort = yield* Config.number("VIEW_SERVER_WEBSOCKET_PORT");
-  const kafkaConsumerGroupId = yield* Config.string("VIEW_SERVER_KAFKA_GROUP_ID");
-
   return yield* runViewServerRuntime(viewServer, {
     host: "0.0.0.0",
     websocketPort,
+    tcpPublishHost: "127.0.0.1",
+    tcpPublishPort: 8081,
     healthPath: "/health",
     metricsPath: "/metrics",
-    kafka: {
-      consumerGroupId: kafkaConsumerGroupId,
-      startFrom: "latest",
-    },
   });
-});
+}).pipe(Effect.provide([KafkaLive, GrpcLive]));
 
 NodeRuntime.runMain(program);
 ```
 
-Kafka regions and source mappings should be declared on `viewServer` with
-topic-owned `kafkaSource` definitions; runtime options only provide the
-deployment consumer group and start policy.
+The shared config owns browser-safe Source Definitions. Kafka/gRPC clients,
+endpoints, credentials, and TLS are resolved by aggregate Node Layers.
 
-gRPC clients and source mappings should also be declared on `viewServer` with
-topic-owned `grpcSource` definitions created through `grpc.topicSources(...)`.
-Runtime options do not redeclare gRPC feeds.
+Use a deployment-unique `KAFKA_GROUP_PREFIX`. Each Kafka Topic Source owns its
+start position. The current recommended deployment topology is one active View
+Server process per logical deployment.
 
-Use a deployment-unique `VIEW_SERVER_KAFKA_GROUP_ID`. The current supported
-deployment model is one active View Server runtime for a logical deployment.
-Multi-replica Kafka rebalance/revoke handoff is intentionally out of scope.
-
-One runtime instance has one Kafka start policy. If one Kafka-backed topic must
-replay from `"earliest"` and another must tail from `"latest"`, deploy two View
-Server runtime instances with separate configs and consumer groups. Do not try
-to mix start positions inside one runtime.
-
-## React Entrypoint
-
-React code should receive the runtime URL from deploy-time configuration, not
-from build-time environment variables.
+## React entrypoint
 
 ```tsx
 import { ViewServerProvider } from "./view-server.config";
-
-declare global {
-  interface Window {
-    readonly __APP_CONFIG__: {
-      readonly VIEW_SERVER_URL: string;
-    };
-  }
-}
 
 export function AppRoot() {
   return (
@@ -80,7 +61,7 @@ export function AppRoot() {
 }
 ```
 
-Serve a small config script before the app bundle:
+Inject the browser URL at deploy time:
 
 ```html
 <script>
@@ -90,99 +71,21 @@ Serve a small config script before the app bundle:
 </script>
 ```
 
-The same app components can be tested in Vitest browser mode by wrapping them in
-`createInMemoryViewServerReact(...).ViewServerInMemoryProvider`.
+## Kubernetes sketch
 
-## Kubernetes Sketch
+Expose port 8080 for WebSocket, health, and metrics. Use `/health` for
+startup/readiness and a TCP or process check for liveness. Keep optional TCP
+publish on a private interface.
 
-```yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: view-server
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: view-server
-  template:
-    metadata:
-      labels:
-        app: view-server
-      annotations:
-        prometheus.io/scrape: "true"
-        prometheus.io/port: "8080"
-        prometheus.io/path: "/metrics"
-    spec:
-      containers:
-        - name: view-server
-          image: registry.example.com/view-server:VERSION
-          ports:
-            - name: websocket
-              containerPort: 8080
-          env:
-            - name: VIEW_SERVER_WEBSOCKET_PORT
-              value: "8080"
-            - name: VIEW_SERVER_KAFKA_GROUP_ID
-              value: "view-server-prod-orders-v1"
-            - name: KAFKA_USA_BOOTSTRAP
-              valueFrom:
-                secretKeyRef:
-                  name: view-server-kafka
-                  key: usa-bootstrap
-            - name: KAFKA_LONDON_BOOTSTRAP
-              valueFrom:
-                secretKeyRef:
-                  name: view-server-kafka
-                  key: london-bootstrap
-            - name: ORDERS_GRPC_URL
-              valueFrom:
-                secretKeyRef:
-                  name: view-server-grpc
-                  key: orders-url
-            - name: STRATEGIES_GRPC_URL
-              valueFrom:
-                secretKeyRef:
-                  name: view-server-grpc
-                  key: strategies-url
-          readinessProbe:
-            httpGet:
-              path: /health
-              port: websocket
-            periodSeconds: 5
-            failureThreshold: 3
-          livenessProbe:
-            tcpSocket:
-              port: websocket
-            periodSeconds: 10
-            failureThreshold: 6
-          resources:
-            requests:
-              cpu: "1"
-              memory: 1Gi
-            limits:
-              cpu: "4"
-              memory: 4Gi
-```
+Provide `KAFKA_GROUP_PREFIX`, region broker addresses, and gRPC base URLs from
+Secrets or ConfigMaps. A missing value fails Layer construction before the
+runtime binds ports.
 
-Size CPU and memory from `vp run -w release-candidate:capacity` on a
-production-like machine. Do not copy the resource values above without testing
-your topic count, row count, grouped queries, Kafka rate, gRPC routes, and
-WebSocket fanout.
-
-`GET /health` is a readiness/startup probe: it returns `200` while the runtime
-is ready or degraded and a non-`200` status while it is starting or stopping.
-An exhausted required source contributes aggregate `starting` health until it
-recovers. Use a process-level or TCP liveness check so recoverable degradation
-does not restart the pod and discard retained in-memory state.
-
-## Release Candidate Gate
-
-Before promoting a runtime image:
+Size CPU and memory using:
 
 ```sh
 vp run -w release-candidate:capacity
 ```
 
-This runs examples, builds, readiness checks, pre-gRPC benchmark gates, gRPC
-benchmark gates, and the broad no-compare release benchmark profile serially.
+Use production-like Topic counts, rows, grouped queries, Kafka rates, gRPC Feed
+Routes, and WebSocket fanout when evaluating capacity.

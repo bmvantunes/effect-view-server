@@ -5,7 +5,8 @@ import type {
   ViewServerTopicConfig,
 } from "@effect-view-server/config";
 import {
-  sourceHealthSchema,
+  SourceRuntimeMetricsSchema,
+  sourceHealthContractSchemas,
   type SourceHealthResultForDefinition,
 } from "@effect-view-server/source-adapter";
 import { isSourceDefinition } from "@effect-view-server/source-adapter/internal";
@@ -20,6 +21,7 @@ export const ViewServerSourceHealthPayloadSchema = Schema.Struct({
 });
 
 export const ViewServerWireSourceHealthSchema = Schema.Json;
+export const ViewServerSourceRuntimeMetricsSchema = SourceRuntimeMetricsSchema;
 
 export type ViewServerSourceHealthPayload = typeof ViewServerSourceHealthPayloadSchema.Type;
 export type ViewServerWireSourceHealth = typeof ViewServerWireSourceHealthSchema.Type;
@@ -31,7 +33,12 @@ const invalidSourceHealth = (topic: string, message: string): ViewServerRuntimeE
   topic,
 });
 
-type CompiledSourceHealthContract = {
+export type CompiledSourceHealthContract = {
+  readonly adapterIdentity: {
+    readonly name: string;
+    readonly version?: string | undefined;
+  };
+  readonly health: Schema.Codec<unknown, unknown, never, never>;
   readonly lifecycle: "materialized" | "leased";
   readonly result: Schema.Codec<unknown, unknown, never, never>;
   readonly route: Schema.Codec<Readonly<Record<string, unknown>>, unknown, never, never>;
@@ -48,9 +55,9 @@ export type ViewServerDecodedSourceHealth<
   Topic extends Extract<keyof Topics, string>,
 > = SourceHealthResultForDefinition<TopicSourceDefinition<Topics, Topic>, TopicRow<Topics, Topic>>;
 
-const compileSourceHealthContract = Effect.fn("ViewServerProtocol.sourceHealth.compile")(function* <
-  Topics extends ViewServerConfigTopicShape,
->(
+const compileSourceHealthContractUncached = Effect.fn(
+  "ViewServerProtocol.sourceHealth.compileUncached",
+)(function* <Topics extends ViewServerConfigTopicShape>(
   config: ViewServerTopicConfig<Topics>,
   topic: string,
 ): Effect.fn.Return<CompiledSourceHealthContract, ViewServerRuntimeError> {
@@ -84,22 +91,44 @@ const compileSourceHealthContract = Effect.fn("ViewServerProtocol.sourceHealth.c
     routeFields[field] = fieldSchema;
   }
   const route = Schema.Struct(routeFields);
-  const health = sourceHealthSchema({
+  const healthContract = sourceHealthContractSchemas({
     adapterFailure,
     route,
     adapterMetrics,
     rejectionLocation,
     lifecycle,
   });
-  const result =
-    lifecycle === "materialized"
-      ? health
-      : Schema.Union([
-          Schema.TaggedStruct("Inactive", { route }),
-          Schema.TaggedStruct("Active", { route, health }),
-        ]);
-  return { lifecycle, result, route, routeFields };
+  return {
+    adapterIdentity: source.identity,
+    health: healthContract.health,
+    lifecycle,
+    result: healthContract.result,
+    route,
+    routeFields,
+  };
 });
+
+const sourceHealthContracts = new WeakMap<object, Map<string, CompiledSourceHealthContract>>();
+
+export const compileSourceHealthContract = Effect.fn("ViewServerProtocol.sourceHealth.compile")(
+  function* <Topics extends ViewServerConfigTopicShape>(
+    config: ViewServerTopicConfig<Topics>,
+    topic: string,
+  ): Effect.fn.Return<CompiledSourceHealthContract, ViewServerRuntimeError> {
+    let contracts = sourceHealthContracts.get(config);
+    if (contracts === undefined) {
+      contracts = new Map();
+      sourceHealthContracts.set(config, contracts);
+    }
+    const cached = contracts.get(topic);
+    if (cached !== undefined) {
+      return cached;
+    }
+    const compiled = yield* compileSourceHealthContractUncached(config, topic);
+    contracts.set(topic, compiled);
+    return compiled;
+  },
+);
 
 const codecErrors = (topic: string) => ({
   invalid: (message: string) =>
@@ -147,6 +176,47 @@ const readProperty = (candidate: unknown, key: string): unknown => {
   return Result.isSuccess(property) ? property.success : undefined;
 };
 
+const exactAdapterIdentity = (
+  expected: CompiledSourceHealthContract["adapterIdentity"],
+  candidate: unknown,
+): boolean => {
+  if (typeof candidate !== "object" || candidate === null || Array.isArray(candidate)) {
+    return false;
+  }
+  const expectedKeys = expected.version === undefined ? ["name"] : ["name", "version"];
+  const keys = Result.try(() => Reflect.ownKeys(candidate));
+  return (
+    Result.isSuccess(keys) &&
+    keys.success.length === expectedKeys.length &&
+    keys.success.every((key) => typeof key === "string" && expectedKeys.includes(key)) &&
+    readProperty(candidate, "name") === expected.name &&
+    readProperty(candidate, "version") === expected.version
+  );
+};
+
+export const requireExactSourceHealth = Effect.fn("ViewServerProtocol.sourceHealth.exact")(
+  function* (topic: string, contract: CompiledSourceHealthContract, candidate: unknown) {
+    if (!exactAdapterIdentity(contract.adapterIdentity, readProperty(candidate, "adapter"))) {
+      return yield* Effect.fail(
+        invalidSourceHealth(
+          topic,
+          `Source Health adapter identity must match ${contract.adapterIdentity.name}.`,
+        ),
+      );
+    }
+    if (
+      contract.lifecycle === "leased" &&
+      readProperty(readProperty(candidate, "target"), "_tag") === "Leased"
+    ) {
+      yield* requireExactRoute(
+        topic,
+        contract.routeFields,
+        readProperty(readProperty(candidate, "target"), "route"),
+      );
+    }
+  },
+);
+
 const equalRouteValue = (left: unknown, right: unknown): boolean => {
   if (BigDecimal.isBigDecimal(left)) {
     return (
@@ -160,11 +230,8 @@ const equalRouteValue = (left: unknown, right: unknown): boolean => {
 
 const requireExactLeasedHealthRoutes = Effect.fn(
   "ViewServerProtocol.sourceHealth.leasedRoutes.exact",
-)(function* (
-  topic: string,
-  routeFields: Readonly<Record<string, Schema.Codec<unknown, unknown, never, never>>>,
-  candidate: unknown,
-) {
+)(function* (topic: string, contract: CompiledSourceHealthContract, candidate: unknown) {
+  const routeFields = contract.routeFields;
   const tag = readProperty(candidate, "_tag");
   if (tag === "Inactive") {
     yield* requireExactRoute(topic, routeFields, readProperty(candidate, "route"));
@@ -190,6 +257,7 @@ const requireExactLeasedHealthRoutes = Effect.fn(
         ),
       );
     }
+    yield* requireExactSourceHealth(topic, contract, health);
   }
 });
 
@@ -270,7 +338,9 @@ export const viewServerEncodeSourceHealth = Effect.fn("ViewServerProtocol.source
   ) {
     const contract = yield* compileSourceHealthContract(config, topic);
     if (contract.lifecycle === "leased") {
-      yield* requireExactLeasedHealthRoutes(topic, contract.routeFields, value);
+      yield* requireExactLeasedHealthRoutes(topic, contract, value);
+    } else {
+      yield* requireExactSourceHealth(topic, contract, value);
     }
     return yield* encodeJsonFieldValue(contract.result, value, codecErrors(topic));
   },
@@ -290,7 +360,9 @@ export const viewServerDecodeSourceHealth: <
   >(config: ViewServerTopicConfig<Topics>, topic: Topic, value: unknown) {
     const contract = yield* compileSourceHealthContract(config, topic);
     if (contract.lifecycle === "leased") {
-      yield* requireExactLeasedHealthRoutes(topic, contract.routeFields, value);
+      yield* requireExactLeasedHealthRoutes(topic, contract, value);
+    } else {
+      yield* requireExactSourceHealth(topic, contract, value);
     }
     const decoded = yield* decodeJsonFieldValue(contract.result, value, codecErrors(topic));
     if (!isDecodedSourceHealth(contract.result, decoded)) {

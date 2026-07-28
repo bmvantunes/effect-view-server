@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from "@effect/vitest";
 // Vitest's mock transform requires this API to come directly from "vitest";
 // the @effect/vitest re-export cannot be hoisted.
 import { vi } from "vitest";
-import { defineViewServerConfig } from "@effect-view-server/config";
+import { ViewServerId, defineViewServerConfig } from "@effect-view-server/config";
 import { makeViewServerRuntimeCore } from "@effect-view-server/runtime-core";
 import type {
   SourceApplicationExit,
@@ -383,7 +383,7 @@ vi.mock("@platformatic/kafka", () => ({
 }));
 
 const Order = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   price: Schema.Number,
   region: Schema.String,
 });
@@ -546,7 +546,7 @@ describe("Kafka Node Adapter", () => {
       yield* awaitCondition(
         () => platformatic.state.committedByGroup.get("replica:orders")?.[0] === 1n,
       );
-      const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("orders");
+      const diagnostics = yield* runtime.liveClient.subscribeSourceHealth({ topic: "orders" });
       yield* TestClock.adjust("1 second");
       const health = Option.getOrThrow(
         yield* diagnostics.events.pipe(Stream.take(1), Stream.runHead),
@@ -704,7 +704,7 @@ describe("Kafka Node Adapter", () => {
           status: "ready",
           statusCode: "Ready",
         });
-        const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("orders");
+        const diagnostics = yield* runtime.liveClient.subscribeSourceHealth({ topic: "orders" });
         yield* TestClock.adjust("1 second");
         const health = Option.getOrThrow(
           yield* diagnostics.events.pipe(Stream.take(1), Stream.runHead),
@@ -946,7 +946,7 @@ describe("Kafka Node Adapter", () => {
         });
         active?.emit("consumer:group:rebalance");
         active?.emitLag(new Map([["source-orders", [40n, 7n]]]));
-        const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("orders");
+        const diagnostics = yield* runtime.liveClient.subscribeSourceHealth({ topic: "orders" });
         yield* TestClock.adjust("1 second");
         const rebalancing = Option.getOrThrow(
           yield* diagnostics.events.pipe(Stream.take(1), Stream.runHead),
@@ -1051,7 +1051,9 @@ describe("Kafka Node Adapter", () => {
             },
           ],
         ]);
-        const diagnostics = yield* secondRuntime.liveClient.subscribeSourceHealth("orders");
+        const diagnostics = yield* secondRuntime.liveClient.subscribeSourceHealth({
+          topic: "orders",
+        });
         yield* TestClock.adjust("1 second");
         const health = Option.getOrThrow(
           yield* diagnostics.events.pipe(Stream.take(1), Stream.runHead),
@@ -1258,7 +1260,9 @@ describe("Kafka Node Adapter", () => {
           ),
         );
         yield* awaitCondition(() => platformatic.state.streams.length === 1);
-        const waitingDiagnostics = yield* waitingRuntime.liveClient.subscribeSourceHealth("orders");
+        const waitingDiagnostics = yield* waitingRuntime.liveClient.subscribeSourceHealth({
+          topic: "orders",
+        });
         yield* TestClock.adjust("1 second");
         const active = Option.getOrThrow(
           yield* waitingDiagnostics.events.pipe(
@@ -1319,8 +1323,9 @@ describe("Kafka Node Adapter", () => {
             }),
           ),
         );
-        const exhaustedDiagnostics =
-          yield* exhaustedRuntime.liveClient.subscribeSourceHealth("orders");
+        const exhaustedDiagnostics = yield* exhaustedRuntime.liveClient.subscribeSourceHealth({
+          topic: "orders",
+        });
         const exhausted = Option.getOrThrow(
           yield* exhaustedDiagnostics.events.pipe(
             Stream.filter((health) => health.status._tag === "Exhausted"),
@@ -1363,7 +1368,7 @@ describe("Kafka Node Adapter", () => {
           }),
         ),
       );
-      const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("orders");
+      const diagnostics = yield* runtime.liveClient.subscribeSourceHealth({ topic: "orders" });
       const waiting = Option.getOrThrow(
         yield* diagnostics.events.pipe(
           Stream.filter((health) => health.status._tag === "WaitingToRetry"),
@@ -1424,7 +1429,7 @@ describe("Kafka Node Adapter", () => {
         ),
       );
       yield* awaitCondition(() => platformatic.state.streams.length === 1);
-      const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("orders");
+      const diagnostics = yield* runtime.liveClient.subscribeSourceHealth({ topic: "orders" });
       platformatic.state.streams[0]?.push(
         message({
           groupId: "replica:orders",
@@ -1787,7 +1792,7 @@ describe("Kafka Node Adapter", () => {
           }),
         ),
       );
-      const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("orders");
+      const diagnostics = yield* runtime.liveClient.subscribeSourceHealth({ topic: "orders" });
       yield* awaitCondition(
         () =>
           platformatic.state.failNextListOffsets === false &&

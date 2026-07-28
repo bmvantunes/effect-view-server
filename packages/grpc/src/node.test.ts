@@ -3,7 +3,7 @@ import { fileDesc, messageDesc, serviceDesc } from "@bufbuild/protobuf/codegenv2
 import { FieldDescriptorProto_Type, FileDescriptorProtoSchema } from "@bufbuild/protobuf/wkt";
 import { compressionGzip, Http2SessionManager } from "@connectrpc/connect-node";
 import { describe, expect, it } from "@effect/vitest";
-import { defineViewServerConfig } from "@effect-view-server/config";
+import { ViewServerId, defineViewServerConfig } from "@effect-view-server/config";
 import { makeViewServerRuntimeCore } from "@effect-view-server/runtime-core";
 import {
   Config,
@@ -96,7 +96,7 @@ const OrdersService = serviceDesc<{
 }>(descriptorFile, 0);
 
 const Row = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
 });
 
 const source = grpc.topicSources({ orders: OrdersService }).materialized(
@@ -801,7 +801,7 @@ describe("gRPC aggregate Node Layer", () => {
               : grpcNode.layerConfig(config, Config.succeed(options));
           const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(Effect.provide(layer));
           yield* awaitNodeRequest(() => managerTarget.calls);
-          const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("orders");
+          const diagnostics = yield* runtime.liveClient.subscribeSourceHealth({ topic: "orders" });
           const exhausted = Option.getOrThrow(
             yield* diagnostics.events.pipe(
               Stream.filter((health) => health.status._tag === "Exhausted"),
@@ -899,7 +899,9 @@ describe("gRPC aggregate Node Layer", () => {
                 Effect.provide(layer),
               );
               yield* awaitNodeRequest(() => observations.length);
-              const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("orders");
+              const diagnostics = yield* runtime.liveClient.subscribeSourceHealth({
+                topic: "orders",
+              });
               const exhausted = Option.getOrThrow(
                 yield* diagnostics.events.pipe(
                   Stream.filter((health) => health.status._tag === "Exhausted"),

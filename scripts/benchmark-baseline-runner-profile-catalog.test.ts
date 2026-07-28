@@ -1,4 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
+import { readFileSync } from "node:fs";
 import config from "../vite.config";
 import { profiles } from "./benchmark-baseline-profiles.mjs";
 import {
@@ -6,7 +7,6 @@ import {
   kafkaSourceAdapterBrokerTask,
   kafkaSourceAdapterTask,
   rawLargeMembershipTask,
-  runtimeGrpcMaterializedTask,
   runtimeGrpcSourceAdapterTask,
 } from "./benchmark-baseline-task-catalog.mjs";
 
@@ -19,6 +19,7 @@ describe("benchmark baseline runner", () => {
     expect({
       benchmarkScope: sourceTask.expectedBenchmarkScope,
       iterations: sourceTask.env["VIEW_SERVER_KAFKA_SOURCE_BENCH_ITERATIONS"],
+      expectedMutationCount: sourceTask.expectedMutationCount,
       minimumSampleCount: sourceTask.minimumSampleCount,
       outputJsonPath: sourceTask.packageOutputJsonPath,
       partitions: sourceTask.env["VIEW_SERVER_KAFKA_SOURCE_BENCH_PARTITIONS"],
@@ -27,6 +28,7 @@ describe("benchmark baseline runner", () => {
       task: sourceTask.args,
     }).toStrictEqual({
       benchmarkScope: "kafka-source-adapter",
+      expectedMutationCount: 4_986,
       iterations: undefined,
       minimumSampleCount: 5,
       outputJsonPath: ".artifacts/source-lanes-64rows-64partitions.json",
@@ -42,6 +44,7 @@ describe("benchmark baseline runner", () => {
           task.env["VIEW_SERVER_KAFKA_SOURCE_BENCH_ITERATIONS"] ??
           task.env["VIEW_SERVER_KAFKA_SOURCE_BROKER_BENCH_ITERATIONS"],
         minimumSampleCount: task.minimumSampleCount,
+        expectedMutationCount: task.expectedMutationCount,
         partitions: task.env["VIEW_SERVER_KAFKA_SOURCE_BENCH_PARTITIONS"],
         rowCount: task.expectedRowCount,
         rows:
@@ -52,20 +55,22 @@ describe("benchmark baseline runner", () => {
     ).toStrictEqual([
       {
         benchmarkScope: "kafka-source-adapter",
+        expectedMutationCount: 155_994,
         iterations: "5",
         minimumSampleCount: 5,
         partitions: "64",
-        rowCount: 64,
-        rows: "64",
+        rowCount: 2_000,
+        rows: "2000",
         task: ["run", "--no-cache", "kafka#bench:source-lanes"],
       },
       {
         benchmarkScope: "kafka-source-adapter-broker",
+        expectedMutationCount: undefined,
         iterations: "5",
         minimumSampleCount: 5,
         partitions: undefined,
-        rowCount: 64,
-        rows: "64",
+        rowCount: 250,
+        rows: "250",
         task: ["run", "--no-cache", "bench:kafka-source-broker"],
       },
     ]);
@@ -86,6 +91,11 @@ describe("benchmark baseline runner", () => {
       command: "node scripts/run-kafka-source-broker-bench.mjs",
       dependsOn: ["build:effect-declarations:runtime-core"],
     });
+
+    const sourceBenchmark = readFileSync("packages/kafka/src/source-lanes.bench.ts", "utf8");
+    expect(sourceBenchmark).toContain("${laneBatchSize}-record mixed JSON/protobuf burst");
+    expect(sourceBenchmark).toContain("sustained JSON/protobuf ingestion");
+    expect(sourceBenchmark).toContain("kafka.protobuf(OrderValueSchema)");
   });
 
   it("guards large membership performance in the focused active-query-sharing profile", () => {
@@ -246,58 +256,6 @@ describe("benchmark baseline runner", () => {
     ]);
   });
 
-  it("defines the Kafka ingest runtime benchmark task", () => {
-    const kafkaIngestTasks = profiles.get("kafka-ingest") ?? [];
-
-    expect(
-      kafkaIngestTasks.map((task) => ({
-        artifactKind: task.expectedArtifactKind,
-        benchmarkScope: task.expectedBenchmarkScope,
-        broker: task.env["VIEW_SERVER_KAFKA_BOOTSTRAP_SERVERS"],
-        outputJsonPath: task.packageOutputJsonPath,
-        rowCount: task.env["VIEW_SERVER_RUNTIME_BENCH_KAFKA_BATCH_SIZE"],
-        task: task.args,
-      })),
-    ).toStrictEqual([
-      {
-        artifactKind: "runtime-benchmark-summary",
-        benchmarkScope: "runtime-kafka-ingest",
-        broker: "localhost:9092",
-        outputJsonPath: ".artifacts/kafka-ingest-250rows.json",
-        rowCount: "250",
-        task: ["run", "--no-cache", "bench:runtime-kafka-ingest"],
-      },
-    ]);
-  });
-
-  it("defines the Kafka sustained firehose runtime benchmark task", () => {
-    const kafkaSustainedFirehoseTasks = profiles.get("kafka-sustained-firehose") ?? [];
-
-    expect(
-      kafkaSustainedFirehoseTasks.map((task) => ({
-        artifactKind: task.expectedArtifactKind,
-        benchmarkMode: task.env["VIEW_SERVER_RUNTIME_BENCH_KAFKA_MODE"],
-        benchmarkScope: task.expectedBenchmarkScope,
-        broker: task.env["VIEW_SERVER_KAFKA_BOOTSTRAP_SERVERS"],
-        outputJsonPath: task.packageOutputJsonPath,
-        rowCount: task.env["VIEW_SERVER_RUNTIME_BENCH_KAFKA_BATCH_SIZE"],
-        sustainedBatches: task.env["VIEW_SERVER_RUNTIME_BENCH_KAFKA_SUSTAINED_BATCHES"],
-        task: task.args,
-      })),
-    ).toStrictEqual([
-      {
-        artifactKind: "runtime-benchmark-summary",
-        benchmarkMode: "sustained-firehose",
-        benchmarkScope: "runtime-kafka-sustained-firehose",
-        broker: "localhost:9092",
-        outputJsonPath: ".artifacts/kafka-sustained-firehose-250rows-4batches.json",
-        rowCount: "250",
-        sustainedBatches: "4",
-        task: ["run", "--no-cache", "bench:runtime-kafka-ingest"],
-      },
-    ]);
-  });
-
   it("defines the WebSocket firehose runtime benchmark tasks", () => {
     const webSocketFirehoseTasks = profiles.get("websocket-firehose") ?? [];
 
@@ -339,114 +297,10 @@ describe("benchmark baseline runner", () => {
     ]);
   });
 
-  it("defines the gRPC runtime benchmark tasks", () => {
-    const materializedTasks = profiles.get("grpc-materialized") ?? [];
-    const leasedTasks = profiles.get("grpc-leased") ?? [];
-    const retainedTasks = profiles.get("grpc-leased-retained") ?? [];
-
-    expect({
-      leased: leasedTasks.map((task) => ({
-        artifactKind: task.expectedArtifactKind,
-        benchmarkScope: task.expectedBenchmarkScope,
-        iterations: task.env["VIEW_SERVER_RUNTIME_BENCH_ITERATIONS"],
-        explicitGc: task.env["VIEW_SERVER_RUNTIME_BENCH_EXPLICIT_GC"],
-        measurementProtocol: task.expectedMeasurementProtocol,
-        nodeOptions: task.env["NODE_OPTIONS"],
-        outputJsonPath: task.packageOutputJsonPath,
-        retainedRows: task.env["VIEW_SERVER_RUNTIME_BENCH_GRPC_LEASED_RETAINED_ROWS"],
-        routeCount: task.env["VIEW_SERVER_RUNTIME_BENCH_GRPC_LEASED_ROUTE_COUNT"],
-        rowCount: task.env["VIEW_SERVER_RUNTIME_BENCH_GRPC_LEASED_ROWS_PER_FEED"],
-        task: task.args,
-        timeMs: task.env["VIEW_SERVER_RUNTIME_BENCH_TIME_MS"],
-      })),
-      retained: retainedTasks.map((task) => ({
-        artifactKind: task.expectedArtifactKind,
-        benchmarkScope: task.expectedBenchmarkScope,
-        iterations: task.env["VIEW_SERVER_RUNTIME_BENCH_ITERATIONS"],
-        explicitGc: task.env["VIEW_SERVER_RUNTIME_BENCH_EXPLICIT_GC"],
-        measurementProtocol: task.expectedMeasurementProtocol,
-        nodeOptions: task.env["NODE_OPTIONS"],
-        outputJsonPath: task.packageOutputJsonPath,
-        retainedRows: task.env["VIEW_SERVER_RUNTIME_BENCH_GRPC_LEASED_RETAINED_ROWS"],
-        routeCount: task.env["VIEW_SERVER_RUNTIME_BENCH_GRPC_LEASED_ROUTE_COUNT"],
-        rowCount: task.env["VIEW_SERVER_RUNTIME_BENCH_GRPC_LEASED_ROWS_PER_FEED"],
-        task: task.args,
-        timeMs: task.env["VIEW_SERVER_RUNTIME_BENCH_TIME_MS"],
-      })),
-      materialized: materializedTasks.map((task) => ({
-        artifactKind: task.expectedArtifactKind,
-        batchSize: task.env["VIEW_SERVER_RUNTIME_BENCH_GRPC_BATCH_SIZE"],
-        benchmarkScope: task.expectedBenchmarkScope,
-        iterations: task.env["VIEW_SERVER_RUNTIME_BENCH_ITERATIONS"],
-        explicitGc: task.env["VIEW_SERVER_RUNTIME_BENCH_EXPLICIT_GC"],
-        measurementProtocol: task.expectedMeasurementProtocol,
-        nodeOptions: task.env["NODE_OPTIONS"],
-        outputJsonPath: task.packageOutputJsonPath,
-        rowCount: task.env["VIEW_SERVER_RUNTIME_BENCH_GRPC_SEED_ROWS"],
-        task: task.args,
-        timeMs: task.env["VIEW_SERVER_RUNTIME_BENCH_TIME_MS"],
-      })),
-    }).toStrictEqual({
-      leased: [
-        {
-          artifactKind: "runtime-benchmark-summary",
-          benchmarkScope: "runtime-grpc-leased",
-          iterations: "5",
-          explicitGc: "1",
-          measurementProtocol: {
-            memoryCheckpoint: "settled-explicit-gc-after-cleanup",
-          },
-          nodeOptions: "--expose-gc",
-          outputJsonPath: ".artifacts/grpc-leased-50rows-25routes-500retained.json",
-          retainedRows: "500",
-          routeCount: "25",
-          rowCount: "50",
-          task: ["run", "--no-cache", "runtime#bench:grpc-leased"],
-          timeMs: "0",
-        },
-      ],
-      retained: [
-        {
-          artifactKind: "runtime-benchmark-summary",
-          benchmarkScope: "runtime-grpc-leased",
-          iterations: "5",
-          explicitGc: "1",
-          measurementProtocol: {
-            memoryCheckpoint: "settled-explicit-gc-after-cleanup",
-          },
-          nodeOptions: "--expose-gc",
-          outputJsonPath: ".artifacts/grpc-leased-50rows-25routes-50000retained.json",
-          retainedRows: "50000",
-          routeCount: "25",
-          rowCount: "50",
-          task: ["run", "--no-cache", "runtime#bench:grpc-leased"],
-          timeMs: "0",
-        },
-      ],
-      materialized: [
-        {
-          artifactKind: "runtime-benchmark-summary",
-          batchSize: "256",
-          benchmarkScope: "runtime-grpc-materialized",
-          iterations: "5",
-          explicitGc: "1",
-          measurementProtocol: {
-            memoryCheckpoint: "settled-explicit-gc-after-cleanup",
-          },
-          nodeOptions: "--expose-gc",
-          outputJsonPath: ".artifacts/grpc-materialized-1000seed-256batch.json",
-          rowCount: "1000",
-          task: ["run", "--no-cache", "runtime#bench:grpc-materialized"],
-          timeMs: "0",
-        },
-      ],
-    });
-  });
-
   it("defines the gRPC Source Adapter benchmark task", () => {
     const sourceAdapterTasks = profiles.get("grpc-source-adapter") ?? [];
-    const directTask = runtimeGrpcSourceAdapterTask(32, 32, {
-      VIEW_SERVER_RUNTIME_BENCH_ITERATIONS: "5",
+    const directTask = runtimeGrpcSourceAdapterTask(1_000, 50, 50_000, {
+      VIEW_SERVER_RUNTIME_BENCH_ITERATIONS: "7",
       VIEW_SERVER_RUNTIME_BENCH_TIME_MS: "0",
       VIEW_SERVER_RUNTIME_BENCH_WARMUP_ITERATIONS: "0",
       VIEW_SERVER_RUNTIME_BENCH_WARMUP_TIME_MS: "0",
@@ -463,6 +317,8 @@ describe("benchmark baseline runner", () => {
         minimumSampleCount: task.minimumSampleCount,
         outputJsonPath: task.packageOutputJsonPath,
         routeCount: task.env["VIEW_SERVER_RUNTIME_BENCH_GRPC_SOURCE_ADAPTER_ROUTE_COUNT"],
+        retainedRowCount:
+          task.env["VIEW_SERVER_RUNTIME_BENCH_GRPC_SOURCE_ADAPTER_RETAINED_ROWS"],
         rowCount: task.expectedRowCount,
         task: task.args,
         timeMs: task.env["VIEW_SERVER_RUNTIME_BENCH_TIME_MS"],
@@ -470,18 +326,24 @@ describe("benchmark baseline runner", () => {
     ).toStrictEqual([
       {
         artifactKind: "runtime-benchmark-summary",
-        batchSize: "32",
+        batchSize: "1000",
         benchmarkScope: "runtime-grpc-source-adapter",
-        expectedMutationCount: 165,
-        iterations: "5",
-        minimumSampleCount: 5,
-        outputJsonPath: ".artifacts/grpc-source-adapter-32batch-32routes.json",
-        routeCount: "32",
-        rowCount: 32,
-        task: ["run", "--no-cache", "@effect-view-server/grpc#bench:adapter"],
+        expectedMutationCount: 64_007,
+        iterations: "7",
+        minimumSampleCount: 7,
+        outputJsonPath:
+          ".artifacts/grpc-source-adapter-1000batch-50routes-50000retained.json",
+        routeCount: "50",
+        retainedRowCount: "50000",
+        rowCount: 1_000,
+        task: ["run", "--no-cache", "bench:grpc-source-adapter"],
         timeMs: "0",
       },
     ]);
+
+    const sourceBenchmark = readFileSync("packages/grpc/src/grpc.bench.ts", "utf8");
+    expect(sourceBenchmark).toContain("preserves Materialized batch, Leased route");
+    expect(sourceBenchmark).toContain("${retainedRowCount}-row retained-capacity");
   });
 
   it("defines isolated grouped order-neutral tasks without changing dual grouped-write artifacts", () => {
@@ -596,33 +458,19 @@ describe("benchmark baseline runner", () => {
     ]);
   });
 
-  it("derives each supported measurement protocol combination from task environments", () => {
+  it("derives the supported grouped measurement protocol", () => {
     const commonGroupedEnvironment = {
       VIEW_SERVER_ENGINE_BENCH_ITERATIONS: "1",
       VIEW_SERVER_ENGINE_BENCH_WRITE_BATCH_SIZE: "1",
     };
 
-    expect({
-      explicitGcOnly: runtimeGrpcMaterializedTask(1, 1, {
-        NODE_OPTIONS: "--expose-gc",
-        VIEW_SERVER_RUNTIME_BENCH_EXPLICIT_GC: "1",
-        VIEW_SERVER_RUNTIME_BENCH_ITERATIONS: "1",
-      }).expectedMeasurementProtocol,
-      noRuntimeProtocol: runtimeGrpcMaterializedTask(1, 1, {
-        VIEW_SERVER_RUNTIME_BENCH_ITERATIONS: "1",
-      }).expectedMeasurementProtocol,
-      primingOnly: groupedWriteTask("incremental", 1, {
+    expect(
+      groupedWriteTask("incremental", 1, {
         ...commonGroupedEnvironment,
         VIEW_SERVER_ENGINE_BENCH_PRIMING_APPEND_BATCHES: "1",
       }).expectedMeasurementProtocol,
-    }).toStrictEqual({
-      explicitGcOnly: {
-        memoryCheckpoint: "settled-explicit-gc-after-cleanup",
-      },
-      noRuntimeProtocol: undefined,
-      primingOnly: {
-        priming: "append-delete-restore-before-sampling",
-      },
+    ).toStrictEqual({
+      priming: "append-delete-restore-before-sampling",
     });
   });
 

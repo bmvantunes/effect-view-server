@@ -43,7 +43,6 @@ export type ViewServerRuntimeTopicDefinitions = TopicDefinitions &
     string,
     {
       readonly schema: RowSchema & Schema.Codec<object, unknown, never, unknown>;
-      readonly key: string;
     }
   >;
 

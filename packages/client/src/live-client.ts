@@ -19,7 +19,6 @@ import type {
 import type { Effect, Stream } from "effect";
 import type { AtomRef } from "effect/unstable/reactivity";
 import type {
-  SourceDefinitionLifecycle,
   SourceHealthForDefinition,
   SourceHealthResultForDefinition,
   SourceRouteForDefinition,
@@ -132,10 +131,64 @@ export type ViewServerSourceOwnedTopic<Topics extends TopicDefinitions> = Extrac
   string
 >;
 
-type SourceRoute<
+type RejectExtraKeys<Candidate, Shape> = {
+  readonly [Key in Exclude<keyof Candidate, keyof Shape>]: never;
+};
+
+type ExactSourceRoute<Route, Candidate> = Candidate extends Route
+  ? Candidate & RejectExtraKeys<Candidate, Route>
+  : never;
+
+type SourceHealthInputShapeForDefinition<
+  Definition,
+  Row extends object,
+  Topic extends string,
+  Candidate,
+> = Definition extends unknown
+  ? SourceHealthInputShapeForLifecycle<
+      Definition,
+      Row,
+      Topic,
+      Candidate,
+      Extract<
+        Definition extends {
+          readonly lifecycle: infer DefinitionLifecycle;
+        }
+          ? DefinitionLifecycle
+          : never,
+        "materialized" | "leased"
+      >
+    >
+  : never;
+
+type SourceHealthInputShapeForLifecycle<
+  Definition,
+  Row extends object,
+  Topic extends string,
+  Candidate,
+  Lifecycle extends "materialized" | "leased",
+> = Lifecycle extends "leased"
+  ? {
+      readonly topic: Topic;
+      readonly routeBy: Candidate extends { readonly routeBy: infer Route }
+        ? ExactSourceRoute<SourceRouteForDefinition<Definition, Row>, Route>
+        : SourceRouteForDefinition<Definition, Row>;
+    }
+  : {
+      readonly topic: Topic;
+      readonly routeBy?: never;
+    };
+
+type SourceHealthInputShape<
   Topics extends TopicDefinitions,
   Topic extends ViewServerSourceOwnedTopic<Topics>,
-> = SourceRouteForDefinition<TopicSourceDefinition<Topics, Topic>, TopicRow<Topics, Topic>>;
+  Candidate,
+> = SourceHealthInputShapeForDefinition<
+  TopicSourceDefinition<Topics, Topic>,
+  TopicRow<Topics, Topic>,
+  Topic,
+  Candidate
+>;
 
 export type ViewServerSourceHealthForTopic<
   Topics extends TopicDefinitions,
@@ -158,23 +211,30 @@ type IsUnion<Value, Whole = Value> = Value extends Whole
     : true
   : never;
 
-export type ViewServerSourceHealthArguments<
+type ExactSourceHealthInput<Shape, Candidate> = Shape extends unknown
+  ? Candidate & NoInfer<Shape & RejectExtraKeys<Candidate, Shape>>
+  : never;
+
+export type ViewServerSourceHealthInputForTopic<
   Topics extends TopicDefinitions,
   Topic extends ViewServerSourceOwnedTopic<Topics>,
+  Candidate,
 > =
   IsUnion<Topic> extends true
     ? never
-    : SourceDefinitionLifecycle<TopicSourceDefinition<Topics, Topic>> extends "leased"
-      ? readonly [topic: Topic, routeBy: SourceRoute<Topics, Topic>]
-      : readonly [topic: Topic];
+    : ExactSourceHealthInput<SourceHealthInputShape<Topics, Topic, Candidate>, Candidate>;
 
 export type ViewServerSourceHealthSubscriber<
   Topics extends TopicDefinitions,
   Error = ViewServerRuntimeError | ViewServerTransportError,
-> = <Topic extends ViewServerSourceOwnedTopic<Topics>>(
-  ...arguments_: ViewServerSourceHealthArguments<Topics, Topic>
+> = <
+  const Input extends {
+    readonly topic: ViewServerSourceOwnedTopic<Topics>;
+  },
+>(
+  input: ViewServerSourceHealthInputForTopic<Topics, Input["topic"], Input>,
 ) => Effect.Effect<
-  ViewServerSourceHealthSubscription<ViewServerSourceHealthResultForTopic<Topics, Topic>>,
+  ViewServerSourceHealthSubscription<ViewServerSourceHealthResultForTopic<Topics, Input["topic"]>>,
   Error
 >;
 

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import type { ViewServerRuntimeError } from "@effect-view-server/config";
 import { trustDecodedRuntimeQuery } from "@effect-view-server/config/internal";
-import { Effect } from "effect";
+import { Effect, Stream } from "effect";
 import { makeViewServerRuntimeCoreInternal } from "./internal";
 import { viewServer } from "./test-support/runtime-test-fixtures";
 
@@ -76,6 +76,33 @@ describe("@effect-view-server/runtime-core", () => {
         snapshotError,
       ]);
 
+      yield* runtimeCore.close;
+    }),
+  );
+
+  it.effect("accepts snapshotable runtime queries through the internal erased entrypoint", () =>
+    Effect.gen(function* () {
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(viewServer, {});
+      const subscription = yield* runtimeCore.internalLiveClient.subscribeRuntimeInternal(
+        "orders",
+        {
+          select: ["id", "price"],
+          limit: 1,
+        },
+      );
+      const events = yield* subscription.events.pipe(Stream.take(1), Stream.runCollect);
+
+      expect(events[0]).toStrictEqual({
+        type: "snapshot",
+        topic: "orders",
+        queryId: "query-0",
+        version: 0,
+        keys: [],
+        rows: [],
+        totalRows: 0,
+      });
+
+      yield* subscription.close();
       yield* runtimeCore.close;
     }),
   );

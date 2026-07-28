@@ -3,6 +3,7 @@
 import { afterAll, beforeAll, bench, describe, expect } from "vitest";
 import { commands, server } from "vitest/browser";
 import {
+  ViewServerId,
   defineViewServerConfig,
   type ViewServerHealth,
   type ViewServerRuntimeError,
@@ -30,7 +31,7 @@ declare global {
 }
 
 const Order = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   customerId: Schema.String,
   status: Schema.Literals(["open", "closed", "cancelled"]),
   price: Schema.Finite,
@@ -42,7 +43,6 @@ const viewServer = defineViewServerConfig({
   topics: {
     orders: {
       schema: Order,
-      key: "id",
     },
   },
 });

@@ -1,3 +1,4 @@
+import { ViewServerId } from "@effect-view-server/config";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Option, Schema } from "effect";
 import {
@@ -22,7 +23,7 @@ describe("column-live-view-engine Active Query raw", () => {
       const store = new TopicStore(
         "raw-insert-incremental",
         Schema.Struct({
-          id: Schema.String,
+          id: ViewServerId,
           status: Schema.String,
           score: Schema.Number,
         }),
@@ -96,7 +97,7 @@ describe("column-live-view-engine Active Query raw", () => {
       const store = new TopicStore(
         "raw-insert-incremental-count-only",
         Schema.Struct({
-          id: Schema.String,
+          id: ViewServerId,
           status: Schema.String,
           score: Schema.Number,
         }),
@@ -155,7 +156,7 @@ describe("column-live-view-engine Active Query raw", () => {
       const store = new TopicStore(
         "raw-match-update-move-up",
         Schema.Struct({
-          id: Schema.String,
+          id: ViewServerId,
           status: Schema.String,
           score: Schema.Number,
         }),
@@ -230,7 +231,7 @@ describe("column-live-view-engine Active Query raw", () => {
       const store = new TopicStore(
         "raw-match-update-move-down-fallback",
         Schema.Struct({
-          id: Schema.String,
+          id: ViewServerId,
           status: Schema.String,
           score: Schema.Number,
         }),
@@ -303,7 +304,7 @@ describe("column-live-view-engine Active Query raw", () => {
       const store = new TopicStore(
         "raw-match-update-unlimited-move-down",
         Schema.Struct({
-          id: Schema.String,
+          id: ViewServerId,
           status: Schema.String,
           score: Schema.Number,
         }),
@@ -379,7 +380,7 @@ describe("column-live-view-engine Active Query raw", () => {
         const store = new TopicStore(
           "raw-match-update-batched-replacements",
           Schema.Struct({
-            id: Schema.String,
+            id: ViewServerId,
             status: Schema.String,
             score: Schema.Number,
           }),
@@ -469,7 +470,7 @@ describe("column-live-view-engine Active Query raw", () => {
       const store = new TopicStore(
         "raw-match-update-remove-before-replace",
         Schema.Struct({
-          id: Schema.String,
+          id: ViewServerId,
           status: Schema.String,
           score: Schema.Number,
         }),
@@ -559,7 +560,7 @@ describe("column-live-view-engine Active Query raw", () => {
       const store = new TopicStore(
         "raw-match-update-outside-lookahead-fallback",
         Schema.Struct({
-          id: Schema.String,
+          id: ViewServerId,
           status: Schema.String,
           score: Schema.Number,
         }),
@@ -633,7 +634,7 @@ describe("column-live-view-engine Active Query raw", () => {
       const store = new TopicStore(
         "raw-match-update-tail-worsens-fallback",
         Schema.Struct({
-          id: Schema.String,
+          id: ViewServerId,
           status: Schema.String,
           score: Schema.Number,
         }),
@@ -710,7 +711,7 @@ describe("column-live-view-engine Active Query raw", () => {
       const store = new TopicStore(
         "raw-pending-insert-match-update",
         Schema.Struct({
-          id: Schema.String,
+          id: ViewServerId,
           status: Schema.String,
           score: Schema.Number,
         }),
@@ -784,7 +785,7 @@ describe("column-live-view-engine Active Query raw", () => {
       const store = new TopicStore(
         "raw-unavailable-changes-fallback",
         Schema.Struct({
-          id: Schema.String,
+          id: ViewServerId,
           status: Schema.String,
           score: Schema.Number,
         }),
@@ -849,7 +850,7 @@ describe("column-live-view-engine Active Query raw", () => {
       const store = new TopicStore(
         "raw-mixed-insert-incremental",
         Schema.Struct({
-          id: Schema.String,
+          id: ViewServerId,
           status: Schema.String,
           score: Schema.Number,
         }),
@@ -922,7 +923,7 @@ describe("column-live-view-engine Active Query raw", () => {
         const store = new TopicStore(
           "raw-zero-limit-incremental",
           Schema.Struct({
-            id: Schema.String,
+            id: ViewServerId,
             status: Schema.String,
             score: Schema.Number,
           }),
@@ -978,7 +979,7 @@ describe("column-live-view-engine Active Query raw", () => {
       const store = new TopicStore(
         "raw-non-matching-change-incremental",
         Schema.Struct({
-          id: Schema.String,
+          id: ViewServerId,
           status: Schema.String,
           score: Schema.Number,
         }),
@@ -1062,7 +1063,7 @@ describe("column-live-view-engine Active Query raw", () => {
       const store = new TopicStore(
         "raw-retained-insert-slot-sort",
         Schema.Struct({
-          id: Schema.String,
+          id: ViewServerId,
           status: Schema.String,
           score: Schema.Number,
         }),
@@ -1121,7 +1122,7 @@ describe("column-live-view-engine Active Query raw", () => {
       const store = new TopicStore(
         "raw-retained-insert-row-sort-fallback",
         Schema.Struct({
-          id: Schema.String,
+          id: ViewServerId,
           status: Schema.String,
           score: Schema.Number,
         }),
@@ -1182,7 +1183,7 @@ describe("column-live-view-engine Active Query raw", () => {
       const store = new TopicStore(
         "raw-retained-insert-missing-slot-fallback",
         Schema.Struct({
-          id: Schema.String,
+          id: ViewServerId,
           status: Schema.String,
           score: Schema.Number,
         }),
@@ -1245,7 +1246,7 @@ describe("column-live-view-engine Active Query raw", () => {
         const store = new TopicStore(
           "raw-noop-then-visible-version",
           Schema.Struct({
-            id: Schema.String,
+            id: ViewServerId,
             status: Schema.String,
             score: Schema.Number,
           }),
@@ -1324,7 +1325,7 @@ describe("column-live-view-engine Active Query raw", () => {
       const store = new TopicStore(
         "raw-retained-update-enters-predicate",
         Schema.Struct({
-          id: Schema.String,
+          id: ViewServerId,
           status: Schema.String,
           score: Schema.Number,
         }),
@@ -1398,7 +1399,7 @@ describe("column-live-view-engine Active Query raw", () => {
       const store = new TopicStore(
         "raw-same-key-pending-insert-removed",
         Schema.Struct({
-          id: Schema.String,
+          id: ViewServerId,
           status: Schema.String,
           score: Schema.Number,
         }),
@@ -1450,7 +1451,7 @@ describe("column-live-view-engine Active Query raw", () => {
       const store = new TopicStore(
         "raw-retained-removal-consumes-lookahead",
         Schema.Struct({
-          id: Schema.String,
+          id: ViewServerId,
           status: Schema.String,
           score: Schema.Number,
         }),
@@ -1555,7 +1556,7 @@ describe("column-live-view-engine Active Query raw", () => {
         const store = new TopicStore(
           "raw-retained-exhausted-lookahead-rejects-later-insert",
           Schema.Struct({
-            id: Schema.String,
+            id: ViewServerId,
             status: Schema.String,
             score: Schema.Number,
           }),
@@ -1673,7 +1674,7 @@ describe("column-live-view-engine Active Query raw", () => {
         const store = new TopicStore(
           "raw-delete-outside-retained-window",
           Schema.Struct({
-            id: Schema.String,
+            id: ViewServerId,
             status: Schema.String,
             score: Schema.Number,
           }),
@@ -1735,7 +1736,7 @@ describe("column-live-view-engine Active Query raw", () => {
         const store = new TopicStore(
           "raw-zero-limit-mixed-incremental",
           Schema.Struct({
-            id: Schema.String,
+            id: ViewServerId,
             status: Schema.String,
             score: Schema.Number,
           }),
@@ -1804,7 +1805,7 @@ describe("column-live-view-engine Active Query raw", () => {
       const store = new TopicStore(
         "raw-visible-delete-fallback",
         Schema.Struct({
-          id: Schema.String,
+          id: ViewServerId,
           status: Schema.String,
           score: Schema.Number,
         }),
@@ -1877,7 +1878,7 @@ describe("column-live-view-engine Active Query raw", () => {
       const store = new TopicStore(
         "raw-visible-delete-exhausted-lookahead",
         Schema.Struct({
-          id: Schema.String,
+          id: ViewServerId,
           status: Schema.String,
           score: Schema.Number,
         }),
@@ -1965,7 +1966,7 @@ describe("column-live-view-engine Active Query raw", () => {
       const store = new TopicStore(
         "raw-visible-delete-shared-wide-lookahead",
         Schema.Struct({
-          id: Schema.String,
+          id: ViewServerId,
           status: Schema.String,
           score: Schema.Number,
         }),
@@ -2080,7 +2081,7 @@ describe("column-live-view-engine Active Query raw", () => {
         const store = new TopicStore(
           "raw-visible-delete-insert-preserves-lookahead",
           Schema.Struct({
-            id: Schema.String,
+            id: ViewServerId,
             status: Schema.String,
             score: Schema.Number,
           }),

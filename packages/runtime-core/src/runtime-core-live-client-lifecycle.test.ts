@@ -6,6 +6,48 @@ import { order, viewServer } from "./test-support/runtime-test-fixtures";
 
 describe("@effect-view-server/runtime-core", () => {
   it.effect(
+    "rejects hostile source-free Source Health inputs through the typed error channel",
+    () =>
+      Effect.gen(function* () {
+        const runtimeCore = yield* makeViewServerRuntimeCore(viewServer, {});
+        const subscribeHostile = (input: unknown): Effect.Effect<unknown, unknown> =>
+          Reflect.apply(runtimeCore.liveClient.subscribeSourceHealth, runtimeCore.liveClient, [
+            input,
+          ]);
+        const hostile = new Proxy(
+          {},
+          {
+            ownKeys: () => {
+              throw new Error("hostile ownKeys");
+            },
+          },
+        );
+        const errors = yield* Effect.all([
+          Effect.flip(subscribeHostile(null)),
+          Effect.flip(subscribeHostile(undefined)),
+          Effect.flip(subscribeHostile(hostile)),
+        ]);
+
+        expect(errors).toStrictEqual(
+          Array.from({ length: 3 }, () => ({
+            _tag: "ViewServerRuntimeError",
+            code: "InvalidQuery",
+            topic: "<invalid>",
+            message: "Source Health input must be one exact { topic, routeBy? } object.",
+          })),
+        );
+        expect(yield* Effect.flip(subscribeHostile({ topic: "orders" }))).toStrictEqual({
+          _tag: "ViewServerRuntimeError",
+          code: "InvalidQuery",
+          topic: "orders",
+          message: "Topic orders has no canonical Source Definition.",
+        });
+
+        yield* runtimeCore.close;
+      }),
+  );
+
+  it.effect(
     "keeps canonical filtered subscriptions alive across the acquisition health refresh",
     () =>
       Effect.gen(function* () {

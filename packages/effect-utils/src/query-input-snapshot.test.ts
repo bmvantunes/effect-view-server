@@ -1,8 +1,46 @@
 import { describe, expect, it } from "@effect/vitest";
+import { Result } from "effect";
 import * as BigDecimal from "effect/BigDecimal";
-import { ownViewServerQuerySnapshot, snapshotViewServerQuery } from "./query-input-snapshot";
+import {
+  captureSourceHealthInput,
+  ownViewServerQuerySnapshot,
+  snapshotViewServerQuery,
+} from "./query-input-snapshot";
 
 describe("query input snapshots", () => {
+  it("captures exact Source Health envelopes without invoking hostile accessors", () => {
+    const materialized = captureSourceHealthInput({ topic: "orders" });
+    const leased = captureSourceHealthInput({
+      topic: "orders",
+      routeBy: { region: "eu" },
+    });
+    const hostile = new Proxy(
+      {},
+      {
+        ownKeys: () => {
+          throw new Error("hostile ownKeys");
+        },
+      },
+    );
+
+    expect(Result.getOrThrow(materialized)).toStrictEqual({
+      topic: "orders",
+      route: [],
+    });
+    expect(Result.getOrThrow(leased)).toStrictEqual({
+      topic: "orders",
+      route: [{ region: "eu" }],
+    });
+    expect(Result.isFailure(captureSourceHealthInput(null))).toBe(true);
+    expect(Result.isFailure(captureSourceHealthInput({ routeBy: { region: "eu" } }))).toBe(true);
+    expect(Result.isFailure(captureSourceHealthInput({ topic: 1 }))).toBe(true);
+    expect(Result.isFailure(captureSourceHealthInput({ topic: "orders", extra: true }))).toBe(true);
+    expect(
+      Result.isFailure(captureSourceHealthInput({ topic: "orders", routeBy: undefined })),
+    ).toBe(true);
+    expect(Result.isFailure(captureSourceHealthInput(hostile))).toBe(true);
+  });
+
   it("owns recursive values while preserving sharing and exact scalars", () => {
     const shared = { field: "label", type: "equals", filter: "ÁbC" };
     const amount = BigDecimal.make(1230n, 3);

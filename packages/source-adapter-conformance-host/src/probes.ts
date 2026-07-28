@@ -171,11 +171,12 @@ export const openHealth = Effect.fn("SourceAdapterConformanceHost.health.open")(
   liveClient: object,
   route?: Readonly<Record<string, unknown>>,
 ) {
-  const acquired = yield* invokeEffect(
-    liveClient,
-    "subscribeSourceHealth",
-    route === undefined ? ["rows"] : ["rows", route],
-  );
+  const acquired = yield* invokeEffect(liveClient, "subscribeSourceHealth", [
+    {
+      topic: "rows",
+      ...(route === undefined ? {} : { routeBy: route }),
+    },
+  ]);
   if (!isRecord(acquired) || !Stream.isStream(acquired["events"])) {
     return yield* Effect.die(
       new TypeError("Conformance host expected a Source Health subscription."),

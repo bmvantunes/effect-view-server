@@ -1,3 +1,4 @@
+import { ViewServerId } from "@effect-view-server/config";
 import { expect, it } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { fromStringUnsafe } from "effect/BigDecimal";
@@ -25,7 +26,7 @@ import type { PositionRow } from "../test-harness/public-engine";
 it("derives topic column vectors from schema metadata and preserves slot mutation semantics", () => {
   const Metric = Schema.Struct({
     finitePrice: Schema.Finite,
-    id: Schema.String,
+    id: ViewServerId,
     decimalPrice: Schema.BigDecimal,
     optionalPrice: Schema.optionalKey(Schema.Number),
     price: Schema.Number,
@@ -155,7 +156,7 @@ it("keeps scalar range helpers exact for numeric runtime domains", () => {
 it("uses typed column values for ordered slot bound indexes", () => {
   const Metric = Schema.Struct({
     decimalPrice: Schema.BigDecimal,
-    id: Schema.String,
+    id: ViewServerId,
     price: Schema.Number,
     quantity: Schema.BigInt,
     status: Schema.String,

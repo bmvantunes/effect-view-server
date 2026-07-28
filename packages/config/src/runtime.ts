@@ -9,5 +9,4 @@ export const runtimeEnvironmentConfig: RuntimeEnvironmentConfig = {
 
 export const runtimeConfig = {
   port: (name: string): Config.Config<number> => Config.number(name),
-  kafkaBootstrapServers: (name: string): Config.Config<string> => Config.string(name),
 };

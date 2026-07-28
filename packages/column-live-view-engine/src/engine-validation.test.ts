@@ -1,3 +1,4 @@
+import { ViewServerId } from "@effect-view-server/config";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import {
@@ -30,14 +31,13 @@ describe("ColumnLiveViewEngine validation", () => {
   it.effect("rejects non-JSON object row fields and preserves plain records", () =>
     Effect.gen(function* () {
       const WithPayload = Schema.Struct({
-        id: Schema.String,
+        id: ViewServerId,
         payload: Schema.ObjectKeyword,
       });
       const engine = yield* createColumnLiveViewEngine({
         topics: {
           payloads: {
             schema: WithPayload,
-            key: "id",
           },
         },
       });
@@ -72,14 +72,13 @@ describe("ColumnLiveViewEngine validation", () => {
   it.effect("rejects non-cloneable object rows", () =>
     Effect.gen(function* () {
       const WithPayload = Schema.Struct({
-        id: Schema.String,
+        id: ViewServerId,
         payload: Schema.ObjectKeyword,
       });
       const engine = yield* createColumnLiveViewEngine({
         topics: {
           payloads: {
             schema: WithPayload,
-            key: "id",
           },
         },
       });
@@ -91,9 +90,9 @@ describe("ColumnLiveViewEngine validation", () => {
     }),
   );
 
-  it.effect("keeps a runtime guard for unsafely cast invalid key configs", () =>
+  it.effect("rejects the removed configurable key property at runtime", () =>
     Effect.gen(function* () {
-      const invalidKeyConfig = {
+      const invalidKeyConfig: object = {
         topics: {
           orders: {
             schema: Order,
@@ -101,15 +100,45 @@ describe("ColumnLiveViewEngine validation", () => {
           },
         },
       };
-      // @ts-expect-error invalid configs can still reach runtime through untyped callers.
-      const engine = yield* createColumnLiveViewEngine(invalidKeyConfig);
+      const error = yield* Effect.flip(
+        // @ts-expect-error hostile untyped callers can still reach the runtime boundary.
+        createColumnLiveViewEngine(invalidKeyConfig),
+      );
 
-      const error = yield* Effect.flip(engine.publish("orders", order("1", "open", 10, 1)));
+      expect(error).toBeInstanceOf(InvalidRowError);
+      expect(error).toStrictEqual(
+        InvalidRowError.make({
+          topic: "orders",
+          message: "Topic definition contains unsupported property: key.",
+        }),
+      );
+    }),
+  );
 
-      expect(error).toMatchObject({
-        _tag: "InvalidRowError",
-        message: expect.stringContaining("Key field missing"),
-      });
+  it.effect("rejects row schemas without the nominal ViewServerId", () =>
+    Effect.gen(function* () {
+      const invalidIdConfig: object = {
+        topics: {
+          orders: {
+            schema: Schema.Struct({
+              id: Schema.String,
+              price: Schema.Number,
+            }),
+          },
+        },
+      };
+      const error = yield* Effect.flip(
+        // @ts-expect-error hostile untyped callers can still reach the runtime boundary.
+        createColumnLiveViewEngine(invalidIdConfig),
+      );
+
+      expect(error).toBeInstanceOf(InvalidRowError);
+      expect(error).toStrictEqual(
+        InvalidRowError.make({
+          message: "Topic row schema must define canonical id as ViewServerId.",
+          topic: "orders",
+        }),
+      );
     }),
   );
 
@@ -119,7 +148,6 @@ describe("ColumnLiveViewEngine validation", () => {
         topics: {
           loose: {
             schema: Schema.ObjectKeyword,
-            key: "id",
           },
         },
       };

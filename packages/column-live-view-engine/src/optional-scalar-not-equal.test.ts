@@ -1,11 +1,11 @@
-import { defineViewServerConfig } from "@effect-view-server/config";
+import { ViewServerId, defineViewServerConfig } from "@effect-view-server/config";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Schema, Stream } from "effect";
 import { fromStringUnsafe, make as makeBigDecimal } from "effect/BigDecimal";
 import { createColumnLiveViewEngine } from "./index";
 
 const OptionalScalarRow = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   number: Schema.optionalKey(Schema.Number),
   bigint: Schema.optionalKey(Schema.BigInt),
   amount: Schema.Union([Schema.BigDecimal, Schema.Undefined]),
@@ -17,7 +17,6 @@ const viewServer = defineViewServerConfig({
   topics: {
     optionalScalars: {
       schema: OptionalScalarRow,
-      key: "id",
     },
   },
 });

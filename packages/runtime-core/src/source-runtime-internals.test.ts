@@ -9,7 +9,7 @@ import {
   type SourceRuntimeRouteEntry,
 } from "./source-runtime";
 import { healthFromEngine } from "./health";
-import { engineHealth } from "./test-support/runtime-test-fixtures";
+import { engineHealth, type Topics } from "./test-support/runtime-test-fixtures";
 
 const Failure = Schema.TaggedStruct("RouteTestFailure", {
   message: Schema.String,
@@ -449,7 +449,7 @@ describe("Source Runtime internal contracts", () => {
       },
       exhaustedAtNanos: 3n,
     } as const;
-    const base = healthFromEngine(engineHealth("ready", 0));
+    const base = healthFromEngine<Topics>(engineHealth("ready", 0));
     const engineStarting = {
       ...base,
       engine: {
@@ -474,7 +474,7 @@ describe("Source Runtime internal contracts", () => {
       status: "stopping" as const,
     };
     const engineDegraded = {
-      ...healthFromEngine(engineHealth("stopping", 0)),
+      ...healthFromEngine<Topics>(engineHealth("stopping", 0)),
       status: "ready" as const,
     };
     const repeated = [
@@ -487,28 +487,53 @@ describe("Source Runtime internal contracts", () => {
     ];
 
     expect([
-      sourceRuntimeInternals.overlaySourceHealth(base, []).status,
-      sourceRuntimeInternals.overlaySourceHealth(base, [{ topic: "orders", status: ready }]).engine
-        .topics.orders.status,
-      sourceRuntimeInternals.overlaySourceHealth(engineStarting, [
-        { topic: "orders", status: ready },
-      ]).engine.topics.orders.status,
-      sourceRuntimeInternals.overlaySourceHealth(engineDegraded, [
-        { topic: "orders", status: ready },
-      ]).engine.topics.orders.status,
-      sourceRuntimeInternals.overlaySourceHealth(base, [{ topic: "orders", status: starting }])
-        .status,
-      sourceRuntimeInternals.overlaySourceHealth(base, [{ topic: "orders", status: stopping }])
-        .status,
-      sourceRuntimeInternals.overlaySourceHealth(base, [{ topic: "orders", status: exhausted }])
-        .status,
-      sourceRuntimeInternals.overlaySourceHealth(runtimeDegraded, [
-        { topic: "orders", status: exhausted },
-      ]).status,
-      sourceRuntimeInternals.overlaySourceHealth(runtimeStarting, []).status,
-      sourceRuntimeInternals.overlaySourceHealth(runtimeDegraded, []).status,
-      sourceRuntimeInternals.overlaySourceHealth(runtimeStopping, []).status,
-      sourceRuntimeInternals.overlaySourceHealth(base, repeated).status,
+      sourceRuntimeInternals.overlaySourceHealth<Topics>(base, [], [], []).status,
+      sourceRuntimeInternals.overlaySourceHealth<Topics>(
+        base,
+        [{ topic: "orders", status: ready }],
+        [],
+        [],
+      ).engine.topics.orders.status,
+      sourceRuntimeInternals.overlaySourceHealth<Topics>(
+        engineStarting,
+        [{ topic: "orders", status: ready }],
+        [],
+        [],
+      ).engine.topics.orders.status,
+      sourceRuntimeInternals.overlaySourceHealth<Topics>(
+        engineDegraded,
+        [{ topic: "orders", status: ready }],
+        [],
+        [],
+      ).engine.topics.orders.status,
+      sourceRuntimeInternals.overlaySourceHealth<Topics>(
+        base,
+        [{ topic: "orders", status: starting }],
+        [],
+        [],
+      ).status,
+      sourceRuntimeInternals.overlaySourceHealth<Topics>(
+        base,
+        [{ topic: "orders", status: stopping }],
+        [],
+        [],
+      ).status,
+      sourceRuntimeInternals.overlaySourceHealth<Topics>(
+        base,
+        [{ topic: "orders", status: exhausted }],
+        [],
+        [],
+      ).status,
+      sourceRuntimeInternals.overlaySourceHealth<Topics>(
+        runtimeDegraded,
+        [{ topic: "orders", status: exhausted }],
+        [],
+        [],
+      ).status,
+      sourceRuntimeInternals.overlaySourceHealth<Topics>(runtimeStarting, [], [], []).status,
+      sourceRuntimeInternals.overlaySourceHealth<Topics>(runtimeDegraded, [], [], []).status,
+      sourceRuntimeInternals.overlaySourceHealth<Topics>(runtimeStopping, [], [], []).status,
+      sourceRuntimeInternals.overlaySourceHealth<Topics>(base, repeated, [], []).status,
     ]).toStrictEqual([
       "ready",
       "ready",

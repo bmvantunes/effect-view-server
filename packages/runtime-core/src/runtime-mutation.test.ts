@@ -63,6 +63,16 @@ describe("Runtime Core mutation", () => {
           row: order("public-decoded", 40),
         },
       ]);
+      yield* runtimeCore.internalClient.publishManyWithStorageKeys(
+        "orders",
+        [
+          {
+            storageKey: "orders/source/row/storage-typed",
+            row: order("public-typed", 50),
+          },
+        ],
+        "typed-partition",
+      );
 
       const decodedSnapshot = yield* runtimeCore.internalClient.snapshot("orders", {
         where: [{ field: "customerId", type: "equals", filter: "customer-decoded" }],
@@ -74,18 +84,30 @@ describe("Runtime Core mutation", () => {
         select: ["id", "price"],
         limit: 1,
       });
+      const typedStorageKeySnapshot = yield* runtimeCore.internalClient.snapshot("orders", {
+        where: [{ field: "customerId", type: "equals", filter: "customer-public-typed" }],
+        select: ["id", "price"],
+        limit: 1,
+      });
 
       expect(decodedSnapshot).toStrictEqual({
         rows: [{ id: "decoded", price: 30 }],
         totalRows: 1,
-        version: 2,
+        version: 3,
         status: "ready",
         statusCode: "Ready",
       });
       expect(storageKeySnapshot).toStrictEqual({
         rows: [{ id: "public-decoded", price: 40 }],
         totalRows: 1,
-        version: 2,
+        version: 3,
+        status: "ready",
+        statusCode: "Ready",
+      });
+      expect(typedStorageKeySnapshot).toStrictEqual({
+        rows: [{ id: "public-typed", price: 50 }],
+        totalRows: 1,
+        version: 3,
         status: "ready",
         statusCode: "Ready",
       });

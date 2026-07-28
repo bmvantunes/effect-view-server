@@ -10,8 +10,8 @@ import { viewServer } from "../test-harness/runtime-type-contracts";
 
 describe("Runtime server and TCP option contracts", () => {
   it("accepts valid contracts and rejects invalid contracts", () => {
+    // @ts-expect-error runtime options reject string ports.
     const invalidOptions = makeViewServerRuntime(viewServer, {
-      // @ts-expect-error runtime options reject string ports.
       websocketPort: "8080",
     });
 
@@ -24,13 +24,13 @@ describe("Runtime server and TCP option contracts", () => {
       ViewServerRuntime<typeof viewServer.topics>
     >();
 
+    // @ts-expect-error runtime TCP publish port rejects string ports.
     const invalidTcpPublishPortOptions = makeViewServerRuntime(viewServer, {
-      // @ts-expect-error runtime TCP publish port rejects string ports.
       tcpPublishPort: "8081",
     });
 
+    // @ts-expect-error runtime TCP publish connection cap rejects string values.
     const invalidTcpPublishMaxConnectionsOptions = makeViewServerRuntime(viewServer, {
-      // @ts-expect-error runtime TCP publish connection cap rejects string values.
       tcpPublishMaxConnections: "16",
       tcpPublishPort: 8081,
     });
@@ -120,6 +120,22 @@ describe("Runtime server and TCP option contracts", () => {
 
     expectTypeOf<ViewServerRuntimeOptions>().toHaveProperty("tcpPublishPort");
 
-    expectTypeOf<ViewServerRuntimeOptions>().toHaveProperty("grpc");
+    expectTypeOf<ViewServerRuntimeOptions>().not.toHaveProperty("grpc");
+
+    expectTypeOf<ViewServerRuntimeOptions>().not.toHaveProperty("kafka");
+
+    const invalidGrpcBag = makeViewServerRuntime(viewServer, {
+      // @ts-expect-error generic runtime options reject transport-specific gRPC bags.
+      grpc: {},
+    });
+
+    const invalidKafkaBag = makeViewServerRuntime(viewServer, {
+      // @ts-expect-error generic runtime options reject transport-specific Kafka bags.
+      kafka: {},
+    });
+
+    expectTypeOf(invalidGrpcBag).not.toBeAny();
+
+    expectTypeOf(invalidKafkaBag).not.toBeAny();
   });
 });

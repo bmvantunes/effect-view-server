@@ -1,5 +1,9 @@
 import { describe, expect, it } from "@effect/vitest";
-import { defineViewServerConfig } from "@effect-view-server/config";
+import {
+  ViewServerId,
+  defineViewServerConfig,
+  type ViewServerRuntimeError,
+} from "@effect-view-server/config";
 import { SourceAdapter } from "@effect-view-server/source-adapter";
 import { SourceAdapterServer } from "@effect-view-server/source-adapter/server";
 import {
@@ -10,10 +14,11 @@ import {
 } from "@effect-view-server/source-adapter-testing";
 import { Effect, Exit, Fiber, Option, Schedule, Schema, Stream } from "effect";
 import { TestClock } from "effect/testing";
+import { makeViewServerRuntimeCoreInternal } from "./internal";
 import { makeViewServerRuntimeCore } from "./index";
 
 const Row = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   region: Schema.String,
   value: Schema.String,
 });
@@ -68,7 +73,7 @@ describe("Runtime Core Source boundary validation", () => {
         },
       });
       const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(Effect.provide(layer));
-      const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("rows");
+      const diagnostics = yield* runtime.liveClient.subscribeSourceHealth({ topic: "rows" });
       const health = Option.getOrThrow(
         yield* diagnostics.events.pipe(Stream.take(1), Stream.runHead),
       );
@@ -174,7 +179,7 @@ describe("Runtime Core Source boundary validation", () => {
         },
       });
       const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(Effect.provide(layer));
-      const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("rows");
+      const diagnostics = yield* runtime.liveClient.subscribeSourceHealth({ topic: "rows" });
       const exhausted = Option.getOrThrow(
         yield* diagnostics.events.pipe(
           Stream.filter((health) => health.status._tag === "Exhausted"),
@@ -251,7 +256,7 @@ describe("Runtime Core Source boundary validation", () => {
           },
         });
         const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(Effect.provide(layer));
-        const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("rows");
+        const diagnostics = yield* runtime.liveClient.subscribeSourceHealth({ topic: "rows" });
         const waiting = Option.getOrThrow(
           yield* diagnostics.events.pipe(
             Stream.filter((health) => health.status._tag === "WaitingToRetry"),
@@ -471,7 +476,7 @@ describe("Runtime Core Source boundary validation", () => {
       const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(
         Effect.provide(fixture.layer),
       );
-      const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("rows");
+      const diagnostics = yield* runtime.liveClient.subscribeSourceHealth({ topic: "rows" });
       yield* fixture.controls.setMetrics(invalidMetrics);
       const exhausted = yield* diagnostics.events.pipe(
         Stream.filter((result) => result.status._tag === "Exhausted"),
@@ -514,7 +519,6 @@ describe("Runtime Core Source boundary validation", () => {
           },
           manual: {
             schema: Row,
-            key: "id",
           },
         },
       });
@@ -523,13 +527,14 @@ describe("Runtime Core Source boundary validation", () => {
       );
       const materializedFailures = yield* Effect.all([
         // @ts-expect-error source-free Topics do not expose diagnostics.
-        materializedRuntime.liveClient.subscribeSourceHealth("manual").pipe(Effect.exit),
+        materializedRuntime.liveClient.subscribeSourceHealth({ topic: "manual" }).pipe(Effect.exit),
         materializedRuntime.liveClient
-          .subscribeSourceHealth(
-            "rows",
+          .subscribeSourceHealth({
+            // @ts-expect-error Materialized diagnostics reject routed topic inference.
+            topic: "rows",
             // @ts-expect-error Materialized diagnostics reject routeBy.
-            { region: "eu" },
-          )
+            routeBy: { region: "eu" },
+          })
           .pipe(Effect.exit),
       ]);
       expect(Option.getOrThrow(Exit.findErrorOption(materializedFailures[0]))).toStrictEqual({
@@ -557,25 +562,32 @@ describe("Runtime Core Source boundary validation", () => {
           },
         },
       });
-      const leasedRuntime = yield* makeViewServerRuntimeCore(leasedConfig, {}).pipe(
+      const leasedRuntime = yield* makeViewServerRuntimeCoreInternal(leasedConfig, {}).pipe(
         Effect.provide(leasedFixture.layer),
       );
+      const missingSnapshotRouteEffect: Effect.Effect<unknown, ViewServerRuntimeError> =
+        leasedRuntime.internalClient.snapshot(
+          "rows",
+          // @ts-expect-error Leased snapshot reads require a route.
+          { select: ["id"] },
+        );
+      const missingSnapshotRoute = yield* Effect.flip(missingSnapshotRouteEffect);
       const leasedFailures = yield* Effect.all([
         // @ts-expect-error Leased diagnostics require a route.
-        leasedRuntime.liveClient.subscribeSourceHealth("rows").pipe(Effect.exit),
+        leasedRuntime.liveClient.subscribeSourceHealth({ topic: "rows" }).pipe(Effect.exit),
         leasedRuntime.liveClient
-          .subscribeSourceHealth(
-            "rows",
+          .subscribeSourceHealth({
+            topic: "rows",
             // @ts-expect-error Leased diagnostics routes reject extra fields.
-            { region: "eu", extra: true },
-          )
+            routeBy: { region: "eu", extra: true },
+          })
           .pipe(Effect.exit),
         leasedRuntime.liveClient
-          .subscribeSourceHealth(
-            "rows",
+          .subscribeSourceHealth({
+            topic: "rows",
             // @ts-expect-error Leased diagnostics preserve route field types.
-            { region: 1 },
-          )
+            routeBy: { region: 1 },
+          })
           .pipe(Effect.exit),
       ]);
       expect(Option.getOrThrow(Exit.findErrorOption(leasedFailures[0]))).toStrictEqual({
@@ -583,6 +595,12 @@ describe("Runtime Core Source boundary validation", () => {
         code: "InvalidQuery",
         topic: "rows",
         message: "Leased Source Topic rows requires exact routeBy.",
+      });
+      expect(missingSnapshotRoute).toStrictEqual({
+        _tag: "ViewServerRuntimeError",
+        code: "InvalidQuery",
+        topic: "rows",
+        message: "Leased topic rows requires routeBy fields: region.",
       });
       expect(Option.getOrThrow(Exit.findErrorOption(leasedFailures[1]))).toStrictEqual({
         _tag: "ViewServerRuntimeError",
@@ -694,7 +712,7 @@ describe("Runtime Core Source boundary validation", () => {
       const runtime = yield* makeViewServerRuntimeCore(dynamicConfig, {}).pipe(
         Effect.provide(dynamicLayer),
       );
-      const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("rows");
+      const diagnostics = yield* runtime.liveClient.subscribeSourceHealth({ topic: "rows" });
       metricsAccepted = false;
       const exit = yield* diagnostics.events.pipe(Stream.take(1), Stream.runHead, Effect.exit);
 

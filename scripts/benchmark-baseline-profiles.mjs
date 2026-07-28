@@ -12,11 +12,7 @@ import {
   rawSnapshotTask,
   rawWriteTask,
   reactInMemoryTask,
-  runtimeGrpcLeasedTask,
-  runtimeGrpcMaterializedTask,
   runtimeGrpcSourceAdapterTask,
-  runtimeKafkaIngestTask,
-  runtimeKafkaSustainedFirehoseTask,
   runtimeWebSocketFirehoseTask,
 } from "./benchmark-baseline-task-catalog.mjs";
 
@@ -77,14 +73,6 @@ const commonReactSmokeEnv = {
   VIEW_SERVER_REACT_BENCH_TIME_MS: "1",
   VIEW_SERVER_REACT_BENCH_WARMUP_ITERATIONS: "0",
   VIEW_SERVER_REACT_BENCH_WARMUP_TIME_MS: "0",
-};
-
-const commonRuntimeKafkaSmokeEnv = {
-  VIEW_SERVER_KAFKA_BOOTSTRAP_SERVERS: "localhost:9092",
-  VIEW_SERVER_RUNTIME_BENCH_ITERATIONS: "3",
-  VIEW_SERVER_RUNTIME_BENCH_TIME_MS: "1",
-  VIEW_SERVER_RUNTIME_BENCH_WARMUP_ITERATIONS: "0",
-  VIEW_SERVER_RUNTIME_BENCH_WARMUP_TIME_MS: "0",
 };
 
 const retainedDeltaSmokeEnv = {
@@ -217,13 +205,13 @@ export const profiles = new Map([
   [
     "kafka-source-adapter",
     [
-      kafkaSourceAdapterTask(64, 64, {
+      kafkaSourceAdapterTask(2_000, 64, {
         VIEW_SERVER_KAFKA_SOURCE_BENCH_ITERATIONS: "5",
         VIEW_SERVER_KAFKA_SOURCE_BENCH_TIME_MS: "0",
         VIEW_SERVER_KAFKA_SOURCE_BENCH_WARMUP_ITERATIONS: "1",
         VIEW_SERVER_KAFKA_SOURCE_BENCH_WARMUP_TIME_MS: "0",
       }),
-      kafkaSourceAdapterBrokerTask(64, {
+      kafkaSourceAdapterBrokerTask(250, {
         VIEW_SERVER_KAFKA_SOURCE_BROKER_BENCH_ITERATIONS: "5",
         VIEW_SERVER_KAFKA_SOURCE_BROKER_BENCH_TIME_MS: "1",
         VIEW_SERVER_KAFKA_SOURCE_BROKER_BENCH_WARMUP_ITERATIONS: "1",
@@ -232,66 +220,10 @@ export const profiles = new Map([
     ],
   ],
   [
-    "kafka-ingest",
-    [
-      runtimeKafkaIngestTask(250, {
-        VIEW_SERVER_RUNTIME_BENCH_KAFKA_BURST_MULTIPLIER: "4",
-        ...commonRuntimeKafkaSmokeEnv,
-      }),
-    ],
-  ],
-  [
-    "kafka-sustained-firehose",
-    [
-      runtimeKafkaSustainedFirehoseTask(250, 4, {
-        ...commonRuntimeKafkaSmokeEnv,
-      }),
-    ],
-  ],
-  [
     "grpc-source-adapter",
     [
-      runtimeGrpcSourceAdapterTask(32, 32, {
-        VIEW_SERVER_RUNTIME_BENCH_ITERATIONS: "5",
-        VIEW_SERVER_RUNTIME_BENCH_TIME_MS: "0",
-        VIEW_SERVER_RUNTIME_BENCH_WARMUP_ITERATIONS: "0",
-        VIEW_SERVER_RUNTIME_BENCH_WARMUP_TIME_MS: "0",
-      }),
-    ],
-  ],
-  [
-    "grpc-materialized",
-    [
-      runtimeGrpcMaterializedTask(1_000, 256, {
-        NODE_OPTIONS: "--expose-gc",
-        VIEW_SERVER_RUNTIME_BENCH_ITERATIONS: "5",
-        VIEW_SERVER_RUNTIME_BENCH_EXPLICIT_GC: "1",
-        VIEW_SERVER_RUNTIME_BENCH_TIME_MS: "0",
-        VIEW_SERVER_RUNTIME_BENCH_WARMUP_ITERATIONS: "0",
-        VIEW_SERVER_RUNTIME_BENCH_WARMUP_TIME_MS: "0",
-      }),
-    ],
-  ],
-  [
-    "grpc-leased",
-    [
-      runtimeGrpcLeasedTask(50, 25, 500, {
-        NODE_OPTIONS: "--expose-gc",
-        VIEW_SERVER_RUNTIME_BENCH_ITERATIONS: "5",
-        VIEW_SERVER_RUNTIME_BENCH_EXPLICIT_GC: "1",
-        VIEW_SERVER_RUNTIME_BENCH_TIME_MS: "0",
-        VIEW_SERVER_RUNTIME_BENCH_WARMUP_ITERATIONS: "0",
-        VIEW_SERVER_RUNTIME_BENCH_WARMUP_TIME_MS: "0",
-      }),
-    ],
-  ],
-  [
-    "grpc-leased-retained",
-    [
-      runtimeGrpcLeasedTask(50, 25, 50_000, {
-        NODE_OPTIONS: "--expose-gc",
-        VIEW_SERVER_RUNTIME_BENCH_ITERATIONS: "5",
-        VIEW_SERVER_RUNTIME_BENCH_EXPLICIT_GC: "1",
+      runtimeGrpcSourceAdapterTask(1_000, 50, 50_000, {
+        VIEW_SERVER_RUNTIME_BENCH_ITERATIONS: "7",
         VIEW_SERVER_RUNTIME_BENCH_TIME_MS: "0",
         VIEW_SERVER_RUNTIME_BENCH_WARMUP_ITERATIONS: "0",
         VIEW_SERVER_RUNTIME_BENCH_WARMUP_TIME_MS: "0",
@@ -458,4 +390,4 @@ export const profiles = new Map([
   ],
 ]);
 
-export const repeatableReportOnlyProfiles = new Set(["grpc-leased-retained"]);
+export const repeatableReportOnlyProfiles = new Set();

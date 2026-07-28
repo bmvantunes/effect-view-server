@@ -1,6 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Schema, SchemaAST } from "effect";
 import {
+  ViewServerId,
   defineViewServerConfig,
   VIEW_SERVER_HEALTH_SUMMARY_TOPIC,
   viewServerUnsupportedRuntimeFieldDomain,
@@ -16,7 +17,6 @@ describe("Reserved system topic validation", () => {
         topics: {
           [reservedTopicName]: {
             schema: Order,
-            key: "id",
           },
         },
       }),
@@ -26,7 +26,7 @@ describe("Reserved system topic validation", () => {
   it("rejects reserved row field names at runtime", () => {
     const reservedFieldName = "__proto__";
     const BadRow = Schema.Struct({
-      id: Schema.String,
+      id: ViewServerId,
       [reservedFieldName]: Schema.String,
     });
 
@@ -35,7 +35,6 @@ describe("Reserved system topic validation", () => {
         topics: {
           badRows: {
             schema: BadRow,
-            key: "id",
           },
         },
       }),
@@ -45,11 +44,11 @@ describe("Reserved system topic validation", () => {
   it("reserves dots for unambiguous nested filter paths", () => {
     const dottedFieldName = "profile.country";
     const DottedRootRow = Schema.Struct({
-      id: Schema.String,
+      id: ViewServerId,
       [dottedFieldName]: Schema.String,
     });
     const DottedNestedRow = Schema.Struct({
-      id: Schema.String,
+      id: ViewServerId,
       profile: Schema.Struct({
         [dottedFieldName]: Schema.String,
       }),
@@ -57,12 +56,12 @@ describe("Reserved system topic validation", () => {
 
     expect(() =>
       defineViewServerConfig({
-        topics: { dotted: { schema: DottedRootRow, key: "id" } },
+        topics: { dotted: { schema: DottedRootRow } },
       }),
     ).toThrow("uses a reserved row field name: profile.country");
     expect(() =>
       defineViewServerConfig({
-        topics: { dotted: { schema: DottedNestedRow, key: "id" } },
+        topics: { dotted: { schema: DottedNestedRow } },
       }),
     ).toThrow(
       "field profile uses unsupported runtime domain: statically named object field contains a reserved dot: profile.country",

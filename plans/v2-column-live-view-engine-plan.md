@@ -1,5 +1,15 @@
 # View Server: Column Live View Engine Plan
 
+> [!IMPORTANT]
+> The original transport-specific source, configurable Topic key, runtime
+> Kafka/gRPC option, health-tree, and legacy transport benchmark sections below
+> are retained only as historical implementation context. PRD #383 and ADRs
+> 0006–0010 supersede those shapes. Active work must use one canonical Topic
+> `source`, exact `id: ViewServerId`, aggregate adapter Layers, canonical
+> Source Diagnostics, and the Kafka/gRPC Source Adapter benchmark profiles.
+> Deferred engine-capacity ideas remain roadmap context; obsolete source
+> integration examples and commands are not active contracts.
+
 This is the planning handoff for the production View Server implementation.
 
 ## Core Decision
@@ -134,12 +144,12 @@ implementation detail.
 ```ts
 // view-server.config.ts
 import { Schema } from "effect";
-import { defineViewServerConfig } from "effect-view-server/config";
+import { ViewServerId, defineViewServerConfig } from "effect-view-server/config";
 import { createViewServerReact } from "effect-view-server/react";
 import type { ViewServerInMemoryOptions } from "effect-view-server/react/testing";
 
 const Order = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   customerId: Schema.String,
   status: Schema.Literals(["open", "closed", "cancelled"]),
   price: Schema.Number,
@@ -148,7 +158,7 @@ const Order = Schema.Struct({
 });
 
 const Trade = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   symbol: Schema.String,
   quantity: Schema.Number,
   price: Schema.Number,
@@ -159,11 +169,9 @@ export const viewServer = defineViewServerConfig({
   topics: {
     orders: {
       schema: Order,
-      key: "id",
     },
     trades: {
       schema: Trade,
-      key: "id",
     },
   },
 });

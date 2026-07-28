@@ -1,13 +1,11 @@
 import { BrowserSocket } from "@effect/platform-browser";
 import type {
   ExactLiveQueryInputForTopic,
-  GrpcRuntimeClients,
   GroupedQuery,
   GroupedResult,
   LiveQueryRow,
   PickRawFields,
   RawQuery,
-  RuntimeRegions,
   TopicDefinitions,
   TopicRow,
   ViewServerConfig,
@@ -21,6 +19,7 @@ import {
   VIEW_SERVER_HEALTH_TOPIC,
 } from "@effect-view-server/config";
 import {
+  captureSourceHealthInput,
   runAllFinalizers,
   snapshotViewServerQuery,
   viewServerQuerySnapshotErrorMessage,
@@ -59,7 +58,7 @@ import type {
   ViewServerLiveClient,
   ViewServerLiveEvent,
   ViewServerLiveSubscription,
-  ViewServerSourceHealthArguments,
+  ViewServerSourceHealthInputForTopic,
   ViewServerSourceHealthResultForTopic,
   ViewServerSourceHealthSubscription,
   ViewServerSourceOwnedTopic,
@@ -186,22 +185,14 @@ const subscriptionOverflowStatus = <Topic extends string>(
   message: `Remote subscription buffer exceeded capacity with ${queuedEvents} queued event(s).`,
 });
 
-export const makeViewServerClientWithConstructionOptions: <
-  const Topics extends TopicDefinitions,
-  const Regions extends RuntimeRegions,
-  const GrpcClients extends GrpcRuntimeClients,
->(
-  config: ViewServerConfig<Topics, Regions, GrpcClients>,
+export const makeViewServerClientWithConstructionOptions: <const Topics extends TopicDefinitions>(
+  config: ViewServerConfig<Topics>,
   options: ViewServerClientOptions,
   constructionOptions?: ViewServerClientConstructionOptions,
 ) => Effect.Effect<ViewServerRemoteClient<Topics>, ViewServerRemoteClientError> = Effect.fn(
   "ViewServerClient.remote.makeInternal",
-)(function* <
-  const Topics extends TopicDefinitions,
-  const Regions extends RuntimeRegions,
-  const GrpcClients extends GrpcRuntimeClients,
->(
-  config: ViewServerConfig<Topics, Regions, GrpcClients>,
+)(function* <const Topics extends TopicDefinitions>(
+  config: ViewServerConfig<Topics>,
   options: ViewServerClientOptions,
   constructionOptions: ViewServerClientConstructionOptions = {},
 ) {
@@ -489,14 +480,31 @@ export const makeViewServerClientWithConstructionOptions: <
     },
   );
 
-  function subscribeSourceHealth<Topic extends ViewServerSourceOwnedTopic<Topics>>(
-    ...arguments_: ViewServerSourceHealthArguments<Topics, Topic>
+  function subscribeSourceHealth<
+    const Input extends {
+      readonly topic: ViewServerSourceOwnedTopic<Topics>;
+    },
+  >(
+    input: ViewServerSourceHealthInputForTopic<Topics, Input["topic"], Input>,
   ): Effect.Effect<
-    ViewServerSourceHealthSubscription<ViewServerSourceHealthResultForTopic<Topics, Topic>>,
+    ViewServerSourceHealthSubscription<
+      ViewServerSourceHealthResultForTopic<Topics, Input["topic"]>
+    >,
     ViewServerRemoteClientError
   > {
-    const [topic, route] = arguments_;
-    return subscribeSourceHealthWire<Topic>(topic, route === undefined ? [] : [route]);
+    const captured = captureSourceHealthInput<Input["topic"]>(input);
+    if (Result.isFailure(captured)) {
+      return Effect.fail({
+        _tag: "ViewServerRuntimeError",
+        code: "InvalidQuery",
+        message: "Source Health input must be one exact { topic, routeBy? } object.",
+        topic: "<invalid>",
+      });
+    }
+    return subscribeSourceHealthWire<Input["topic"]>(
+      captured.success.topic,
+      captured.success.route,
+    );
   }
 
   return {
@@ -509,20 +517,15 @@ export const makeViewServerClientWithConstructionOptions: <
   };
 });
 
-export const makeViewServerClient: <
-  const Topics extends TopicDefinitions,
-  const Regions extends RuntimeRegions,
-  const GrpcClients extends GrpcRuntimeClients,
->(
-  config: ViewServerConfig<Topics, Regions, GrpcClients>,
+export const makeViewServerClient: <const Topics extends TopicDefinitions>(
+  config: ViewServerConfig<Topics>,
   options: ViewServerClientOptions,
 ) => Effect.Effect<ViewServerRemoteClient<Topics>, ViewServerRemoteClientError> = Effect.fn(
   "ViewServerClient.remote.make",
-)(function* <
-  const Topics extends TopicDefinitions,
-  const Regions extends RuntimeRegions,
-  const GrpcClients extends GrpcRuntimeClients,
->(config: ViewServerConfig<Topics, Regions, GrpcClients>, options: ViewServerClientOptions) {
+)(function* <const Topics extends TopicDefinitions>(
+  config: ViewServerConfig<Topics>,
+  options: ViewServerClientOptions,
+) {
   return yield* makeViewServerClientWithConstructionOptions(config, options);
 });
 

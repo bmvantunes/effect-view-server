@@ -1,5 +1,8 @@
-import type { DecodableTopicDefinitions } from "@effect-view-server/column-live-view-engine";
-import type { ViewServerTopicConfig, ViewServerRuntimeError } from "@effect-view-server/config";
+import type {
+  TopicDefinitions,
+  ViewServerTopicConfig,
+  ViewServerRuntimeError,
+} from "@effect-view-server/config";
 import type { Effect } from "effect";
 import { makeViewServerRuntimeCoreInternalWithConstructionOptions } from "./runtime-core-construction";
 import type {
@@ -7,23 +10,14 @@ import type {
   ViewServerRuntimeCoreInternalOptionsFor,
 } from "./runtime-core-types";
 import type { ViewServerSourceRequirements } from "./source-runtime";
-export {
-  collectSourceOwnershipConflicts,
-  makeSourceOwnershipPolicy,
-} from "./source-ownership-policy";
-export {
-  makeTopicSourceBindings,
-  topicGrpcSourceMetadataFromUnknown,
-} from "./source-binding-resolution";
+export { makeSourceOwnershipPolicy } from "./source-ownership-policy";
+export { makeTopicSourceBindings } from "./source-binding-resolution";
 export { makeRuntimeCoreMutationPipeline } from "./source-mutation-pipeline";
 export { engineQueryWithoutRoute } from "./engine-query";
 export { adaptRuntimeQuerySubscriber } from "./runtime-query-subscriber";
 export type {
   TopicDefinitionHasRequiredDefinedObjectProperty,
   TopicDefinitionHasSourceOwner,
-  TopicGrpcSourceLifecycle,
-  TopicGrpcSourceMetadata,
-  TopicGrpcSourceValidMetadata,
   TopicSourceBinding,
   TopicSourceOwner,
 } from "./source-binding-resolution";
@@ -34,12 +28,7 @@ export type {
   ViewServerRuntimeCoreInternalMutations,
 } from "./source-mutation-pipeline";
 export type {
-  SourceOwnershipAccessProfile,
-  SourceOwnershipConflict,
   SourceOwnershipDecision,
-  SourceOwnershipGrpcLifecycle,
-  SourceOwnershipGrpcOptions,
-  SourceOwnershipKafkaOptions,
   SourceOwnershipOwner,
   SourceOwnershipPolicy,
   SourceOwnershipTopic,
@@ -58,7 +47,7 @@ export type {
 } from "./runtime-core-types";
 export type { ViewServerSourceRequirements } from "./source-runtime";
 
-export const makeViewServerRuntimeCoreInternal: <const Topics extends DecodableTopicDefinitions>(
+export const makeViewServerRuntimeCoreInternal: <const Topics extends TopicDefinitions>(
   config: ViewServerTopicConfig<Topics>,
   input: ViewServerRuntimeCoreInternalOptionsFor<Topics>,
 ) => Effect.Effect<

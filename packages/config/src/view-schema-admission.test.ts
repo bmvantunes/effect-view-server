@@ -2,6 +2,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { Schema } from "effect";
 import { StructuredProfile } from "../test-harness/schemas";
 import {
+  ViewServerId,
   defineViewServerConfig,
   viewSchema,
   viewServerUnsupportedRuntimeFieldDomain,
@@ -71,11 +72,11 @@ describe("viewSchema admission", () => {
     ).toBe("custom equivalence without canonical identity witness");
 
     expect(() =>
+      // @ts-expect-error Runtime admission protects structurally valid schemas with unsupported identity semantics.
       defineViewServerConfig({
         topics: {
           rawClass: {
             schema: RawProfile,
-            key: "code",
           },
         },
       }),
@@ -88,7 +89,7 @@ describe("viewSchema admission", () => {
         topics: {
           accepted: {
             schema: Schema.Struct({
-              id: Schema.String,
+              id: ViewServerId,
               decimal: viewSchema.BigDecimal,
               option: registeredOption,
               chunk: registeredChunk,
@@ -97,7 +98,6 @@ describe("viewSchema admission", () => {
               nested: registeredNested,
               profile: StructuredProfile,
             }),
-            key: "id",
           },
         },
       }),
@@ -106,10 +106,10 @@ describe("viewSchema admission", () => {
 
   it("admits concrete classes independently of reuse and schema inspection order", () => {
     class FirstProfile extends Schema.Class<FirstProfile>("FirstProfile")({
-      id: Schema.String,
+      id: ViewServerId,
     }) {}
     class SecondProfile extends Schema.Class<SecondProfile>("SecondProfile")({
-      id: Schema.String,
+      id: ViewServerId,
     }) {}
 
     expect(viewServerUnsupportedRuntimeFieldDomain(FirstProfile)).toBe(
@@ -123,7 +123,7 @@ describe("viewSchema admission", () => {
     expect(viewServerUnsupportedRuntimeFieldDomain(SecondProfile)).toBe(undefined);
 
     expect(() =>
-      Reflect.apply(viewSchema.admitClass, undefined, [Schema.Struct({ id: Schema.String })]),
+      Reflect.apply(viewSchema.admitClass, undefined, [Schema.Struct({ id: ViewServerId })]),
     ).toThrow("viewSchema.admitClass requires a concrete Effect Schema.Class.");
   });
 });

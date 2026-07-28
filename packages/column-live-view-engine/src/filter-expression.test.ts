@@ -1,3 +1,4 @@
+import { ViewServerId } from "@effect-view-server/config";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import * as BigDecimal from "effect/BigDecimal";
@@ -11,7 +12,7 @@ import { decodeRawQuery } from "./raw-query-decoder";
 import { rawQueryCompilerMetadata } from "./raw-query-metadata";
 
 const Row = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   name: Schema.String,
   age: Schema.Number,
   active: Schema.optionalKey(Schema.Boolean),
@@ -178,7 +179,7 @@ describe("recursive filter expressions", () => {
   it.effect("supports own data properties with dangerous nested field names", () =>
     Effect.gen(function* () {
       const DangerousRow = Schema.Struct({
-        id: Schema.String,
+        id: ViewServerId,
         nested: Schema.Struct({
           constructor: Schema.String,
           prototype: Schema.String,
@@ -533,7 +534,7 @@ describe("recursive filter expressions", () => {
   it.effect("orders canonical collisions by code units and interns wide groups linearly", () =>
     Effect.gen(function* () {
       const CollatingRow = Schema.Struct({
-        id: Schema.String,
+        id: ViewServerId,
         Å: Schema.Number,
         Å: Schema.Number,
       });

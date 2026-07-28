@@ -1,4 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
+import { SourceAdapter } from "@effect-view-server/source-adapter";
 import { Effect, Schema, SchemaGetter } from "effect";
 import * as BigDecimal from "effect/BigDecimal";
 import {
@@ -27,16 +28,24 @@ const RouteRow = Schema.Struct({
   rank: Schema.Number,
 });
 
+const routeAdapter = SourceAdapter.make({
+  identity: { name: "protocol-route-test" },
+  failure: Schema.TaggedStruct("ProtocolRouteFailure", {
+    message: Schema.String,
+  }),
+  materialized: undefined,
+  leased: {
+    metrics: Schema.Struct({ connected: Schema.Boolean }),
+    rejectionLocation: Schema.Struct({ offset: Schema.BigInt }),
+    definitionOptions: SourceAdapter.definitionOptions<Record<never, never>>(),
+  },
+});
+
 const leasedViewServer = {
   topics: {
     orders: {
       schema: RouteRow,
-      key: "id",
-      grpcSource: {
-        kind: "grpc",
-        lifecycle: "leased",
-        routeBy: ["region", "sequence", "amount", "zero"],
-      },
+      source: routeAdapter.leasedSource(["region", "sequence", "amount", "zero"], {}),
     },
   },
 } as const;
@@ -89,7 +98,7 @@ describe("leased route wire codec", () => {
         viewServerEncodeRawQuery(leasedViewServer, "orders", { select: ["id"] }),
       );
       const ordinary = {
-        topics: { orders: { schema: RouteRow, key: "id" } },
+        topics: { orders: { schema: RouteRow } },
       } as const;
       const unexpected = yield* Effect.flip(
         viewServerEncodeRawQuery(ordinary, "orders", {
@@ -450,7 +459,7 @@ describe("leased route wire codec", () => {
       });
       const ThrowingRow = Schema.Struct({ id: Schema.String, broken: ThrowingScalar });
       const throwingConfig = {
-        topics: { broken: { schema: ThrowingRow, key: "id" } },
+        topics: { broken: { schema: ThrowingRow } },
       } as const;
       const error = yield* Effect.flip(
         encodeRouteBy(throwingConfig, "broken", { broken: "unchanged" }),

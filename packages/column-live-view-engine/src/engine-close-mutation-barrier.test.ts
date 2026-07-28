@@ -1,3 +1,4 @@
+import { ViewServerId } from "@effect-view-server/config";
 import { describe, expect, it } from "@effect/vitest";
 import { Cause, Clock, Deferred, Effect, Exit, Fiber, Option, Schema } from "effect";
 import { createColumnLiveViewEngine, EngineClosedError, InvalidRowError } from "./index";
@@ -6,7 +7,7 @@ import { publishTopicStoreRow, type TopicStoreMutationAdmission } from "./topic-
 import { TopicStore, topicStoreState } from "./topic-store-state";
 
 const Row = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   value: Schema.Number,
 });
 
@@ -57,7 +58,6 @@ describe("ColumnLiveViewEngine close mutation barrier", () => {
         topics: {
           rows: {
             schema: Row,
-            key: "id",
           },
         },
       });
@@ -125,7 +125,6 @@ describe("ColumnLiveViewEngine close mutation barrier", () => {
         topics: {
           rows: {
             schema: Row,
-            key: "id",
           },
         },
       });
@@ -190,11 +189,9 @@ describe("ColumnLiveViewEngine close mutation barrier", () => {
         topics: {
           first: {
             schema: Row,
-            key: "id",
           },
           second: {
             schema: Row,
-            key: "id",
           },
         },
       });
@@ -240,11 +237,9 @@ describe("ColumnLiveViewEngine close mutation barrier", () => {
         topics: {
           first: {
             schema: Row,
-            key: "id",
           },
           second: {
             schema: Row,
-            key: "id",
           },
         },
       });
@@ -288,11 +283,9 @@ describe("ColumnLiveViewEngine close mutation barrier", () => {
         topics: {
           first: {
             schema: Row,
-            key: "id",
           },
           second: {
             schema: Row,
-            key: "id",
           },
         },
       });
@@ -346,7 +339,6 @@ describe("ColumnLiveViewEngine close mutation barrier", () => {
         topics: {
           rows: {
             schema: Row,
-            key: "id",
           },
         },
       });
@@ -385,7 +377,6 @@ describe("ColumnLiveViewEngine close mutation barrier", () => {
         topics: {
           rows: {
             schema: Row,
-            key: "id",
           },
         },
       });

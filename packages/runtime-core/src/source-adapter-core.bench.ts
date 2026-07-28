@@ -1,7 +1,11 @@
 // Import Vitest directly so the Effect test-runtime graph does not distort
 // the Source Adapter hot-path measurements.
 import { afterAll, beforeAll, bench, describe } from "vitest";
-import { defineViewServerConfig, type ViewServerRuntimeError } from "@effect-view-server/config";
+import {
+  ViewServerId,
+  defineViewServerConfig,
+  type ViewServerRuntimeError,
+} from "@effect-view-server/config";
 import {
   SourceFixture,
   type ControllableSourceFixture,
@@ -25,7 +29,7 @@ const materializedTarget: SourceFixtureTarget = {
   _tag: "Materialized",
 };
 const Row = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   value: Schema.Number,
 });
 

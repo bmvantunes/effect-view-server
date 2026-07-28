@@ -1,5 +1,11 @@
 import { describe, expectTypeOf, it } from "@effect/vitest";
-import { defineViewServerConfig, type ViewServerRuntimeError } from "@effect-view-server/config";
+import {
+  ViewServerId,
+  defineViewServerConfig,
+  type ViewServerHealth,
+  type ViewServerRuntimeError,
+} from "@effect-view-server/config";
+import { SourceAdapter } from "@effect-view-server/source-adapter";
 import { Effect, Schema } from "effect";
 import type * as Protocol from "./index";
 import {
@@ -9,31 +15,110 @@ import {
   viewServerDecodeHealthSummaryEvent,
   viewServerDecodeHealthTopicEvent,
   viewServerDecodeTrustedLiveEvent,
+  viewServerEncodeHealth,
   viewServerEncodeHealthSummaryEvent,
   viewServerEncodeHealthTopicEvent,
 } from "./index";
 
 const TypeOrder = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
 });
 
 const typeViewServer = defineViewServerConfig({
   topics: {
     orders: {
       schema: TypeOrder,
-      key: "id",
     },
     trades: {
       schema: TypeOrder,
-      key: "id",
+    },
+  },
+});
+
+const typeSourceAdapter = SourceAdapter.make({
+  identity: {
+    name: "type-source",
+  },
+  failure: Schema.String,
+  materialized: {
+    metrics: Schema.Struct({ observed: Schema.BigInt }),
+    rejectionLocation: Schema.String,
+    definitionOptions: SourceAdapter.definitionOptions<{ readonly label: string }>(),
+  },
+  leased: {
+    metrics: Schema.Struct({ observed: Schema.BigInt }),
+    rejectionLocation: Schema.String,
+    definitionOptions: SourceAdapter.definitionOptions<{ readonly label: string }>(),
+  },
+});
+const typeSourceViewServer = defineViewServerConfig({
+  topics: {
+    manual: {
+      schema: TypeOrder,
+    },
+    materialized: {
+      schema: TypeOrder,
+      source: typeSourceAdapter.materializedSource({ label: "materialized" }),
+    },
+    leased: {
+      schema: TypeOrder,
+      source: typeSourceAdapter.leasedSource(["id"], { label: "leased" }),
     },
   },
 });
 
 declare const wireEvent: Protocol.ViewServerWireEvent;
 declare const trustedWireEvent: Protocol.ViewServerTrustedWireEvent;
+declare const aggregateHealth: ViewServerHealth<typeof typeSourceViewServer.topics>;
 
 describe("@effect-view-server/protocol type contract", () => {
+  it("types aggregate Source Health encoder cardinality and topic ownership", () => {
+    const valid = viewServerEncodeHealth(typeSourceViewServer, aggregateHealth);
+    expectTypeOf(valid).toEqualTypeOf<
+      Effect.Effect<Protocol.ViewServerWireHealth, ViewServerRuntimeError>
+    >();
+
+    const pendingMaterialized = viewServerEncodeHealth(typeSourceViewServer, {
+      ...aggregateHealth,
+      sources: {
+        leased: aggregateHealth.sources.leased,
+      },
+    });
+    expectTypeOf(pendingMaterialized).toEqualTypeOf<
+      Effect.Effect<Protocol.ViewServerWireHealth, ViewServerRuntimeError>
+    >();
+
+    const sourceFreeTopic = viewServerEncodeHealth(typeSourceViewServer, {
+      ...aggregateHealth,
+      sources: {
+        ...aggregateHealth.sources,
+        // @ts-expect-error source-free topics are absent from aggregate Source Health.
+        manual: aggregateHealth.sources.materialized,
+      },
+    });
+    expectTypeOf(sourceFreeTopic).not.toBeAny();
+
+    const invalidMaterializedCardinality = viewServerEncodeHealth(typeSourceViewServer, {
+      ...aggregateHealth,
+      sources: {
+        ...aggregateHealth.sources,
+        // @ts-expect-error materialized health is a singular Source Health value.
+        materialized: [aggregateHealth.sources.materialized],
+      },
+    });
+    expectTypeOf(invalidMaterializedCardinality).not.toBeAny();
+
+    const invalidLeasedCardinality = viewServerEncodeHealth(typeSourceViewServer, {
+      ...aggregateHealth,
+      sources: {
+        ...aggregateHealth.sources,
+        // @ts-expect-error leased health is an array of active Source Health values.
+        leased: aggregateHealth.sources.materialized,
+      },
+    });
+    expectTypeOf(invalidLeasedCardinality).not.toBeAny();
+  });
+
   it("does not export transport-neutral live client contracts", () => {
     expectTypeOf<keyof typeof Protocol>().not.toEqualTypeOf<
       "ViewServerLiveClient" | "ViewServerLiveEvent" | "ViewServerLiveSubscription"
@@ -62,7 +147,6 @@ describe("@effect-view-server/protocol type contract", () => {
           connectionStatus: "connected",
           unhealthyTopics: ["orders"],
           updatedAtNanos: 1n,
-          maxKafkaLag: null,
         },
       ],
       totalRows: 1,
@@ -84,7 +168,6 @@ describe("@effect-view-server/protocol type contract", () => {
           connectionStatus: "connected",
           unhealthyTopics: [],
           updatedAtNanos: 1n,
-          maxKafkaLag: 0n,
         },
       ],
       totalRows: 1,
@@ -117,7 +200,6 @@ describe("@effect-view-server/protocol type contract", () => {
           connectionStatus: "connected",
           unhealthyTopics: [],
           updatedAtNanos: 1n,
-          maxKafkaLag: 0n,
         },
       ],
       // @ts-expect-error health summary totalRows is always 1.
@@ -150,7 +232,6 @@ describe("@effect-view-server/protocol type contract", () => {
           connectionStatus: "connected",
           unhealthyTopics: [],
           updatedAtNanos: 1n,
-          maxKafkaLag: 0n,
         },
       ],
       totalRows: 1,
@@ -191,7 +272,6 @@ describe("@effect-view-server/protocol type contract", () => {
           // @ts-expect-error unknown unhealthy topics are rejected at compile time.
           unhealthyTopics: ["missing"],
           updatedAtNanos: 1n,
-          maxKafkaLag: 0n,
         },
       ],
       totalRows: 1,
@@ -231,7 +311,6 @@ describe("@effect-view-server/protocol type contract", () => {
             memoryBytes: 0,
             tombstoneCount: 0,
             compactionPending: false,
-            kafkaLag: null,
             updatedAtNanos: 1n,
           },
           index: 0,
@@ -304,7 +383,6 @@ describe("@effect-view-server/protocol type contract", () => {
             memoryBytes: 0,
             tombstoneCount: 0,
             compactionPending: false,
-            kafkaLag: 0n,
             updatedAtNanos: 1n,
           },
           index: 0,
@@ -348,7 +426,6 @@ describe("@effect-view-server/protocol type contract", () => {
             memoryBytes: 0,
             tombstoneCount: 0,
             compactionPending: false,
-            kafkaLag: 0n,
             updatedAtNanos: 1n,
           },
           index: 0,
@@ -393,7 +470,6 @@ describe("@effect-view-server/protocol type contract", () => {
             connectionStatus: "connected",
             unhealthyTopics: [],
             updatedAtNanos: 1n,
-            maxKafkaLag: 0n,
           },
           index: 0,
         },
@@ -453,7 +529,6 @@ describe("@effect-view-server/protocol type contract", () => {
             memoryBytes: 0,
             tombstoneCount: 0,
             compactionPending: false,
-            kafkaLag: 0n,
             updatedAtNanos: 1n,
           },
           index: 0,

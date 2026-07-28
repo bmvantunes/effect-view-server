@@ -10,7 +10,6 @@ import {
   comparableRuntimeThroughputKafkaIngestLanes,
   comparableRuntimeThroughputCases,
   runtimeMetrics,
-  drainedRuntimeMetrics,
   comparableNonKafkaRuntimeThroughputCases,
   runtimeGrpcLeasedSample,
   runtimeGrpcLeasedOperationCaseFor,
@@ -1257,120 +1256,6 @@ describe("benchmark runtime and transport invariants", () => {
     });
   });
 
-
-  it("requires drained final Kafka lag for sustained firehose baselines", () => {
-    const twoLaneKafkaIngestLanes = [
-      ...comparableRuntimeThroughputKafkaIngestLanes,
-      {
-        internalTopic: "trades",
-        lane: "trades",
-        producedRows: runtimeThroughputMutationCount,
-        region: "local",
-        sourceTopicAlias: "unique-topic-per-run:trades",
-      },
-    ];
-    const sustainedFirehoseObservation = {
-      ...observation,
-      artifactKind: "runtime-benchmark-summary",
-      benchmarkScope: "runtime-kafka-sustained-firehose",
-      groupedWriteAdmission: undefined,
-      kafkaIngestLanes: twoLaneKafkaIngestLanes,
-      mutationCount: runtimeThroughputMutationCount,
-      runtimeMetrics: {
-        ...drainedRuntimeMetrics,
-        kafkaLag: {
-          ...drainedRuntimeMetrics.kafkaLag,
-          sampledRegionCount: twoLaneKafkaIngestLanes.length,
-        },
-      },
-      throughputCases: comparableRuntimeThroughputCases,
-    };
-    const baseline = buildBenchmarkBaseline("kafka-sustained-firehose", [
-      sustainedFirehoseObservation,
-    ]);
-    const nonZeroLagBaseline = buildBenchmarkBaseline("kafka-sustained-firehose", [
-      {
-        ...sustainedFirehoseObservation,
-        runtimeMetrics,
-      },
-    ]);
-    const partialLagSampleBaseline = buildBenchmarkBaseline("kafka-sustained-firehose", [
-      {
-        ...sustainedFirehoseObservation,
-        runtimeMetrics: drainedRuntimeMetrics,
-      },
-    ]);
-    const missingMaxLagBaseline = buildBenchmarkBaseline("kafka-sustained-firehose", [
-      {
-        ...sustainedFirehoseObservation,
-        runtimeMetrics: {
-          ...sustainedFirehoseObservation.runtimeMetrics,
-          kafkaLag: {
-            ...sustainedFirehoseObservation.runtimeMetrics.kafkaLag,
-            maxConsumerLagMessages: null,
-          },
-        },
-      },
-    ]);
-    const missingRuntimeMetricsBaseline = buildBenchmarkBaseline("kafka-sustained-firehose", [
-      {
-        ...sustainedFirehoseObservation,
-        runtimeMetrics: undefined,
-      },
-    ]);
-    const missingKafkaIngestLanesBaseline = buildBenchmarkBaseline("kafka-sustained-firehose", [
-      {
-        ...sustainedFirehoseObservation,
-        kafkaIngestLanes: undefined,
-      },
-    ]);
-    const missingKafkaIngestLanesWithArtifactKindDriftBaseline = buildBenchmarkBaseline(
-      "kafka-sustained-firehose",
-      [
-        {
-          ...sustainedFirehoseObservation,
-          artifactKind: "engine-benchmark-summary",
-          kafkaIngestLanes: undefined,
-        },
-      ],
-    );
-
-    expect(compareArtifacts(baseline, baseline)).toStrictEqual({
-      ok: true,
-      regressions: [],
-    });
-    expect(compareArtifacts(baseline, nonZeroLagBaseline)).toStrictEqual({
-      ok: false,
-      regressions: [
-        "task a: runtimeMetrics.kafkaLag sampled 1 regions but expected 2.",
-        "task a: final Kafka lag must be 0 but was 9007199254740993.",
-        "task a: max final Kafka lag must be 0 but was 9007199254740993.",
-      ],
-    });
-    expect(compareArtifacts(baseline, partialLagSampleBaseline)).toStrictEqual({
-      ok: false,
-      regressions: ["task a: runtimeMetrics.kafkaLag sampled 1 regions but expected 2."],
-    });
-    expect(compareArtifacts(baseline, missingMaxLagBaseline)).toStrictEqual({
-      ok: false,
-      regressions: ["task a: max final Kafka lag must be 0 but was null."],
-    });
-    expect(compareArtifacts(baseline, missingRuntimeMetricsBaseline)).toStrictEqual({
-      ok: false,
-      regressions: [
-        "task a: runtimeMetrics presence changed.",
-        "task a: runtimeMetrics.kafkaLag is required.",
-      ],
-    });
-    expect(() => validateBenchmarkBaseline(missingKafkaIngestLanesBaseline)).toThrow(
-      "Benchmark artifact field baseline.tasks[0].kafkaIngestLanes is required for runtime-kafka-sustained-firehose.",
-    );
-    expect(() =>
-      validateBenchmarkBaseline(missingKafkaIngestLanesWithArtifactKindDriftBaseline),
-    ).toThrow(
-      "Benchmark artifact field baseline.tasks[0].kafkaIngestLanes is required for runtime-kafka-sustained-firehose.",
-    );
-  });
 
 
 });

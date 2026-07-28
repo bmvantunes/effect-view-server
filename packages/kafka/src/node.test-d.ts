@@ -1,5 +1,5 @@
 import { describe, expectTypeOf, it } from "@effect/vitest";
-import { defineViewServerConfig } from "@effect-view-server/config";
+import { ViewServerId, defineViewServerConfig } from "@effect-view-server/config";
 import { Config, Effect, Layer, Schema, Scope } from "effect";
 import { SourceAdapter } from "effect-view-server/source-adapter";
 import {
@@ -18,7 +18,7 @@ import type {
 } from "./server";
 
 const Row = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   price: Schema.Number,
   region: Schema.String,
 });
@@ -53,7 +53,6 @@ const sourceFreeConfig = defineViewServerConfig({
   topics: {
     orders: {
       schema: Row,
-      key: "id",
     },
   },
 });

@@ -5,6 +5,7 @@ import type {
   ViewServerLiveSubscription,
 } from "@effect-view-server/client";
 import {
+  ViewServerId,
   defineViewServerConfig,
   type ExactLiveQueryInputForTopic,
   type DeltaOperation,
@@ -13,12 +14,14 @@ import {
   type RawQuery,
   type TopicDefinitions,
   type TopicRow,
+  type ViewServerHealth,
   type ViewServerRuntimeError,
   type ViewServerTransportError,
 } from "@effect-view-server/config";
-import { grpcSourceMarkers } from "@effect-view-server/config/internal";
 import { createInMemoryViewServer } from "@effect-view-server/in-memory";
+import { SourceAdapter } from "@effect-view-server/source-adapter";
 import { Deferred, Effect, Fiber, Option, Queue, Schema, Stream } from "effect";
+import { AtomRef } from "effect/unstable/reactivity";
 import {
   liveQueryViewportChromeFromAsyncResult,
   liveQueryViewportFailureMessage,
@@ -33,7 +36,7 @@ import {
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 
 const Order = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   status: Schema.Literals(["open", "closed"]),
   price: Schema.Number,
 });
@@ -42,7 +45,6 @@ const viewServer = defineViewServerConfig({
   topics: {
     orders: {
       schema: Order,
-      key: "id",
     },
   },
 });
@@ -55,18 +57,26 @@ type ViewportChromeStream = Stream.Stream<
 >;
 
 const LeasedOrder = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   region: Schema.String,
+});
+
+const sourceAdapter = SourceAdapter.make({
+  identity: { name: "viewport-source" },
+  failure: Schema.Never,
+  materialized: undefined,
+  leased: {
+    metrics: Schema.Struct({ observed: Schema.BigInt }),
+    rejectionLocation: Schema.Struct({ offset: Schema.BigInt }),
+    definitionOptions: SourceAdapter.definitionOptions<undefined>(),
+  },
 });
 
 const leasedViewServer = defineViewServerConfig({
   topics: {
     orders: {
       schema: LeasedOrder,
-      key: "id",
-      grpcSource: grpcSourceMarkers.leased({
-        routeBy: ["region"],
-      }),
+      source: sourceAdapter.leasedSource(["region"], undefined),
     },
   },
 });
@@ -448,6 +458,10 @@ describe("Live Query Viewport Module", () => {
     Effect.gen(function* () {
       const base = createInMemoryViewServer(viewServer);
       const requests: Array<ManualRequest> = [];
+      const leasedHealth = AtomRef.make<ViewServerHealth<LeasedTopics>>({
+        ...base.liveClient.health.value,
+        sources: { orders: [] },
+      });
       const leasedClient = {
         subscribe: adaptQuerySubstrate<LeasedTopics>((_, query) =>
           Effect.gen(function* () {
@@ -462,7 +476,7 @@ describe("Live Query Viewport Module", () => {
         subscribeHealthSummary: base.liveClient.subscribeHealthSummary,
         subscribeHealth: base.liveClient.subscribeHealth,
         subscribeSourceHealth: () => Effect.die("unused source health"),
-        health: base.liveClient.health,
+        health: leasedHealth,
         close: Effect.void,
       } satisfies ViewServerLiveClient<LeasedTopics>;
       let currentStream: ViewportChromeStream = Stream.never;

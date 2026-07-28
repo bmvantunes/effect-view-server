@@ -31,7 +31,6 @@ type UnionOrderTopics = {
     readonly schema: typeof Order & {
       readonly Type: LimitOrderRow | MarketOrderRow;
     };
-    readonly key: "id";
   };
 };
 
@@ -600,7 +599,7 @@ describe("Runtime client and configuration generic contracts", () => {
 
     expectTypeOf<ViewServerBackpressureError>().toMatchTypeOf<ViewServerRuntimeError>();
 
-    // @ts-expect-error topic keys must be string fields from the Effect Schema row type
+    // @ts-expect-error Topic configuration no longer accepts a key property.
     defineViewServerConfig({
       topics: {
         invalid: {
@@ -612,10 +611,9 @@ describe("Runtime client and configuration generic contracts", () => {
 
     defineViewServerConfig({
       topics: {
+        // @ts-expect-error topic schemas must expose concrete fields for query typing and wire validation
         loose: {
-          // @ts-expect-error topic schemas must expose concrete fields for query typing and wire validation
           schema: Schema.Record(Schema.String, Schema.String),
-          key: "id",
         },
       },
     });
@@ -625,7 +623,6 @@ describe("Runtime client and configuration generic contracts", () => {
       topics: {
         __view_server_health: {
           schema: Order,
-          key: "id",
         },
       },
     });

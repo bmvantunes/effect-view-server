@@ -1,6 +1,6 @@
 import type { RowSchema } from "@effect-view-server/config";
 import { validateDecodedRow } from "@effect-view-server/config/internal";
-import { Effect } from "effect";
+import { Effect, Predicate } from "effect";
 import { topicRowChangedFieldsFromRows, type TopicRowChangedFields } from "./row-scan";
 import { fieldValue, isPlainRecord } from "./row-values";
 import type { TopicRowValueSemantics } from "./topic-row-value-semantics";
@@ -116,18 +116,18 @@ const validateDecodedTopicRow = Effect.fn("ColumnLiveViewEngine.topicRow.decoded
   },
 );
 
-const topicRowKey = Effect.fn("ColumnLiveViewEngine.topicRow.key")(function* <Error>(
-  context: TopicRowPreparationContext,
+export const topicRowKey = Effect.fn("ColumnLiveViewEngine.topicRow.key")(function <Error>(
+  context: Pick<TopicRowPreparationContext, "keyField" | "topic">,
   row: RowObject,
   invalidRow: InvalidRowErrorFactory<Error>,
-) {
+): Effect.Effect<string, Error> {
   const key = fieldValue(row, context.keyField);
-  if (typeof key !== "string") {
-    return yield* Effect.fail(
+  if (!Predicate.isString(key)) {
+    return Effect.fail(
       invalidRow(context.topic, `Key field ${context.keyField} must decode to a string.`),
     );
   }
-  return key;
+  return Effect.succeed(key);
 });
 
 const inspectTopicPatch = Effect.fn("ColumnLiveViewEngine.topicRow.patch.inspect")(function* <

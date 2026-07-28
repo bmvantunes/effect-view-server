@@ -15,7 +15,7 @@ const FilterRow = Schema.Struct({
 });
 
 const filterConfig = {
-  topics: { values: { schema: FilterRow, key: "id" } },
+  topics: { values: { schema: FilterRow } },
 } as const;
 
 const decodeHostileWhere = (where: unknown) =>

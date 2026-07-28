@@ -1,16 +1,16 @@
 import { ViewServerAuthError } from "@effect-view-server/server";
-import { defineViewServerConfig } from "@effect-view-server/config";
+import { ViewServerId, defineViewServerConfig } from "@effect-view-server/config";
 import { Effect, Schema } from "effect";
 
 export const Order = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   price: Schema.Number,
 });
 
 export type OrderRow = typeof Order.Type;
 
 export const Trade = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   symbol: Schema.String,
 });
 
@@ -18,7 +18,6 @@ export const viewServer = defineViewServerConfig({
   topics: {
     orders: {
       schema: Order,
-      key: "id",
     },
   },
 });

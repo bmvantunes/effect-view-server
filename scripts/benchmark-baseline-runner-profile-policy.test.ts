@@ -37,21 +37,10 @@ describe("benchmark baseline runner", () => {
       groupedOrderNeutral: scripts["bench:baseline:grouped-order-neutral"],
       groupedOrderNeutralUpdate: scripts["bench:baseline:grouped-order-neutral:update"],
       grpcGate: scripts["grpc:gate"],
-      grpcLeased: scripts["bench:baseline:grpc-leased"],
-      grpcLeasedRetained: scripts["bench:baseline:grpc-leased-retained"],
-      grpcLeasedRetainedRepeat: scripts["bench:baseline:grpc-leased-retained:repeat"],
-      grpcLeasedRetainedUpdate: scripts["bench:baseline:grpc-leased-retained:update"],
-      grpcLeasedUpdate: scripts["bench:baseline:grpc-leased:update"],
-      grpcMaterialized: scripts["bench:baseline:grpc-materialized"],
-      grpcMaterializedUpdate: scripts["bench:baseline:grpc-materialized:update"],
       grpcSourceAdapter: scripts["bench:baseline:grpc-source-adapter"],
       grpcSourceAdapterUpdate: scripts["bench:baseline:grpc-source-adapter:update"],
-      kafkaIngest: scripts["bench:baseline:kafka-ingest"],
-      kafkaIngestUpdate: scripts["bench:baseline:kafka-ingest:update"],
       kafkaSourceAdapter: scripts["bench:baseline:kafka-source-adapter"],
       kafkaSourceAdapterUpdate: scripts["bench:baseline:kafka-source-adapter:update"],
-      kafkaSustainedFirehose: scripts["bench:baseline:kafka-sustained-firehose"],
-      kafkaSustainedFirehoseUpdate: scripts["bench:baseline:kafka-sustained-firehose:update"],
       preGrpcGate: scripts["pre-grpc:gate"],
       rawReadWrite: scripts["bench:baseline:raw-read-write"],
       rawReadWriteUpdate: scripts["bench:baseline:raw-read-write:update"],
@@ -70,35 +59,17 @@ describe("benchmark baseline runner", () => {
       groupedOrderNeutralUpdate:
         "node scripts/run-benchmark-baseline.mjs --profile=grouped-order-neutral --update-baseline",
       grpcGate:
-        "VP_RUN_CONCURRENCY_LIMIT=1 vp run -w ready && VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:grpc-materialized && VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:grpc-leased && VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:grpc-leased-retained && VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:grpc-source-adapter",
-      grpcLeased: "node scripts/run-benchmark-baseline.mjs --profile=grpc-leased",
-      grpcLeasedRetained: "node scripts/run-benchmark-baseline.mjs --profile=grpc-leased-retained",
-      grpcLeasedRetainedRepeat:
-        "node scripts/run-benchmark-baseline.mjs --profile=grpc-leased-retained --repeat=3 --no-compare",
-      grpcLeasedRetainedUpdate:
-        "node scripts/run-benchmark-baseline.mjs --profile=grpc-leased-retained --update-baseline",
-      grpcLeasedUpdate:
-        "node scripts/run-benchmark-baseline.mjs --profile=grpc-leased --update-baseline",
-      grpcMaterialized: "node scripts/run-benchmark-baseline.mjs --profile=grpc-materialized",
-      grpcMaterializedUpdate:
-        "node scripts/run-benchmark-baseline.mjs --profile=grpc-materialized --update-baseline",
+        "VP_RUN_CONCURRENCY_LIMIT=1 vp run -w ready && VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:grpc-source-adapter",
       grpcSourceAdapter:
         "node scripts/run-benchmark-baseline.mjs --profile=grpc-source-adapter",
       grpcSourceAdapterUpdate:
         "node scripts/run-benchmark-baseline.mjs --profile=grpc-source-adapter --update-baseline",
-      kafkaIngest: "node scripts/run-benchmark-baseline.mjs --profile=kafka-ingest",
-      kafkaIngestUpdate:
-        "node scripts/run-benchmark-baseline.mjs --profile=kafka-ingest --update-baseline",
       kafkaSourceAdapter:
         "node scripts/run-benchmark-baseline.mjs --profile=kafka-source-adapter",
       kafkaSourceAdapterUpdate:
         "node scripts/run-benchmark-baseline.mjs --profile=kafka-source-adapter --update-baseline",
-      kafkaSustainedFirehose:
-        "node scripts/run-benchmark-baseline.mjs --profile=kafka-sustained-firehose",
-      kafkaSustainedFirehoseUpdate:
-        "node scripts/run-benchmark-baseline.mjs --profile=kafka-sustained-firehose --update-baseline",
       preGrpcGate:
-        "VP_RUN_CONCURRENCY_LIMIT=1 vp run -w ready && VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:smoke && VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:raw-read-write && VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:active-query-sharing && VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:grouped-admission && VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:grouped-order-neutral && VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:websocket-firehose && VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:kafka-source-adapter && VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:kafka-ingest && VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:kafka-sustained-firehose",
+        "VP_RUN_CONCURRENCY_LIMIT=1 vp run -w ready && VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:smoke && VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:raw-read-write && VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:active-query-sharing && VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:grouped-admission && VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:grouped-order-neutral && VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:websocket-firehose && VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:kafka-source-adapter",
       rawReadWrite: "node scripts/run-benchmark-baseline.mjs --profile=raw-read-write",
       rawReadWriteUpdate:
         "node scripts/run-benchmark-baseline.mjs --profile=raw-read-write --update-baseline",
@@ -138,8 +109,6 @@ describe("benchmark baseline runner", () => {
       "VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:grouped-order-neutral",
       "VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:websocket-firehose",
       "VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:kafka-source-adapter",
-      "VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:kafka-ingest",
-      "VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:kafka-sustained-firehose",
     ]);
     expect(preGrpcBenchmarkGates.toSorted()).toStrictEqual(strictPreGrpcCompareBenchmarkGates);
     expect(preGrpcBenchmarkGates).not.toContain("bench:baseline:release");
@@ -154,9 +123,6 @@ describe("benchmark baseline runner", () => {
 
     expect(scripts["grpc:gate"].split(" && ")).toStrictEqual([
       "VP_RUN_CONCURRENCY_LIMIT=1 vp run -w ready",
-      "VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:grpc-materialized",
-      "VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:grpc-leased",
-      "VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:grpc-leased-retained",
       "VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:grpc-source-adapter",
     ]);
   });

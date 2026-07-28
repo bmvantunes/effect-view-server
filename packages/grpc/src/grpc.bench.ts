@@ -4,7 +4,7 @@ import { afterAll, beforeAll, bench, describe } from "vitest";
 import { create, toBinary, type Message } from "@bufbuild/protobuf";
 import { fileDesc, messageDesc, serviceDesc } from "@bufbuild/protobuf/codegenv2";
 import { FieldDescriptorProto_Type, FileDescriptorProtoSchema } from "@bufbuild/protobuf/wkt";
-import { defineViewServerConfig } from "@effect-view-server/config";
+import { ViewServerId, defineViewServerConfig } from "@effect-view-server/config";
 import { makeViewServerRuntimeCore } from "@effect-view-server/runtime-core";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -115,7 +115,7 @@ const RowsService = serviceDesc<{
 }>(descriptorFile, 0);
 
 const Row = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   region: Schema.String,
   value: Schema.Number,
 });
@@ -225,6 +225,10 @@ const routeCount = positiveIntegerFromEnv(
   "VIEW_SERVER_RUNTIME_BENCH_GRPC_SOURCE_ADAPTER_ROUTE_COUNT",
   32,
 );
+const retainedRowCount = positiveIntegerFromEnv(
+  "VIEW_SERVER_RUNTIME_BENCH_GRPC_SOURCE_ADAPTER_RETAINED_ROWS",
+  50_000,
+);
 const benchmarkOptions = {
   iterations: positiveIntegerFromEnv("VIEW_SERVER_RUNTIME_BENCH_ITERATIONS", 5),
   time: nonNegativeIntegerFromEnv("VIEW_SERVER_RUNTIME_BENCH_TIME_MS", 0),
@@ -281,8 +285,9 @@ const makeBenchmarkState = Effect.gen(function* () {
   const materializedSubscription = yield* materializedRuntime.liveClient.subscribe("rows", {
     select: ["id"],
   });
-  const materializedDiagnostics =
-    yield* materializedRuntime.liveClient.subscribeSourceHealth("rows");
+  const materializedDiagnostics = yield* materializedRuntime.liveClient.subscribeSourceHealth({
+    topic: "rows",
+  });
   const committedIds = new Set<string>();
   let observedRejectedItemCount = 0n;
   const materializedObserverFiber = yield* materializedSubscription.events.pipe(
@@ -358,9 +363,33 @@ const makeBenchmarkState = Effect.gen(function* () {
         .pipe(Effect.provideService(Clock.Clock, clock)),
     { concurrency: "unbounded" },
   );
+  const leasedCommittedIds = routes.map(() => new Set<string>());
+  const leasedObserverFibers = yield* Effect.forEach(
+    leasedSubscriptions,
+    (subscription, routeIndex) =>
+      subscription.events.pipe(
+        Stream.runForEach((event) =>
+          Effect.sync(() => {
+            if (event.type === "snapshot") {
+              for (const row of event.rows) {
+                leasedCommittedIds[routeIndex]?.add(row.id);
+              }
+            } else if (event.type === "delta") {
+              for (const operation of event.operations) {
+                if (operation.type === "insert" || operation.type === "update") {
+                  leasedCommittedIds[routeIndex]?.add(operation.row.id);
+                }
+              }
+            }
+          }),
+        ),
+        Effect.forkDetach({ startImmediately: true }),
+      ),
+    { concurrency: "unbounded" },
+  );
   const leasedDiagnostics = yield* Effect.forEach(
     routes,
-    (route) => leasedRuntime.liveClient.subscribeSourceHealth("rows", route),
+    (route) => leasedRuntime.liveClient.subscribeSourceHealth({ topic: "rows", routeBy: route }),
     { concurrency: "unbounded" },
   );
   const leasedHealthSampleCounts = Array.from({ length: routeCount }, () => 0);
@@ -381,6 +410,32 @@ const makeBenchmarkState = Effect.gen(function* () {
     `${routeCount} leased gRPC invocations`,
     () => controlled.invocations.length === routeCount + 1,
   );
+  const retainedRowsPerRoute = Math.ceil(retainedRowCount / routeCount);
+  const retainedLastIds: Array<string> = [];
+  for (let routeIndex = 0; routeIndex < routeCount; routeIndex += 1) {
+    const invocation = Option.getOrThrow(
+      Option.fromUndefinedOr(controlled.invocations[routeIndex + 1]),
+    );
+    const route = Option.getOrThrow(Option.fromUndefinedOr(routes[routeIndex]));
+    let retainedLastId = "";
+    for (let rowIndex = 0; rowIndex < retainedRowsPerRoute; rowIndex += 1) {
+      const ordinal = routeIndex * retainedRowsPerRoute + rowIndex;
+      if (ordinal >= retainedRowCount) {
+        break;
+      }
+      retainedLastId = `retained-${ordinal}`;
+      controlled.emit(invocation, {
+        id: retainedLastId,
+        region: route.region,
+        value: ordinal,
+      });
+    }
+    retainedLastIds.push(retainedLastId);
+  }
+  yield* awaitCondition("leased retained-capacity setup", () =>
+    retainedLastIds.every((id, routeIndex) => leasedCommittedIds[routeIndex]?.has(id)),
+  );
+  successfulMutationCount += retainedRowCount;
   yield* awaitCondition("initial leased health samples", () =>
     leasedHealthSampleCounts.every((count) => count >= 1),
   );
@@ -389,6 +444,8 @@ const makeBenchmarkState = Effect.gen(function* () {
     controlled,
     leasedDiagnostics,
     leasedDiagnosticsFibers,
+    leasedCommittedIds,
+    leasedObserverFibers,
     leasedHealthSampleCounts,
     leasedRuntime,
     leasedSubscriptions,
@@ -414,16 +471,21 @@ let memoryBefore: BenchmarkMemorySnapshot | undefined;
 const mappedBenchmarkName = `maps ${batchSize} decoded response messages into ordered Upserts`;
 const rejectionBenchmarkName = "records one Mapping rejection and continues with a valid response";
 const leasedHealthBenchmarkName = `publishes one-second health samples for ${routeCount} active Leased Feeds`;
+const leasedRetainedCapacityBenchmarkName = `applies ${batchSize} rows across ${routeCount} Leased Feeds with ${retainedRowCount} retained`;
 const benchmarkCases = [
   mappedBenchmarkName,
   rejectionBenchmarkName,
   leasedHealthBenchmarkName,
+  leasedRetainedCapacityBenchmarkName,
 ] as const;
 
 const benchmarkOutputJsonPath = (): string => {
   const configured = process.env["VIEW_SERVER_RUNTIME_BENCH_OUTPUT_JSON"];
   return configured === undefined || configured.trim() === ""
-    ? join(".artifacts", `grpc-source-adapter-${batchSize}batch-${routeCount}routes.json`)
+    ? join(
+        ".artifacts",
+        `grpc-source-adapter-${batchSize}batch-${routeCount}routes-${retainedRowCount}retained.json`,
+      )
     : configured.trim();
 };
 
@@ -469,7 +531,7 @@ const requireState = (): BenchmarkState => {
 beforeAll(async () => {
   memoryBefore = memorySnapshot();
   state = await Effect.runPromise(makeBenchmarkState.pipe(Effect.scoped));
-});
+}, 120_000);
 
 afterAll(async () => {
   const current = state;
@@ -486,6 +548,7 @@ afterAll(async () => {
         ...current.leasedSubscriptions.map((subscription) => subscription.close()),
         ...current.leasedDiagnostics.map((subscription) => subscription.close()),
         ...current.leasedDiagnosticsFibers.map(Fiber.interrupt),
+        ...current.leasedObserverFibers.map(Fiber.interrupt),
       ],
       { concurrency: "unbounded", discard: true },
     ),
@@ -544,6 +607,7 @@ afterAll(async () => {
     mutationCount: successfulMutationCount,
     notes: [
       "Localhost CPU/GC stress benchmark over the in-process gRPC Source Adapter runtime seam; no network transport is involved.",
+      `The canonical profile preserves Materialized batch, Leased route, and ${retainedRowCount}-row retained-capacity coverage.`,
       "Warmups and timed repetitions stay disabled because every measured case mutates shared benchmark state.",
       "Cleanup, backpressure, queued-event, mutation, route, and subscriber evidence is recorded exactly.",
     ],
@@ -552,7 +616,7 @@ afterAll(async () => {
     subscriberCount: routeCount + 1,
     topics: ["rows"],
   });
-});
+}, 120_000);
 
 describe("gRPC Source Adapter focused overhead", () => {
   bench(
@@ -640,6 +704,44 @@ describe("gRPC Source Adapter focused overhead", () => {
             ),
           ),
       );
+    },
+    benchmarkOptions,
+  );
+
+  bench(
+    leasedRetainedCapacityBenchmarkName,
+    async () => {
+      const current = requireState();
+      const rowsPerRoute = Math.ceil(batchSize / routeCount);
+      const expectedIds: Array<string> = [];
+      for (let routeIndex = 0; routeIndex < routeCount; routeIndex += 1) {
+        const invocation = Option.getOrThrow(
+          Option.fromUndefinedOr(current.controlled.invocations[routeIndex + 1]),
+        );
+        const route = Option.getOrThrow(Option.fromUndefinedOr(current.routes[routeIndex]));
+        for (let rowIndex = 0; rowIndex < rowsPerRoute; rowIndex += 1) {
+          const ordinal = routeIndex * rowsPerRoute + rowIndex;
+          if (ordinal >= batchSize) {
+            break;
+          }
+          const id = `leased-${nextId}`;
+          expectedIds.push(id);
+          current.controlled.emit(invocation, {
+            id,
+            region: route.region,
+            value: nextId,
+          });
+          nextId += 1;
+        }
+      }
+      await Effect.runPromise(
+        awaitCondition("leased retained-capacity convergence", () =>
+          expectedIds.every((id, ordinal) =>
+            current.leasedCommittedIds[Math.floor(ordinal / rowsPerRoute)]?.has(id),
+          ),
+        ),
+      );
+      successfulMutationCount += batchSize;
     },
     benchmarkOptions,
   );

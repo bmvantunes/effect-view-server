@@ -134,7 +134,6 @@ describe("Real View Server RPC wire protocol composition", () => {
           },
           manual_orders: {
             schema: Order,
-            key: "id",
           },
         },
       });
@@ -155,7 +154,7 @@ describe("Real View Server RPC wire protocol composition", () => {
         orderBy: [{ field: "id", direction: "asc" }],
       });
       yield* Effect.addFinalizer(() => manualSubscription.close().pipe(Effect.orDie));
-      const sourceHealth = yield* client.subscribeSourceHealth("source_orders");
+      const sourceHealth = yield* client.subscribeSourceHealth({ topic: "source_orders" });
       yield* Effect.addFinalizer(() => sourceHealth.close().pipe(Effect.orDie));
       const initialSnapshotSeen = yield* Deferred.make<void>();
       const manualEvents = yield* manualSubscription.events.pipe(

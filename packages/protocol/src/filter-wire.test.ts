@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { defineViewServerConfig } from "@effect-view-server/config";
+import { ViewServerId, defineViewServerConfig } from "@effect-view-server/config";
 import { Effect, Schema } from "effect";
 import { viewServerDecodeRawQuery, viewServerEncodeRawQuery } from "./index";
 
@@ -7,11 +7,10 @@ const viewServer = defineViewServerConfig({
   topics: {
     values: {
       schema: Schema.Struct({
-        id: Schema.String,
+        id: ViewServerId,
         number: Schema.Number,
         bigint: Schema.BigInt,
       }),
-      key: "id",
     },
   },
 });

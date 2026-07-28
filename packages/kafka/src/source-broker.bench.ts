@@ -2,7 +2,7 @@
 // the broker-backed Kafka Source Adapter measurement.
 import { afterAll, beforeAll, bench, describe } from "vitest";
 import { Admin, Producer } from "@platformatic/kafka";
-import { defineViewServerConfig } from "@effect-view-server/config";
+import { ViewServerId, defineViewServerConfig } from "@effect-view-server/config";
 import { makeViewServerRuntimeCore } from "@effect-view-server/runtime-core";
 import { Buffer } from "node:buffer";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -98,7 +98,7 @@ const requireState = (): BenchmarkState => {
 };
 
 const Row = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   value: Schema.Number,
 });
 const WireRow = Schema.Struct({

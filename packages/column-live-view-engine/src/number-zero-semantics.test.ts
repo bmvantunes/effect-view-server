@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { defineViewServerConfig } from "@effect-view-server/config";
+import { ViewServerId, defineViewServerConfig } from "@effect-view-server/config";
 import { Effect, Schema } from "effect";
 import {
   applyDelta,
@@ -12,7 +12,7 @@ import {
 import { createColumnLiveViewEngine } from "./index";
 
 const NumberRow = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   value: Schema.Number,
 });
 
@@ -20,7 +20,6 @@ const numberViewServer = defineViewServerConfig({
   topics: {
     numberRows: {
       schema: NumberRow,
-      key: "id",
     },
   },
 });

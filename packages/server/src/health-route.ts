@@ -1,14 +1,11 @@
 import type { TopicDefinitions, ViewServerTopicConfig } from "@effect-view-server/config";
-import { viewServerDecodeHealth } from "@effect-view-server/protocol";
+import { viewServerEncodeHealth } from "@effect-view-server/protocol";
 import { Cause, Effect, Option } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import { validateViewServerHttpRequest, viewServerAuthErrorResponse } from "./auth";
 import type { ViewServerWebSocketServerInput } from "./server-types";
 
-const jsonStringify = (value: unknown): string =>
-  JSON.stringify(value, (_key, nextValue: unknown) =>
-    typeof nextValue === "bigint" ? nextValue.toString() : nextValue,
-  );
+const jsonStringify = (value: unknown): string => JSON.stringify(value);
 
 const jsonResponse = (status: number, value: unknown): HttpServerResponse.HttpServerResponse =>
   HttpServerResponse.text(jsonStringify(value), {
@@ -38,7 +35,7 @@ export const makeViewServerHealthRoute = <const Topics extends TopicDefinitions>
           onSuccess: () =>
             Effect.gen(function* () {
               const health = yield* input.runtime.health();
-              return yield* viewServerDecodeHealth(config, health);
+              return yield* viewServerEncodeHealth(config, health);
             }).pipe(
               Effect.map((health) => jsonResponse(readinessStatus(health.status), health)),
               Effect.catchCause((cause) => Effect.succeed(failureJsonResponse(cause))),

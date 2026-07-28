@@ -1,4 +1,3 @@
-import type { DecodableTopicDefinitions } from "@effect-view-server/column-live-view-engine";
 import type { ColumnLiveViewTerminalObserver } from "@effect-view-server/column-live-view-engine/internal";
 import type {
   ViewServerLiveSubscription,
@@ -9,6 +8,7 @@ import type {
   GroupedQuery,
   LiveQueryRow,
   RawQuery,
+  TopicDefinitions,
   TopicRow,
   ViewServerRuntimeError,
   ViewServerTransportError,
@@ -24,7 +24,7 @@ type RuntimeSubscription = Effect.Effect<
   ViewServerRuntimeError | ViewServerTransportError
 >;
 
-export type RuntimeCoreLiveQuerySubstrate<Topics extends DecodableTopicDefinitions> = {
+export type RuntimeCoreLiveQuerySubstrate<Topics extends TopicDefinitions> = {
   readonly subscribeQuery: (
     topic: Extract<keyof Topics, string>,
     query: Readonly<Record<string, unknown>>,
@@ -40,14 +40,14 @@ export type RuntimeCoreLiveQuerySubstrate<Topics extends DecodableTopicDefinitio
   ) => Effect.Effect<void, ViewServerRuntimeError>;
 };
 
-export type RuntimeCoreLiveQueryFacade<Topics extends DecodableTopicDefinitions> = Pick<
+export type RuntimeCoreLiveQueryFacade<Topics extends TopicDefinitions> = Pick<
   ViewServerRuntimeCoreInternalLiveClient<Topics>,
   "subscribeInternal" | "subscribeObservedInternal"
 > & {
   readonly subscribe: ViewServerRuntimeLiveClient<Topics>["subscribe"];
 };
 
-export const makeRuntimeCoreLiveQueryFacade = <Topics extends DecodableTopicDefinitions>(
+export const makeRuntimeCoreLiveQueryFacade = <Topics extends TopicDefinitions>(
   substrate: RuntimeCoreLiveQuerySubstrate<Topics>,
 ): RuntimeCoreLiveQueryFacade<Topics> => {
   function subscribeInternal<

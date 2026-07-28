@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { defineViewServerConfig, viewSchema } from "@effect-view-server/config";
+import { ViewServerId, defineViewServerConfig, viewSchema } from "@effect-view-server/config";
 import { BigDecimal, Chunk, Effect, HashMap, HashSet, Option, Schema } from "effect";
 import { createColumnLiveViewEngine } from "./index";
 import {
@@ -19,7 +19,7 @@ class Profile extends Schema.Class<Profile>("Profile")({
 viewSchema.admitClass(Profile);
 
 const SemanticRow = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   profile: Profile,
   backupProfile: viewSchema.Option(Profile),
   tags: viewSchema.Chunk(Schema.String),
@@ -36,7 +36,6 @@ const semanticViewServer = defineViewServerConfig({
   topics: {
     semanticRows: {
       schema: SemanticRow,
-      key: "id",
     },
   },
 });

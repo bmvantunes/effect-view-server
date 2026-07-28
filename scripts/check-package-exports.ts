@@ -11,14 +11,15 @@ import type { RuntimeEnvironmentConfig } from "@effect-view-server/config/runtim
 import type { ViewServerWireEvent } from "@effect-view-server/protocol";
 import type { ViewServerRuntime } from "@effect-view-server/runtime";
 import type { ViewServerHealthHttpJson, ViewServerWebSocketServer } from "@effect-view-server/server";
-import type {
-  ExactRuntimeOptions as PublicKafkaExactRuntimeOptions,
-  KafkaTopicSourceDefinition as PublicKafkaTopicSourceDefinition,
-  KafkaTopicSourceMapInput as PublicKafkaTopicSourceMapInput,
-  ValidateKafkaTopicSource as PublicValidateKafkaTopicSource,
-} from "effect-view-server/config/kafka";
-import { defineViewServerConfig } from "effect-view-server/config";
-import { kafka as publicKafkaSource } from "effect-view-server/kafka/contract";
+import { ViewServerId, defineViewServerConfig } from "effect-view-server/config";
+import {
+  decodeKafkaCodec,
+  kafka as publicKafkaSource,
+} from "effect-view-server/kafka/contract";
+// @ts-expect-error the obsolete workspace Kafka config subpath is not exported.
+import type { KafkaCodec as RemovedWorkspaceKafkaConfigModule } from "@effect-view-server/config/kafka";
+// @ts-expect-error the obsolete public Kafka config subpath is not exported.
+import type { KafkaCodec as RemovedPublicKafkaConfigModule } from "effect-view-server/config/kafka";
 // @ts-expect-error standalone gRPC topic selectors are not workspace config exports.
 import type { GrpcLeasedTopic as RemovedWorkspaceGrpcLeasedTopic } from "@effect-view-server/config";
 // @ts-expect-error standalone gRPC topic selectors are not workspace config exports.
@@ -89,36 +90,19 @@ type RemovedKafkaRootExports = readonly [
   RemovedPublicKafkaResolvedSourceTopicDefinition,
 ];
 
-type PublicKafkaExportTopics = {
-  readonly orders: {
-    readonly key: "id";
-    readonly schema: never;
-  };
-};
-type PublicKafkaExportRegions = {
-  readonly local: string;
-};
-type PublicKafkaTypeExports = readonly [
-  PublicKafkaExactRuntimeOptions<PublicKafkaExportTopics, PublicKafkaExportRegions, {}>,
-  PublicKafkaTopicSourceDefinition<PublicKafkaExportTopics, PublicKafkaExportRegions, "orders">,
-  PublicKafkaTopicSourceMapInput<PublicKafkaExportTopics, "orders", "local", never, undefined>,
-  PublicValidateKafkaTopicSource<
-    PublicKafkaExportTopics,
-    PublicKafkaExportRegions,
-    "orders",
-    "id",
-    unknown
-  >,
+type RemovedKafkaConfigModules = readonly [
+  RemovedWorkspaceKafkaConfigModule,
+  RemovedPublicKafkaConfigModule,
 ];
 
 const removedGrpcTypeExports: RemovedGrpcTypeExports | undefined = undefined;
 const removedKafkaRootExports: RemovedKafkaRootExports | undefined = undefined;
-const publicKafkaTypeExports: PublicKafkaTypeExports | undefined = undefined;
+const removedKafkaConfigModules: RemovedKafkaConfigModules | undefined = undefined;
 const PublicKafkaSourceValue = Schema.Struct({
   price: Schema.Number,
 });
 const PublicKafkaSourceRow = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   price: Schema.Number,
 });
 const publicKafkaSourceValue = publicKafkaSource.json(() =>
@@ -161,7 +145,8 @@ const wireEventType: ViewServerWireEvent | undefined = undefined;
 
 void removedGrpcTypeExports;
 void removedKafkaRootExports;
-void publicKafkaTypeExports;
+void removedKafkaConfigModules;
+void decodeKafkaCodec;
 void publicKafkaFacadeTopicsAreExact;
 void clientType;
 void engineType;

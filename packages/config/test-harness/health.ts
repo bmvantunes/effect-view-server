@@ -1,4 +1,4 @@
-import type { KafkaStartFromHealth, TopicRuntimeHealth } from "../src/index";
+import type { TopicRuntimeHealth } from "../src/index";
 
 export const sourceTopicHealth = (
   status: TopicRuntimeHealth["status"],
@@ -26,27 +26,3 @@ export const sourceTopicHealth = (
   tombstoneCount: 0,
   compactionPending: false,
 });
-
-export const kafkaStartFromHealth = {
-  consumerGroupId: "view-server-test",
-  fallbackMode: "earliest",
-  mode: "committed",
-} as const;
-
-export const kafkaLatestStartFromHealth = {
-  consumerGroupId: "view-server-latest",
-  fallbackMode: "latest",
-  mode: "latest",
-} satisfies KafkaStartFromHealth;
-
-export const kafkaEarliestStartFromHealth = {
-  consumerGroupId: "view-server-earliest",
-  fallbackMode: "earliest",
-  mode: "earliest",
-} satisfies KafkaStartFromHealth;
-
-export const kafkaCommittedFailStartFromHealth = {
-  consumerGroupId: "view-server-committed",
-  fallbackMode: "fail",
-  mode: "committed",
-} satisfies KafkaStartFromHealth;

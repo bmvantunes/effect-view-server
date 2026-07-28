@@ -1,11 +1,11 @@
 import { describe, expect, it } from "@effect/vitest";
-import { defineViewServerConfig, viewSchema } from "@effect-view-server/config";
+import { ViewServerId, defineViewServerConfig, viewSchema } from "@effect-view-server/config";
 import { Effect, Schema } from "effect";
 import { sendTcpPublishCommand } from "../test-harness/runtime";
 import { makeViewServerRuntime } from "./index";
 
 class RootClassTcpOrder extends Schema.Class<RootClassTcpOrder>("RootClassTcpOrder")({
-  id: Schema.String,
+  id: ViewServerId,
   quantity: Schema.BigInt,
   status: Schema.String,
 }) {}
@@ -15,7 +15,6 @@ const rootClassTcpViewServer = defineViewServerConfig({
   topics: {
     orders: {
       schema: RootClassTcpOrder,
-      key: "id",
     },
   },
 });

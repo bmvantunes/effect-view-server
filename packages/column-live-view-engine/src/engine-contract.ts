@@ -6,13 +6,12 @@ import type {
   ExactRawQuery,
   LiveQueryRow,
   LiveQueryResult,
-  RowFromSchema,
   RowSchema,
   SnapshotEvent,
   StatusEvent,
-  StringFieldKey,
   TopicRow,
   ValidateLiveQuery,
+  ViewServerIdSchema,
 } from "@effect-view-server/config";
 import type { Effect, Schema, Stream } from "effect";
 import type { ColumnLiveViewEngineHealth } from "./engine-health";
@@ -24,9 +23,17 @@ export type DecodableTopicDefinitions = Record<
   string,
   {
     readonly schema: RowSchema & Schema.Codec<object, unknown, never, never>;
-    readonly key: string;
+    readonly source?: object | undefined;
   }
 >;
+
+type EngineTopicShape = {
+  readonly schema: RowSchema & Schema.Codec<object, unknown, never, never>;
+  readonly source?: object | undefined;
+};
+
+type RejectExtraEngineTopicKeys<Candidate> =
+  Exclude<keyof Candidate, keyof EngineTopicShape> extends never ? unknown : never;
 
 type UnionToIntersection<Union> = (Union extends unknown ? (value: Union) => void : never) extends (
   value: infer Intersection,
@@ -105,15 +112,22 @@ export type ExactEngineGroupedQueryInputForTopic<
   Query,
 > = ExactEngineQueryInputForTopic<Topics, Topic, Query, "grouped">;
 
+type TypeEquals<A, B> =
+  (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2
+    ? (<T>() => T extends B ? 1 : 2) extends <T>() => T extends A ? 1 : 2
+      ? true
+      : false
+    : false;
+
 type ValidateEngineTopics<Topics extends DecodableTopicDefinitions> = {
   readonly [Topic in keyof Topics]: Topics[Topic] extends {
     readonly schema: infer S extends RowSchema & Schema.Codec<object, unknown, never, never>;
-    readonly key: infer Key extends string;
   }
-    ? {
-        readonly schema: S;
-        readonly key: Key & StringFieldKey<RowFromSchema<S>>;
-      }
+    ? S extends { readonly fields: { readonly id: infer Id } }
+      ? TypeEquals<Id, ViewServerIdSchema> extends true
+        ? Topics[Topic] & RejectExtraEngineTopicKeys<Topics[Topic]>
+        : never
+      : never
     : never;
 };
 

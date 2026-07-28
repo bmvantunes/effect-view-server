@@ -1,20 +1,13 @@
 import { describe, expect, it } from "@effect/vitest";
 import { ViewServerAuthError } from "@effect-view-server/server";
-import { defineViewServerConfig, kafka } from "@effect-view-server/config";
+import { defineViewServerConfig } from "@effect-view-server/config";
 import { makeViewServerRuntimeCoreInternal } from "@effect-view-server/runtime-core/internal";
-import { Deferred, Effect, Fiber, Option, Schema, Stream } from "effect";
+import { SourceFixture } from "@effect-view-server/source-adapter-testing";
+import { Deferred, Effect, Fiber, Layer, Option, Schema, Stream } from "effect";
 import * as BigDecimal from "effect/BigDecimal";
 import type { ViewServerRuntimeDependencies } from "./internal";
 import { makeDefaultRuntimeDependencies, makeViewServerRuntimeWithDependencies } from "./internal";
 import { makeViewServerRuntime } from "./index";
-import {
-  makeDefaultGrpcRuntimeSourceDependencies,
-  makeGrpcRuntimeSourceAdapter,
-} from "./grpc-runtime-source";
-import {
-  makeDefaultKafkaRuntimeSourceDependencies,
-  makeKafkaRuntimeSourceAdapter,
-} from "./kafka-runtime-source";
 import { makeViewServerTcpPublishIngress } from "./tcp-publish-ingress";
 import {
   connectTcpPublishSocket,
@@ -28,14 +21,11 @@ import {
   defaultedTcpViewServer,
   jsonCodecTcpRecursiveViewServer,
   jsonCodecTcpViewServer,
-  keyTransformTcpViewServer,
   nestedTcpViewServer,
-  nonStringKeyTcpViewServer,
   positivePriceTcpViewServer,
   transformTcpViewServer,
   unionCodecTcpViewServer,
 } from "../test-harness/tcp-publish";
-import { grpcClients, GrpcOrder, grpcTopicSources } from "../test-harness/grpc-config";
 
 describe("TCP publish Interface", () => {
   it.live("accepts TCP publish commands through the runtime mutation path", () =>
@@ -184,106 +174,6 @@ describe("TCP publish Interface", () => {
         status: "ready",
         statusCode: "Ready",
       });
-      yield* runtime.close;
-    }),
-  );
-
-  it.live("decodes TCP command keys before patching and deleting rows", () =>
-    Effect.gen(function* () {
-      const runtime = yield* makeViewServerRuntime(keyTransformTcpViewServer, {
-        host: "127.0.0.1",
-        tcpPublishPort: 0,
-        websocketPort: 0,
-      });
-      const tcpUrl = yield* Effect.fromNullishOr(runtime.tcpPublishUrl);
-
-      const publishResponse = yield* sendTcpPublishCommand(tcpUrl, {
-        op: "publish",
-        topic: "orders",
-        row: { id: "%61", price: 10 },
-      });
-      const patchResponse = yield* sendTcpPublishCommand(tcpUrl, {
-        op: "patch",
-        topic: "orders",
-        key: "%61",
-        patch: { price: 20 },
-      });
-      const patchedSnapshot = yield* runtime.client.snapshot("orders", {
-        select: ["id", "price"],
-        limit: 10,
-      });
-      const deleteResponse = yield* sendTcpPublishCommand(tcpUrl, {
-        op: "delete",
-        topic: "orders",
-        key: "%61",
-      });
-      const deletedSnapshot = yield* runtime.client.snapshot("orders", {
-        select: ["id", "price"],
-        limit: 10,
-      });
-
-      expect(publishResponse).toStrictEqual({ ok: true });
-      expect(patchResponse).toStrictEqual({ ok: true });
-      expect(patchedSnapshot).toStrictEqual({
-        rows: [{ id: "a", price: 20 }],
-        totalRows: 1,
-        version: 2,
-        status: "ready",
-        statusCode: "Ready",
-      });
-      expect(deleteResponse).toStrictEqual({ ok: true });
-      expect(deletedSnapshot).toStrictEqual({
-        rows: [],
-        totalRows: 0,
-        version: 3,
-        status: "ready",
-        statusCode: "Ready",
-      });
-      yield* runtime.close;
-    }),
-  );
-
-  it.live("rejects TCP command keys that decode to non-string runtime keys", () =>
-    Effect.gen(function* () {
-      const runtime = yield* makeViewServerRuntime(nonStringKeyTcpViewServer, {
-        host: "127.0.0.1",
-        tcpPublishPort: 0,
-        websocketPort: 0,
-      });
-      const tcpUrl = yield* Effect.fromNullishOr(runtime.tcpPublishUrl);
-
-      const patchResponse = yield* sendTcpPublishCommand(tcpUrl, {
-        op: "patch",
-        topic: "orders",
-        key: "1",
-        patch: { price: 20 },
-      });
-      const deleteResponse = yield* sendTcpPublishCommand(tcpUrl, {
-        op: "delete",
-        topic: "orders",
-        key: "1",
-      });
-
-      expect([patchResponse, deleteResponse]).toStrictEqual([
-        {
-          ok: false,
-          error: {
-            _tag: "ViewServerTcpPublishIngressError",
-            message: "TCP publish key did not match View Server topic orders.",
-            phase: "decode",
-            topic: "orders",
-          },
-        },
-        {
-          ok: false,
-          error: {
-            _tag: "ViewServerTcpPublishIngressError",
-            message: "TCP publish key did not match View Server topic orders.",
-            phase: "decode",
-            topic: "orders",
-          },
-        },
-      ]);
       yield* runtime.close;
     }),
   );
@@ -1229,11 +1119,9 @@ describe("TCP publish Interface", () => {
         topics: {
           orders: {
             schema: Order,
-            key: "id",
           },
           trades: {
             schema: Trade,
-            key: "id",
           },
         },
       });
@@ -1657,16 +1545,15 @@ describe("TCP publish Interface", () => {
       const runtimeCore = yield* makeViewServerRuntimeCoreInternal(viewServer, {});
       const missingTopicSchemaConfig = {
         topics: {
-          orders: {
-            key: "id",
-          },
+          orders: {},
         },
       };
-      const missingTopicKeyFieldConfig = {
+      const missingCanonicalIdConfig = {
         topics: {
           orders: {
-            schema: Order,
-            key: "missing",
+            schema: Schema.Struct({
+              price: Schema.Number,
+            }),
           },
         },
       };
@@ -1676,9 +1563,9 @@ describe("TCP publish Interface", () => {
         runtimeCore.decodedMutationClient,
         { port: 0 },
       );
-      const missingTopicKeyFieldIngress = yield* makeViewServerTcpPublishIngress(
-        // @ts-expect-error intentionally malformed config for the runtime key guard.
-        missingTopicKeyFieldConfig,
+      const missingCanonicalIdIngress = yield* makeViewServerTcpPublishIngress(
+        // @ts-expect-error intentionally malformed config for the canonical ID guard.
+        missingCanonicalIdConfig,
         runtimeCore.decodedMutationClient,
         { port: 0 },
       );
@@ -1687,8 +1574,8 @@ describe("TCP publish Interface", () => {
         connectTcpPublishSocket(missingTopicSchemaIngress.url),
         (socket) => Effect.sync(() => socket.destroy()),
       );
-      const missingTopicKeyFieldSocket = yield* Effect.acquireRelease(
-        connectTcpPublishSocket(missingTopicKeyFieldIngress.url),
+      const missingCanonicalIdSocket = yield* Effect.acquireRelease(
+        connectTcpPublishSocket(missingCanonicalIdIngress.url),
         (socket) => Effect.sync(() => socket.destroy()),
       );
       const command = `${JSON.stringify({
@@ -1697,15 +1584,15 @@ describe("TCP publish Interface", () => {
         row: order("a", 10),
       })}\n`;
       missingTopicSchemaSocket.write(command);
-      missingTopicKeyFieldSocket.write(command);
+      missingCanonicalIdSocket.write(command);
       const missingTopicSchemaResponse = yield* readTcpPublishResponse(
         missingTopicSchemaSocket,
       ).pipe(Effect.timeout("1 second"));
-      const missingTopicKeyFieldResponse = yield* readTcpPublishResponse(
-        missingTopicKeyFieldSocket,
+      const missingCanonicalIdResponse = yield* readTcpPublishResponse(
+        missingCanonicalIdSocket,
       ).pipe(Effect.timeout("1 second"));
 
-      expect([missingTopicSchemaResponse, missingTopicKeyFieldResponse]).toStrictEqual([
+      expect([missingTopicSchemaResponse, missingCanonicalIdResponse]).toStrictEqual([
         {
           ok: false,
           error: {
@@ -1719,14 +1606,14 @@ describe("TCP publish Interface", () => {
           ok: false,
           error: {
             _tag: "ViewServerTcpPublishIngressError",
-            message: "TCP publish cannot find key field missing for View Server topic orders.",
+            message: "TCP publish cannot find canonical id field for View Server topic orders.",
             phase: "decode",
             topic: "orders",
           },
         },
       ]);
       yield* missingTopicSchemaIngress.close;
-      yield* missingTopicKeyFieldIngress.close;
+      yield* missingCanonicalIdIngress.close;
       yield* runtimeCore.close;
     }),
   );
@@ -1830,59 +1717,55 @@ describe("TCP publish Interface", () => {
   );
 
   it.live("rejects TCP publish commands for source-owned topics", () =>
-    Effect.gen(function* () {
-      const sourceOwnedViewServer = defineViewServerConfig({
-        kafka: {
-          local: "localhost:9092",
-        },
-        topics: {
-          orders: {
-            schema: Order,
-            key: "id",
-            kafkaSource: kafka.source({
-              topic: "orders-source",
-              regions: ["local"],
-              value: kafka.json(() => Schema.toCodecJson(Order)),
-              key: kafka.stringKey(),
-              rowKey: ({ key }) => key,
-              map: ({ value }) => ({
-                price: value.price,
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fixture = yield* SourceFixture.make(Order);
+        const sourceOwnedViewServer = defineViewServerConfig({
+          topics: {
+            orders: {
+              schema: Order,
+              source: fixture.materializedSource({
+                label: "tcp-source-owned",
               }),
-            }),
+            },
           },
-        },
-      });
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(sourceOwnedViewServer, {});
-      const ingress = yield* makeViewServerTcpPublishIngress(
-        sourceOwnedViewServer,
-        runtimeCore.decodedMutationClient,
-        {
-          port: 0,
-        },
-      );
+        });
+        const fixtureContext = yield* Layer.build(fixture.layer);
+        const runtimeCore = yield* makeViewServerRuntimeCoreInternal(
+          sourceOwnedViewServer,
+          {},
+        ).pipe(Effect.provideContext(fixtureContext));
+        const ingress = yield* makeViewServerTcpPublishIngress(
+          sourceOwnedViewServer,
+          runtimeCore.decodedMutationClient,
+          {
+            port: 0,
+          },
+        );
 
-      const response = yield* sendTcpPublishCommand(ingress.url, {
-        op: "publish",
-        topic: "orders",
-        row: {
-          id: "a",
-          price: "not-a-number",
-        },
-      });
-
-      expect(response).toStrictEqual({
-        ok: false,
-        error: {
-          _tag: "ViewServerRuntimeError",
-          code: "UnsupportedQuery",
-          message:
-            "Source-owned topics do not support direct runtime mutations; publish through the configured Source Adapter or use an externally-published topic.",
+        const response = yield* sendTcpPublishCommand(ingress.url, {
+          op: "publish",
           topic: "orders",
-        },
-      });
-      yield* ingress.close;
-      yield* runtimeCore.close;
-    }),
+          row: {
+            id: "a",
+            price: "not-a-number",
+          },
+        });
+
+        expect(response).toStrictEqual({
+          ok: false,
+          error: {
+            _tag: "ViewServerRuntimeError",
+            code: "UnsupportedQuery",
+            message:
+              "Source-owned topics do not support direct runtime mutations; publish through the configured Source Adapter or use an externally-published topic.",
+            topic: "orders",
+          },
+        });
+        yield* ingress.close;
+        yield* runtimeCore.close;
+      }),
+    ),
   );
 
   it.live("requires auth for TCP publish mutations when runtime auth is configured", () =>
@@ -1979,63 +1862,22 @@ describe("TCP publish Interface", () => {
 
   it.live("passes matching config into TCP publish ingress", () =>
     Effect.gen(function* () {
-      const regions = {
-        local: "localhost:9092",
-      };
-      const mixedSourceViewServer = defineViewServerConfig({
-        kafka: regions,
-        grpc: {
-          clients: grpcClients,
-        },
+      const multiTopicViewServer = defineViewServerConfig({
         topics: {
-          orders: grpcTopicSources.materialized({
-            schema: GrpcOrder,
-            key: "id",
-            client: "orders",
-            method: "streamOrders",
-            request: () => ({ orderId: "all" }),
-            acquire: () => Stream.never,
-            map: ({ value }) => ({
-              id: value.customerId,
-              customerId: value.customerId,
-              status: value.status,
-              price: value.price,
-              region: "usa",
-              updatedAt: value.updatedAt,
-            }),
-          }),
+          orders: {
+            schema: Order,
+          },
           audit: {
             schema: Order,
-            key: "id",
-            kafkaSource: kafka.source({
-              topic: "audit-source",
-              regions: ["local"],
-              value: kafka.json(() => Schema.toCodecJson(Order)),
-              key: kafka.stringKey(),
-              rowKey: ({ key }) => key,
-              map: ({ value }) => ({
-                price: value.price,
-              }),
-            }),
           },
         },
       });
-      type MixedTopics = typeof mixedSourceViewServer.topics;
+      type MixedTopics = typeof multiTopicViewServer.topics;
       type RuntimeDependencies = ViewServerRuntimeDependencies<MixedTopics>;
       let tcpPublishTopics: ReadonlyArray<string> = [];
       let tcpPublishOptionKeys: ReadonlyArray<string> = [];
       const dependencies: RuntimeDependencies = {
         ...makeDefaultRuntimeDependencies<MixedTopics>(),
-        sourceAdapters: [
-          makeKafkaRuntimeSourceAdapter({
-            ...makeDefaultKafkaRuntimeSourceDependencies<MixedTopics>(),
-            makeIngress: () => Effect.succeed({ close: Effect.void }),
-          }),
-          makeGrpcRuntimeSourceAdapter({
-            ...makeDefaultGrpcRuntimeSourceDependencies<MixedTopics>(),
-            makeIngress: () => Effect.succeed({ close: Effect.void }),
-          }),
-        ],
         makeServer: () =>
           Effect.succeed({
             url: "ws://127.0.0.1:0/rpc",
@@ -2055,13 +1897,10 @@ describe("TCP publish Interface", () => {
 
       const runtime = yield* makeViewServerRuntimeWithDependencies(
         dependencies,
-        mixedSourceViewServer,
+        multiTopicViewServer,
         {
           host: "127.0.0.1",
           tcpPublishPort: 1235,
-          kafka: {
-            consumerGroupId: "view-server-tcp-source-owned",
-          },
         },
       );
 

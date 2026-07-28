@@ -1,12 +1,12 @@
 import { describe, expectTypeOf, it } from "@effect/vitest";
-import { defineViewServerConfig, grpc, type GrpcRuntimeClients } from "@effect-view-server/config";
-import type { Stream } from "effect";
+import { ViewServerId, defineViewServerConfig } from "@effect-view-server/config";
+import { SourceAdapter } from "@effect-view-server/source-adapter";
 import { Schema } from "effect";
 import type * as BigDecimal from "effect/BigDecimal";
 import { createViewServerReact } from "./index";
 
 const Order = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   status: Schema.Literals(["open", "closed"]),
   price: Schema.Number,
   region: Schema.String,
@@ -16,33 +16,26 @@ const viewServer = defineViewServerConfig({
   topics: {
     orders: {
       schema: Order,
-      key: "id",
     },
   },
 });
 
-declare const grpcRuntimeClients: GrpcRuntimeClients;
-declare const grpcRuntimeStream: Stream.Stream<unknown, unknown, never>;
-
-const leasedSources = grpc.topicSources(grpcRuntimeClients);
+const sourceAdapter = SourceAdapter.make({
+  identity: { name: "viewport-type-source" },
+  failure: Schema.Never,
+  materialized: undefined,
+  leased: {
+    metrics: Schema.Struct({ observed: Schema.BigInt }),
+    rejectionLocation: Schema.Struct({ offset: Schema.BigInt }),
+    definitionOptions: SourceAdapter.definitionOptions<undefined>(),
+  },
+});
 const leasedViewServer = defineViewServerConfig({
-  grpc: { clients: grpcRuntimeClients },
   topics: {
-    orders: leasedSources.leased({
+    orders: {
       schema: Order,
-      key: "id",
-      client: "orders",
-      method: "streamOrders",
-      routeBy: ["region"],
-      request: (route) => route,
-      acquire: () => grpcRuntimeStream,
-      map: ({ route }) => ({
-        id: "order-1",
-        status: "open",
-        price: 1,
-        region: route.region,
-      }),
-    }),
+      source: sourceAdapter.leasedSource(["region"], undefined),
+    },
   },
 });
 

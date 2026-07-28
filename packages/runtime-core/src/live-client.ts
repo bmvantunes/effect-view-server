@@ -1,7 +1,6 @@
 import type {
   ColumnLiveViewEngineError,
   ColumnLiveViewSubscription,
-  DecodableTopicDefinitions,
 } from "@effect-view-server/column-live-view-engine";
 import type {
   ColumnLiveViewEngineInternal,
@@ -12,12 +11,14 @@ import type {
   ViewServerSourceHealthSubscriber,
 } from "@effect-view-server/client";
 import type {
+  TopicDefinitions,
   ViewServerTopicConfig,
   ViewServerRuntimeError,
   ViewServerTransportError,
 } from "@effect-view-server/config";
 import { validateLiveQuerySourceRoute } from "@effect-view-server/config";
 import {
+  captureSourceHealthInput,
   snapshotViewServerQuery,
   runAllFinalizers,
   viewServerQuerySnapshotErrorMessage,
@@ -69,7 +70,7 @@ export const acquireRuntimeCoreLiveSubscription = Effect.fn(
 );
 
 export const makeRuntimeCoreLiveClientModule = Effect.fn("ViewServerRuntimeCore.liveClient.make")(
-  <const Topics extends DecodableTopicDefinitions>(
+  <const Topics extends TopicDefinitions>(
     config: ViewServerTopicConfig<Topics>,
     engine: ColumnLiveViewEngineInternal<Topics>,
     pushedHealth: RuntimeCorePushedHealthHub<Topics>,
@@ -83,8 +84,17 @@ export const makeRuntimeCoreLiveClientModule = Effect.fn("ViewServerRuntimeCore.
       const subscribeMissingSourceHealth: ViewServerSourceHealthSubscriber<
         Topics,
         ViewServerRuntimeError
-      > = (...arguments_) => {
-        const [topic] = arguments_;
+      > = (input) => {
+        const captured = captureSourceHealthInput(input);
+        if (Result.isFailure(captured)) {
+          return Effect.fail(
+            invalidRuntimeQueryError(
+              "<invalid>",
+              "Source Health input must be one exact { topic, routeBy? } object.",
+            ),
+          );
+        }
+        const { topic } = captured.success;
         return Effect.fail(invalidRuntimeQueryError(topic, `Topic ${topic} has no Source.`));
       };
       const sources: Pick<
@@ -250,7 +260,7 @@ export const makeRuntimeCoreLiveClientModule = Effect.fn("ViewServerRuntimeCore.
       > => {
         const acquisition = subscribeQuery(topic, query);
         return sourceOwnership
-          .requirePublicSubscriptionAllowed(topic, "runtimeCore")
+          .requirePublicSubscriptionAllowed(topic)
           .pipe(Effect.flatMap(() => acquisition));
       };
       const subscribeRuntimeInternal: ViewServerRuntimeCoreInternalLiveClient<Topics>["subscribeRuntimeInternal"] =
@@ -291,14 +301,14 @@ export const makeRuntimeCoreLiveClientModule = Effect.fn("ViewServerRuntimeCore.
           subscribeQuery,
           subscribeObservedQuery,
           requirePublicReadAllowed: (topic) =>
-            sourceOwnership.requirePublicSubscriptionAllowed(topic, "runtimeCore"),
+            sourceOwnership.requirePublicSubscriptionAllowed(topic),
         });
       const subscribeRuntime = adaptRuntimeQuerySubscriber<Topics>(subscribeRuntimeQuery);
       const protocolQuerySubscriber: ViewServerRuntimeCoreProtocolQuerySubscriber<Topics> = {
         subscribeProtocolQuery: subscribeRuntimeQuery,
       };
       const subscribeSourceHealth: ViewServerRuntimeCoreLiveClientModule<Topics>["liveClient"]["subscribeSourceHealth"] =
-        (...arguments_) => sources.subscribeSourceHealth(...arguments_);
+        sources.subscribeSourceHealth;
       const liveClient = {
         subscribe,
         subscribeRuntime,

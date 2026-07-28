@@ -1,8 +1,7 @@
-import { describe, expect, it } from "@effect/vitest";
+import { describe, expect, it, vi } from "@effect/vitest";
 import { SourceAdapter } from "@effect-view-server/source-adapter";
 import { Schema } from "effect";
-import { defineViewServerConfig } from "./index";
-import { grpcSourceMarkers } from "./internal";
+import { ViewServerId, defineViewServerConfig } from "./index";
 
 const Failure = Schema.TaggedStruct("ConfigSourceFailure", {
   message: Schema.String,
@@ -37,7 +36,7 @@ const adapter = SourceAdapter.make({
 });
 
 const Row = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   region: Schema.String,
   shard: Schema.BigInt,
 });
@@ -74,6 +73,25 @@ const nominalClone = <Value extends object>(
 };
 
 describe("Source Adapter config", () => {
+  it("accepts the canonical ViewServerId across independently evaluated config modules", async () => {
+    const firstConfigModule = await import("./index");
+    vi.resetModules();
+    const secondConfigModule = await import("./index");
+
+    expect(firstConfigModule.ViewServerId).not.toBe(secondConfigModule.ViewServerId);
+    expect(
+      secondConfigModule.defineViewServerConfig({
+        topics: {
+          orders: {
+            schema: Schema.Struct({
+              id: firstConfigModule.ViewServerId,
+            }),
+          },
+        },
+      }).topics.orders.schema.fields.id,
+    ).toBe(firstConfigModule.ViewServerId);
+  });
+
   it("owns canonical id and snapshots exact Materialized and Leased definitions", () => {
     const materialized = adapter.materializedSource({ stream: "all" });
     const leased = adapter.leasedSource(["region", "shard"], { stream: "routed" });
@@ -91,17 +109,13 @@ describe("Source Adapter config", () => {
     });
 
     expect({
-      materializedKey: config.topics.materialized.key,
       materializedSource: config.topics.materialized.source,
-      leasedKey: config.topics.leased.key,
       leasedRoute: config.topics.leased.source.routeBy,
       topicsFrozen: Object.isFrozen(config.topics),
       definitionsFrozen:
         Object.isFrozen(config.topics.materialized) && Object.isFrozen(config.topics.leased),
     }).toStrictEqual({
-      materializedKey: "id",
       materializedSource: materialized,
-      leasedKey: "id",
       leasedRoute: ["region", "shard"],
       topicsFrozen: true,
       definitionsFrozen: true,
@@ -131,7 +145,7 @@ describe("Source Adapter config", () => {
     ).toThrow("View Server topic structural source must be created by SourceAdapter.make(...).");
 
     expect(() =>
-      // @ts-expect-error source-owned topics cannot declare a key.
+      // @ts-expect-error every Topic rejects the removed configurable key.
       defineViewServerConfig({
         topics: {
           explicit: {
@@ -141,7 +155,7 @@ describe("Source Adapter config", () => {
           },
         },
       }),
-    ).toThrow("View Server topic explicit uses canonical source-owned id and cannot declare key.");
+    ).toThrow("View Server topic explicit contains unsupported property: key.");
 
     const conflicting = {
       schema: Row,
@@ -149,7 +163,7 @@ describe("Source Adapter config", () => {
     };
     Object.defineProperty(conflicting, "grpcSource", {
       enumerable: true,
-      value: grpcSourceMarkers.materialized(),
+      value: {},
     });
     expect(() =>
       defineViewServerConfig({
@@ -157,9 +171,23 @@ describe("Source Adapter config", () => {
           conflict: conflicting,
         },
       }),
-    ).toThrow(
-      "View Server topic conflict cannot declare more than one source owner: source, grpcSource.",
-    );
+    ).toThrow("View Server topic conflict contains unsupported property: grpcSource.");
+
+    const conflictingKafka = {
+      schema: Row,
+      source: adapter.materializedSource({ stream: "all" }),
+    };
+    Object.defineProperty(conflictingKafka, "kafkaSource", {
+      enumerable: true,
+      value: {},
+    });
+    expect(() =>
+      defineViewServerConfig({
+        topics: {
+          conflict: conflictingKafka,
+        },
+      }),
+    ).toThrow("View Server topic conflict contains unsupported property: kafkaSource.");
 
     const materializedAdapter = nominalClone(adapter, {
       materialized: undefined,
@@ -200,23 +228,49 @@ describe("Source Adapter config", () => {
     );
   });
 
-  it("requires exact Schema.String canonical ids and complete scalar Leased routes", () => {
+  it("requires the exact ViewServerId schema and complete scalar Leased routes", () => {
     const source = adapter.materializedSource({ stream: "all" });
+    const marker = Symbol.for("@effect-view-server/config/ViewServerId");
+    const forgedRefinement = Object.assign(
+      Schema.NonEmptyString.annotate({ identifier: "ViewServerId" }),
+      { [marker]: true as const },
+    );
+    const forgedTransformation = Object.assign(
+      Schema.Trim.annotate({ identifier: "ViewServerId" }),
+      { [marker]: true as const },
+    );
     const invalidIds = [
       Schema.Struct({ region: Schema.String }),
       Schema.Struct({ id: Schema.optionalKey(Schema.String), region: Schema.String }),
+      Schema.Struct({ id: Schema.String, region: Schema.String }),
       Schema.Struct({ id: Schema.NonEmptyString, region: Schema.String }),
+      Schema.Struct({
+        id: ViewServerId.pipe(Schema.brand("RuntimeSourceId")),
+        region: Schema.String,
+      }),
+      Schema.Struct({ id: Schema.Trim, region: Schema.String }),
+      Schema.Struct({ id: forgedRefinement, region: Schema.String }),
+      Schema.Struct({ id: forgedTransformation, region: Schema.String }),
       Schema.Struct({ id: Schema.Number, region: Schema.String }),
     ];
 
     for (const schema of invalidIds) {
       expect(() =>
-        // @ts-expect-error malformed source-owned row ids remain runtime guarded.
+        // @ts-expect-error malformed row ids remain runtime guarded.
         defineViewServerConfig({ topics: { invalid: { schema, source } } }),
-      ).toThrow(
-        "View Server topic invalid source-owned row schema must define canonical id as Schema.String.",
-      );
+      ).toThrow("View Server topic invalid row schema must define canonical id as ViewServerId.");
     }
+
+    expect(() =>
+      // @ts-expect-error Source-free Topics require the same exact canonical id.
+      defineViewServerConfig({
+        topics: {
+          invalid: {
+            schema: Schema.Struct({ region: Schema.String }),
+          },
+        },
+      }),
+    ).toThrow("View Server topic invalid row schema must define canonical id as ViewServerId.");
 
     expect(() =>
       // @ts-expect-error Leased route fields must exist in the row.
@@ -231,5 +285,24 @@ describe("Source Adapter config", () => {
     ).toThrow(
       "View Server topic invalidRoute leased source route field missing must have a complete supported scalar schema domain.",
     );
+  });
+
+  it("rejects removed top-level transport and runtime option trees", () => {
+    for (const property of ["kafka", "grpc", "defineRuntimeOptions"]) {
+      const hostile = {
+        topics: {
+          rows: {
+            schema: Row,
+          },
+        },
+      };
+      Object.defineProperty(hostile, property, {
+        enumerable: true,
+        value: {},
+      });
+      expect(() => defineViewServerConfig(hostile)).toThrow(
+        `View Server config contains unsupported property: ${property}.`,
+      );
+    }
   });
 });

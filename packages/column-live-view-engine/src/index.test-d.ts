@@ -1,5 +1,6 @@
 import { describe, expectTypeOf, it } from "@effect/vitest";
 import {
+  ViewServerId,
   defineViewServerConfig,
   type DeltaEvent,
   type ExactGroupedQuery,
@@ -25,7 +26,7 @@ import { createColumnLiveViewEngine } from "./index";
 import type { TopicStore } from "./topic-store";
 
 const Order = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   customerId: Schema.String,
   status: Schema.Literals(["open", "closed", "cancelled"]),
   price: Schema.Finite,
@@ -34,7 +35,7 @@ const Order = Schema.Struct({
 });
 
 const Position = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   quantity: Schema.Number,
 });
 
@@ -42,11 +43,9 @@ const viewServer = defineViewServerConfig({
   topics: {
     orders: {
       schema: Order,
-      key: "id",
     },
     trades: {
       schema: Order,
-      key: "id",
     },
   },
 });
@@ -55,19 +54,17 @@ const heterogeneousViewServer = defineViewServerConfig({
   topics: {
     orders: {
       schema: Order,
-      key: "id",
     },
     positions: {
       schema: Position,
-      key: "id",
     },
   },
 });
 
 type Topics = typeof viewServer.topics;
-type LeasedEngineTopics = {
+type SourceOwnedEngineTopics = {
   readonly orders: Topics["orders"] & {
-    readonly grpcSource: {
+    readonly source: {
       readonly lifecycle: "leased";
       readonly routeBy: readonly ["region"];
     };
@@ -86,7 +83,7 @@ type StreamEvent<Value> =
 declare const engine: Engine;
 declare const heterogeneousEngine: ColumnLiveViewEngine<typeof heterogeneousViewServer.topics>;
 declare const heterogeneousTopic: "orders" | "positions";
-declare const leasedEngine: ColumnLiveViewEngine<LeasedEngineTopics>;
+declare const sourceOwnedEngine: ColumnLiveViewEngine<SourceOwnedEngineTopics>;
 declare const dynamicSingleField: "id" | "price";
 declare const optionalNarrowFieldsQuery: {
   readonly select?: readonly ["id"];
@@ -223,7 +220,7 @@ describe("ColumnLiveViewEngine type contract", () => {
   });
 
   it("keeps source routing policy outside engine queries", () => {
-    const routeFreeSnapshot = leasedEngine.snapshot("orders", {
+    const routeFreeSnapshot = sourceOwnedEngine.snapshot("orders", {
       select: ["id"],
       where: [{ field: "region", type: "equals", filter: "usa" }],
     });
@@ -234,7 +231,7 @@ describe("ColumnLiveViewEngine type contract", () => {
       readonly routeBy: { readonly region: "usa" };
       readonly select: readonly ["id"];
     };
-    const invalidRoutedSnapshot = leasedEngine.snapshot(
+    const invalidRoutedSnapshot = sourceOwnedEngine.snapshot(
       "orders",
       // @ts-expect-error the engine query seam is source-agnostic and does not accept routeBy.
       routedQuery,
@@ -461,15 +458,31 @@ describe("ColumnLiveViewEngine type contract", () => {
       };
     }> = {
       topics: {
+        // @ts-expect-error engine topic definitions reject the removed key property.
         orders: {
           schema: Order,
-          // @ts-expect-error engine topic keys must be string select in the schema.
           key: "missing",
         },
       },
     };
 
     void _invalidKeyConfig;
+  });
+
+  it("rejects plain string schemas at the engine topic boundary", () => {
+    const PlainStringIdRow = Schema.Struct({
+      id: Schema.String,
+    });
+    const _invalidIdConfig = createColumnLiveViewEngine({
+      topics: {
+        // @ts-expect-error engine topics require the nominal ViewServerId schema.
+        rows: {
+          schema: PlainStringIdRow,
+        },
+      },
+    });
+
+    void _invalidIdConfig;
   });
 
   it("rejects invalid grouped incremental admission limit options", () => {

@@ -787,7 +787,7 @@ export type SourceDefinitionRetryServices<Definition> = Definition extends {
     readonly retryServices?: infer RetryServices;
   };
 }
-  ? RetryServices
+  ? Exclude<RetryServices, undefined>
   : never;
 
 let nextAdapterServiceId = 0;

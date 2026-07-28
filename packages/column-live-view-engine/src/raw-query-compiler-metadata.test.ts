@@ -15,7 +15,6 @@ describe("Raw query compiler metadata", () => {
                 label: { ast: "not-a-schema-ast" },
               },
             },
-            key: "id",
           },
         },
       };

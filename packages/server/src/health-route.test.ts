@@ -4,7 +4,7 @@ import {
   type ViewServerHealth,
   type ViewServerRuntimeError,
 } from "@effect-view-server/config";
-import { ViewServerHealthSchema } from "@effect-view-server/protocol";
+import { viewServerEncodeHealth } from "@effect-view-server/protocol";
 import { SourceFixture } from "@effect-view-server/source-adapter-testing";
 import { makeViewServerRuntimeCoreInternal } from "@effect-view-server/runtime-core/internal";
 import { Deferred, Effect, Schema } from "effect";
@@ -18,10 +18,29 @@ import {
   degradedServerHealth,
   fetchJson,
   fetchJsonWithAuthorization,
-  kafkaStartFromHealth,
   order,
   viewServer,
 } from "../test-harness/server";
+
+const SourceAggregateHealthJson = Schema.Struct({
+  sources: Schema.Struct({
+    orders: Schema.Struct({
+      adapter: Schema.Struct({
+        name: Schema.String,
+        version: Schema.String,
+      }),
+      metrics: Schema.Struct({
+        runtime: Schema.Struct({
+          rejectedItemCount: Schema.String,
+        }),
+        adapter: Schema.Struct({
+          observed: Schema.String,
+        }),
+      }),
+      sampledAtNanos: Schema.String,
+    }),
+  }),
+});
 
 describe("Real View Server health route", () => {
   it.live("serves GET /health beside the websocket RPC endpoint", () =>
@@ -139,15 +158,12 @@ describe("Real View Server health route", () => {
           health: () =>
             Effect.succeed({
               ...baseHealth,
-              kafka: {
-                startFrom: kafkaStartFromHealth,
-                regions: {},
+              engine: {
+                ...baseHealth.engine,
                 topics: {
-                  source_orders: {
-                    status: "ready",
-                    sourceTopic: "source_orders",
-                    viewServerTopic: "missing",
-                    regions: {},
+                  ...baseHealth.engine.topics,
+                  missing: {
+                    ...baseHealth.engine.topics.orders,
                   },
                 },
               },
@@ -171,7 +187,7 @@ describe("Real View Server health route", () => {
     }).pipe(Effect.scoped),
   );
 
-  it.live("keeps readiness successful for degraded health and serializes bigint fields", () =>
+  it.live("keeps readiness successful for degraded canonical health", () =>
     Effect.gen(function* () {
       const inMemory = createServerTestRuntime(viewServer);
       yield* Effect.addFinalizer(() => inMemory.close);
@@ -185,8 +201,7 @@ describe("Real View Server health route", () => {
       });
       yield* Effect.addFinalizer(() => server.close);
 
-      const expectedHealth =
-        yield* Schema.encodeUnknownEffect(ViewServerHealthSchema)(degradedHealth);
+      const expectedHealth = yield* viewServerEncodeHealth(viewServer, degradedHealth);
       const health = yield* fetchJson(server.healthUrl);
 
       expect(health.response.status).toBe(200);
@@ -214,8 +229,7 @@ describe("Real View Server health route", () => {
       });
       yield* Effect.addFinalizer(() => server.close);
 
-      const expectedHealth =
-        yield* Schema.encodeUnknownEffect(ViewServerHealthSchema)(startingHealth);
+      const expectedHealth = yield* viewServerEncodeHealth(viewServer, startingHealth);
       const health = yield* fetchJson(server.healthUrl);
       expect(health.response.status).toBe(503);
       expect(health.value).toStrictEqual(expectedHealth);
@@ -260,8 +274,16 @@ describe("Real View Server health route", () => {
 
       const health = yield* fetchJson(server.healthUrl);
       const body = yield* Schema.decodeUnknownEffect(HealthJson)(health.value);
+      const sourceBody = yield* Schema.decodeUnknownEffect(SourceAggregateHealthJson)(health.value);
       expect(health.response.status).toBe(200);
       expect(body.status).toBe("degraded");
+      expect(sourceBody.sources.orders.adapter).toStrictEqual({
+        name: "controllable-fixture",
+        version: "1",
+      });
+      expect(sourceBody.sources.orders.metrics.runtime.rejectedItemCount).toBe("1");
+      expect(sourceBody.sources.orders.metrics.adapter.observed).toBe("0");
+      expect(sourceBody.sources.orders.sampledAtNanos).toMatch(/^[0-9]+$/);
 
       yield* server.close;
       yield* runtime.close;
@@ -276,37 +298,6 @@ describe("Real View Server health route", () => {
       const degradedHealth: ViewServerHealth<typeof viewServer.topics> = {
         ...baseHealth,
         status: "degraded",
-        kafka: {
-          startFrom: kafkaStartFromHealth,
-          regions: {},
-          topics: {
-            source_orders: {
-              status: "ready",
-              sourceTopic: "source_orders",
-              viewServerTopic: "orders",
-              regions: {
-                usa: {
-                  connected: true,
-                  assignedPartitions: 1,
-                  messagesPerSecond: 0,
-                  bytesPerSecond: 0,
-                  decodedMessagesPerSecond: 0,
-                  decodeFailuresPerSecond: 0,
-                  mappingFailuresPerSecond: 0,
-                  publishFailuresPerSecond: 0,
-                  commitFailuresPerSecond: 0,
-                  processingFailuresPerSecond: 0,
-                  lastMessageAt: null,
-                  lastCommitAt: null,
-                  consumerLagMessages: 42n,
-                  lagSampledAt: null,
-                  committedOffset: null,
-                  lastError: null,
-                },
-              },
-            },
-          },
-        },
       };
       const cachedHealth = AtomRef.make<ViewServerHealth<typeof viewServer.topics>>(degradedHealth);
       const liveClient = {

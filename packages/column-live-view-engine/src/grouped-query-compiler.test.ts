@@ -1,3 +1,4 @@
+import { ViewServerId } from "@effect-view-server/config";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { InvalidQueryError } from "./index";
@@ -349,7 +350,7 @@ describe("Grouped query compilation and evaluation", () => {
       ]);
 
       const PositionForCompiler = Schema.Struct({
-        id: Schema.String,
+        id: ViewServerId,
         quantity: Schema.BigInt,
         symbol: Schema.String,
       });
@@ -436,7 +437,7 @@ describe("Grouped query compilation and evaluation", () => {
   it.effect("ignores malformed runtime values for bigint grouped sums", () =>
     Effect.gen(function* () {
       const PositionForCompiler = Schema.Struct({
-        id: Schema.String,
+        id: ViewServerId,
         symbol: Schema.String,
         quantity: Schema.BigInt,
       });

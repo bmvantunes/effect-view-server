@@ -10,7 +10,7 @@ import {
   type SourceDefinition,
   type SourceDefinitionOptionsFamily,
   type SourceRetryPolicy,
-} from "@effect-view-server/source-adapter";
+} from "effect-view-server/source-adapter";
 import type { Effect, Option } from "effect";
 import { Schema } from "effect";
 import { exactArrayValues, exactDataEntries } from "./exact-shape";

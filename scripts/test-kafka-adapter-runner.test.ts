@@ -89,12 +89,7 @@ const settle = async (
   code: number | null,
   signal: string | null = null,
 ) => {
-  for (let turn = 0; children.length < index + 1 && turn < 1_000; turn += 1) {
-    await new Promise<void>((resolve) => {
-      setImmediate(resolve);
-    });
-  }
-  expect(children).toHaveLength(index + 1);
+  await expect.poll(() => children.length).toBe(index + 1);
   children[index].emit("close", code, signal);
 };
 

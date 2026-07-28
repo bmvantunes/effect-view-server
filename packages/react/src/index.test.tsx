@@ -1,7 +1,10 @@
 import { describe, expect, inject, it, vi } from "@effect/vitest";
 import type { ViewServerLiveClient } from "@effect-view-server/client";
 import { makeViewServerClient } from "@effect-view-server/client/remote";
+import { SourceAdapter } from "@effect-view-server/source-adapter";
+import { SourceAdapterServer } from "@effect-view-server/source-adapter/server";
 import {
+  ViewServerId,
   defineViewServerConfig,
   VIEW_SERVER_HEALTH_SUMMARY_TOPIC,
   VIEW_SERVER_HEALTH_TOPIC,
@@ -9,25 +12,60 @@ import {
   type ViewServerHealthTopicRow,
   type Where,
 } from "@effect-view-server/config";
-import { grpcSourceMarkers } from "@effect-view-server/config/internal";
 import { createInMemoryViewServer as createCoreInMemoryViewServer } from "@effect-view-server/in-memory";
-import { createInMemoryViewServerTesting } from "@effect-view-server/in-memory/testing";
-import { Effect, Schema, Stream } from "effect";
-import { fromStringUnsafe, type BigDecimal } from "effect/BigDecimal";
-import { Component, type ReactNode } from "react";
+import { makeViewServerRuntimeCore } from "@effect-view-server/runtime-core";
+import { Cause, Effect, Option, Schedule, Schema, Scope, Stream } from "effect";
+import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
+import { Component, Suspense, type ReactNode } from "react";
 import { render } from "vitest-browser-react";
 import { createViewServerReact } from "./index";
-import { ViewServerReactClientProvider } from "./internal";
-import { createInMemoryViewServerReact, type ViewServerInMemoryOptions } from "./testing";
+import {
+  deleteMapEntryIfCurrent,
+  installMapEntryIfVacant,
+  ViewServerReactClientProvider,
+} from "./internal";
+import {
+  createInMemoryViewServerReact,
+  makeInMemoryViewServerReact,
+  type ViewServerInMemoryOptions,
+} from "./testing";
 
 declare module "vitest" {
   export interface ProvidedContext {
     readonly viewServerRemoteUrl: string;
+    readonly viewServerSourceRemoteUrl: string;
   }
 }
 
+describe("Source Health cache entry helpers", () => {
+  it("keeps a newer cache entry when an older finalizer runs late", () => {
+    const original = {};
+    const replacement = {};
+    const entries = new Map([["health", replacement]]);
+
+    deleteMapEntryIfCurrent(entries, "health", original);
+
+    expect(entries.get("health")).toBe(replacement);
+    deleteMapEntryIfCurrent(entries, "health", replacement);
+    expect(entries.has("health")).toBe(false);
+  });
+
+  it("does not replace a newer entry when an older atom recomputes", () => {
+    const original = {};
+    const replacement = {};
+    const entries = new Map([["health", replacement]]);
+
+    installMapEntryIfVacant(entries, "health", original);
+    expect(entries.get("health")).toBe(replacement);
+
+    entries.delete("health");
+    installMapEntryIfVacant(entries, "health", original);
+    expect(entries.get("health")).toBe(original);
+  });
+});
+
 const Order = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   customerId: Schema.String,
   status: Schema.Literals(["open", "closed", "cancelled"]),
   price: Schema.Number,
@@ -36,7 +74,7 @@ const Order = Schema.Struct({
 });
 
 const Trade = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   symbol: Schema.String,
   quantity: Schema.BigInt,
   price: Schema.Number,
@@ -47,28 +85,38 @@ const viewServer = defineViewServerConfig({
   topics: {
     orders: {
       schema: Order,
-      key: "id",
     },
     trades: {
       schema: Trade,
-      key: "id",
     },
   },
 });
 
-const LeasedAmountOrder = Schema.Struct({
-  id: Schema.String,
-  amount: Schema.BigDecimal,
+const SourceHealthOrder = Schema.Struct({
+  id: ViewServerId,
+  region: Schema.String,
 });
 
-const leasedAmountViewServer = defineViewServerConfig({
+const sourceAdapter = SourceAdapter.make({
+  identity: { name: "react-browser-source" },
+  failure: Schema.Never,
+  materialized: {
+    metrics: Schema.Struct({ observed: Schema.BigInt }),
+    rejectionLocation: Schema.Struct({ offset: Schema.BigInt }),
+    definitionOptions: SourceAdapter.definitionOptions<undefined>(),
+  },
+  leased: {
+    metrics: Schema.Struct({ observed: Schema.BigInt }),
+    rejectionLocation: Schema.Struct({ offset: Schema.BigInt }),
+    definitionOptions: SourceAdapter.definitionOptions<undefined>(),
+  },
+});
+
+const sourceHealthViewServer = defineViewServerConfig({
   topics: {
     orders: {
-      schema: LeasedAmountOrder,
-      key: "id",
-      grpcSource: grpcSourceMarkers.leased({
-        routeBy: ["amount"],
-      }),
+      schema: SourceHealthOrder,
+      source: sourceAdapter.leasedSource(["region"], undefined),
     },
   },
 });
@@ -76,8 +124,45 @@ const leasedAmountViewServer = defineViewServerConfig({
 const react = createViewServerReact(viewServer);
 const { useLiveQuery, useViewServerHealth, useViewServerHealthSummary } = react;
 const ViewServerClientProvider = react[ViewServerReactClientProvider];
-const leasedAmountReact = createViewServerReact(leasedAmountViewServer);
-const LeasedAmountClientProvider = leasedAmountReact[ViewServerReactClientProvider];
+const sourceHealthReact = createViewServerReact(sourceHealthViewServer);
+const SourceHealthClientProvider = sourceHealthReact[ViewServerReactClientProvider];
+
+const makeSourceHealthAdapterLayer = (leaseState: { active: number }) =>
+  SourceAdapterServer.make(sourceAdapter, {
+    materialized: {
+      acquire: () =>
+        Effect.succeed(
+          SourceAdapterServer.attempt([
+            SourceAdapterServer.lane({
+              id: "react-browser",
+              events: Stream.never,
+            }),
+          ]),
+        ),
+      metrics: () => Effect.succeed({ observed: 1n }),
+      retry: Schedule.recurs(0),
+    },
+    leased: {
+      acquire: () =>
+        Effect.gen(function* () {
+          leaseState.active += 1;
+          yield* Scope.addFinalizer(
+            yield* Effect.scope,
+            Effect.sync(() => {
+              leaseState.active -= 1;
+            }),
+          );
+          return SourceAdapterServer.attempt([
+            SourceAdapterServer.lane({
+              id: "react-browser",
+              events: Stream.never,
+            }),
+          ]);
+        }),
+      metrics: () => Effect.succeed({ observed: 1n }),
+      retry: Schedule.recurs(0),
+    },
+  });
 
 type TestInMemoryOptions = ViewServerInMemoryOptions<typeof viewServer.topics>;
 
@@ -120,7 +205,6 @@ const healthTopicRow = (
   memoryBytes: 0,
   tombstoneCount: 0,
   compactionPending: false,
-  kafkaLag: 0n,
   updatedAtNanos: 1n,
 });
 
@@ -133,7 +217,6 @@ const healthSummaryRow = (
   connectionStatus: "connected",
   unhealthyTopics: runtimeStatus === "ready" ? [] : ["orders"],
   updatedAtNanos: 1n,
-  maxKafkaLag: 0n,
 });
 
 const fakeHealthClient = (
@@ -390,7 +473,6 @@ describe("createViewServerReact", () => {
                   connectionStatus: "connected",
                   unhealthyTopics: ["orders"],
                   updatedAtNanos: 1n,
-                  maxKafkaLag: 0n,
                 },
               ],
               totalRows: 1,
@@ -858,59 +940,363 @@ describe("createViewServerReact", () => {
     await view.unmount();
   });
 
-  it("replaces leased subscriptions when the exact BigDecimal route changes", async () => {
-    const inMemory = createInMemoryViewServerTesting(leasedAmountViewServer);
+  it("adopts the committed winner for competing same-key Source Health consumers", async () => {
+    const leaseState = { active: 0 };
+    const sourceAdapterLayer = makeSourceHealthAdapterLayer(leaseState);
+    const runtime = await Effect.runPromise(
+      makeViewServerRuntimeCore(sourceHealthViewServer, {}).pipe(
+        Effect.provide(sourceAdapterLayer),
+      ),
+    );
     let subscribeCount = 0;
     let closeCount = 0;
-    const trackedClient = {
-      ...inMemory.liveClient,
-      subscribe: (topic, query) =>
-        inMemory.liveClient.subscribe(topic, query).pipe(
-          Effect.map((subscription) => {
+    const subscribeSourceHealth: typeof runtime.liveClient.subscribeSourceHealth = (input) =>
+      runtime.liveClient.subscribeSourceHealth(input).pipe(
+        Effect.tap(() =>
+          Effect.sync(() => {
             subscribeCount += 1;
-            return {
-              events: subscription.events,
-              close: () =>
-                subscription.close().pipe(
-                  Effect.tap(() =>
-                    Effect.sync(() => {
-                      closeCount += 1;
-                    }),
-                  ),
-                ),
-            };
           }),
         ),
-    } satisfies ViewServerLiveClient<typeof leasedAmountViewServer.topics>;
+        Effect.map((subscription) => ({
+          events: subscription.events,
+          close: () =>
+            subscription.close().pipe(
+              Effect.tap(() =>
+                Effect.sync(() => {
+                  closeCount += 1;
+                }),
+              ),
+            ),
+        })),
+      );
+    const trackedClient = {
+      ...runtime.liveClient,
+      subscribeSourceHealth,
+    } satisfies ViewServerLiveClient<typeof sourceHealthViewServer.topics>;
 
-    function LeasedOrdersView(props: { readonly route: BigDecimal }) {
-      const result = leasedAmountReact.useLiveQuery("orders", {
-        select: ["id"],
-        routeBy: { amount: props.route },
+    function SourceHealthView(props: { readonly label: string; readonly region: string }) {
+      const result = sourceHealthReact.useSourceHealth({
+        topic: "orders",
+        routeBy: { region: props.region },
       });
-      return <output role="status">{result.status}</output>;
+      const text = AsyncResult.isSuccess(result)
+        ? result.value._tag === "Inactive"
+          ? `Inactive:${result.value.route.region}`
+          : `Active:${result.value.health.adapter.name}`
+        : "Loading";
+      return (
+        <output aria-label={props.label} role="status">
+          {text}
+        </output>
+      );
     }
 
     const view = await render(
-      <LeasedAmountClientProvider client={trackedClient}>
-        <LeasedOrdersView route={fromStringUnsafe("1.50")} />
-      </LeasedAmountClientProvider>,
+      <SourceHealthClientProvider client={trackedClient}>
+        <SourceHealthView label="first source health" region="eu" />
+        <SourceHealthView label="second source health" region="eu" />
+        <SourceHealthView label="us source health" region="us" />
+      </SourceHealthClientProvider>,
     );
-    await expect.element(view.getByText("ready", { exact: true })).toBeVisible();
-    await expect.poll(() => subscribeCount).toBe(1);
+    await expect
+      .element(view.getByRole("status", { name: "first source health" }))
+      .toHaveTextContent(/^Inactive:eu$/);
+    await expect
+      .element(view.getByRole("status", { name: "second source health" }))
+      .toHaveTextContent(/^Inactive:eu$/);
+    await expect
+      .element(view.getByRole("status", { name: "us source health" }))
+      .toHaveTextContent(/^Inactive:us$/);
+    await expect.poll(() => subscribeCount).toBe(2);
+    await expect.poll(() => leaseState.active).toBe(0);
+
+    const liveSubscription = await Effect.runPromise(
+      runtime.liveClient.subscribe("orders", {
+        select: ["id"],
+        routeBy: { region: "eu" },
+      }),
+    );
+    await expect
+      .element(view.getByRole("status", { name: "first source health" }))
+      .toHaveTextContent(/^Active:react-browser-source$/);
+    await expect.poll(() => leaseState.active).toBe(1);
+    await Effect.runPromise(liveSubscription.close());
+    await expect
+      .element(view.getByRole("status", { name: "second source health" }))
+      .toHaveTextContent(/^Inactive:eu$/);
+    await expect.poll(() => leaseState.active).toBe(0);
 
     await view.rerender(
-      <LeasedAmountClientProvider client={trackedClient}>
-        <LeasedOrdersView route={fromStringUnsafe("1.5")} />
-      </LeasedAmountClientProvider>,
+      <SourceHealthClientProvider client={trackedClient}>
+        <SourceHealthView label="us source health" region="us" />
+      </SourceHealthClientProvider>,
     );
-
-    await expect.poll(() => subscribeCount).toBe(2);
     await expect.poll(() => closeCount).toBe(1);
+    await expect.poll(() => subscribeCount).toBe(2);
+
+    await view.rerender(
+      <SourceHealthClientProvider client={trackedClient}>
+        <SourceHealthView label="us source health" region="us" />
+        <SourceHealthView label="remounted eu source health" region="eu" />
+      </SourceHealthClientProvider>,
+    );
+    await expect
+      .element(view.getByRole("status", { name: "remounted eu source health" }))
+      .toHaveTextContent(/^Inactive:eu$/);
+    await expect.poll(() => subscribeCount).toBe(3);
+
+    await view.rerender(<SourceHealthClientProvider client={trackedClient} />);
+    await expect.poll(() => closeCount).toBe(3);
 
     await view.unmount();
-    await expect.poll(() => closeCount).toBe(2);
-    await Effect.runPromise(inMemory.close);
+    await Effect.runPromise(runtime.close);
+  });
+
+  it("does not retain Source Health entries from discarded renders", async () => {
+    const leaseState = { active: 0 };
+    const runtime = await Effect.runPromise(
+      makeViewServerRuntimeCore(sourceHealthViewServer, {}).pipe(
+        Effect.provide(makeSourceHealthAdapterLayer(leaseState)),
+      ),
+    );
+    const subscribedInputKeys: Array<string> = [];
+    const subscribeSourceHealth: typeof runtime.liveClient.subscribeSourceHealth = (input) => {
+      subscribedInputKeys.push(Object.keys(input).join("|"));
+      return runtime.liveClient.subscribeSourceHealth(input);
+    };
+    const trackedClient = {
+      ...runtime.liveClient,
+      subscribeSourceHealth,
+    } satisfies ViewServerLiveClient<typeof sourceHealthViewServer.topics>;
+    const pending = new Promise<never>(() => undefined);
+
+    function DiscardedSourceHealthView(): ReactNode {
+      sourceHealthReact.useSourceHealth({
+        routeBy: { region: "eu" },
+        topic: "orders",
+      });
+      throw pending;
+    }
+
+    function CommittedSourceHealthView() {
+      const result = sourceHealthReact.useSourceHealth({
+        topic: "orders",
+        routeBy: { region: "eu" },
+      });
+      return (
+        <output role="status">
+          {AsyncResult.isSuccess(result) && result.value._tag === "Inactive"
+            ? result.value.route.region
+            : "Loading"}
+        </output>
+      );
+    }
+
+    const view = await render(
+      <SourceHealthClientProvider client={trackedClient}>
+        <Suspense fallback={<output role="status">Suspended</output>}>
+          <DiscardedSourceHealthView />
+        </Suspense>
+      </SourceHealthClientProvider>,
+    );
+    await expect.element(view.getByRole("status")).toHaveTextContent(/^Suspended$/);
+    expect(subscribedInputKeys).toStrictEqual([]);
+
+    await view.rerender(
+      <SourceHealthClientProvider client={trackedClient}>
+        <CommittedSourceHealthView />
+      </SourceHealthClientProvider>,
+    );
+    await expect.poll(() => subscribedInputKeys.length).toBe(1);
+    await expect.element(view.getByRole("status")).toHaveTextContent(/^eu$/);
+    expect(subscribedInputKeys).toStrictEqual(["topic|routeBy"]);
+
+    await view.unmount();
+    await Effect.runPromise(runtime.close);
+  });
+
+  it("surfaces hostile Source Health inputs as typed errors without crashing render", async () => {
+    const leaseState = { active: 0 };
+    const runtime = await Effect.runPromise(
+      makeViewServerRuntimeCore(sourceHealthViewServer, {}).pipe(
+        Effect.provide(makeSourceHealthAdapterLayer(leaseState)),
+      ),
+    );
+    type SourceHealthInput = {
+      readonly topic: "orders";
+      readonly routeBy: {
+        readonly region: string;
+      };
+    };
+    let getterReads = 0;
+
+    function HostileSourceHealthView(props: {
+      readonly label: string;
+      readonly input: SourceHealthInput;
+    }) {
+      const result = sourceHealthReact.useSourceHealth(props.input);
+      let text = "Loading";
+      if (AsyncResult.isSuccess(result)) {
+        text = "Success";
+      } else if (AsyncResult.isFailure(result)) {
+        const error = Option.getOrUndefined(Cause.findErrorOption(result.cause));
+        text =
+          error?._tag === "ViewServerRuntimeError" ? `error:${error.code}` : "error:Unexpected";
+      }
+      return (
+        <output aria-label={props.label} role="status">
+          {text}
+        </output>
+      );
+    }
+
+    const accessorInput = {
+      topic: "orders",
+      routeBy: { region: "eu" },
+    } satisfies SourceHealthInput;
+    Object.defineProperty(accessorInput, "routeBy", {
+      enumerable: true,
+      get: () => {
+        getterReads += 1;
+        throw new Error("Source Health accessor must not escape render.");
+      },
+    });
+    const proxyInput = new Proxy(
+      {
+        topic: "orders",
+        routeBy: { region: "us" },
+      } satisfies SourceHealthInput,
+      {
+        ownKeys: () => {
+          throw new Error("Source Health proxy trap must not escape render.");
+        },
+      },
+    );
+
+    const accessorView = await render(
+      <ProviderErrorBoundary>
+        <SourceHealthClientProvider client={runtime.liveClient}>
+          <HostileSourceHealthView label="accessor source health" input={accessorInput} />
+        </SourceHealthClientProvider>
+      </ProviderErrorBoundary>,
+    );
+    await expect
+      .element(accessorView.getByRole("status", { name: "accessor source health" }))
+      .toHaveTextContent(/^error:InvalidQuery$/);
+    expect(getterReads).toBe(0);
+    await accessorView.unmount();
+
+    const proxyView = await render(
+      <ProviderErrorBoundary>
+        <SourceHealthClientProvider client={runtime.liveClient}>
+          <HostileSourceHealthView label="proxy source health" input={proxyInput} />
+        </SourceHealthClientProvider>
+      </ProviderErrorBoundary>,
+    );
+    await expect
+      .element(proxyView.getByRole("status", { name: "proxy source health" }))
+      .toHaveTextContent(/^error:InvalidQuery$/);
+    await proxyView.unmount();
+
+    expect(leaseState.active).toBe(0);
+    await Effect.runPromise(runtime.close);
+  });
+
+  it("provides source-backed in-memory React diagnostics and owns lease cleanup", async () => {
+    const leaseState = { active: 0 };
+    const sourceAdapterLayer = makeSourceHealthAdapterLayer(leaseState);
+    const local = await Effect.runPromise(
+      makeInMemoryViewServerReact(sourceHealthReact).pipe(Effect.provide(sourceAdapterLayer)),
+    );
+
+    function SourceHealthView() {
+      const result = sourceHealthReact.useSourceHealth({
+        topic: "orders",
+        routeBy: { region: "browser" },
+      });
+      const text = AsyncResult.isSuccess(result)
+        ? result.value._tag === "Inactive"
+          ? `Inactive:${result.value.route.region}`
+          : `Active:${result.value.health.adapter.name}`
+        : "Loading";
+      return <output role="status">{text}</output>;
+    }
+
+    function ActiveSourceView() {
+      const result = sourceHealthReact.useLiveQuery("orders", {
+        select: ["id"],
+        routeBy: { region: "browser" },
+      });
+      return <output aria-label="source rows">{result.status}</output>;
+    }
+
+    const view = await render(
+      <local.ViewServerInMemoryProvider>
+        <SourceHealthView />
+      </local.ViewServerInMemoryProvider>,
+    );
+    await expect.element(view.getByText("Inactive:browser", { exact: true })).toBeVisible();
+    expect(leaseState.active).toBe(0);
+
+    await view.rerender(
+      <local.ViewServerInMemoryProvider>
+        <SourceHealthView />
+        <ActiveSourceView />
+      </local.ViewServerInMemoryProvider>,
+    );
+    await expect
+      .element(view.getByText("Active:react-browser-source", { exact: true }))
+      .toBeVisible();
+    await expect
+      .element(view.getByRole("status", { name: "source rows" }))
+      .toHaveTextContent(/^ready$/);
+    expect(leaseState.active).toBe(1);
+
+    await view.unmount();
+    await expect.poll(() => leaseState.active).toBe(0);
+    await Effect.runPromise(local.close);
+  });
+
+  it("streams the same Source Health contract through the remote provider", async () => {
+    function RemoteSourceHealthView() {
+      const result = sourceHealthReact.useSourceHealth({
+        topic: "orders",
+        routeBy: { region: "remote" },
+      });
+      const text = AsyncResult.isSuccess(result)
+        ? result.value._tag === "Inactive"
+          ? `Inactive:${result.value.route.region}`
+          : `Active:${result.value.health.adapter.name}`
+        : "Loading";
+      return <output role="status">{text}</output>;
+    }
+
+    const view = await render(
+      <sourceHealthReact.ViewServerProvider url={inject("viewServerSourceRemoteUrl")}>
+        <RemoteSourceHealthView />
+      </sourceHealthReact.ViewServerProvider>,
+    );
+    await expect.element(view.getByText("Inactive:remote", { exact: true })).toBeVisible();
+
+    const remoteClient = await Effect.runPromise(
+      makeViewServerClient(sourceHealthViewServer, {
+        url: inject("viewServerSourceRemoteUrl"),
+      }),
+    );
+    const liveSubscription = await Effect.runPromise(
+      remoteClient.subscribe("orders", {
+        select: ["id"],
+        routeBy: { region: "remote" },
+      }),
+    );
+    await expect
+      .element(view.getByText("Active:react-browser-source", { exact: true }))
+      .toBeVisible();
+
+    await Effect.runPromise(liveSubscription.close());
+    await expect.element(view.getByText("Inactive:remote", { exact: true })).toBeVisible();
+    await view.unmount();
+    await Effect.runPromise(remoteClient.close);
   });
 
   it("reuses subscriptions when recursive where syntax has the same engine meaning", async () => {

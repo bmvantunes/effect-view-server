@@ -1,5 +1,9 @@
 import { describe, expect, it } from "@effect/vitest";
-import { defineViewServerConfig, type ViewServerRuntimeError } from "@effect-view-server/config";
+import {
+  ViewServerId,
+  defineViewServerConfig,
+  type ViewServerRuntimeError,
+} from "@effect-view-server/config";
 import { SourceAdapter } from "@effect-view-server/source-adapter";
 import { SourceAdapterServer } from "@effect-view-server/source-adapter/server";
 import {
@@ -12,7 +16,7 @@ import type { ViewServerRuntimeCoreInternalMutations } from "./source-mutation-p
 import { makeRuntimeCoreSourceManager } from "./source-runtime";
 
 const Row = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   region: Schema.String,
   value: Schema.String,
 });
@@ -91,8 +95,11 @@ describe("Runtime Core Source manager lifecycle", () => {
       yield* Deferred.await(metricsStarted);
       yield* Fiber.interrupt(acquisition);
 
-      const diagnostics = yield* manager.subscribeSourceHealth("rows", {
-        region: "eu",
+      const diagnostics = yield* manager.subscribeSourceHealth({
+        topic: "rows",
+        routeBy: {
+          region: "eu",
+        },
       });
       expect(
         Option.getOrThrow(yield* diagnostics.events.pipe(Stream.take(1), Stream.runHead)),
@@ -279,7 +286,7 @@ describe("Runtime Core Source manager lifecycle", () => {
         ),
       }).pipe(Effect.provide(fixture.layer));
       const subscriptionFiber = yield* manager
-        .subscribeSourceHealth("rows", { region: "eu" })
+        .subscribeSourceHealth({ topic: "rows", routeBy: { region: "eu" } })
         .pipe(Effect.forkChild({ startImmediately: true }));
       yield* Deferred.await(handoffStarted);
 
@@ -324,7 +331,10 @@ describe("Runtime Core Source manager lifecycle", () => {
           observerCloseCount += 1;
         }),
       }).pipe(Effect.provide(fixture.layer));
-      const diagnostics = yield* manager.subscribeSourceHealth("rows", { region: "eu" });
+      const diagnostics = yield* manager.subscribeSourceHealth({
+        topic: "rows",
+        routeBy: { region: "eu" },
+      });
       const streamHalted = yield* Deferred.make<void>();
       const streamFiber = yield* diagnostics.events.pipe(
         Stream.runDrain,
@@ -481,8 +491,14 @@ describe("Runtime Core Source manager lifecycle", () => {
         Effect.provide(fixture.layer),
       );
 
-      const firstDiagnostics = yield* manager.subscribeSourceHealth("rows", { region: "eu" });
-      const secondDiagnostics = yield* manager.subscribeSourceHealth("rows", { region: "eu" });
+      const firstDiagnostics = yield* manager.subscribeSourceHealth({
+        topic: "rows",
+        routeBy: { region: "eu" },
+      });
+      const secondDiagnostics = yield* manager.subscribeSourceHealth({
+        topic: "rows",
+        routeBy: { region: "eu" },
+      });
       const firstLease = Option.getOrThrow(
         yield* manager.acquireLeased("rows", {
           routeBy: { region: "eu" },
@@ -626,7 +642,7 @@ describe("Runtime Core Source manager lifecycle", () => {
         .pipe(Effect.exit);
       expect(Exit.isFailure(closedAcquire)).toBe(true);
       const closedHealth = yield* manager
-        .subscribeSourceHealth("rows", { region: "eu" })
+        .subscribeSourceHealth({ topic: "rows", routeBy: { region: "eu" } })
         .pipe(Effect.exit);
       expect(Exit.findErrorOption(closedHealth)).toStrictEqual(
         Option.some({
@@ -674,7 +690,7 @@ describe("Runtime Core Source manager lifecycle", () => {
         },
       }).pipe(Effect.provide(fixture.layer));
       const subscriptionFiber = yield* manager
-        .subscribeSourceHealth("rows")
+        .subscribeSourceHealth({ topic: "rows" })
         .pipe(Effect.forkChild({ startImmediately: true }));
       yield* Deferred.await(handoffStarted);
       const closeFiber = yield* manager.close.pipe(Effect.forkChild({ startImmediately: true }));
@@ -685,7 +701,9 @@ describe("Runtime Core Source manager lifecycle", () => {
       const subscription = yield* Fiber.join(subscriptionFiber);
       yield* Fiber.join(closeFiber);
       yield* subscription.close();
-      const closedHealth = yield* manager.subscribeSourceHealth("rows").pipe(Effect.exit);
+      const closedHealth = yield* manager
+        .subscribeSourceHealth({ topic: "rows" })
+        .pipe(Effect.exit);
       expect(Exit.findErrorOption(closedHealth)).toStrictEqual(
         Option.some({
           _tag: "ViewServerRuntimeError",

@@ -6,7 +6,11 @@ import {
   type ViewServerRemoteClient,
 } from "@effect-view-server/client/remote";
 import type { ViewServerLiveEvent, ViewServerLiveSubscription } from "@effect-view-server/client";
-import { defineViewServerConfig, type ViewServerHealth } from "@effect-view-server/config";
+import {
+  ViewServerId,
+  defineViewServerConfig,
+  type ViewServerHealth,
+} from "@effect-view-server/config";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { Cause, Effect, Exit, Schema, Scope, Stream } from "effect";
@@ -52,7 +56,7 @@ type OrderEvent = ViewServerLiveEvent<OrderRow, string, string>;
 type OrderEventReader = () => Effect.Effect<ReadonlyArray<OrderEvent>, Cause.Done>;
 
 const Order = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   customerId: Schema.String,
   status: Schema.Literals(["open", "closed", "cancelled"]),
   price: Schema.Finite,
@@ -64,7 +68,6 @@ const viewServer = defineViewServerConfig({
   topics: {
     orders: {
       schema: Order,
-      key: "id",
     },
   },
 });

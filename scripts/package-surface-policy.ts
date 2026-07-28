@@ -4,11 +4,6 @@ export type PackageSurfaceEntrypoint = {
   readonly facade?: {
     readonly additionalAllReexports?: ReadonlyArray<string>;
     readonly exportKey: string;
-    readonly reexport?: {
-      readonly kind: "named";
-      readonly runtime: ReadonlyArray<string>;
-      readonly types: ReadonlyArray<string>;
-    };
     readonly sourceEntrypoint: string;
   };
 };
@@ -56,6 +51,8 @@ export const packageSurfacePolicy = {
     "@effect-view-server/column-live-view-engine/src/topic-store-state",
     "@effect-view-server/column-live-view-engine/topic-store-state",
     "@effect-view-server/config/src/grpc-contract",
+    "@effect-view-server/config/grpc",
+    "@effect-view-server/config/kafka",
     "@effect-view-server/config/src/source-contract",
     "@effect-view-server/config/src/source-query-contract",
     "@effect-view-server/config/dist/grpc-contract.js",
@@ -84,6 +81,8 @@ export const packageSurfacePolicy = {
     "@effect-view-server/source-adapter/src/model",
     "@effect-view-server/source-adapter/model",
     "@effect-view-server/source-adapter-testing/src/index",
+    "effect-view-server/config/grpc",
+    "effect-view-server/config/kafka",
   ],
   deepImportSuffixes: [
     "dist/index.d.ts",
@@ -287,55 +286,8 @@ export const packageSurfacePolicy = {
             sourceEntrypoint: "src/config-live-protocol.ts",
           },
         },
-        {
-          exportKey: "./kafka",
-          sourceEntrypoint: "src/kafka.ts",
-          facade: {
-            exportKey: "./config/kafka",
-            sourceEntrypoint: "src/config-kafka.ts",
-            reexport: {
-              kind: "named",
-              runtime: ["decodeKafkaCodec", "kafka", "kafkaErrorIsMapping"],
-              types: [
-                "KafkaBytesCodec",
-                "KafkaCodec",
-                "KafkaCodecDecodeInput",
-                "KafkaCodecError",
-                "KafkaCodecType",
-                "KafkaCustomCodec",
-                "KafkaDecodeError",
-                "KafkaJsonCodec",
-                "KafkaMappingError",
-                "KafkaMessageMetadata",
-                "KafkaProtobufCodec",
-                "KafkaProtobufType",
-                "KafkaSourceCodec",
-                "KafkaStringCodec",
-                "KafkaTopicSourceDefinition",
-                "KafkaTopicSourceMapInput",
-                "NonEmptyReadonlyArray",
-                "ExactRuntimeOptions",
-                "RuntimeOptions",
-                "RuntimeOptionsCandidate",
-                "RuntimeOptionsDefinition",
-                "RuntimeRegions",
-                "RuntimeValue",
-                "ValidateKafkaTopicSource",
-                "ValidateRuntimeOptions",
-                "ViewServerKafkaCommittedStartFrom",
-                "ViewServerKafkaStartFrom",
-              ],
-            },
-          },
-        },
-        {
-          exportKey: "./grpc",
-          sourceEntrypoint: "src/grpc.ts",
-          facade: { exportKey: "./config/grpc", sourceEntrypoint: "src/config-grpc.ts" },
-        },
         { exportKey: "./internal", sourceEntrypoint: "src/internal.ts" },
       ],
-      packOnlyEntrypoints: ["src/grpc-contract.ts"],
     },
     {
       architecture: {
@@ -350,11 +302,11 @@ export const packageSurfacePolicy = {
     {
       architecture: {
         allowedWorkspaceSpecifiers: [
-          "@effect-view-server/source-adapter",
-          "@effect-view-server/source-adapter/server",
+          "effect-view-server/source-adapter",
+          "effect-view-server/source-adapter/server",
         ],
         message:
-          "The gRPC Adapter may depend only on the portable/server Source Adapter SDK, never Runtime Core or View Server transports.",
+          "The first-party gRPC Adapter must consume only the public Source Adapter SDK seams.",
         relativeOverrides: [],
       },
       directory: "grpc",
@@ -612,20 +564,22 @@ export const packageSurfacePolicy = {
       workspaceSpecifier: "@effect-view-server/column-live-view-engine/internal",
     },
     {
-      forbidden: ["defineGrpcFeed", "defineKafkaTopic", "decodeKafkaTopicMessage"],
+      forbidden: [
+        "decodeKafkaCodec",
+        "decodeKafkaTopicMessage",
+        "defineGrpcFeed",
+        "defineKafkaTopic",
+        "grpc",
+        "kafka",
+      ],
       forbiddenSourceExports: [
         "decodeKafkaTopicMessage",
         "KafkaDecodedTopicMessage",
         "KafkaDecodedTopicSourceMessage",
         "KafkaResolvedSourceTopicDefinition",
       ],
-      required: ["defineViewServerConfig", "grpc", "kafka", "decodeKafkaCodec"],
+      required: ["defineViewServerConfig", "viewSchema"],
       workspaceSpecifier: "@effect-view-server/config",
-    },
-    {
-      forbidden: ["defineGrpcFeed"],
-      required: ["grpc"],
-      workspaceSpecifier: "@effect-view-server/config/grpc",
     },
     {
       forbidden: ["grpcNode", "grpcServer"],
@@ -648,20 +602,15 @@ export const packageSurfacePolicy = {
       workspaceSpecifier: "@effect-view-server/config/health",
     },
     {
-      forbidden: ["defineGrpcFeed"],
+      forbidden: [
+        "decodeKafkaCodec",
+        "defineGrpcFeed",
+        "defineKafkaTopic",
+        "grpc",
+        "kafka",
+      ],
       required: [],
       workspaceSpecifier: "@effect-view-server/config/internal",
-    },
-    {
-      consumerForbidden: ["makeKafkaResolvedSourceTopics"],
-      forbidden: [
-        "defineKafkaTopic",
-        "KafkaMappingInput",
-        "KafkaTopicDefinition",
-        "KafkaRuntimeTopicDefinition",
-      ],
-      required: ["kafka", "decodeKafkaCodec"],
-      workspaceSpecifier: "@effect-view-server/config/kafka",
     },
     {
       forbidden: [],
@@ -812,6 +761,11 @@ export const packageSurfacePolicy = {
   ],
 } as const satisfies PackageSurfacePolicy;
 
+const privatePackageSurfacePolicies: ReadonlyArray<PrivatePackageSurface> =
+  packageSurfacePolicy.packages;
+const runtimeSymbolPolicyEntries: PackageSurfacePolicy["runtimeSymbols"] =
+  packageSurfacePolicy.runtimeSymbols;
+
 export const packageSpecifierFor = (packageName: string, exportKey: string): string =>
   exportKey === "." ? packageName : `${packageName}/${exportKey.slice(2)}`;
 
@@ -893,62 +847,53 @@ const expectedManifestExport = (
   };
 };
 
-export const facadeProjections = packageSurfacePolicy.packages.flatMap((packagePolicy) =>
-  packagePolicy.entrypoints.flatMap((entrypoint) => {
-    if (!("facade" in entrypoint)) {
-      return [];
-    }
-    return [
-      {
-        consumerExportKey: entrypoint.facade.exportKey,
-        consumerSourceEntrypoint: entrypoint.facade.sourceEntrypoint,
-        consumerSpecifier: packageSpecifierFor(
-          packageSurfacePolicy.facade.packageName,
-          entrypoint.facade.exportKey,
-        ),
-        reexport:
-          "reexport" in entrypoint.facade
-            ? entrypoint.facade.reexport
-            : { kind: "all" as const },
-        workspaceSpecifier: packageSpecifierFor(packagePolicy.packageName, entrypoint.exportKey),
-        workspaceSpecifiers: [
-          packageSpecifierFor(packagePolicy.packageName, entrypoint.exportKey),
-          ...("additionalAllReexports" in entrypoint.facade
-            ? entrypoint.facade.additionalAllReexports
-            : []),
-        ],
-      },
-    ];
-  }),
-);
-
-export type FacadeProjection = (typeof facadeProjections)[number];
-export type NamedFacadeProjection = FacadeProjection & {
-  readonly reexport: {
-    readonly kind: "named";
-    readonly runtime: ReadonlyArray<string>;
-    readonly types: ReadonlyArray<string>;
-  };
+export type FacadeProjection = {
+  readonly consumerExportKey: string;
+  readonly consumerSourceEntrypoint: string;
+  readonly consumerSpecifier: string;
+  readonly workspaceSpecifier: string;
+  readonly workspaceSpecifiers: ReadonlyArray<string>;
 };
 
-const isNamedFacadeProjection = (
-  projection: FacadeProjection,
-): projection is NamedFacadeProjection => projection.reexport.kind === "named";
+export const facadeProjections: ReadonlyArray<FacadeProjection> =
+  privatePackageSurfacePolicies.flatMap((packagePolicy) =>
+    packagePolicy.entrypoints.flatMap((entrypoint) => {
+      const facade = entrypoint.facade;
+      if (facade === undefined) {
+        return [];
+      }
+      return [
+        {
+          consumerExportKey: facade.exportKey,
+          consumerSourceEntrypoint: facade.sourceEntrypoint,
+          consumerSpecifier: packageSpecifierFor(
+            packageSurfacePolicy.facade.packageName,
+            facade.exportKey,
+          ),
+          workspaceSpecifier: packageSpecifierFor(packagePolicy.packageName, entrypoint.exportKey),
+          workspaceSpecifiers: [
+            packageSpecifierFor(packagePolicy.packageName, entrypoint.exportKey),
+            ...(facade.additionalAllReexports ?? []),
+          ],
+        },
+      ];
+    }),
+  );
 
 export const runtimeSymbolPolicies = [
-  ...packageSurfacePolicy.runtimeSymbols.map((symbolPolicy) => ({
+  ...runtimeSymbolPolicyEntries.map((symbolPolicy) => ({
     forbidden: symbolPolicy.forbidden,
     required: symbolPolicy.required,
     specifier: symbolPolicy.workspaceSpecifier,
   })),
   ...facadeProjections.map((projection) => {
-    const projectedSymbols = packageSurfacePolicy.runtimeSymbols.filter((symbolPolicy) =>
+    const projectedSymbols = runtimeSymbolPolicyEntries.filter((symbolPolicy) =>
       projection.workspaceSpecifiers.includes(symbolPolicy.workspaceSpecifier),
     );
     return {
       forbidden: projectedSymbols.flatMap((symbolPolicy) => [
         ...symbolPolicy.forbidden,
-        ...("consumerForbidden" in symbolPolicy ? symbolPolicy.consumerForbidden : []),
+        ...(symbolPolicy.consumerForbidden ?? []),
       ]),
       required: projectedSymbols.flatMap((symbolPolicy) => symbolPolicy.required),
       specifier: projection.consumerSpecifier,
@@ -964,17 +909,18 @@ export type SourceForbiddenExportPolicy = {
 };
 
 export const sourceForbiddenExportPolicies: ReadonlyArray<SourceForbiddenExportPolicy> =
-  packageSurfacePolicy.runtimeSymbols.flatMap(
-    (symbolPolicy) =>
-      "forbiddenSourceExports" in symbolPolicy
-        ? workspaceEntrypointPolicies
-            .filter((entrypoint) => entrypoint.specifier === symbolPolicy.workspaceSpecifier)
-            .map((entrypoint) => ({
-              ...entrypoint,
-              forbidden: symbolPolicy.forbiddenSourceExports,
-            }))
-        : [],
-  );
+  runtimeSymbolPolicyEntries.flatMap((symbolPolicy) => {
+    const forbidden = symbolPolicy.forbiddenSourceExports;
+    if (forbidden === undefined) {
+      return [];
+    }
+    return workspaceEntrypointPolicies
+      .filter((entrypoint) => entrypoint.specifier === symbolPolicy.workspaceSpecifier)
+      .map((entrypoint) => ({
+        ...entrypoint,
+        forbidden,
+      }));
+  });
 
 export type ExpectedPackageSurface = {
   readonly directory: string;
@@ -984,7 +930,7 @@ export type ExpectedPackageSurface = {
 };
 
 export const expectedPackageSurfaces: ReadonlyArray<ExpectedPackageSurface> = [
-  ...packageSurfacePolicy.packages.map((packagePolicy) => ({
+  ...privatePackageSurfacePolicies.map((packagePolicy) => ({
     directory: packagePolicy.directory,
     packageName: packagePolicy.packageName,
     manifestExports: packagePolicy.entrypoints.map((entrypoint) =>
@@ -992,7 +938,7 @@ export const expectedPackageSurfaces: ReadonlyArray<ExpectedPackageSurface> = [
     ),
     packEntrypoints: [
       ...packagePolicy.entrypoints.map((entrypoint) => entrypoint.sourceEntrypoint),
-      ...("packOnlyEntrypoints" in packagePolicy ? packagePolicy.packOnlyEntrypoints : []),
+      ...(packagePolicy.packOnlyEntrypoints ?? []),
     ],
   })),
   {
@@ -1020,12 +966,6 @@ export const expectedPackageSurfaceFor = (directory: string): ExpectedPackageSur
 export const facadeProjectionFor = (consumerSpecifier: string): (typeof facadeProjections)[number] =>
   facadeProjections.find((projection) => projection.consumerSpecifier === consumerSpecifier) ??
   unknownPolicyDirectory("facade projection", consumerSpecifier);
-
-export const namedFacadeProjectionFor = (consumerSpecifier: string): NamedFacadeProjection =>
-  facadeProjections
-    .filter(isNamedFacadeProjection)
-    .find((projection) => projection.consumerSpecifier === consumerSpecifier) ??
-  unknownPolicyDirectory("named facade projection", consumerSpecifier);
 
 export const sourceForbiddenExportPolicyFor = (
   workspaceSpecifier: string,

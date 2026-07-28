@@ -1,3 +1,4 @@
+import { ViewServerId } from "@effect-view-server/config";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Option, Schema } from "effect";
 import type { LiveQueryExecution } from "./active-query";
@@ -5,7 +6,7 @@ import { makeLiveSubscription } from "./live-subscription";
 import { makeTopicStoreSubscriptionPermit, TopicStore, topicStoreState } from "./topic-store-state";
 
 const Row = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
 });
 
 type Row = typeof Row.Type;

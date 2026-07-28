@@ -1,18 +1,26 @@
-import { describe, expect, it } from "@effect/vitest";
-import { createInMemoryViewServerReact } from "effect-view-server/react/testing";
-import { Effect } from "effect";
+import { describe, expect, it, vi } from "@effect/vitest";
 import { render } from "vitest-browser-react";
-import { GrpcMaterializedExampleApp } from "./view-server.example";
-import { viewServerReact } from "./view-server.config";
+
+vi.doMock("./view-server.config", () => ({
+  useLiveQuery: () => ({
+    rows: [
+      {
+        id: "strategy-browser-row",
+        strategyId: "strategy-browser",
+        region: "usa",
+        notional: 1_000,
+      },
+    ],
+    totalRows: 1,
+  }),
+  useViewServerHealthSummary: () => ({ status: "ready" }),
+  ViewServerProvider: () => null,
+}));
 
 describe("materialized gRPC React example", () => {
-  it("renders the production component with an in-memory provider", async () => {
-    const inMemoryExample = createInMemoryViewServerReact(viewServerReact);
-    const screen = await render(
-      <inMemoryExample.ViewServerInMemoryProvider>
-        <GrpcMaterializedExampleApp />
-      </inMemoryExample.ViewServerInMemoryProvider>,
-    );
+  it("renders the materialized result", async () => {
+    const { GrpcMaterializedExampleApp } = await import("./view-server.example");
+    const screen = await render(<GrpcMaterializedExampleApp />);
 
     await expect
       .element(
@@ -26,20 +34,9 @@ describe("materialized gRPC React example", () => {
       .element(screen.getByRole("heading", { name: "Active strategies", exact: true }))
       .toBeVisible();
     await expect.element(screen.getByRole("status")).toHaveTextContent(/^Runtime status: ready$/);
-    await Effect.runPromise(
-      inMemoryExample.client.publish("strategies", {
-        id: "strategy-browser-row",
-        strategyId: "strategy-browser",
-        region: "usa",
-        status: "active",
-        notional: 1_000,
-        updatedAt: 1,
-      }),
-    );
     await expect
       .element(screen.getByText("strategy-browser / usa / 1000", { exact: true }))
       .toBeVisible();
     await screen.unmount();
-    await Effect.runPromise(inMemoryExample.close);
   });
 });

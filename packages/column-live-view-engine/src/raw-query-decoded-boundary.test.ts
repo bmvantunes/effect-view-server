@@ -1,11 +1,11 @@
 import { describe, expect, it } from "@effect/vitest";
-import { defineViewServerConfig } from "@effect-view-server/config";
+import { ViewServerId, defineViewServerConfig } from "@effect-view-server/config";
 import { Effect, Schema, Stream } from "effect";
 import { InvalidQueryError } from "./index";
 import { createColumnLiveViewEngineInternal } from "./internal";
 
 const Order = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   amount: Schema.BigIntFromString,
 });
 
@@ -13,7 +13,6 @@ const viewServer = defineViewServerConfig({
   topics: {
     orders: {
       schema: Order,
-      key: "id",
     },
   },
 });

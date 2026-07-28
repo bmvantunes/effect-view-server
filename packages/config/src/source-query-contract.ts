@@ -8,11 +8,7 @@ import type { TopicDefinitions, TopicRow } from "./query-core";
 import type { RejectExtraKeys } from "./query-exact";
 import type { RouteFieldKey, RouteFieldValue } from "./query-filter";
 import type { ExactLiveQuery, ValidateLiveQuery } from "./query-result-contract";
-import type {
-  NonEmptyRouteBy,
-  TopicLeasedSourceDefinition,
-  TopicSourceDefinition,
-} from "./source-contract";
+import type { NonEmptyRouteBy } from "./source-contract";
 
 type RouteShape<Row, RouteBy extends string> = {
   readonly [Field in Extract<RouteBy, RouteFieldKey<Row>>]-?: RouteFieldValue<Row, Field>;
@@ -29,33 +25,31 @@ type UnionToIntersection<Union> = (Union extends unknown ? (value: Union) => voi
   ? Intersection
   : never;
 
-export type TopicRouteBy<Topics, Topic extends keyof Topics> = Topics[Topic] extends {
-  readonly source: infer Source;
-}
+type LeasedRouteFields<Source> = Source extends unknown
   ? SourceDefinitionLifecycle<Source> extends "leased"
     ? Extract<SourceDefinitionRouteFields<Source>[number], string>
     : never
-  : Topics[Topic] extends {
-        readonly grpcSource: TopicLeasedSourceDefinition<infer RouteBy>;
-      }
-    ? Extract<RouteBy[number], string>
-    : never;
+  : never;
 
-export type TopicRouteByTuple<Topics, Topic extends keyof Topics> = Topics[Topic] extends {
-  readonly source: infer Source;
-}
+type LeasedRouteTuple<Source> = Source extends unknown
   ? SourceDefinitionLifecycle<Source> extends "leased"
     ? SourceDefinitionRouteFields<Source> extends NonEmptyRouteBy
       ? SourceDefinitionRouteFields<Source>
       : never
     : never
-  : Topics[Topic] extends {
-        readonly grpcSource: TopicLeasedSourceDefinition<infer RouteBy>;
-      }
-    ? RouteBy extends NonEmptyRouteBy
-      ? RouteBy
-      : never
-    : never;
+  : never;
+
+export type TopicRouteBy<Topics, Topic extends keyof Topics> = Topics[Topic] extends {
+  readonly source: infer Source;
+}
+  ? LeasedRouteFields<Source>
+  : never;
+
+export type TopicRouteByTuple<Topics, Topic extends keyof Topics> = Topics[Topic] extends {
+  readonly source: infer Source;
+}
+  ? LeasedRouteTuple<Source>
+  : never;
 
 export type ExactLeasedRouteQuery<Row, RouteBy extends string, Query> = [RouteBy] extends [never]
   ? { readonly routeBy?: never }
@@ -63,61 +57,35 @@ export type ExactLeasedRouteQuery<Row, RouteBy extends string, Query> = [RouteBy
     ? { readonly routeBy: ExactRouteObject<Row, RouteBy, Candidate> }
     : { readonly routeBy: RouteShape<Row, RouteBy> };
 
-type ExactLeasedRouteQueryForTopic<
-  Topics,
-  Topic extends keyof Topics,
-  Query,
-> = Topic extends keyof Topics
-  ? [TopicRouteBy<Topics, Topic>] extends [never]
-    ? never
-    : ExactLeasedRouteQuery<TopicRow<Topics, Topic>, TopicRouteBy<Topics, Topic>, Query>
-  : never;
-
-type LeasedRouteFieldsForTopicUnion<Topics, Topic extends keyof Topics> = Topic extends keyof Topics
-  ? TopicRouteBy<Topics, Topic>
-  : never;
-
-type LeasedRouteShapeForTopic<Topics, Topic extends keyof Topics> = Topic extends keyof Topics
-  ? [TopicRouteBy<Topics, Topic>] extends [never]
-    ? never
-    : RouteShape<TopicRow<Topics, Topic>, TopicRouteBy<Topics, Topic>>
-  : never;
-
-type IsMutuallyAssignable<Left, Right> = [Left] extends [Right]
-  ? [Right] extends [Left]
-    ? true
-    : false
-  : false;
-
-type TopicsWithDifferentLeasedRouteContracts<
-  Topics,
-  Topic extends keyof Topics,
-  AllContracts,
-> = Topic extends keyof Topics
-  ? [TopicRouteBy<Topics, Topic>] extends [never]
-    ? never
-    : IsMutuallyAssignable<LeasedRouteShapeForTopic<Topics, Topic>, AllContracts> extends true
-      ? never
-      : Topic
-  : never;
-
-type OrdinaryTopicsForTopicUnion<Topics, Topic extends keyof Topics> = Topic extends keyof Topics
-  ? [TopicRouteBy<Topics, Topic>] extends [never]
-    ? Topic
-    : never
-  : never;
-
-type ExactSourceRouteQueryMember<
-  Topics,
-  Topic extends keyof Topics,
-  Query,
-  AllContracts = LeasedRouteShapeForTopic<Topics, Topic>,
-> = [LeasedRouteFieldsForTopicUnion<Topics, Topic>] extends [never]
-  ? { readonly routeBy?: never }
-  : [OrdinaryTopicsForTopicUnion<Topics, Topic>] extends [never]
-    ? [TopicsWithDifferentLeasedRouteContracts<Topics, Topic, AllContracts>] extends [never]
-      ? UnionToIntersection<ExactLeasedRouteQueryForTopic<Topics, Topic, Query>>
+type ExactSourceRouteQueryForDefinition<Row, Source, Query> = Source extends unknown
+  ? SourceDefinitionLifecycle<Source> extends "leased"
+    ? SourceDefinitionRouteFields<Source> extends NonEmptyRouteBy
+      ? ExactLeasedRouteQuery<
+          Row,
+          Extract<SourceDefinitionRouteFields<Source>[number], string>,
+          Query
+        >
       : never
+    : { readonly routeBy?: never }
+  : never;
+
+type ExactSourceRouteQueryForTopic<
+  Topics,
+  Topic extends keyof Topics,
+  Query,
+> = Topic extends keyof Topics
+  ? {
+      readonly exact: Topics[Topic] extends { readonly source: infer Source }
+        ? ExactSourceRouteQueryForDefinition<TopicRow<Topics, Topic>, Source, Query>
+        : { readonly routeBy?: never };
+    }
+  : never;
+
+type ExactSourceRouteQueryMember<Topics, Topic extends keyof Topics, Query> =
+  UnionToIntersection<ExactSourceRouteQueryForTopic<Topics, Topic, Query>> extends {
+    readonly exact: infer Exact;
+  }
+    ? Exact
     : never;
 
 type InvalidExactSourceRouteQueryMember<
@@ -275,13 +243,7 @@ const validateLiveQuerySourceRouteUnsafe = <Topics extends TopicDefinitions>(
   if (topicDefinition === undefined) {
     return undefined;
   }
-  const sourceAwareTopic: {
-    readonly grpcSource?: TopicSourceDefinition | undefined;
-    readonly source?: object | undefined;
-  } = topicDefinition;
-  const configuredRouteBy = sourceLeasedRouteBy(
-    sourceAwareTopic.source ?? sourceAwareTopic.grpcSource,
-  );
+  const configuredRouteBy = sourceLeasedRouteBy(topicDefinition.source);
   if (configuredRouteBy === undefined) {
     if (isRecord(query) && Object.hasOwn(query, "routeBy")) {
       return `Topic ${topic} does not accept routeBy.`;

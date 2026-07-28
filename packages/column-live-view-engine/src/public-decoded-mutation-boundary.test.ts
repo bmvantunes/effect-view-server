@@ -1,11 +1,11 @@
 import { describe, expect, it } from "@effect/vitest";
-import { defineViewServerConfig, viewSchema } from "@effect-view-server/config";
+import { ViewServerId, defineViewServerConfig, viewSchema } from "@effect-view-server/config";
 import { Effect, Schema } from "effect";
 import { InvalidRowError } from "./index";
 import { createColumnLiveViewEngineInternal } from "./internal";
 
 const TransformedRow = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   amount: Schema.BigIntFromString,
   uriPart: Schema.StringFromUriComponent,
 });
@@ -13,7 +13,7 @@ const TransformedRow = Schema.Struct({
 class RootClassTransformedRow extends Schema.Class<RootClassTransformedRow>(
   "RootClassTransformedRow",
 )({
-  id: Schema.String,
+  id: ViewServerId,
   amount: Schema.BigIntFromString,
 }) {}
 viewSchema.admitClass(RootClassTransformedRow);
@@ -22,7 +22,6 @@ const transformedViewServer = defineViewServerConfig({
   topics: {
     rows: {
       schema: TransformedRow,
-      key: "id",
     },
   },
 });
@@ -31,7 +30,6 @@ const rootClassViewServer = defineViewServerConfig({
   topics: {
     rows: {
       schema: RootClassTransformedRow,
-      key: "id",
     },
   },
 });

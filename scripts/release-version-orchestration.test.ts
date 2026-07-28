@@ -22,9 +22,24 @@ type CommandCall = {
 };
 
 const publicPackagePath = join("packages", "effect-view-server", "package.json");
+const grpcPackagePath = join("packages", "grpc", "package.json");
 const kafkaPackagePath = join("packages", "kafka", "package.json");
 const kafkaPeerMatrixPath = join("packages", "kafka", "source-adapter-peer-matrix.json");
 const workspacePath = "pnpm-workspace.yaml";
+
+const initialGrpcPackage = {
+  name: "@effect-view-server/grpc",
+  version: "0.0.0",
+  private: true,
+  devDependencies: {
+    effect: "4.0.0-beta.100",
+    "effect-view-server": "0.0.6",
+  },
+  peerDependencies: {
+    effect: "4.0.0-beta.100",
+    "effect-view-server": "0.0.6",
+  },
+};
 
 const initialKafkaPackage = {
   name: "@effect-view-server/kafka",
@@ -56,6 +71,7 @@ const initialWorkspace = [
   "packages:",
   "  - packages/*",
   "overrides:",
+  '  "@effect-view-server/grpc>effect-view-server": "workspace:0.0.6"',
   '  "@effect-view-server/kafka>effect-view-server": "workspace:0.0.6"',
   '  "@babel/core": "7.29.7"',
   "",
@@ -68,11 +84,13 @@ const writeJson = (path: string, value: unknown) => {
 const makeReleaseVersionTree = () => {
   const rootDirectory = mkdtempSync(join(tmpdir(), "effect-view-server-release-version-"));
   mkdirSync(join(rootDirectory, "packages", "effect-view-server"), { recursive: true });
+  mkdirSync(join(rootDirectory, "packages", "grpc"), { recursive: true });
   mkdirSync(join(rootDirectory, "packages", "kafka"), { recursive: true });
   writeJson(join(rootDirectory, publicPackagePath), {
     name: "effect-view-server",
     version: "0.0.6",
   });
+  writeJson(join(rootDirectory, grpcPackagePath), initialGrpcPackage);
   writeJson(join(rootDirectory, kafkaPackagePath), initialKafkaPackage);
   writeJson(join(rootDirectory, kafkaPeerMatrixPath), initialKafkaPeerMatrix);
   writeFileSync(join(rootDirectory, workspacePath), initialWorkspace);
@@ -105,7 +123,7 @@ const makeCommand = (
 };
 
 describe("release version orchestration", () => {
-  it("keeps Kafka private while synchronizing the complete facade compatibility plan", () => {
+  it("keeps adapters private while synchronizing the complete facade compatibility plan", () => {
     const scenario = makeReleaseVersionTree();
     const calls: Array<CommandCall> = [];
     let installSnapshot: unknown = undefined;
@@ -119,6 +137,9 @@ describe("release version orchestration", () => {
       },
       () => {
         installSnapshot = {
+          grpcPackage: JSON.parse(
+            readFileSync(join(scenario.rootDirectory, grpcPackagePath), "utf8"),
+          ),
           kafkaPackage: JSON.parse(
             readFileSync(join(scenario.rootDirectory, kafkaPackagePath), "utf8"),
           ),
@@ -158,6 +179,19 @@ describe("release version orchestration", () => {
       },
     ]);
     expect(installSnapshot).toStrictEqual({
+      grpcPackage: {
+        name: "@effect-view-server/grpc",
+        version: "0.0.0",
+        private: true,
+        devDependencies: {
+          effect: "4.0.0-beta.100",
+          "effect-view-server": "0.1.0",
+        },
+        peerDependencies: {
+          effect: "4.0.0-beta.100",
+          "effect-view-server": "0.1.0",
+        },
+      },
       kafkaPackage: {
         name: "@effect-view-server/kafka",
         version: "0.0.0",
@@ -186,6 +220,7 @@ describe("release version orchestration", () => {
         "packages:",
         "  - packages/*",
         "overrides:",
+        '  "@effect-view-server/grpc>effect-view-server": "workspace:0.1.0"',
         '  "@effect-view-server/kafka>effect-view-server": "workspace:0.1.0"',
         '  "@babel/core": "7.29.7"',
         "",
@@ -209,6 +244,9 @@ describe("release version orchestration", () => {
     await expect(release).rejects.toThrowError("vp exec changeset version failed.");
     await expect(release).rejects.toHaveProperty("exitCode", 9);
     expect(calls).toHaveLength(1);
+    expect(
+      JSON.parse(readFileSync(join(scenario.rootDirectory, grpcPackagePath), "utf8")),
+    ).toStrictEqual(initialGrpcPackage);
     expect(
       JSON.parse(readFileSync(join(scenario.rootDirectory, kafkaPackagePath), "utf8")),
     ).toStrictEqual(initialKafkaPackage);
@@ -245,6 +283,19 @@ describe("release version orchestration", () => {
     await expect(release).rejects.toBeInstanceOf(ReleaseVersionCommandError);
     await expect(release).rejects.toHaveProperty("exitCode", 17);
     expect(calls).toHaveLength(2);
+    expect(
+      JSON.parse(readFileSync(join(scenario.rootDirectory, grpcPackagePath), "utf8")),
+    ).toStrictEqual({
+      ...initialGrpcPackage,
+      devDependencies: {
+        ...initialGrpcPackage.devDependencies,
+        "effect-view-server": "0.1.0",
+      },
+      peerDependencies: {
+        ...initialGrpcPackage.peerDependencies,
+        "effect-view-server": "0.1.0",
+      },
+    });
     expect(
       JSON.parse(readFileSync(join(scenario.rootDirectory, kafkaPeerMatrixPath), "utf8")),
     ).toStrictEqual([
@@ -319,11 +370,45 @@ describe("release version orchestration", () => {
         }),
     },
     {
+      message: "packages/grpc/package.json must describe @effect-view-server/grpc.",
+      mutate: (rootDirectory: string) =>
+        writeJson(join(rootDirectory, grpcPackagePath), {
+          name: "wrong-package",
+          version: "0.0.0",
+        }),
+    },
+    {
       message: "packages/kafka/package.json must describe @effect-view-server/kafka.",
       mutate: (rootDirectory: string) =>
         writeJson(join(rootDirectory, kafkaPackagePath), {
           name: "wrong-package",
           version: "0.0.0",
+        }),
+    },
+    {
+      message: "packages/grpc/package.json must remain private.",
+      mutate: (rootDirectory: string) =>
+        writeJson(join(rootDirectory, grpcPackagePath), {
+          ...initialGrpcPackage,
+          private: false,
+        }),
+    },
+    {
+      message:
+        "packages/grpc/package.json must contain an exact devDependencies.effect-view-server dependency.",
+      mutate: (rootDirectory: string) =>
+        writeJson(join(rootDirectory, grpcPackagePath), {
+          ...initialGrpcPackage,
+          devDependencies: {},
+        }),
+    },
+    {
+      message:
+        "packages/grpc/package.json must contain an exact peerDependencies.effect-view-server dependency.",
+      mutate: (rootDirectory: string) =>
+        writeJson(join(rootDirectory, grpcPackagePath), {
+          ...initialGrpcPackage,
+          peerDependencies: {},
         }),
     },
     {
@@ -380,7 +465,7 @@ describe("release version orchestration", () => {
     },
     {
       message:
-        "pnpm-workspace.yaml must contain exactly one @effect-view-server/kafka>effect-view-server override.",
+        "pnpm-workspace.yaml must contain exactly one @effect-view-server/grpc>effect-view-server override.",
       mutate: (rootDirectory: string) =>
         writeFileSync(join(rootDirectory, workspacePath), "packages:\n  - packages/*\n"),
     },
@@ -392,6 +477,7 @@ describe("release version orchestration", () => {
           join(rootDirectory, workspacePath),
           [
             "overrides:",
+            '  "@effect-view-server/grpc>effect-view-server": "workspace:0.0.6"',
             '  "@effect-view-server/kafka>effect-view-server": "workspace:0.0.6"',
             '  "@effect-view-server/kafka>effect-view-server": "workspace:0.0.6"',
             "",
@@ -404,7 +490,26 @@ describe("release version orchestration", () => {
       mutate: (rootDirectory: string) =>
         writeFileSync(
           join(rootDirectory, workspacePath),
-          'overrides:\n  "@effect-view-server/kafka>effect-view-server": workspace:*\n',
+          [
+            "overrides:",
+            '  "@effect-view-server/grpc>effect-view-server": "workspace:0.0.6"',
+            '  "@effect-view-server/kafka>effect-view-server": workspace:*',
+            "",
+          ].join("\n"),
+        ),
+    },
+    {
+      message:
+        "pnpm-workspace.yaml must express the @effect-view-server/grpc>effect-view-server override as an exact quoted workspace version.",
+      mutate: (rootDirectory: string) =>
+        writeFileSync(
+          join(rootDirectory, workspacePath),
+          [
+            "overrides:",
+            '  "@effect-view-server/grpc>effect-view-server": workspace:*',
+            '  "@effect-view-server/kafka>effect-view-server": "workspace:0.0.6"',
+            "",
+          ].join("\n"),
         ),
     },
   ])("rejects malformed release metadata before running Changesets", ({ message, mutate }) => {

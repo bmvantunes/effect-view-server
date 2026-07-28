@@ -1,5 +1,5 @@
 import { describe, expectTypeOf, it } from "@effect/vitest";
-import { defineViewServerConfig } from "@effect-view-server/config";
+import { ViewServerId, defineViewServerConfig } from "@effect-view-server/config";
 import type { ViewServerRuntimeError, ViewServerTransportError } from "@effect-view-server/config";
 import type { Effect } from "effect";
 import { Schema } from "effect";
@@ -8,7 +8,7 @@ import type { ViewServerRemoteClient } from "./remote";
 import { makeViewServerClient } from "./remote";
 
 const Order = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   customerId: Schema.String,
   price: Schema.Number,
 });
@@ -17,7 +17,6 @@ const viewServer = defineViewServerConfig({
   topics: {
     orders: {
       schema: Order,
-      key: "id",
     },
   },
 });

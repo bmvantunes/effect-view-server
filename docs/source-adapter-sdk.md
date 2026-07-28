@@ -73,15 +73,15 @@ A leased declaration uses `leasedSource(routeBy, options)` with a non-empty
 exact route-field tuple. Consumers do not need `as const`.
 
 Every Source-Owned Topic in the SDK path has an exact required
-`id: Schema.String` and one canonical `source`:
+`id: ViewServerId` and one canonical `source`:
 
 ```ts
 import { Schema } from "effect";
-import { defineViewServerConfig } from "effect-view-server/config";
+import { ViewServerId, defineViewServerConfig } from "effect-view-server/config";
 import { exampleSource } from "./example-source";
 
 const Order = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   price: Schema.Number,
 });
 

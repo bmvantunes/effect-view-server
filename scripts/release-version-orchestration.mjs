@@ -2,8 +2,10 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const publicPackageName = "effect-view-server";
+const grpcPackageName = "@effect-view-server/grpc";
 const kafkaPackageName = "@effect-view-server/kafka";
 const publicPackageRelativePath = join("packages", "effect-view-server", "package.json");
+const grpcPackageRelativePath = join("packages", "grpc", "package.json");
 const kafkaPackageRelativePath = join("packages", "kafka", "package.json");
 const kafkaPeerMatrixRelativePath = join(
   "packages",
@@ -11,6 +13,7 @@ const kafkaPeerMatrixRelativePath = join(
   "source-adapter-peer-matrix.json",
 );
 const workspaceRelativePath = "pnpm-workspace.yaml";
+const grpcOverrideKey = '"@effect-view-server/grpc>effect-view-server"';
 const kafkaOverrideKey = '"@effect-view-server/kafka>effect-view-server"';
 const semverPattern =
   /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
@@ -39,8 +42,8 @@ const validateManifest = (manifest, expectedName, path) => {
   return manifest;
 };
 
-const validateKafkaManifest = (manifest, path) => {
-  validateManifest(manifest, kafkaPackageName, path);
+const validateAdapterManifest = (manifest, expectedName, path) => {
+  validateManifest(manifest, expectedName, path);
 
   if (manifest.private !== true) {
     throw new Error(`${path} must remain private.`);
@@ -81,33 +84,41 @@ const validatePeerMatrix = (matrix, path) => {
   return matrix;
 };
 
-const synchronizeWorkspaceOverride = (workspace, version, path) => {
-  const matchingLines = workspace
-    .split("\n")
-    .filter((line) => line.includes(`${kafkaPackageName}>${publicPackageName}`));
+const synchronizeWorkspaceOverrides = (workspace, version, path) => {
+  let synchronized = workspace;
+  for (const [packageName, overrideKey] of [
+    [grpcPackageName, grpcOverrideKey],
+    [kafkaPackageName, kafkaOverrideKey],
+  ]) {
+    const matchingLines = synchronized
+      .split("\n")
+      .filter((line) => line.includes(`${packageName}>${publicPackageName}`));
 
-  if (matchingLines.length !== 1) {
-    throw new Error(
-      `${path} must contain exactly one ${kafkaPackageName}>${publicPackageName} override.`,
+    if (matchingLines.length !== 1) {
+      throw new Error(
+        `${path} must contain exactly one ${packageName}>${publicPackageName} override.`,
+      );
+    }
+
+    const overridePattern = new RegExp(
+      `^(\\s*${overrideKey}:\\s*)"workspace:[^"\\s]+"(\\s*)$`,
+      "m",
     );
+
+    if (!overridePattern.test(synchronized)) {
+      throw new Error(
+        `${path} must express the ${packageName}>${publicPackageName} override as an exact quoted workspace version.`,
+      );
+    }
+
+    synchronized = synchronized.replace(overridePattern, `$1"workspace:${version}"$2`);
   }
-
-  const overridePattern = new RegExp(
-    `^(\\s*${kafkaOverrideKey}:\\s*)"workspace:[^"\\s]+"(\\s*)$`,
-    "m",
-  );
-
-  if (!overridePattern.test(workspace)) {
-    throw new Error(
-      `${path} must express the ${kafkaPackageName}>${publicPackageName} override as an exact quoted workspace version.`,
-    );
-  }
-
-  return workspace.replace(overridePattern, `$1"workspace:${version}"$2`);
+  return synchronized;
 };
 
 const readReleaseMetadata = (rootDirectory) => {
   const publicPackagePath = join(rootDirectory, publicPackageRelativePath);
+  const grpcPackagePath = join(rootDirectory, grpcPackageRelativePath);
   const kafkaPackagePath = join(rootDirectory, kafkaPackageRelativePath);
   const kafkaPeerMatrixPath = join(rootDirectory, kafkaPeerMatrixRelativePath);
   const workspacePath = join(rootDirectory, workspaceRelativePath);
@@ -118,10 +129,20 @@ const readReleaseMetadata = (rootDirectory) => {
   );
   const workspace = readFileSync(workspacePath, "utf8");
 
-  synchronizeWorkspaceOverride(workspace, publicPackage.version, workspaceRelativePath);
+  synchronizeWorkspaceOverrides(workspace, publicPackage.version, workspaceRelativePath);
 
   return {
-    kafkaPackage: validateKafkaManifest(readJson(kafkaPackagePath), kafkaPackageRelativePath),
+    grpcPackage: validateAdapterManifest(
+      readJson(grpcPackagePath),
+      grpcPackageName,
+      grpcPackageRelativePath,
+    ),
+    grpcPackagePath,
+    kafkaPackage: validateAdapterManifest(
+      readJson(kafkaPackagePath),
+      kafkaPackageName,
+      kafkaPackageRelativePath,
+    ),
     kafkaPackagePath,
     kafkaPeerMatrix: validatePeerMatrix(
       readJson(kafkaPeerMatrixPath),
@@ -136,19 +157,23 @@ const readReleaseMetadata = (rootDirectory) => {
 
 const prepareSynchronizedMetadata = (metadata) => {
   const version = metadata.publicPackage.version;
+  const grpcPackage = structuredClone(metadata.grpcPackage);
   const kafkaPackage = structuredClone(metadata.kafkaPackage);
 
+  grpcPackage.devDependencies[publicPackageName] = version;
+  grpcPackage.peerDependencies[publicPackageName] = version;
   kafkaPackage.devDependencies[publicPackageName] = version;
   kafkaPackage.peerDependencies[publicPackageName] = version;
 
   return {
+    grpcPackage,
     kafkaPackage,
     kafkaPeerMatrix: metadata.kafkaPeerMatrix.map((entry) => ({
       ...entry,
       [publicPackageName]: version,
     })),
     version,
-    workspace: synchronizeWorkspaceOverride(
+    workspace: synchronizeWorkspaceOverrides(
       metadata.workspace,
       version,
       workspaceRelativePath,
@@ -181,6 +206,10 @@ export const runReleaseVersion = ({ command, rootDirectory }) => {
   const metadata = readReleaseMetadata(rootDirectory);
   const synchronized = prepareSynchronizedMetadata(metadata);
 
+  writeFileSync(
+    metadata.grpcPackagePath,
+    `${JSON.stringify(synchronized.grpcPackage, undefined, 2)}\n`,
+  );
   writeFileSync(
     metadata.kafkaPackagePath,
     `${JSON.stringify(synchronized.kafkaPackage, undefined, 2)}\n`,

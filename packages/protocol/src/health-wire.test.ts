@@ -25,7 +25,6 @@ describe("Health wire codec", () => {
         connectionStatus: "connected",
         unhealthyTopics: ["orders"],
         updatedAtNanos: 123n,
-        maxKafkaLag: 45n,
       };
 
       const summaryStatus = yield* viewServerEncodeHealthSummaryEvent(viewServer, {
@@ -72,7 +71,6 @@ describe("Health wire codec", () => {
             connectionStatus: "connected",
             unhealthyTopics: ["orders"],
             updatedAtNanos: "123",
-            maxKafkaLag: "45",
           },
         ],
         totalRows: 1,
@@ -103,7 +101,6 @@ describe("Health wire codec", () => {
             connectionStatus: "disconnected",
             unhealthyTopics: [],
             updatedAtNanos: "1",
-            maxKafkaLag: null,
           },
         ],
         totalRows: 1,
@@ -122,7 +119,6 @@ describe("Health wire codec", () => {
             connectionStatus: "disconnected",
             unhealthyTopics: [],
             updatedAtNanos: 1n,
-            maxKafkaLag: null,
           },
         ],
         totalRows: 1,
@@ -190,13 +186,11 @@ describe("Health wire codec", () => {
         memoryBytes: 6,
         tombstoneCount: 1,
         compactionPending: false,
-        kafkaLag: 7n,
         updatedAtNanos: 456n,
       };
       const badJsonHealthTopicRow: ViewServerHealthTopicRow<"badjson"> = {
         ...healthTopicRow,
         id: "badjson",
-        kafkaLag: null,
         rowCount: 0,
         liveRowCount: 0,
         version: 0,
@@ -241,7 +235,6 @@ describe("Health wire codec", () => {
             memoryBytes: 6,
             tombstoneCount: 1,
             compactionPending: false,
-            kafkaLag: "7",
             updatedAtNanos: "456",
           },
           {
@@ -274,7 +267,7 @@ describe("Health wire codec", () => {
           {
             type: "update",
             key: "orders",
-            row: { ...healthTopicRow, rowCount: 11, kafkaLag: "7", updatedAtNanos: "456" },
+            row: { ...healthTopicRow, rowCount: 11, updatedAtNanos: "456" },
             index: 0,
           },
           { type: "move", key: "orders", fromIndex: 1, toIndex: 0 },

@@ -174,23 +174,9 @@ export const rawRuntimeMetrics = {
     maxMs: 2,
     totalMs: 7,
   },
-  kafkaLag: {
-    maxConsumerLagMessages: "9007199254740993",
-    sampledRegionCount: 1,
-    totalConsumerLagMessages: "9007199254740993",
-  },
 };
 
 export const runtimeMetrics = rawRuntimeMetrics;
-
-export const drainedRuntimeMetrics = {
-  ...runtimeMetrics,
-  kafkaLag: {
-    maxConsumerLagMessages: "0",
-    sampledRegionCount: 1,
-    totalConsumerLagMessages: "0",
-  },
-};
 
 export const comparableNonKafkaRuntimeThroughputCases = [
   {

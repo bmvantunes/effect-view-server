@@ -4,7 +4,7 @@ import type * as EffectChunk from "effect/Chunk";
 import type * as EffectHashMap from "effect/HashMap";
 import type * as EffectHashSet from "effect/HashSet";
 import * as EffectOption from "effect/Option";
-import { defineViewServerConfig, viewSchema } from "./index";
+import { ViewServerId, defineViewServerConfig, viewSchema } from "./index";
 
 const OptionNumber = viewSchema.Option(Schema.NumberFromString);
 const ChunkNumber = viewSchema.Chunk(Schema.NumberFromString);
@@ -15,7 +15,7 @@ const Nested = viewSchema.Option(
 );
 
 class Profile extends Schema.Class<Profile>("Profile")({
-  id: Schema.String,
+  id: ViewServerId,
   score: Schema.NumberFromString,
   backup: viewSchema.Option(Schema.String),
 }) {
@@ -27,7 +27,7 @@ const admittedProfile = viewSchema.admitClass(Profile);
 const AnnotatedProfile = Profile.annotate({ title: "AnnotatedProfile" });
 
 class SecondaryProfile extends Schema.Class<SecondaryProfile>("SecondaryProfile")(
-  { id: Schema.String },
+  { id: ViewServerId },
   { title: "Secondary profile" },
 ) {}
 const admittedSecondaryProfile = viewSchema.admitClass(SecondaryProfile);
@@ -36,7 +36,6 @@ const profileConfig = defineViewServerConfig({
   topics: {
     profiles: {
       schema: Profile,
-      key: "id",
     },
   },
 });
@@ -92,7 +91,7 @@ describe("viewSchema public type contracts", () => {
 
   it("reports misuse without requiring consumer casts", () => {
     // @ts-expect-error admitClass requires a concrete Effect Schema.Class.
-    viewSchema.admitClass(Schema.Struct({ id: Schema.String }));
+    viewSchema.admitClass(Schema.Struct({ id: ViewServerId }));
     // @ts-expect-error declarations without Class fields are not concrete Schema classes.
     viewSchema.admitClass(Schema.Option(Schema.String));
     // @ts-expect-error Class annotation rebuilds do not retain the concrete Class field Interface.

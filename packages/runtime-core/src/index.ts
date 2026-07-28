@@ -1,8 +1,6 @@
-import type { DecodableTopicDefinitions } from "@effect-view-server/column-live-view-engine";
 import type {
+  TopicDefinitions,
   ViewServerConfig,
-  GrpcRuntimeClients,
-  RuntimeRegions,
   ViewServerRuntimeError,
 } from "@effect-view-server/config";
 import { Effect } from "effect";
@@ -13,7 +11,7 @@ import type {
 } from "./runtime-core-types";
 import type { ViewServerSourceRequirements } from "./source-runtime";
 
-export type { DecodableTopicDefinitions } from "@effect-view-server/column-live-view-engine";
+export type { TopicDefinitions } from "@effect-view-server/config";
 export type { GroupedIncrementalAdmissionLimits } from "@effect-view-server/column-live-view-engine";
 export type { RuntimeCoreTransportHealth } from "./health";
 export type { RuntimeCoreHealthOverlay } from "./health";
@@ -29,30 +27,18 @@ export type {
 } from "./runtime-core-types";
 export type { ViewServerSourceRequirements } from "./source-runtime";
 
-type SynchronousRuntimeCoreConfig<
-  Topics extends DecodableTopicDefinitions,
-  Regions extends RuntimeRegions,
-  GrpcClients extends GrpcRuntimeClients,
-> = ViewServerConfig<Topics, Regions, GrpcClients> &
+type SynchronousRuntimeCoreConfig<Topics extends TopicDefinitions> = ViewServerConfig<Topics> &
   ([ViewServerSourceRequirements<NoInfer<Topics>>] extends [never] ? unknown : never);
 
-export const makeViewServerRuntimeCore: <
-  const Topics extends DecodableTopicDefinitions,
-  const Regions extends RuntimeRegions,
-  const GrpcClients extends GrpcRuntimeClients,
->(
-  config: ViewServerConfig<Topics, Regions, GrpcClients>,
+export const makeViewServerRuntimeCore: <const Topics extends TopicDefinitions>(
+  config: ViewServerConfig<Topics>,
   input: ViewServerRuntimeCoreOptionsFor<Topics>,
 ) => Effect.Effect<
   ViewServerRuntimeCoreInstance<Topics>,
   ViewServerRuntimeError,
   ViewServerSourceRequirements<Topics>
-> = Effect.fn("ViewServerRuntimeCore.make")(function* <
-  const Topics extends DecodableTopicDefinitions,
-  const Regions extends RuntimeRegions,
-  const GrpcClients extends GrpcRuntimeClients,
->(
-  config: ViewServerConfig<Topics, Regions, GrpcClients>,
+> = Effect.fn("ViewServerRuntimeCore.make")(function* <const Topics extends TopicDefinitions>(
+  config: ViewServerConfig<Topics>,
   input: ViewServerRuntimeCoreOptionsFor<Topics>,
 ) {
   const runtimeCore = yield* makeViewServerRuntimeCoreInternal(config, input);
@@ -66,12 +52,8 @@ export const makeViewServerRuntimeCore: <
   };
 });
 
-export const createViewServerRuntimeCore = <
-  const Topics extends DecodableTopicDefinitions,
-  const Regions extends RuntimeRegions,
-  const GrpcClients extends GrpcRuntimeClients,
->(
-  config: SynchronousRuntimeCoreConfig<Topics, Regions, GrpcClients>,
+export const createViewServerRuntimeCore = <const Topics extends TopicDefinitions>(
+  config: SynchronousRuntimeCoreConfig<Topics>,
   options: ViewServerRuntimeCoreOptionsFor<Topics> = {},
 ): ViewServerRuntimeCoreInstance<Topics> =>
   Effect.runSync(makeViewServerRuntimeCore(config, options));

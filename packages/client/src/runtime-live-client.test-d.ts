@@ -1,23 +1,43 @@
 import { describe, expectTypeOf, it } from "@effect/vitest";
-import type { GrpcLeasedTopicSource, TopicDefinition } from "@effect-view-server/config";
+import { ViewServerId, defineViewServerConfig } from "@effect-view-server/config";
+import { SourceAdapter } from "@effect-view-server/source-adapter";
 import type { Effect } from "effect";
 import { Schema } from "effect";
 import type { ViewServerLiveSubscription, ViewServerRuntimeLiveClient } from "./index";
 
 const Order = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   price: Schema.Number,
 });
 
-type OrdinaryTopics = {
-  readonly orders: TopicDefinition<typeof Order, "id">;
-};
+const sourceAdapter = SourceAdapter.make({
+  identity: { name: "runtime-live-client-type-source" },
+  failure: Schema.Never,
+  materialized: undefined,
+  leased: {
+    metrics: Schema.Struct({ observed: Schema.BigInt }),
+    rejectionLocation: Schema.Struct({ offset: Schema.BigInt }),
+    definitionOptions: SourceAdapter.definitionOptions<undefined>(),
+  },
+});
 
-type LeasedTopics = {
-  readonly orders: TopicDefinition<typeof Order, "id"> & {
-    readonly grpcSource: GrpcLeasedTopicSource<readonly ["id"]>;
-  };
-};
+const ordinaryViewServer = defineViewServerConfig({
+  topics: {
+    orders: { schema: Order },
+  },
+});
+
+const leasedViewServer = defineViewServerConfig({
+  topics: {
+    orders: {
+      schema: Order,
+      source: sourceAdapter.leasedSource(["id"], undefined),
+    },
+  },
+});
+
+type OrdinaryTopics = typeof ordinaryViewServer.topics;
+type LeasedTopics = typeof leasedViewServer.topics;
 
 declare const leasedRuntimeClient: ViewServerRuntimeLiveClient<LeasedTopics>;
 declare const ordinaryRuntimeClient: ViewServerRuntimeLiveClient<OrdinaryTopics>;

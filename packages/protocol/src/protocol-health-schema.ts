@@ -1,8 +1,4 @@
 import type {
-  GrpcClientHealth,
-  GrpcFeedHealth,
-  GrpcRuntimeHealth,
-  KafkaStartFromHealth,
   TopicRuntimeHealth,
   TransportHealth,
   ViewServerHealthSummaryRow,
@@ -52,113 +48,21 @@ const TransportHealthSchema: Schema.Codec<TransportHealth> = Schema.Struct({
   lastError: StringOrNull,
 });
 
-const KafkaStartFromHealthSchema: Schema.Codec<KafkaStartFromHealth> = Schema.Union([
-  Schema.Struct({
-    consumerGroupId: Schema.String,
-    mode: Schema.Literal("earliest"),
-    fallbackMode: Schema.Literal("earliest"),
-  }),
-  Schema.Struct({
-    consumerGroupId: Schema.String,
-    mode: Schema.Literal("latest"),
-    fallbackMode: Schema.Literal("latest"),
-  }),
-  Schema.Struct({
-    consumerGroupId: Schema.String,
-    mode: Schema.Literal("committed"),
-    fallbackMode: Schema.Literals(["earliest", "latest", "fail"]),
-  }),
-]);
-
-const GrpcClientHealthSchema: Schema.Codec<GrpcClientHealth> = Schema.Struct({
-  status: Schema.Literals(["connected", "disconnected", "degraded", "starting"]),
-  baseUrl: Schema.String,
-  activeFeeds: Schema.Number,
-  lastConnectedAt: NumberOrNull,
-  lastError: StringOrNull,
-});
-
-const GrpcFeedHealthSchema: Schema.Codec<GrpcFeedHealth> = Schema.Struct({
-  status: Schema.Literals(["starting", "ready", "degraded", "stopping"]),
-  lifecycle: Schema.Literals(["materialized", "leased"]),
-  feedName: Schema.String,
-  feedKey: Schema.String,
-  topic: Schema.String,
-  subscriberCount: Schema.Number,
-  rowCount: Schema.Number,
-  messagesPerSecond: Schema.Number,
-  rowsPerSecond: Schema.Number,
-  decodeFailuresPerSecond: Schema.Number,
-  mappingFailuresPerSecond: Schema.Number,
-  publishFailuresPerSecond: Schema.Number,
-  reconnects: Schema.Number,
-  lastMessageAt: NumberOrNull,
-  lastError: StringOrNull,
-});
-
-const GrpcRuntimeHealthSchema: Schema.Codec<GrpcRuntimeHealth> = Schema.Struct({
-  clients: Schema.Record(Schema.String, GrpcClientHealthSchema),
-  feeds: Schema.Record(
-    Schema.String,
-    Schema.Struct({
-      materialized: Schema.Record(Schema.String, GrpcFeedHealthSchema),
-      leased: Schema.Record(Schema.String, GrpcFeedHealthSchema),
-    }),
-  ),
-});
-
-export const ViewServerHealthSchema = Schema.Struct({
+const ViewServerHealthBaseFields = {
   status: Schema.Literals(["ready", "degraded", "starting", "stopping"]),
   version: Schema.Number,
   uptimeMs: Schema.Number,
   engine: Schema.Struct({
     topics: Schema.Record(Schema.String, TopicRuntimeHealthSchema),
   }),
-  kafka: Schema.optionalKey(
-    Schema.Struct({
-      startFrom: KafkaStartFromHealthSchema,
-      regions: Schema.Record(
-        Schema.String,
-        Schema.Struct({
-          status: Schema.Literals(["connected", "disconnected", "degraded", "starting"]),
-          brokers: Schema.String,
-          lastConnectedAt: NumberOrNull,
-          lastError: StringOrNull,
-        }),
-      ),
-      topics: Schema.Record(
-        Schema.String,
-        Schema.Struct({
-          status: Schema.Literals(["ready", "degraded", "starting", "stalled"]),
-          sourceTopic: Schema.String,
-          viewServerTopic: Schema.String,
-          regions: Schema.Record(
-            Schema.String,
-            Schema.Struct({
-              connected: Schema.Boolean,
-              assignedPartitions: Schema.Number,
-              messagesPerSecond: Schema.Number,
-              bytesPerSecond: Schema.Number,
-              decodedMessagesPerSecond: Schema.Number,
-              decodeFailuresPerSecond: Schema.Number,
-              mappingFailuresPerSecond: Schema.Number,
-              publishFailuresPerSecond: Schema.Number,
-              commitFailuresPerSecond: Schema.Number,
-              processingFailuresPerSecond: Schema.Number,
-              lastMessageAt: NumberOrNull,
-              lastCommitAt: NumberOrNull,
-              consumerLagMessages: Schema.NullOr(BigIntString),
-              lagSampledAt: NumberOrNull,
-              committedOffset: StringOrNull,
-              lastError: StringOrNull,
-            }),
-          ),
-        }),
-      ),
-    }),
-  ),
-  grpc: Schema.optionalKey(GrpcRuntimeHealthSchema),
   transport: TransportHealthSchema,
+};
+
+export const ViewServerHealthBaseSchema = Schema.Struct(ViewServerHealthBaseFields);
+
+export const ViewServerHealthSchema = Schema.Struct({
+  ...ViewServerHealthBaseFields,
+  sources: Schema.Record(Schema.String, Schema.Json),
 });
 
 export type ViewServerWireHealth = typeof ViewServerHealthSchema.Type;
@@ -182,7 +86,6 @@ export const ViewServerHealthSummaryRowSchema: Schema.Codec<
   connectionStatus: Schema.Literals(["connecting", "connected", "disconnected"]),
   unhealthyTopics: Schema.Array(Schema.String),
   updatedAtNanos: BigIntString,
-  maxKafkaLag: Schema.NullOr(BigIntString),
 });
 
 export const ViewServerHealthTopicRowSchema: Schema.Codec<
@@ -213,6 +116,5 @@ export const ViewServerHealthTopicRowSchema: Schema.Codec<
   memoryBytes: Schema.Number,
   tombstoneCount: Schema.Number,
   compactionPending: Schema.Boolean,
-  kafkaLag: Schema.NullOr(BigIntString),
   updatedAtNanos: BigIntString,
 });

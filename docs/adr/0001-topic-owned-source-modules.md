@@ -2,15 +2,14 @@
 
 ## Status
 
-Accepted. Issue #384 implements the transport-neutral `source` property, Source
-Adapter contracts, canonical Topic Row ID, and Runtime Core support described by
-ADRs 0006–0010. Issues #385 and #386 implement first-party Kafka and gRPC
-adoption. Removal of the remaining transport-specific Topic source properties
-stays staged in issue #387.
+Accepted and implemented. Issues #384–#387 deliver the transport-neutral
+`source` property, Source Adapter contracts, canonical Topic Row ID, Runtime
+Core support, first-party Kafka and gRPC adoption, and removal of the
+transport-specific Topic source properties described by ADRs 0006–0010.
 
 ## Context
 
-A View Server Topic is the logical table users query. It owns one Topic Schema and one authoritative store. Under the canonical Source Adapter model, that Topic Schema has the canonical `id: Schema.String` field. External Source Topics, gRPC feeds, TCP publish commands, and direct Runtime Client mutations are ways to mutate that View Server Topic.
+A View Server Topic is the logical table users query. It owns one Topic Schema and one authoritative store. Under the canonical Source Adapter model, that Topic Schema has the canonical `id: ViewServerId` field. External Source Topics, gRPC feeds, TCP publish commands, and direct Runtime Client mutations are ways to mutate that View Server Topic.
 
 The early Kafka runtime shape allowed source declarations to be owned by runtime options. That made source ownership shallow: topic schema lived in the View Server config, while Kafka Source Codec, Region, Mapping, source topic name, and delivery behavior could live elsewhere. The Interface forced callers and maintainers to understand two places before they could answer basic questions:
 
@@ -30,7 +29,7 @@ As specified by ADR 0006, the canonical source shape is one `source` property co
 
 Runtime options do not declare canonical source ownership or contain Source Adapter configuration. Per-source ownership and behavior stay in the one Topic-owned Source Definition. Concrete brokers, clients, credentials, endpoints, and platform resources belong to the Source Adapter's aggregate Layer supplied to the View Server Runtime Effect.
 
-The remaining runtime-owned transport helpers and transport-specific Topic properties are staged for deletion rather than becoming compatibility paths. The public facade and package subexports keep negative export tests for removed names so they cannot silently return.
+Runtime-owned transport helpers and transport-specific Topic properties have been removed rather than retained as compatibility paths. The public facade and package subexports keep negative export tests for those removed names so they cannot silently return.
 
 ## Consequences
 

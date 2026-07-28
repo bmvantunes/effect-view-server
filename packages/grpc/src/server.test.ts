@@ -8,7 +8,7 @@ import {
 } from "@bufbuild/protobuf/wkt";
 import { Code, ConnectError } from "@connectrpc/connect";
 import { describe, expect, it } from "@effect/vitest";
-import { defineViewServerConfig } from "@effect-view-server/config";
+import { ViewServerId, defineViewServerConfig } from "@effect-view-server/config";
 import {
   viewServerDecodeSourceHealth,
   viewServerEncodeSourceHealth,
@@ -153,7 +153,7 @@ const InventoryService = serviceDesc<{
 }>(descriptorFile, 1);
 
 const Order = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   price: Schema.Number,
   region: Schema.String,
 });
@@ -474,7 +474,9 @@ describe("gRPC Source Adapter Runtime Core vertical slice", () => {
       yield* controlled.emit(1, { id: "one", price: 10, region: "eu" });
       const events = yield* Fiber.join(eventsFiber);
       yield* TestClock.adjust("1 second");
-      const metricsDiagnostics = yield* runtime.liveClient.subscribeSourceHealth("orders");
+      const metricsDiagnostics = yield* runtime.liveClient.subscribeSourceHealth({
+        topic: "orders",
+      });
       const sampled = Option.getOrThrow(
         yield* metricsDiagnostics.events.pipe(Stream.take(1), Stream.runHead),
       );
@@ -597,8 +599,9 @@ describe("gRPC Source Adapter Runtime Core vertical slice", () => {
         const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(
           Effect.provide(grpcServerLayer(config, { orders: controlled.client })),
         );
-        const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("orders", {
-          region: "eu",
+        const diagnostics = yield* runtime.liveClient.subscribeSourceHealth({
+          topic: "orders",
+          routeBy: { region: "eu" },
         });
         const inactive = Option.getOrThrow(
           yield* diagnostics.events.pipe(Stream.take(1), Stream.runHead),
@@ -741,14 +744,15 @@ describe("gRPC Source Adapter Runtime Core vertical slice", () => {
         Stream.runCollect,
         Effect.forkChild,
       );
-      const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("orders", {
-        region: "eu",
+      const diagnostics = yield* runtime.liveClient.subscribeSourceHealth({
+        topic: "orders",
+        routeBy: { region: "eu" },
       });
       const rejectionDiagnostics = yield* Effect.forEach(
         [1n, 2n, 3n, 4n] as const,
         (streamItemIndex) =>
           runtime.liveClient
-            .subscribeSourceHealth("orders", { region: "eu" })
+            .subscribeSourceHealth({ topic: "orders", routeBy: { region: "eu" } })
             .pipe(Effect.map((events) => ({ events, streamItemIndex }))),
       );
       const rejectionFibers = yield* Effect.forEach(rejectionDiagnostics, (entry) =>
@@ -794,8 +798,9 @@ describe("gRPC Source Adapter Runtime Core vertical slice", () => {
         return yield* Effect.die("Expected Degraded Leased diagnostics.");
       }
       yield* TestClock.adjust("1 second");
-      const sampledDiagnostics = yield* runtime.liveClient.subscribeSourceHealth("orders", {
-        region: "eu",
+      const sampledDiagnostics = yield* runtime.liveClient.subscribeSourceHealth({
+        topic: "orders",
+        routeBy: { region: "eu" },
       });
       const sampledActive = Option.getOrThrow(
         yield* sampledDiagnostics.events.pipe(Stream.take(1), Stream.runHead),
@@ -991,7 +996,7 @@ describe("gRPC Source Adapter Runtime Core vertical slice", () => {
           }),
         ),
       );
-      const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("orders");
+      const diagnostics = yield* runtime.liveClient.subscribeSourceHealth({ topic: "orders" });
       const exhausted = Option.getOrThrow(
         yield* diagnostics.events.pipe(
           Stream.filter((health) => health.status._tag === "Exhausted"),
@@ -1063,7 +1068,7 @@ describe("gRPC Source Adapter Runtime Core vertical slice", () => {
         const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(
           Effect.provide(grpcServerLayer(config, { orders: controlled.client })),
         );
-        const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("orders");
+        const diagnostics = yield* runtime.liveClient.subscribeSourceHealth({ topic: "orders" });
         if (phase === "stream") {
           yield* awaitInvocationCount(controlled, 1);
           yield* controlled.fail(0, hostileCause);
@@ -1141,7 +1146,7 @@ describe("gRPC Source Adapter Runtime Core vertical slice", () => {
         ),
       );
       const missingDefinitionDiagnostics =
-        yield* missingDefinitionRuntime.liveClient.subscribeSourceHealth("orders");
+        yield* missingDefinitionRuntime.liveClient.subscribeSourceHealth({ topic: "orders" });
       const missingDefinitionHealth = Option.getOrThrow(
         yield* missingDefinitionDiagnostics.events.pipe(
           Stream.filter((health) => health.status._tag === "Exhausted"),
@@ -1183,8 +1188,9 @@ describe("gRPC Source Adapter Runtime Core vertical slice", () => {
           ),
         ),
       );
-      const missingClientDiagnostics =
-        yield* missingClientRuntime.liveClient.subscribeSourceHealth("orders");
+      const missingClientDiagnostics = yield* missingClientRuntime.liveClient.subscribeSourceHealth(
+        { topic: "orders" },
+      );
       const missingClientHealth = Option.getOrThrow(
         yield* missingClientDiagnostics.events.pipe(
           Stream.filter((health) => health.status._tag === "Exhausted"),
@@ -1243,7 +1249,7 @@ describe("gRPC Source Adapter Runtime Core vertical slice", () => {
       const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(
         Effect.provide(grpcServerLayer(config, { orders: controlled.client })),
       );
-      const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("orders");
+      const diagnostics = yield* runtime.liveClient.subscribeSourceHealth({ topic: "orders" });
       const exhausted = Option.getOrThrow(
         yield* diagnostics.events.pipe(
           Stream.filter((health) => health.status._tag === "Exhausted"),
@@ -1317,7 +1323,7 @@ describe("gRPC Source Adapter Runtime Core vertical slice", () => {
         const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(
           Effect.provide(grpcServerLayer(config, { orders: controlled.client })),
         );
-        const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("orders");
+        const diagnostics = yield* runtime.liveClient.subscribeSourceHealth({ topic: "orders" });
         const exhausted = Option.getOrThrow(
           yield* diagnostics.events.pipe(
             Stream.filter((health) => health.status._tag === "Exhausted"),
@@ -1370,8 +1376,9 @@ describe("gRPC Source Adapter Runtime Core vertical slice", () => {
       const completedRuntime = yield* makeViewServerRuntimeCore(completedConfig, {}).pipe(
         Effect.provide(grpcServerLayer(completedConfig, { orders: completed.client })),
       );
-      const completedDiagnostics =
-        yield* completedRuntime.liveClient.subscribeSourceHealth("orders");
+      const completedDiagnostics = yield* completedRuntime.liveClient.subscribeSourceHealth({
+        topic: "orders",
+      });
       yield* awaitInvocationCount(completed, 1);
       yield* completed.complete(0);
       const completedHealth = Option.getOrThrow(
@@ -1388,8 +1395,9 @@ describe("gRPC Source Adapter Runtime Core vertical slice", () => {
         _tag: "UnexpectedCompletion",
       });
       yield* TestClock.adjust("1 second");
-      const completedMetricsDiagnostics =
-        yield* completedRuntime.liveClient.subscribeSourceHealth("orders");
+      const completedMetricsDiagnostics = yield* completedRuntime.liveClient.subscribeSourceHealth({
+        topic: "orders",
+      });
       const completedSampled = Option.getOrThrow(
         yield* completedMetricsDiagnostics.events.pipe(Stream.take(1), Stream.runHead),
       );
@@ -1457,7 +1465,7 @@ describe("gRPC Source Adapter Runtime Core vertical slice", () => {
           const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(
             Effect.provide(adapterContext),
           );
-          const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("orders");
+          const diagnostics = yield* runtime.liveClient.subscribeSourceHealth({ topic: "orders" });
           const ready = Option.getOrThrow(
             yield* diagnostics.events.pipe(
               Stream.filter((health) => health.status._tag === "Ready"),
@@ -1544,7 +1552,7 @@ describe("gRPC Source Adapter Runtime Core vertical slice", () => {
       const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(
         Effect.provide(grpcServerLayer(config, { orders: controlled.client })),
       );
-      const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("orders");
+      const diagnostics = yield* runtime.liveClient.subscribeSourceHealth({ topic: "orders" });
       yield* awaitInvocationCount(controlled, 1);
       yield* controlled.fail(0);
       const exhausted = Option.getOrThrow(
@@ -1555,7 +1563,9 @@ describe("gRPC Source Adapter Runtime Core vertical slice", () => {
         ),
       );
       yield* TestClock.adjust("1 second");
-      const metricsDiagnostics = yield* runtime.liveClient.subscribeSourceHealth("orders");
+      const metricsDiagnostics = yield* runtime.liveClient.subscribeSourceHealth({
+        topic: "orders",
+      });
       const sampled = Option.getOrThrow(
         yield* metricsDiagnostics.events.pipe(Stream.take(1), Stream.runHead),
       );
@@ -2110,7 +2120,7 @@ describe("gRPC Source Adapter Runtime Core vertical slice", () => {
           ),
         ),
       );
-      const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("orders");
+      const diagnostics = yield* runtime.liveClient.subscribeSourceHealth({ topic: "orders" });
       const exhausted = Option.getOrThrow(
         yield* diagnostics.events.pipe(
           Stream.filter((health) => health.status._tag === "Exhausted"),

@@ -26,9 +26,6 @@ export default defineConfig({
     "src/topic-contract.ts",
     "src/health-contract.ts",
     "src/live-protocol.ts",
-    "src/kafka.ts",
-    "src/grpc.ts",
-    "src/grpc-contract.ts",
     "src/internal.ts",
   ]),
   lint: {

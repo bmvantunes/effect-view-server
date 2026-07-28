@@ -1,3 +1,4 @@
+import { ViewServerId } from "@effect-view-server/config";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import {
@@ -17,7 +18,7 @@ describe("column-live-view-engine Active Query lifecycle", () => {
       const store = new TopicStore(
         "raw-insert-reset-release",
         Schema.Struct({
-          id: Schema.String,
+          id: ViewServerId,
           status: Schema.String,
           score: Schema.Number,
         }),
@@ -56,7 +57,7 @@ describe("column-live-view-engine Active Query lifecycle", () => {
     Effect.gen(function* () {
       const store = new TopicStore(
         "numbers",
-        Schema.Struct({ id: Schema.String, score: Schema.Number }),
+        Schema.Struct({ id: ViewServerId, score: Schema.Number }),
         "id",
         () => {},
       );

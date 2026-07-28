@@ -1,13 +1,8 @@
-import type {
-  GrpcRuntimeClients,
-  RuntimeRegions,
-  ViewServerConfig,
-  ViewServerRuntimeError,
-} from "@effect-view-server/config";
+import type { ViewServerConfig, ViewServerRuntimeError } from "@effect-view-server/config";
 import {
   createViewServerRuntimeCore,
   makeViewServerRuntimeCore,
-  type DecodableTopicDefinitions,
+  type TopicDefinitions,
   type ViewServerRuntimeCoreInstance,
   type ViewServerRuntimeCoreOptionsFor,
   type ViewServerRuntimeCorePublicClient,
@@ -16,9 +11,12 @@ import {
 } from "@effect-view-server/runtime-core";
 import { Effect } from "effect";
 
-export type { DecodableTopicDefinitions } from "@effect-view-server/runtime-core";
+export type {
+  TopicDefinitions,
+  ViewServerSourceRequirements,
+} from "@effect-view-server/runtime-core";
 
-export type ViewServerInMemoryTopicDefinitions = DecodableTopicDefinitions;
+export type ViewServerInMemoryTopicDefinitions = TopicDefinitions;
 
 export type ViewServerInMemoryInstance<Topics extends ViewServerInMemoryTopicDefinitions> = {
   readonly client: ViewServerRuntimeCorePublicClient<Topics>;
@@ -30,12 +28,9 @@ export type ViewServerInMemoryOptions<
   Topics extends ViewServerInMemoryTopicDefinitions = ViewServerInMemoryTopicDefinitions,
 > = Omit<ViewServerRuntimeCoreOptionsFor<Topics>, "transportHealth">;
 
-type SynchronousInMemoryConfig<
-  Topics extends ViewServerInMemoryTopicDefinitions,
-  Regions extends RuntimeRegions,
-  GrpcClients extends GrpcRuntimeClients,
-> = ViewServerConfig<Topics, Regions, GrpcClients> &
-  ([ViewServerSourceRequirements<NoInfer<Topics>>] extends [never] ? unknown : never);
+type SynchronousInMemoryConfig<Topics extends ViewServerInMemoryTopicDefinitions> =
+  ViewServerConfig<Topics> &
+    ([ViewServerSourceRequirements<NoInfer<Topics>>] extends [never] ? unknown : never);
 
 const toRuntimeCoreOptions = <const Topics extends ViewServerInMemoryTopicDefinitions>(
   input: ViewServerInMemoryOptions<Topics>,
@@ -61,24 +56,16 @@ const toInMemoryInstance = <const Topics extends ViewServerInMemoryTopicDefiniti
   };
 };
 
-export const makeInMemoryViewServer: <
-  const Topics extends ViewServerInMemoryTopicDefinitions,
-  const Regions extends RuntimeRegions,
-  const GrpcClients extends GrpcRuntimeClients,
->(
-  config: ViewServerConfig<Topics, Regions, GrpcClients>,
+export const makeInMemoryViewServer: <const Topics extends ViewServerInMemoryTopicDefinitions>(
+  config: ViewServerConfig<Topics>,
   input: ViewServerInMemoryOptions<Topics>,
 ) => Effect.Effect<
   ViewServerInMemoryInstance<Topics>,
   ViewServerRuntimeError,
   ViewServerSourceRequirements<Topics>
 > = Effect.fn("ViewServerInMemory.make")(
-  <
-    const Topics extends ViewServerInMemoryTopicDefinitions,
-    const Regions extends RuntimeRegions,
-    const GrpcClients extends GrpcRuntimeClients,
-  >(
-    config: ViewServerConfig<Topics, Regions, GrpcClients>,
+  <const Topics extends ViewServerInMemoryTopicDefinitions>(
+    config: ViewServerConfig<Topics>,
     input: ViewServerInMemoryOptions<Topics>,
   ) =>
     makeViewServerRuntimeCore(config, toRuntimeCoreOptions(input)).pipe(
@@ -86,12 +73,8 @@ export const makeInMemoryViewServer: <
     ),
 );
 
-export const createInMemoryViewServer = <
-  const Topics extends ViewServerInMemoryTopicDefinitions,
-  const Regions extends RuntimeRegions,
-  const GrpcClients extends GrpcRuntimeClients,
->(
-  config: SynchronousInMemoryConfig<Topics, Regions, GrpcClients>,
+export const createInMemoryViewServer = <const Topics extends ViewServerInMemoryTopicDefinitions>(
+  config: SynchronousInMemoryConfig<Topics>,
   options: ViewServerInMemoryOptions<Topics> = {},
 ): ViewServerInMemoryInstance<Topics> =>
   toInMemoryInstance(createViewServerRuntimeCore(config, toRuntimeCoreOptions(options)));

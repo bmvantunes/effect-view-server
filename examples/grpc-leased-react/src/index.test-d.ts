@@ -1,6 +1,7 @@
 import { describe, expectTypeOf, it } from "@effect/vitest";
 import type { LiveQueryResult } from "effect-view-server/config";
-import { grpcClients, useLiveQuery } from "./view-server.config";
+import { ordersService } from "./grpc-descriptors";
+import { useLiveQuery, viewServer } from "./view-server.config";
 
 describe("leased gRPC example type contracts", () => {
   it("requires leased route values and preserves selected row types", () => {
@@ -41,9 +42,9 @@ describe("leased gRPC example type contracts", () => {
     expectTypeOf(invalidRouteQuery).not.toBeAny();
   });
 
-  it("keeps the generated gRPC client descriptor typed", () => {
-    expectTypeOf(
-      grpcClients.orders.service.method.streamOrders.methodKind,
-    ).toEqualTypeOf<"server_streaming">();
+  it("keeps the generated descriptor and canonical source typed", () => {
+    expectTypeOf(ordersService.method.streamOrders.methodKind).toEqualTypeOf<"server_streaming">();
+    expectTypeOf(viewServer.topics.orders.source.lifecycle).toEqualTypeOf<"leased">();
+    expectTypeOf(viewServer.topics.orders.source.options.client).toEqualTypeOf<string>();
   });
 });

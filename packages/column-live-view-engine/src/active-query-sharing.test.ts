@@ -1,3 +1,4 @@
+import { ViewServerId } from "@effect-view-server/config";
 import { fromStringUnsafe } from "effect/BigDecimal";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Option, Schema } from "effect";
@@ -32,7 +33,7 @@ describe("column-live-view-engine Active Query sharing", () => {
         const store = new TopicStore(
           "shared-large-grouped-filter",
           Schema.Struct({
-            id: Schema.String,
+            id: ViewServerId,
             customerId: Schema.String,
             status: Schema.String,
           }),
@@ -123,7 +124,7 @@ describe("column-live-view-engine Active Query sharing", () => {
         const store = new TopicStore(
           "shared-large-membership",
           Schema.Struct({
-            id: Schema.String,
+            id: ViewServerId,
             customerId: Schema.String,
             region: Schema.String,
           }),
@@ -174,7 +175,7 @@ describe("column-live-view-engine Active Query sharing", () => {
   it.effect("reuses execution state for identical compiled raw queries", () =>
     Effect.gen(function* () {
       const rowSchema = Schema.Struct({
-        id: Schema.String,
+        id: ViewServerId,
         status: Schema.String,
         score: Schema.Number,
         count: Schema.BigInt,
@@ -287,7 +288,7 @@ describe("column-live-view-engine Active Query sharing", () => {
       const store = new TopicStore(
         "registry-isolation",
         Schema.Struct({
-          id: Schema.String,
+          id: ViewServerId,
           score: Schema.Number,
         }),
         "id",
@@ -329,7 +330,7 @@ describe("column-live-view-engine Active Query sharing", () => {
       const store = new TopicStore(
         "projection-sharing",
         Schema.Struct({
-          id: Schema.String,
+          id: ViewServerId,
           status: Schema.String,
           score: Schema.Number,
         }),
@@ -385,7 +386,7 @@ describe("column-live-view-engine Active Query sharing", () => {
       const store = new TopicStore(
         "window-sharing",
         Schema.Struct({
-          id: Schema.String,
+          id: ViewServerId,
           status: Schema.String,
           score: Schema.Number,
         }),
@@ -507,7 +508,7 @@ describe("column-live-view-engine Active Query sharing", () => {
       const store = new TopicStore(
         "window-shrink",
         Schema.Struct({
-          id: Schema.String,
+          id: ViewServerId,
           status: Schema.String,
           score: Schema.Number,
         }),
@@ -571,7 +572,7 @@ describe("column-live-view-engine Active Query sharing", () => {
       const store = new TopicStore(
         "window-unbounded",
         Schema.Struct({
-          id: Schema.String,
+          id: ViewServerId,
           status: Schema.String,
           score: Schema.Number,
         }),
@@ -638,7 +639,7 @@ describe("column-live-view-engine Active Query sharing", () => {
       const store = new TopicStore(
         "window-zero-limit",
         Schema.Struct({
-          id: Schema.String,
+          id: ViewServerId,
           status: Schema.String,
           score: Schema.Number,
         }),
@@ -685,19 +686,19 @@ describe("column-live-view-engine Active Query sharing", () => {
     Effect.gen(function* () {
       const numericStore = new TopicStore(
         "numbers",
-        Schema.Struct({ id: Schema.String, score: Schema.Number }),
+        Schema.Struct({ id: ViewServerId, score: Schema.Number }),
         "id",
         () => {},
       );
       const bigintStore = new TopicStore(
         "bigints",
-        Schema.Struct({ id: Schema.String, amount: Schema.BigInt }),
+        Schema.Struct({ id: ViewServerId, amount: Schema.BigInt }),
         "id",
         () => {},
       );
       const decimalStore = new TopicStore(
         "decimals",
-        Schema.Struct({ id: Schema.String, price: Schema.BigDecimal }),
+        Schema.Struct({ id: ViewServerId, price: Schema.BigDecimal }),
         "id",
         () => {},
       );
@@ -831,7 +832,7 @@ describe("column-live-view-engine Active Query sharing", () => {
       const eventStore = new TopicStore(
         "events",
         Schema.Struct({
-          id: Schema.String,
+          id: ViewServerId,
           label: Schema.String,
           tags: Schema.Array(Schema.String),
           metadata: Schema.Struct({
@@ -905,7 +906,7 @@ describe("column-live-view-engine Active Query sharing", () => {
       const store = new TopicStore(
         "delimiter-fields",
         Schema.Struct({
-          id: Schema.String,
+          id: ViewServerId,
           a: Schema.Number,
           b: Schema.Number,
           "a:asc;b": Schema.Number,
@@ -962,7 +963,7 @@ describe("column-live-view-engine Active Query sharing", () => {
       const store = new TopicStore(
         "special-non-serializable",
         Schema.Struct({
-          id: Schema.String,
+          id: ViewServerId,
           marker: Schema.String,
         }),
         "id",

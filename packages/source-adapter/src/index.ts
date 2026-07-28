@@ -56,6 +56,7 @@ export {
   SourceBufferMetricsSchema,
   SourceLaneRuntimeMetricsSchema,
   SourceRuntimeMetricsSchema,
+  sourceHealthContractSchemas,
   sourceHealthSchema,
   sourceRejectionDiagnosticSchema,
   sourceStatusSchema,

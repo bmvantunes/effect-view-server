@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { defineViewServerConfig } from "@effect-view-server/config";
+import { ViewServerId, defineViewServerConfig } from "@effect-view-server/config";
 import { Effect, Schema, Stream } from "effect";
 import {
   makeViewServerRuntimeCoreInternal,
@@ -11,10 +11,9 @@ const config = defineViewServerConfig({
   topics: {
     orders: {
       schema: Schema.Struct({
-        id: Schema.String,
+        id: ViewServerId,
         region: Schema.String,
       }),
-      key: "id",
     },
   },
 });

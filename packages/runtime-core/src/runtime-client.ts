@@ -1,7 +1,7 @@
-import type { DecodableTopicDefinitions } from "@effect-view-server/column-live-view-engine";
 import type { ColumnLiveViewEngineInternal } from "@effect-view-server/column-live-view-engine/internal";
 import type {
   LiveQueryResult,
+  TopicDefinitions,
   ViewServerHealth,
   ViewServerTopicConfig,
   ViewServerRuntimeClient,
@@ -24,14 +24,14 @@ import {
 } from "./source-mutation-pipeline";
 import { makeSourceOwnershipPolicy } from "./source-ownership-policy";
 
-export type RuntimeCoreClientInstance<Topics extends DecodableTopicDefinitions> = {
+export type RuntimeCoreClientInstance<Topics extends TopicDefinitions> = {
   readonly client: ViewServerRuntimeClient<Topics>;
   readonly decodedMutationClient: ViewServerRuntimeDecodedMutationClient<Topics>;
   readonly internalClient: ViewServerRuntimeCoreInternalClient<Topics>;
   readonly requestHealthRefresh: Effect.Effect<void>;
 };
 
-export type ViewServerRuntimeCoreInternalClient<Topics extends DecodableTopicDefinitions> =
+export type ViewServerRuntimeCoreInternalClient<Topics extends TopicDefinitions> =
   ViewServerRuntimeClient<Topics> &
     ViewServerRuntimeCoreInternalMutations<Topics> & {
       readonly snapshotRuntimeInternal: (
@@ -41,7 +41,7 @@ export type ViewServerRuntimeCoreInternalClient<Topics extends DecodableTopicDef
     };
 
 export const makeRuntimeCoreClient = Effect.fn("ViewServerRuntimeCore.client.make")(
-  <const Topics extends DecodableTopicDefinitions>(
+  <const Topics extends TopicDefinitions>(
     config: ViewServerTopicConfig<Topics>,
     engine: ColumnLiveViewEngineInternal<Topics>,
     readFreshRuntimeHealth: Effect.Effect<ViewServerHealth<Topics>>,
@@ -89,8 +89,7 @@ export const makeRuntimeCoreClient = Effect.fn("ViewServerRuntimeCore.client.mak
       };
       const { snapshotInternal, snapshot } = makeRuntimeCoreSnapshotQueryFacade<Topics>({
         snapshotQuery,
-        requirePublicReadAllowed: (topic) =>
-          sourceOwnership.requirePublicReadAllowed(topic, "runtimeCore"),
+        requirePublicReadAllowed: (topic) => sourceOwnership.requirePublicReadAllowed(topic),
       });
       const internalClient: ViewServerRuntimeCoreInternalClient<Topics> = {
         ...mutationPipeline.internalMutations,

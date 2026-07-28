@@ -1,82 +1,75 @@
 # Deployment
 
-## Runtime Process
+## Runtime process
 
-Run View Server as a Node process using `NodeRuntime.runMain`:
+Compose adapter Layers at the Node application edge:
 
 ```ts
 import { NodeRuntime } from "@effect/platform-node";
+import { Config, Effect } from "effect";
+import { grpcNode } from "effect-view-server/grpc/node";
+import { kafkaNode } from "effect-view-server/kafka/node";
 import { runViewServerRuntime } from "effect-view-server/runtime";
-import { viewServer } from "./view-server-config";
+import { viewServer } from "./view-server.config";
 
-NodeRuntime.runMain(
-  runViewServerRuntime(viewServer, {
-    host: "0.0.0.0",
-    websocketPort: 8080,
-    healthPath: "/health",
-    metricsPath: "/metrics",
-  }),
-);
+const KafkaLive = kafkaNode.layerConfig(viewServer, {
+  consumerGroupPrefix: Config.string("KAFKA_GROUP_PREFIX"),
+  regions: {
+    eu: { bootstrapServers: Config.string("KAFKA_EU_BOOTSTRAP") },
+  },
+});
+const GrpcLive = grpcNode.layerConfig(viewServer, {
+  orders: { baseUrl: Config.string("ORDERS_GRPC_URL") },
+});
+
+runViewServerRuntime(viewServer, {
+  host: "0.0.0.0",
+  websocketPort: 8080,
+  tcpPublishHost: "127.0.0.1",
+  tcpPublishPort: 8081,
+  healthPath: "/health",
+  metricsPath: "/metrics",
+}).pipe(Effect.provide([KafkaLive, GrpcLive]), NodeRuntime.runMain);
 ```
 
-The runtime handles process signal interruption through Effect finalizers. Do
-not add separate process-level cleanup unless it is outside View Server
-ownership.
+`NodeRuntime.runMain` turns process signals into Effect interruption and runs
+Source Attempt and Layer finalizers.
 
 ## Kubernetes
 
-Use `GET /health` for readiness and startup checks. The endpoint returns `200`
-when the runtime is ready or degraded, and returns a non-`200` status while the
-runtime is starting or stopping. Degraded sources remain queryable and must not
-trigger an automatic restart that discards retained in-memory state. A required
-source whose retries are exhausted contributes `starting` aggregate health, so
-readiness returns a non-`200` response until that source can recover. Prefer a
-process-level or TCP liveness check until a separate liveness endpoint exists.
-If runtime auth is enabled, readiness probes must be
-accepted by `auth.validateRequest` or auth must whitelist the health path;
-otherwise probes can receive auth failures instead of runtime health. Use
-`GET /metrics` for Prometheus scraping.
+Use `GET /health` for startup/readiness, `GET /metrics` for Prometheus, and a
+process or TCP liveness check. Degraded sources remain queryable and must not
+cause a restart that discards retained in-memory rows.
 
-Kafka and gRPC credentials, broker addresses, and base URLs should be loaded
-through Effect `Config`. Missing required values should fail startup.
+Broker endpoints, gRPC base URLs, credentials, TLS, and pools belong to adapter
+`layerConfig(...)` values. Missing configuration fails Layer construction
+before server ports open.
 
-The current supported deployment model is one active View Server runtime per
-logical deployment. Give each deployment a unique Kafka consumer group id. Kafka
-multi-replica rebalance/revoke handoff is intentionally out of scope for the
-current milestone.
+## Network surface
 
-Kafka `startFrom` is also per runtime instance. Use separate runtime instances
-and consumer groups when different source topics need different start positions.
+- browser clients: Effect RPC WebSocket with NDJSON
+- health and metrics: same HTTP/WebSocket server
+- optional TCP publish: separate private host and port, source-free Topics only
 
-## Network Surface
-
-- Browser clients connect through Effect RPC WebSocket with NDJSON.
-- `GET /health` and `GET /metrics` share the runtime HTTP server.
-- TCP publish is optional and binds separately through `tcpPublishHost` and
-  `tcpPublishPort`.
-
-Keep TCP publish on a private interface unless protected by your own network
-controls. TCP publish is a mutation ingress, not a browser API.
+Browser headers and sessions are not forwarded to upstream gRPC. Put upstream
+authentication in the Node Layer and represent authorization-sensitive leased
+datasets through explicit Feed Route fields.
 
 ## Recovery
 
-Current Runtime Core state is in memory. There is no durable WAL/checkpoint.
-Deployments that need full rebuild after restart must replay source data from an
-authoritative source:
+Runtime Core state is in memory. Kafka can replay from a Source
+Definition-owned authoritative start position. Materialized gRPC reconnects and
+replays according to its upstream contract. Leased gRPC rebuilds on demand.
+External TCP publishers must own replay for source-free Topics.
 
-- Kafka: use `startFrom: "earliest"` or a dedicated rebuild consumer group.
-- Materialized gRPC: reconnect and replay from the upstream stream contract.
-- Leased gRPC: rebuilt on demand from active subscriptions.
-- TCP publish: external publisher must be authoritative if replay is required.
+## Release gate
 
-## Release Gate
-
-Before promoting a runtime build, run:
+Before promoting a runtime image:
 
 ```sh
 vp run -w release-candidate:capacity
 ```
 
-The gate covers examples, build, package seam checks, strict Effect diagnostics,
-tests, coverage, and benchmark baseline profiles. See
-[Operations](./operations.md) for Prometheus, probe, and resource guidance.
+The gate serially covers examples, builds, package seams, strict Effect
+diagnostics, tests, coverage, engine/read-write/WebSocket baselines, and the
+canonical Kafka and gRPC Source Adapter profiles.

@@ -283,9 +283,9 @@ export default defineConfig({
         command: "node scripts/run-kafka-source-broker-bench.mjs",
         dependsOn: [declarationTaskName("runtime-core")],
       },
-      "bench:runtime-kafka-ingest": {
-        command: "node scripts/run-runtime-kafka-ingest-bench.mjs",
-        dependsOn: [declarationTaskName("runtime")],
+      "bench:grpc-source-adapter": {
+        command: "node scripts/run-grpc-source-adapter-bench.mjs",
+        dependsOn: [declarationTaskName("runtime-core")],
       },
       "examples:check:effect": {
         command: 'node --eval ""',

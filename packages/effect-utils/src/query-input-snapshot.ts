@@ -1,4 +1,5 @@
 import { make as makeBigDecimal } from "effect/BigDecimal";
+import { Result } from "effect";
 import {
   hasPlainRecordPrototype,
   inspectArrayData,
@@ -184,3 +185,49 @@ export const ownViewServerQuerySnapshot = <Query extends QueryRecord>(query: Que
   ownedQuerySnapshots.add(query);
   return query;
 };
+
+export type CapturedSourceHealthInput<Topic extends string = string> = {
+  readonly topic: Topic;
+  readonly route: ReadonlyArray<Readonly<Record<string, unknown>>>;
+};
+
+/**
+ * Captures an owned Source Health request without invoking input accessors.
+ *
+ * The `Topic` parameter preserves the caller's already-validated public input
+ * type; this utility proves only that the captured runtime value is a string.
+ * Runtime/client adapters must still validate configured Source ownership
+ * before using the result.
+ */
+export function captureSourceHealthInput<const Topic extends string>(
+  input: unknown,
+): Result.Result<CapturedSourceHealthInput<Topic>, unknown>;
+export function captureSourceHealthInput(
+  input: unknown,
+): Result.Result<CapturedSourceHealthInput<string>, unknown>;
+export function captureSourceHealthInput(
+  input: unknown,
+): Result.Result<CapturedSourceHealthInput<string>, unknown> {
+  return Result.try(() => {
+    const captured = snapshotViewServerQuery(input);
+    const keys = Reflect.ownKeys(captured);
+    const hasRoute = Object.hasOwn(captured, "routeBy");
+    const expectedKeys = hasRoute ? ["topic", "routeBy"] : ["topic"];
+    const route = captured["routeBy"];
+    const topic = captured["topic"];
+    if (
+      keys.length !== expectedKeys.length ||
+      keys.some((key) => !expectedKeys.some((expected) => expected === key)) ||
+      typeof topic !== "string" ||
+      (hasRoute && !isPlainRecord(route))
+    ) {
+      throw new TypeError(
+        "Source Health input must contain topic and leased routeBy only when required.",
+      );
+    }
+    return {
+      topic,
+      route: isPlainRecord(route) ? [route] : [],
+    };
+  });
+}

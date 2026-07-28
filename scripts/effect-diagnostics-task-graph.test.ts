@@ -23,7 +23,6 @@ describe("strict Effect diagnostics task graph", () => {
     expect({
       build: kafkaConfig.run?.tasks?.build,
       test: kafkaConfig.run?.tasks?.test,
-      runtimeKafkaBenchmark: tasks["bench:runtime-kafka-ingest"],
     }).toStrictEqual({
       build: {
         command: "vp pack",
@@ -35,10 +34,6 @@ describe("strict Effect diagnostics task graph", () => {
           "@effect-view-server/kafka#build",
           "@effect-view-server/source-adapter-conformance-host#build",
         ],
-      },
-      runtimeKafkaBenchmark: {
-        command: "node scripts/run-runtime-kafka-ingest-bench.mjs",
-        dependsOn: ["build:effect-declarations:runtime"],
       },
     });
   });

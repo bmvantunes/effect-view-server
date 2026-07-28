@@ -6,7 +6,6 @@ import type {
   SourceDefinitionAdapterFailure,
   SourceDefinitionAdapterMetrics,
   SourceDefinitionLaneId,
-  SourceDefinitionLifecycle,
   SourceDefinitionRejectionLocation,
   SourceDefinitionRouteFields,
   SourceItemRejectionDiagnostic,
@@ -22,27 +21,48 @@ export type SourceRouteForDefinition<Definition, Row extends object> = {
   >]: Row[Field];
 };
 
-type SourceLifecycleForDefinition<Definition> =
-  SourceDefinitionLifecycle<Definition> extends SourceLifecycle
-    ? SourceDefinitionLifecycle<Definition>
-    : never;
+type SourceLifecycleForDefinition<Definition> = Definition extends {
+  readonly lifecycle: infer Lifecycle extends SourceLifecycle;
+}
+  ? Lifecycle
+  : never;
 
-export type SourceHealthForDefinition<Definition, Row extends object> = SourceHealth<
-  SourceDefinitionAdapterFailure<Definition>,
-  SourceRouteForDefinition<Definition, Row>,
-  SourceDefinitionAdapterMetrics<Definition>,
-  SourceDefinitionRejectionLocation<Definition>,
-  SourceLifecycleForDefinition<Definition>,
-  SourceDefinitionLaneId<Definition>
->;
+type SourceHealthForDefinitionLifecycle<
+  Definition,
+  Row extends object,
+  Lifecycle extends SourceLifecycle,
+> = Lifecycle extends unknown
+  ? SourceHealth<
+      SourceDefinitionAdapterFailure<Definition>,
+      SourceRouteForDefinition<Definition, Row>,
+      SourceDefinitionAdapterMetrics<Definition>,
+      SourceDefinitionRejectionLocation<Definition>,
+      Lifecycle,
+      SourceDefinitionLaneId<Definition>
+    >
+  : never;
 
-export type SourceHealthResultForDefinition<Definition, Row extends object> =
-  SourceDefinitionLifecycle<Definition> extends "leased"
-    ? LeasedSourceHealthResult<
-        SourceRouteForDefinition<Definition, Row>,
-        SourceHealthForDefinition<Definition, Row>
-      >
-    : MaterializedSourceHealthResult<SourceHealthForDefinition<Definition, Row>>;
+export type SourceHealthForDefinition<Definition, Row extends object> = Definition extends unknown
+  ? SourceHealthForDefinitionLifecycle<Definition, Row, SourceLifecycleForDefinition<Definition>>
+  : never;
+
+type SourceHealthResultForLifecycle<
+  Definition,
+  Row extends object,
+  Lifecycle extends SourceLifecycle,
+> = Lifecycle extends "leased"
+  ? LeasedSourceHealthResult<
+      SourceRouteForDefinition<Definition, Row>,
+      SourceHealthForDefinitionLifecycle<Definition, Row, Lifecycle>
+    >
+  : MaterializedSourceHealthResult<SourceHealthForDefinitionLifecycle<Definition, Row, Lifecycle>>;
+
+export type SourceHealthResultForDefinition<
+  Definition,
+  Row extends object,
+> = Definition extends unknown
+  ? SourceHealthResultForLifecycle<Definition, Row, SourceLifecycleForDefinition<Definition>>
+  : never;
 
 export type SourceLaneRuntimeMetrics<LaneId extends string = string> = {
   readonly id: LaneId;
@@ -306,3 +326,69 @@ export const sourceHealthSchema = <
     }),
     sampledAtNanos: NonNegativeBigInt,
   });
+
+export type SourceHealthContractResult<
+  AdapterFailure,
+  Route extends Readonly<Record<string, unknown>>,
+  AdapterMetrics,
+  RejectionLocation,
+  Lifecycle extends SourceLifecycle,
+> = Lifecycle extends "leased"
+  ? LeasedSourceHealthResult<
+      Route,
+      SourceHealth<AdapterFailure, Route, AdapterMetrics, RejectionLocation, "leased">
+    >
+  : MaterializedSourceHealthResult<
+      SourceHealth<AdapterFailure, Route, AdapterMetrics, RejectionLocation, "materialized">
+    >;
+
+export function sourceHealthContractSchemas<
+  AdapterFailure,
+  Route extends Readonly<Record<string, unknown>>,
+  AdapterMetrics,
+  RejectionLocation,
+  const Lifecycle extends SourceLifecycle,
+>(input: {
+  readonly adapterFailure: Schema.Codec<AdapterFailure, unknown, never, never>;
+  readonly route: Schema.Codec<Route, unknown, never, never>;
+  readonly adapterMetrics: Schema.Codec<AdapterMetrics, unknown, never, never>;
+  readonly rejectionLocation: Schema.Codec<RejectionLocation, unknown, never, never>;
+  readonly lifecycle: Lifecycle;
+}): {
+  readonly health: Schema.Codec<
+    SourceHealth<AdapterFailure, Route, AdapterMetrics, RejectionLocation, Lifecycle>,
+    unknown,
+    never,
+    never
+  >;
+  readonly result: Schema.Codec<
+    SourceHealthContractResult<AdapterFailure, Route, AdapterMetrics, RejectionLocation, Lifecycle>,
+    unknown,
+    never,
+    never
+  >;
+};
+export function sourceHealthContractSchemas<
+  AdapterFailure,
+  Route extends Readonly<Record<string, unknown>>,
+  AdapterMetrics,
+  RejectionLocation,
+>(input: {
+  readonly adapterFailure: Schema.Codec<AdapterFailure, unknown, never, never>;
+  readonly route: Schema.Codec<Route, unknown, never, never>;
+  readonly adapterMetrics: Schema.Codec<AdapterMetrics, unknown, never, never>;
+  readonly rejectionLocation: Schema.Codec<RejectionLocation, unknown, never, never>;
+  readonly lifecycle: SourceLifecycle;
+}): object {
+  const health = sourceHealthSchema(input);
+  return {
+    health,
+    result:
+      input.lifecycle === "materialized"
+        ? health
+        : Schema.Union([
+            Schema.TaggedStruct("Inactive", { route: input.route }),
+            Schema.TaggedStruct("Active", { route: input.route, health }),
+          ]),
+  };
+}

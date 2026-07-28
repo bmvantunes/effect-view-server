@@ -1,5 +1,10 @@
 import { describe, expect, it } from "@effect/vitest";
-import { defineViewServerConfig, type GroupedQuery, viewSchema } from "@effect-view-server/config";
+import {
+  ViewServerId,
+  defineViewServerConfig,
+  type GroupedQuery,
+  viewSchema,
+} from "@effect-view-server/config";
 import { Effect, Schema } from "effect";
 import * as HashMap from "effect/HashMap";
 import { createColumnLiveViewEngine } from "./index";
@@ -19,7 +24,7 @@ const collisionRight = "GpcpIaaa";
 const Attributes = viewSchema.HashMap(Schema.String, Schema.String);
 
 const HashMapRow = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   desk: Schema.String,
   attributes: Attributes,
 });
@@ -32,7 +37,6 @@ const hashMapViewServer = defineViewServerConfig({
   topics: {
     hashMapRows: {
       schema: HashMapRow,
-      key: "id",
     },
   },
 });

@@ -1,5 +1,9 @@
 import { describe, expect, it } from "@effect/vitest";
-import { defineViewServerConfig, type GroupedQuery } from "@effect-view-server/config";
+import {
+  ViewServerId,
+  defineViewServerConfig,
+  type GroupedQuery,
+} from "@effect-view-server/config";
 import { Effect, Schema } from "effect";
 import {
   expectDeltaEvent,
@@ -11,7 +15,7 @@ import { createColumnLiveViewEngine } from "./index";
 import { createColumnLiveViewEngineInternal } from "./internal";
 
 const OptionalUndefinedRow = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   desk: Schema.optionalKey(Schema.Union([Schema.String, Schema.Undefined])),
 });
 
@@ -21,7 +25,6 @@ const optionalUndefinedViewServer = defineViewServerConfig({
   topics: {
     optionalUndefinedRows: {
       schema: OptionalUndefinedRow,
-      key: "id",
     },
   },
 });

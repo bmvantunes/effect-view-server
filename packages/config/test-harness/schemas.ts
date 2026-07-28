@@ -1,5 +1,5 @@
 import { Schema } from "effect";
-import { viewSchema } from "../src/index";
+import { ViewServerId, viewSchema } from "../src/index";
 
 export class StructuredProfile extends Schema.Class<StructuredProfile>("StructuredProfile")({
   code: Schema.String,
@@ -7,7 +7,7 @@ export class StructuredProfile extends Schema.Class<StructuredProfile>("Structur
 viewSchema.admitClass(StructuredProfile);
 
 export const Order = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   customerId: Schema.String,
   status: Schema.Literals(["open", "closed", "cancelled"]),
   price: Schema.Number,
@@ -16,7 +16,7 @@ export const Order = Schema.Struct({
 });
 
 export const Trade = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   symbol: Schema.String,
   quantity: Schema.Number,
   price: Schema.Number,
@@ -24,7 +24,7 @@ export const Trade = Schema.Struct({
 });
 
 export const Position = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   accountId: Schema.String,
   symbol: Schema.String,
   active: Schema.Boolean,

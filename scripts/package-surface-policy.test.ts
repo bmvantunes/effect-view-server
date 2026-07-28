@@ -5,7 +5,6 @@ import {
   expectedPackageSurfaces,
   forbiddenDeepImportSpecifiers,
   facadeProjectionFor,
-  namedFacadeProjectionFor,
   packageDistStemForSourceEntrypoint,
   packageSurfacePolicy,
   runtimeSymbolPolicies,
@@ -18,16 +17,16 @@ import {
 describe("Package Surface Policy", () => {
   it("owns one unique inventory of private and consumer package specifiers", () => {
     expect(packageSurfacePolicy.packages).toHaveLength(15);
-    expect(workspacePackageSpecifiers).toHaveLength(33);
-    expect(new Set(workspacePackageSpecifiers).size).toBe(33);
-    expect(consumerPackageSpecifiers).toHaveLength(25);
-    expect(new Set(consumerPackageSpecifiers).size).toBe(25);
+    expect(workspacePackageSpecifiers).toHaveLength(31);
+    expect(new Set(workspacePackageSpecifiers).size).toBe(31);
+    expect(consumerPackageSpecifiers).toHaveLength(23);
+    expect(new Set(consumerPackageSpecifiers).size).toBe(23);
     expect(consumerPackageSpecifiers).not.toContain("effect-view-server");
     expect(
       expectedPackageSurfaces
         .filter((surface) => surface.directory !== "effect-view-server")
         .flatMap((surface) => surface.packEntrypoints),
-    ).toHaveLength(34);
+    ).toHaveLength(31);
     expect(packageSurfacePolicy.runtimeSymbols.map((policy) => policy.workspaceSpecifier).sort()).toStrictEqual(
       [...workspacePackageSpecifiers].sort(),
     );
@@ -63,7 +62,6 @@ describe("Package Surface Policy", () => {
     const facadeSurface = expectedPackageSurfaces.find(
       (surface) => surface.directory === "effect-view-server",
     );
-    const kafkaProjection = namedFacadeProjectionFor("effect-view-server/config/kafka");
     const kafkaContractProjection = facadeProjectionFor(
       "effect-view-server/kafka/contract",
     );
@@ -96,8 +94,6 @@ describe("Package Surface Policy", () => {
           importTarget: "./dist/live-protocol.js",
           typesTarget: "./dist/live-protocol.d.ts",
         },
-        { exportKey: "./kafka", importTarget: "./dist/kafka.js", typesTarget: "./dist/kafka.d.ts" },
-        { exportKey: "./grpc", importTarget: "./dist/grpc.js", typesTarget: "./dist/grpc.d.ts" },
         {
           exportKey: "./internal",
           importTarget: "./dist/internal.js",
@@ -110,21 +106,11 @@ describe("Package Surface Policy", () => {
         "src/topic-contract.ts",
         "src/health-contract.ts",
         "src/live-protocol.ts",
-        "src/kafka.ts",
-        "src/grpc.ts",
         "src/internal.ts",
-        "src/grpc-contract.ts",
       ],
     });
-    expect(facadeSurface?.manifestExports).toHaveLength(25);
-    expect(facadeSurface?.packEntrypoints).toHaveLength(25);
-    expect(kafkaProjection.workspaceSpecifier).toBe("@effect-view-server/config/kafka");
-    expect(kafkaProjection.consumerSourceEntrypoint).toBe("src/config-kafka.ts");
-    expect(kafkaProjection.reexport).toMatchObject({
-      kind: "named",
-      runtime: ["decodeKafkaCodec", "kafka", "kafkaErrorIsMapping"],
-    });
-    expect(kafkaProjection.reexport.types).toHaveLength(27);
+    expect(facadeSurface?.manifestExports).toHaveLength(23);
+    expect(facadeSurface?.packEntrypoints).toHaveLength(23);
     expect(kafkaContractProjection.workspaceSpecifier).toBe(
       "@effect-view-server/kafka/contract",
     );
@@ -132,9 +118,6 @@ describe("Package Surface Policy", () => {
       "@effect-view-server/source-adapter-conformance-host",
       "@effect-view-server/source-adapter-testing",
     ]);
-    expect(() => namedFacadeProjectionFor("effect-view-server/client")).toThrowError(
-      "Unknown named facade projection policy directory: effect-view-server/client",
-    );
     expect(() => packageDistStemForSourceEntrypoint("index.js")).toThrowError(
       "Unsupported package source entrypoint: index.js",
     );

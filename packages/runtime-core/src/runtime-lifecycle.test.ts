@@ -1,6 +1,11 @@
 import { describe, expect, it } from "@effect/vitest";
+import type { ColumnLiveViewEngineHealth } from "@effect-view-server/column-live-view-engine";
 import { createColumnLiveViewEngineInternal } from "@effect-view-server/column-live-view-engine/internal";
-import { defineViewServerConfig } from "@effect-view-server/config";
+import {
+  ViewServerId,
+  defineViewServerConfig,
+  type ViewServerHealth,
+} from "@effect-view-server/config";
 import { SourceFixture } from "@effect-view-server/source-adapter-testing";
 import { Context, Deferred, Effect, Exit, Fiber, Layer, Option, Schema, Stream } from "effect";
 import { TestClock } from "effect/testing";
@@ -21,12 +26,18 @@ const viewServer = defineViewServerConfig({
   topics: {
     orders: {
       schema: Schema.Struct({
-        id: Schema.String,
+        id: ViewServerId,
         value: Schema.Number,
       }),
-      key: "id",
     },
   },
+});
+
+const sourceFreeHealth = (
+  health: ColumnLiveViewEngineHealth<typeof viewServer.topics>,
+): ViewServerHealth<typeof viewServer.topics> => ({
+  ...healthFromEngine(health),
+  sources: {},
 });
 
 describe("Runtime Core lifecycle", () => {
@@ -345,10 +356,10 @@ describe("Runtime Core lifecycle", () => {
       const releaseClaim = yield* Deferred.make<void>();
       let readCount = 0;
       const hub = yield* makeRuntimeCorePushedHealthHub(
-        healthFromEngine(engineHealth("ready", 0)),
+        sourceFreeHealth(engineHealth("ready", 0)),
         Effect.sync(() => {
           readCount += 1;
-          return healthFromEngine(engineHealth("ready", 1));
+          return sourceFreeHealth(engineHealth("ready", 1));
         }),
         "1 second",
         {
@@ -398,7 +409,7 @@ describe("Runtime Core lifecycle", () => {
       const claimStarted = yield* Deferred.make<void>();
       const releaseClaim = yield* Deferred.make<void>();
       let closeClaimCount = 0;
-      const initialHealth = healthFromEngine(engineHealth("ready", 0));
+      const initialHealth = sourceFreeHealth(engineHealth("ready", 0));
       const hub = yield* makeRuntimeCorePushedHealthHub(
         initialHealth,
         Effect.succeed(initialHealth),
@@ -516,7 +527,7 @@ describe("Runtime Core lifecycle", () => {
     () =>
       Effect.gen(function* () {
         const Row = Schema.Struct({
-          id: Schema.String,
+          id: ViewServerId,
           region: Schema.String,
         });
         const fixture = yield* SourceFixture.make(Row);
@@ -531,9 +542,13 @@ describe("Runtime Core lifecycle", () => {
           },
         });
         const engine = yield* createColumnLiveViewEngineInternal({ topics: config.topics });
+        const initialHealth: ViewServerHealth<typeof config.topics> = {
+          ...healthFromEngine(yield* engine.health()),
+          sources: { rows: [] },
+        };
         const hub = yield* makeRuntimeCorePushedHealthHub(
-          healthFromEngine(yield* engine.health()),
-          Effect.succeed(healthFromEngine(yield* engine.health())),
+          initialHealth,
+          Effect.succeed(initialHealth),
           "1 minute",
         );
         const leaseAcquired = yield* Deferred.make<void>();
@@ -597,7 +612,7 @@ describe("Runtime Core lifecycle", () => {
   it.effect("releases an observed Source lease when interruption is pending at its handoff", () =>
     Effect.gen(function* () {
       const Row = Schema.Struct({
-        id: Schema.String,
+        id: ViewServerId,
         region: Schema.String,
       });
       const fixture = yield* SourceFixture.make(Row);
@@ -612,9 +627,13 @@ describe("Runtime Core lifecycle", () => {
         },
       });
       const engine = yield* createColumnLiveViewEngineInternal({ topics: config.topics });
+      const initialHealth: ViewServerHealth<typeof config.topics> = {
+        ...healthFromEngine(yield* engine.health()),
+        sources: { rows: [] },
+      };
       const hub = yield* makeRuntimeCorePushedHealthHub(
-        healthFromEngine(yield* engine.health()),
-        Effect.succeed(healthFromEngine(yield* engine.health())),
+        initialHealth,
+        Effect.succeed(initialHealth),
         "1 minute",
       );
       const leaseAcquired = yield* Deferred.make<void>();
@@ -724,7 +743,7 @@ describe("Runtime Core lifecycle", () => {
   it.effect("interrupts suspended Source Manager startup", () =>
     Effect.gen(function* () {
       const Row = Schema.Struct({
-        id: Schema.String,
+        id: ViewServerId,
         region: Schema.String,
       });
       const fixture = yield* SourceFixture.make(Row);
@@ -787,7 +806,7 @@ describe("Runtime Core lifecycle", () => {
       const keepHandoffOpen = yield* Deferred.make<void>();
       let closeClaimCount = 0;
       let handoffCount = 0;
-      const initialHealth = healthFromEngine(engineHealth("ready", 0));
+      const initialHealth = sourceFreeHealth(engineHealth("ready", 0));
       const hub = yield* makeRuntimeCorePushedHealthHub(
         initialHealth,
         Effect.succeed(initialHealth),
@@ -834,12 +853,12 @@ describe("Runtime Core lifecycle", () => {
       const releaseRefresh = yield* Deferred.make<void>();
       let readCount = 0;
       const hub = yield* makeRuntimeCorePushedHealthHub(
-        healthFromEngine(engineHealth("ready", 0)),
+        sourceFreeHealth(engineHealth("ready", 0)),
         Effect.gen(function* () {
           readCount += 1;
           yield* Deferred.succeed(refreshStarted, undefined);
           yield* Deferred.await(releaseRefresh);
-          return healthFromEngine(engineHealth("ready", 1));
+          return sourceFreeHealth(engineHealth("ready", 1));
         }),
         "1 minute",
       );
@@ -873,7 +892,7 @@ describe("Runtime Core lifecycle", () => {
     Effect.gen(function* () {
       const closeClaimed = yield* Deferred.make<void>();
       const releaseNotification = yield* Deferred.make<void>();
-      const initialHealth = healthFromEngine(engineHealth("ready", 0));
+      const initialHealth = sourceFreeHealth(engineHealth("ready", 0));
       const hub = yield* makeRuntimeCorePushedHealthHub(
         initialHealth,
         Effect.succeed(initialHealth),
@@ -902,7 +921,7 @@ describe("Runtime Core lifecycle", () => {
     () =>
       Effect.gen(function* () {
         const engine = yield* createColumnLiveViewEngineInternal({ topics: viewServer.topics });
-        const initialHealth = healthFromEngine(yield* engine.health());
+        const initialHealth = sourceFreeHealth(yield* engine.health());
         const hub = yield* makeRuntimeCorePushedHealthHub(
           initialHealth,
           Effect.succeed(initialHealth),
@@ -923,13 +942,35 @@ describe("Runtime Core lifecycle", () => {
           hub,
           requestHealthRefresh,
         );
-        const unsupportedSourceDiagnostics: Effect.Effect<unknown, unknown> = Reflect.apply(
-          liveClient.subscribeSourceHealth,
-          liveClient,
-          ["orders"],
+        const subscribeHostile = (input: unknown): Effect.Effect<unknown, unknown> =>
+          Reflect.apply(liveClient.subscribeSourceHealth, liveClient, [input]);
+        const hostile = new Proxy(
+          {},
+          {
+            ownKeys: () => {
+              throw new Error("hostile ownKeys");
+            },
+          },
         );
-        const sourceDiagnostics = yield* Effect.exit(unsupportedSourceDiagnostics);
-        expect(Exit.isFailure(sourceDiagnostics)).toBe(true);
+        const sourceDiagnosticsErrors = yield* Effect.all([
+          Effect.flip(subscribeHostile(null)),
+          Effect.flip(subscribeHostile(undefined)),
+          Effect.flip(subscribeHostile(hostile)),
+        ]);
+        expect(sourceDiagnosticsErrors).toStrictEqual(
+          Array.from({ length: 3 }, () => ({
+            _tag: "ViewServerRuntimeError",
+            code: "InvalidQuery",
+            topic: "<invalid>",
+            message: "Source Health input must be one exact { topic, routeBy? } object.",
+          })),
+        );
+        expect(yield* Effect.flip(subscribeHostile({ topic: "orders" }))).toStrictEqual({
+          _tag: "ViewServerRuntimeError",
+          code: "InvalidQuery",
+          topic: "orders",
+          message: "Topic orders has no Source.",
+        });
         const subscriptionFiber = yield* liveClient
           .subscribeInternal("orders", { select: ["id"] })
           .pipe(Effect.forkChild({ startImmediately: true }));
@@ -988,7 +1029,7 @@ describe("Runtime Core lifecycle", () => {
       const engine = yield* createColumnLiveViewEngineInternal({
         topics: viewServer.topics,
       });
-      const initialHealth = healthFromEngine(yield* engine.health());
+      const initialHealth = sourceFreeHealth(yield* engine.health());
       const hub = yield* makeRuntimeCorePushedHealthHub(
         initialHealth,
         Effect.succeed(initialHealth),
@@ -1023,19 +1064,19 @@ describe("Runtime Core lifecycle", () => {
         Effect.gen(function* () {
           yield* Deferred.succeed(firstReadStarted, undefined);
           yield* Deferred.await(releaseFirstRead);
-          return healthFromEngine(engineHealth("ready", 1));
+          return sourceFreeHealth(engineHealth("ready", 1));
         }),
         Effect.gen(function* () {
           yield* Deferred.succeed(secondReadStarted, undefined);
           yield* Deferred.await(releaseSecondRead);
-          return healthFromEngine(engineHealth("ready", 2));
+          return sourceFreeHealth(engineHealth("ready", 2));
         }),
       ];
       const hub = yield* makeRuntimeCorePushedHealthHub(
-        healthFromEngine(engineHealth("ready", 0)),
+        sourceFreeHealth(engineHealth("ready", 0)),
         Effect.suspend(() => {
           const read =
-            reads[readCount] ?? Effect.succeed(healthFromEngine(engineHealth("ready", 3)));
+            reads[readCount] ?? Effect.succeed(sourceFreeHealth(engineHealth("ready", 3)));
           readCount += 1;
           return read;
         }),
@@ -1082,19 +1123,19 @@ describe("Runtime Core lifecycle", () => {
         Effect.gen(function* () {
           yield* Deferred.succeed(firstReadStarted, undefined);
           yield* Deferred.await(releaseFirstRead);
-          return healthFromEngine(engineHealth("ready", 1));
+          return sourceFreeHealth(engineHealth("ready", 1));
         }),
         Effect.gen(function* () {
           yield* Deferred.succeed(secondReadStarted, undefined);
           yield* Deferred.await(releaseSecondRead);
-          return healthFromEngine(engineHealth("ready", 2));
+          return sourceFreeHealth(engineHealth("ready", 2));
         }),
       ];
       const hub = yield* makeRuntimeCorePushedHealthHub(
-        healthFromEngine(engineHealth("ready", 0)),
+        sourceFreeHealth(engineHealth("ready", 0)),
         Effect.suspend(() => {
           const read =
-            reads[readCount] ?? Effect.succeed(healthFromEngine(engineHealth("ready", 3)));
+            reads[readCount] ?? Effect.succeed(sourceFreeHealth(engineHealth("ready", 3)));
           readCount += 1;
           return read;
         }),
@@ -1139,10 +1180,10 @@ describe("Runtime Core lifecycle", () => {
       let registrationCount = 0;
       let readCount = 0;
       const hub = yield* makeRuntimeCorePushedHealthHub(
-        healthFromEngine(engineHealth("ready", 0)),
+        sourceFreeHealth(engineHealth("ready", 0)),
         Effect.sync(() => {
           readCount += 1;
-          return healthFromEngine(engineHealth("ready", 1));
+          return sourceFreeHealth(engineHealth("ready", 1));
         }),
         "1 minute",
         {
@@ -1192,11 +1233,11 @@ describe("Runtime Core lifecycle", () => {
       const refreshStarted = yield* Deferred.make<void>();
       const releaseRefresh = yield* Deferred.make<void>();
       const hub = yield* makeRuntimeCorePushedHealthHub(
-        healthFromEngine(engineHealth("ready", 0)),
+        sourceFreeHealth(engineHealth("ready", 0)),
         Effect.gen(function* () {
           yield* Deferred.succeed(refreshStarted, undefined);
           yield* Deferred.await(releaseRefresh);
-          return healthFromEngine(engineHealth("ready", 1));
+          return sourceFreeHealth(engineHealth("ready", 1));
         }),
         "1 minute",
       );

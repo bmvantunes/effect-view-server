@@ -1,6 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Duration, Effect, Equivalence, Schema, SchemaGetter } from "effect";
 import {
+  ViewServerId,
   defineViewServerConfig,
   viewSchema,
   viewServerUnsupportedRuntimeFieldDomain,
@@ -322,7 +323,7 @@ describe("Topic schema admission", () => {
         Schema.TupleWithRest(Schema.Tuple([Schema.String]), [Schema.String]),
       ),
     ).toBe(undefined);
-    expect(viewServerUnsupportedRuntimeFieldDomain(Schema.Struct({ id: Schema.String }))).toBe(
+    expect(viewServerUnsupportedRuntimeFieldDomain(Schema.Struct({ id: ViewServerId }))).toBe(
       undefined,
     );
     expect(viewServerUnsupportedRuntimeFieldDomain({})).toBe(undefined);
@@ -330,7 +331,7 @@ describe("Topic schema admission", () => {
 
   it("validates the complete row schema, not only its fields", () => {
     const Row = Schema.Struct({
-      id: Schema.String,
+      id: ViewServerId,
       status: Schema.String,
     });
     const EquivalentRow = Row.pipe(
@@ -359,7 +360,6 @@ describe("Topic schema admission", () => {
         topics: {
           equivalent: {
             schema: EquivalentRow,
-            key: "id",
           },
         },
       }),
@@ -371,7 +371,6 @@ describe("Topic schema admission", () => {
         topics: {
           lossy: {
             schema: LossyRow,
-            key: "id",
           },
         },
       }),
@@ -382,7 +381,7 @@ describe("Topic schema admission", () => {
 
   it("rejects safe exposed fields that diverge from the row schema AST", () => {
     const DivergentRow = Schema.Struct({
-      id: Schema.String,
+      id: ViewServerId,
       value: Schema.String,
     });
     expect(Reflect.set(DivergentRow.fields, "value", Schema.Number)).toBe(true);
@@ -392,7 +391,6 @@ describe("Topic schema admission", () => {
         topics: {
           divergent: {
             schema: DivergentRow,
-            key: "id",
           },
         },
       }),
@@ -425,10 +423,9 @@ describe("Topic schema admission", () => {
         topics: {
           defaults: {
             schema: Schema.Struct({
-              id: Schema.String,
+              id: ViewServerId,
               passthrough: PassthroughDefault,
             }),
-            key: "id",
           },
         },
       }),
@@ -437,8 +434,7 @@ describe("Topic schema admission", () => {
       defineViewServerConfig({
         topics: {
           omitted: {
-            schema: Schema.Struct({ id: Schema.String, value: OmittedDefault }),
-            key: "id",
+            schema: Schema.Struct({ id: ViewServerId, value: OmittedDefault }),
           },
         },
       }),
@@ -449,7 +445,7 @@ describe("Topic schema admission", () => {
 
   it("rejects malformed row and field schemas from untyped callers", () => {
     const InvalidFieldRow = Schema.Struct({
-      id: Schema.String,
+      id: ViewServerId,
       value: Schema.String,
     });
     Object.defineProperty(InvalidFieldRow.fields, "value", {
@@ -462,10 +458,9 @@ describe("Topic schema admission", () => {
     expect(() =>
       defineViewServerConfig({
         topics: {
+          // @ts-expect-error Runtime admission protects untyped callers that do not provide a Struct.
           invalidRow: {
-            // @ts-expect-error Runtime admission protects untyped callers that do not provide a Struct.
             schema: {},
-            key: "id",
           },
         },
       }),
@@ -475,7 +470,6 @@ describe("Topic schema admission", () => {
         topics: {
           invalidField: {
             schema: InvalidFieldRow,
-            key: "id",
           },
         },
       }),
@@ -660,10 +654,9 @@ describe("Topic schema admission", () => {
         topics: {
           ambiguous: {
             schema: Schema.Struct({
-              id: Schema.String,
+              id: ViewServerId,
               value: Schema.Union([Schema.Null, Schema.Undefined]),
             }),
-            key: "id",
           },
         },
       }),
@@ -732,10 +725,9 @@ describe("Topic schema admission", () => {
         topics: {
           customEquivalence: {
             schema: Schema.Struct({
-              id: Schema.String,
+              id: ViewServerId,
               label: CaseInsensitiveString,
             }),
-            key: "id",
           },
         },
       }),
@@ -777,8 +769,7 @@ describe("Topic schema admission", () => {
       defineViewServerConfig({
         topics: {
           lossy: {
-            schema: Schema.Struct({ id: Schema.String, value: Lossy }),
-            key: "id",
+            schema: Schema.Struct({ id: ViewServerId, value: Lossy }),
           },
         },
       }),
@@ -793,10 +784,9 @@ describe("Topic schema admission", () => {
         topics: {
           dated: {
             schema: Schema.Struct({
-              id: Schema.String,
+              id: ViewServerId,
               createdAt: Schema.Date,
             }),
-            key: "id",
           },
         },
       }),
@@ -806,12 +796,11 @@ describe("Topic schema admission", () => {
         topics: {
           nested: {
             schema: Schema.Struct({
-              id: Schema.String,
+              id: ViewServerId,
               metadata: Schema.Struct({
                 latency: Schema.Duration,
               }),
             }),
-            key: "id",
           },
         },
       }),
@@ -821,10 +810,9 @@ describe("Topic schema admission", () => {
         topics: {
           mixedNumeric: {
             schema: Schema.Struct({
-              id: Schema.String,
+              id: ViewServerId,
               amount: Schema.Union([Schema.BigInt, Schema.Number]),
             }),
-            key: "id",
           },
         },
       }),
@@ -836,12 +824,11 @@ describe("Topic schema admission", () => {
         topics: {
           nestedMixedNumeric: {
             schema: Schema.Struct({
-              id: Schema.String,
+              id: ViewServerId,
               payload: Schema.Struct({
                 amount: Schema.Union([Schema.BigInt, Schema.Number]),
               }),
             }),
-            key: "id",
           },
         },
       }),

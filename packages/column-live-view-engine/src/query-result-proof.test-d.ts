@@ -1,3 +1,4 @@
+import { ViewServerId } from "@effect-view-server/config";
 import { describe, expectTypeOf, it } from "@effect/vitest";
 import type {
   GroupedQuery,
@@ -33,7 +34,7 @@ import { type ExecutableQuery, prepareRuntimeExecutableQuery } from "./query-exe
 import type { TopicStore } from "./topic-store";
 
 const Order = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   status: Schema.Literals(["open", "closed", "cancelled"]),
   price: Schema.Finite,
 });
@@ -85,7 +86,7 @@ type ExpectedGroupedResult = {
 type ForgedResult = { readonly forged: true };
 
 const NumericId = Schema.Struct({ id: Schema.Number });
-const StringId = Schema.Struct({ id: Schema.String });
+const StringId = Schema.Struct({ id: ViewServerId });
 const numericMetadata = rawQueryCompilerMetadata(NumericId);
 const stringMetadata = rawQueryCompilerMetadata(StringId);
 const numericIdQuery = { select: ["id"] } satisfies RawQuery<typeof NumericId.Type>;

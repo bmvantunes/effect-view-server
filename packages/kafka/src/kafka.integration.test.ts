@@ -1,7 +1,7 @@
 import { create, toBinary } from "@bufbuild/protobuf";
 import { describe, expect, it } from "@effect/vitest";
 import { Admin, Producer } from "@platformatic/kafka";
-import { defineViewServerConfig } from "@effect-view-server/config";
+import { ViewServerId, defineViewServerConfig } from "@effect-view-server/config";
 import { makeViewServerRuntimeCore } from "@effect-view-server/runtime-core";
 import { Buffer } from "node:buffer";
 import { execFile } from "node:child_process";
@@ -209,19 +209,19 @@ const JsonInput = Schema.Struct({
 });
 
 const JsonOrder = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   customerId: Schema.String,
   price: Schema.Number,
 });
 
 const ProtobufOrder = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   customerId: Schema.String,
   price: Schema.Number,
 });
 
 const CustomOrder = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   value: Schema.Number,
 });
 
@@ -335,7 +335,9 @@ describe("Kafka Source Adapter with real Apache Kafka", () => {
             makeViewServerRuntimeCore(viewServer, {}).pipe(Effect.provideContext(kafkaContext)),
             (runtime) => runtime.close,
           );
-          const jsonHealth = yield* diagnostics.liveClient.subscribeSourceHealth("jsonOrders");
+          const jsonHealth = yield* diagnostics.liveClient.subscribeSourceHealth({
+            topic: "jsonOrders",
+          });
 
           yield* send(kafkaBootstrapServers, [
             {
@@ -715,8 +717,12 @@ describe("Kafka Source Adapter with real Apache Kafka", () => {
           makeViewServerRuntimeCore(viewServer, {}).pipe(Effect.provideContext(kafkaContext)),
           (current) => current.close,
         );
-        const earliestHealth = yield* runtime.liveClient.subscribeSourceHealth("earliestOrders");
-        const latestHealth = yield* runtime.liveClient.subscribeSourceHealth("latestOrders");
+        const earliestHealth = yield* runtime.liveClient.subscribeSourceHealth({
+          topic: "earliestOrders",
+        });
+        const latestHealth = yield* runtime.liveClient.subscribeSourceHealth({
+          topic: "latestOrders",
+        });
         yield* Effect.all(
           [
             earliestHealth.events.pipe(
@@ -1058,17 +1064,24 @@ describe("Kafka Source Adapter with real Apache Kafka", () => {
           makeViewServerRuntimeCore(viewServer, {}).pipe(Effect.provideContext(kafkaContext)),
           (current) => current.close,
         );
-        const committedLatestHealth =
-          yield* runtime.liveClient.subscribeSourceHealth("committedLatest");
-        const timestampLatestHealth =
-          yield* runtime.liveClient.subscribeSourceHealth("timestampLatest");
-        const durationLatestHealth =
-          yield* runtime.liveClient.subscribeSourceHealth("durationLatest");
-        const committedFailHealth =
-          yield* runtime.liveClient.subscribeSourceHealth("committedFail");
-        const timestampFailHealth =
-          yield* runtime.liveClient.subscribeSourceHealth("timestampFail");
-        const durationFailHealth = yield* runtime.liveClient.subscribeSourceHealth("durationFail");
+        const committedLatestHealth = yield* runtime.liveClient.subscribeSourceHealth({
+          topic: "committedLatest",
+        });
+        const timestampLatestHealth = yield* runtime.liveClient.subscribeSourceHealth({
+          topic: "timestampLatest",
+        });
+        const durationLatestHealth = yield* runtime.liveClient.subscribeSourceHealth({
+          topic: "durationLatest",
+        });
+        const committedFailHealth = yield* runtime.liveClient.subscribeSourceHealth({
+          topic: "committedFail",
+        });
+        const timestampFailHealth = yield* runtime.liveClient.subscribeSourceHealth({
+          topic: "timestampFail",
+        });
+        const durationFailHealth = yield* runtime.liveClient.subscribeSourceHealth({
+          topic: "durationFail",
+        });
         yield* Effect.all(
           [
             committedLatestHealth.events,
@@ -1225,7 +1238,7 @@ describe("Kafka Source Adapter with real Apache Kafka", () => {
             (current) => current.close,
           );
           const health = yield* Effect.acquireRelease(
-            runtime.liveClient.subscribeSourceHealth("orders"),
+            runtime.liveClient.subscribeSourceHealth({ topic: "orders" }),
             (current) => current.close().pipe(Effect.orDie),
           );
           return Option.getOrThrow(
@@ -1318,7 +1331,7 @@ describe("Kafka Source Adapter with real Apache Kafka", () => {
             makeViewServerRuntimeCore(viewServer, {}).pipe(Effect.provideContext(kafkaContext)),
             (current) => current.close,
           );
-          const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("orders");
+          const diagnostics = yield* runtime.liveClient.subscribeSourceHealth({ topic: "orders" });
           yield* diagnostics.events.pipe(
             Stream.filter((health) => health.status._tag === "Ready"),
             Stream.take(1),
@@ -1388,7 +1401,9 @@ describe("Kafka Source Adapter with real Apache Kafka", () => {
               { id: "local:replayed", customerId: "replayed", price: 1 },
             ],
           });
-          const recoveredDiagnostics = yield* runtime.liveClient.subscribeSourceHealth("orders");
+          const recoveredDiagnostics = yield* runtime.liveClient.subscribeSourceHealth({
+            topic: "orders",
+          });
           const recovered = Option.getOrThrow(
             yield* recoveredDiagnostics.events.pipe(
               Stream.filter(
@@ -1472,7 +1487,7 @@ describe("Kafka Source Adapter with real Apache Kafka", () => {
           makeViewServerRuntimeCore(viewServer, {}).pipe(Effect.provideContext(kafkaContext)),
           (current) => current.close,
         );
-        const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("orders");
+        const diagnostics = yield* runtime.liveClient.subscribeSourceHealth({ topic: "orders" });
         yield* diagnostics.events.pipe(
           Stream.filter((health) => health.status._tag === "Ready"),
           Stream.take(1),
@@ -1501,7 +1516,9 @@ describe("Kafka Source Adapter with real Apache Kafka", () => {
             }),
           ),
         ).toBeGreaterThanOrEqual(2);
-        const replayDiagnostics = yield* runtime.liveClient.subscribeSourceHealth("orders");
+        const replayDiagnostics = yield* runtime.liveClient.subscribeSourceHealth({
+          topic: "orders",
+        });
         const replayedRejection = Option.getOrThrow(
           yield* replayDiagnostics.events.pipe(
             Stream.filter(
@@ -1591,7 +1608,7 @@ describe("Kafka Source Adapter with real Apache Kafka", () => {
         yield* Effect.scoped(
           Effect.gen(function* () {
             const initialDiagnostics = yield* Effect.acquireRelease(
-              runtime.liveClient.subscribeSourceHealth("orders"),
+              runtime.liveClient.subscribeSourceHealth({ topic: "orders" }),
               (subscription) => subscription.close().pipe(Effect.orDie),
             );
             yield* initialDiagnostics.events.pipe(
@@ -1606,7 +1623,7 @@ describe("Kafka Source Adapter with real Apache Kafka", () => {
         yield* Effect.scoped(
           Effect.gen(function* () {
             const outageDiagnostics = yield* Effect.acquireRelease(
-              runtime.liveClient.subscribeSourceHealth("orders"),
+              runtime.liveClient.subscribeSourceHealth({ topic: "orders" }),
               (subscription) => subscription.close().pipe(Effect.orDie),
             );
             yield* withKafkaOutage(
@@ -1641,7 +1658,7 @@ describe("Kafka Source Adapter with real Apache Kafka", () => {
             }),
           );
         const recoveredDiagnostics = yield* Effect.acquireRelease(
-          runtime.liveClient.subscribeSourceHealth("orders"),
+          runtime.liveClient.subscribeSourceHealth({ topic: "orders" }),
           (subscription) => subscription.close().pipe(Effect.orDie),
         );
         const recoveredHealth = Option.getOrThrow(
@@ -1706,7 +1723,7 @@ describe("Kafka Source Adapter with real Apache Kafka", () => {
               (current) => current.close,
             );
             const health = yield* Effect.acquireRelease(
-              runtime.liveClient.subscribeSourceHealth("orders"),
+              runtime.liveClient.subscribeSourceHealth({ topic: "orders" }),
               (current) => current.close().pipe(Effect.orDie),
             );
             yield* health.events.pipe(
@@ -1765,7 +1782,7 @@ describe("Kafka Source Adapter with real Apache Kafka", () => {
               (current) => current.close,
             );
             const health = yield* Effect.acquireRelease(
-              runtime.liveClient.subscribeSourceHealth("orders"),
+              runtime.liveClient.subscribeSourceHealth({ topic: "orders" }),
               (current) => current.close().pipe(Effect.orDie),
             );
             yield* health.events.pipe(

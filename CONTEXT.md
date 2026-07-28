@@ -4,7 +4,7 @@ This context defines the language for the View Server project: a type-safe live 
 
 ## Document Status
 
-Runtime code and published package exports are authoritative for currently available behavior. The transport-neutral Source Adapter SDK, Runtime Core supervision, Source Health protocol, framework-neutral diagnostics, conformance foundation, and first-party Kafka and gRPC Source Adapters described here are implemented. The canonical-only `source` cutover, React Source Diagnostics hook, and final removal of transport-specific source shapes remain staged work.
+Runtime code and published package exports are authoritative for currently available behavior. The transport-neutral Source Adapter SDK, Runtime Core supervision, Source Health protocol, framework-neutral diagnostics, React Source Diagnostics hook, conformance foundation, first-party Kafka and gRPC Source Adapters, and canonical-only `source` configuration described here are implemented. Transport-specific source shapes have been removed.
 
 ## Language
 
@@ -47,7 +47,7 @@ The schema-derived ownership, equivalence, canonical JSON representation, and or
 _Avoid_: Deep clone helper, generic object equality, JSON stringify semantics
 
 **Topic Row ID**:
-In the accepted target architecture, the required `id: Schema.String` field declared by every Topic Schema. Its decoded string uniquely identifies a Topic Row and acts as the final deterministic sort tiebreaker; the field name and Schema are not configurable.
+In the accepted target architecture, the required `id: ViewServerId` field declared by every Topic Schema. Its decoded string uniquely identifies a Topic Row and acts as the final deterministic sort tiebreaker; the field name and Schema are not configurable.
 _Avoid_: Configurable Row Key, primary key when discussing external databases, optional ID, numeric ID
 
 **Timestamp**:
@@ -279,9 +279,8 @@ _Avoid_: Guessed field value, implicit string field, server-side key reconstruct
 ### Ingestion Concepts
 
 The Source Adapter concepts in this section describe the implemented core SDK,
-Runtime Core path, and first-party Kafka and gRPC contract, server, and Node
-platform Layers. Removal of the remaining transport-specific source shapes
-remains staged in issue #387.
+Runtime Core path, first-party Kafka and gRPC contract, server, and Node
+platform Layers, and the completed canonical-only Source configuration.
 
 **Source Topic**:
 An external Kafka topic, gRPC server stream, or other server-side source that provides messages to be mapped into a View Server Topic.
@@ -512,7 +511,7 @@ _Avoid_: Browser write, send, emit
 ## Relationships
 
 - A **View Server** owns one or more **View Server Topics**.
-- A **View Server Topic** has exactly one canonical **Topic Row ID** declared as `id: Schema.String` in its Topic Schema.
+- A **View Server Topic** has exactly one canonical **Topic Row ID** declared as `id: ViewServerId` in its Topic Schema.
 - A **Topic Row** belongs to exactly one **View Server Topic**.
 - A **Timestamp** is a numeric Topic Row field and uses the same typed comparison semantics as its number or bigint representation.
 - **Topic Row Value Semantics** are derived from that Topic Row's configured schema and are shared by local and Wire Protocol ownership boundaries.

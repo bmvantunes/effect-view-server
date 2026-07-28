@@ -486,43 +486,18 @@ export const facadeProjectionViolationsForSource = ({
   if (inspection.nonReexportStatements.length > 0) {
     violations.push(`${relativePath} must contain only package re-export declarations.`);
   }
-  if (projection.reexport.kind === "all") {
-    const expectedWorkspaceSpecifiers = projection.workspaceSpecifiers;
-    if (
-      inspection.reexports.length !== expectedWorkspaceSpecifiers.length ||
-      inspection.reexports.some(
-        (reexport, index) =>
-          reexport.kind !== "all" ||
-          reexport.moduleSpecifier !== expectedWorkspaceSpecifiers[index] ||
-          reexport.typeOnly,
-      )
-    ) {
-      violations.push(
-        `${relativePath} must exclusively re-export all of ${expectedWorkspaceSpecifiers.join(" and ")}.`,
-      );
-    }
-    return violations;
-  }
-  const namedReexports = inspection.reexports.flatMap((reexport) =>
-    reexport.kind === "named" && reexport.moduleSpecifier === projection.workspaceSpecifier
-      ? [reexport]
-      : [],
-  );
-  const namedExports = namedReexports.flatMap((reexport) => reexport.exports);
-  const runtimeNames = namedExports
-    .filter((namedExport) => !namedExport.typeOnly)
-    .map((namedExport) => namedExport.exportedName);
-  const typeNames = namedExports
-    .filter((namedExport) => namedExport.typeOnly)
-    .map((namedExport) => namedExport.exportedName);
+  const expectedWorkspaceSpecifiers = projection.workspaceSpecifiers;
   if (
-    inspection.reexports.length !== namedReexports.length ||
-    namedExports.some((namedExport) => namedExport.sourceName !== namedExport.exportedName) ||
-    runtimeNames.join("\0") !== projection.reexport.runtime.join("\0") ||
-    typeNames.join("\0") !== projection.reexport.types.join("\0")
+    inspection.reexports.length !== expectedWorkspaceSpecifiers.length ||
+    inspection.reexports.some(
+      (reexport, index) =>
+        reexport.kind !== "all" ||
+        reexport.moduleSpecifier !== expectedWorkspaceSpecifiers[index] ||
+        reexport.typeOnly,
+    )
   ) {
     violations.push(
-      `${relativePath} must exactly re-export the curated runtime and type symbols from ${projection.workspaceSpecifier}.`,
+      `${relativePath} must exclusively re-export all of ${expectedWorkspaceSpecifiers.join(" and ")}.`,
     );
   }
   return violations;
@@ -859,7 +834,10 @@ const runtimeAdapterLeafModule =
 
 const tcpPublishAdapterModule = /^packages\/runtime\/src\/tcp-publish-[^/]+\.ts$/;
 
-const runtimeAdapterImplementationSpecifier = (adapter: string, specifier: string): boolean =>
+const runtimeAdapterImplementationSpecifier = (
+  adapter: string | undefined,
+  specifier: string,
+): boolean =>
   specifier === `./${adapter}-ingress` ||
   specifier === `./${adapter}-lease-manager` ||
   specifier === `./${adapter}-runtime-source`;
@@ -898,7 +876,7 @@ export const runtimeSourceSeamViolationsForFile = ({
   if (adapterOptionMatch !== null) {
     const adapter = adapterOptionMatch[1];
     for (const specifier of moduleSpecifiers) {
-      if (adapter !== undefined && runtimeAdapterImplementationSpecifier(adapter, specifier)) {
+      if (runtimeAdapterImplementationSpecifier(adapter, specifier)) {
         violations.push(
           `${relativePath} imports its source Adapter Implementation through ${specifier}.`,
         );

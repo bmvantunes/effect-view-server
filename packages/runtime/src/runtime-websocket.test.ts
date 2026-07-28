@@ -592,6 +592,31 @@ describe("Runtime WebSocket and operational endpoints", () => {
             },
           }),
         );
+        const stringLimitError = yield* Effect.flip(
+          invalidOptionsEffect({
+            groupedIncrementalAdmissionLimits: { maxGroups: "1" },
+          }),
+        );
+        const nanLimitError = yield* Effect.flip(
+          invalidOptionsEffect({
+            groupedIncrementalAdmissionLimits: { maxMembers: Number.NaN },
+          }),
+        );
+        const fractionalLimitError = yield* Effect.flip(
+          invalidOptionsEffect({
+            groupedIncrementalAdmissionLimits: { maxMembersPerGroup: 1.5 },
+          }),
+        );
+        const zeroLimitError = yield* Effect.flip(
+          invalidOptionsEffect({
+            groupedIncrementalAdmissionLimits: { maxRetainedValueEntries: 0 },
+          }),
+        );
+        const negativeLimitError = yield* Effect.flip(
+          invalidOptionsEffect({
+            groupedIncrementalAdmissionLimits: { maxGroups: -1 },
+          }),
+        );
         const ownKeysError = yield* Effect.flip(
           invalidOptionsEffect(
             new Proxy(
@@ -657,6 +682,44 @@ describe("Runtime WebSocket and operational endpoints", () => {
           message:
             "View Server runtime option groupedIncrementalAdmissionLimits contains unsupported property: maxGroupz.",
         });
+        expect([
+          stringLimitError,
+          nanLimitError,
+          fractionalLimitError,
+          zeroLimitError,
+          negativeLimitError,
+        ]).toStrictEqual([
+          {
+            _tag: "ViewServerRuntimeError",
+            code: "RuntimeUnavailable",
+            message:
+              "View Server runtime option groupedIncrementalAdmissionLimits.maxGroups must be a positive safe integer.",
+          },
+          {
+            _tag: "ViewServerRuntimeError",
+            code: "RuntimeUnavailable",
+            message:
+              "View Server runtime option groupedIncrementalAdmissionLimits.maxMembers must be a positive safe integer.",
+          },
+          {
+            _tag: "ViewServerRuntimeError",
+            code: "RuntimeUnavailable",
+            message:
+              "View Server runtime option groupedIncrementalAdmissionLimits.maxMembersPerGroup must be a positive safe integer.",
+          },
+          {
+            _tag: "ViewServerRuntimeError",
+            code: "RuntimeUnavailable",
+            message:
+              "View Server runtime option groupedIncrementalAdmissionLimits.maxRetainedValueEntries must be a positive safe integer.",
+          },
+          {
+            _tag: "ViewServerRuntimeError",
+            code: "RuntimeUnavailable",
+            message:
+              "View Server runtime option groupedIncrementalAdmissionLimits.maxGroups must be a positive safe integer.",
+          },
+        ]);
         expect(ownKeysError).toStrictEqual({
           _tag: "ViewServerRuntimeError",
           code: "RuntimeUnavailable",

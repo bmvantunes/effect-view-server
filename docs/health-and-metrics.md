@@ -51,7 +51,8 @@ source, not a client atom and not the upstream adapter network. Concurrent
 requests are coalesced.
 
 - `200`: runtime is ready or degraded
-- non-`200`: runtime is starting or stopping
+- `503`: runtime is starting or stopping
+- other non-`200`: authentication, health reading, or health encoding failed
 
 JSON encodes `bigint` values as decimal strings. Authentication is evaluated
 before the health snapshot is served.

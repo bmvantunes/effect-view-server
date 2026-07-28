@@ -20,19 +20,23 @@ export type ResolvedViewServerRuntimeBaseOptions<
   };
 };
 
-const runtimeOptionKeys = new Set<PropertyKey>([
-  "auth",
-  "groupedIncrementalAdmissionLimits",
-  "healthPath",
-  "host",
-  "metricsPath",
-  "rpcPath",
-  "subscriptionQueueCapacity",
-  "tcpPublishHost",
-  "tcpPublishMaxConnections",
-  "tcpPublishPort",
-  "websocketPort",
-]);
+const runtimeOptionKeyRecord = {
+  auth: true,
+  groupedIncrementalAdmissionLimits: true,
+  healthPath: true,
+  host: true,
+  metricsPath: true,
+  rpcPath: true,
+  subscriptionQueueCapacity: true,
+  tcpPublishHost: true,
+  tcpPublishMaxConnections: true,
+  tcpPublishPort: true,
+  websocketPort: true,
+} satisfies {
+  readonly [Key in keyof ViewServerRuntimeOptions<ViewServerRuntimeTopicDefinitions>]-?: true;
+};
+
+const runtimeOptionKeys = new Set<PropertyKey>(Reflect.ownKeys(runtimeOptionKeyRecord));
 
 const groupedIncrementalAdmissionLimitKeyRecord = {
   maxGroups: true,
@@ -88,6 +92,17 @@ export const validateViewServerRuntimeOptions = Effect.fn("ViewServerRuntime.opt
             throw new TypeError(
               `View Server runtime option groupedIncrementalAdmissionLimits contains unsupported property: ${String(unsupportedGroupedLimit)}.`,
             );
+          }
+          for (const key of groupedIncrementalAdmissionLimitKeys) {
+            const value = Reflect.get(groupedLimits, key);
+            if (
+              value !== undefined &&
+              (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0)
+            ) {
+              throw new TypeError(
+                `View Server runtime option groupedIncrementalAdmissionLimits.${String(key)} must be a positive safe integer.`,
+              );
+            }
           }
         }
         const capturedGroupedLimits =

@@ -135,15 +135,17 @@ const validateSourceTopicKeys = Effect.fn("ViewServerProtocol.health.sourceTopic
     keys: ReadonlyArray<string>,
   ) {
     const configuredSources = configuredSourceTopicNames(config);
+    const configuredSourceSet = new Set(configuredSources);
+    const keySet = new Set(keys);
     for (const topic of configuredSources) {
-      if (!keys.includes(topic)) {
+      if (!keySet.has(topic)) {
         return yield* Effect.fail(
           invalidHealthRow(topic, `Health payload is missing source topic: ${topic}`),
         );
       }
     }
     for (const topic of keys) {
-      if (!configuredSources.includes(topic)) {
+      if (!configuredSourceSet.has(topic)) {
         return yield* Effect.fail(
           invalidHealthRow(
             topic,

@@ -40,7 +40,10 @@ definition:
 import { ViewServerId, viewSchema } from "effect-view-server/config";
 import { Schema } from "effect";
 
-class Profile extends Schema.Class<Profile>("Profile")({ id: ViewServerId }) {}
+class Profile extends Schema.Class<Profile>("Profile")({
+  id: ViewServerId,
+  displayName: viewSchema.Option(Schema.String),
+}) {}
 viewSchema.admitClass(Profile);
 ```
 

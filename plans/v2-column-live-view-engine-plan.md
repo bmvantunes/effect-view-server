@@ -281,12 +281,12 @@ Accepted combined-source shape:
 ```ts
 // view-server.config.ts
 import { Config, Schema, Stream } from "effect";
-import { ViewServerId, defineViewServerConfig, grpc, kafka } from "effect-view-server/config";
+import { defineViewServerConfig, grpc, kafka } from "effect-view-server/config";
 import { KafkaTrade, Order, Strategy, Trade } from "./schemas";
 import { ordersService, strategiesService } from "./generated/grpc";
 
 const ManualOrder = Schema.Struct({
-  id: ViewServerId,
+  id: Schema.String,
   customerId: Schema.String,
   strategyId: Schema.String,
   status: Schema.Literals(["open", "closed", "cancelled"]),

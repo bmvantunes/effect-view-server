@@ -183,7 +183,7 @@ export const makeRuntimeCoreMutationPipeline = <const Topics extends TopicDefini
       mutation: ViewServerRuntimeDecodedMutation<Topics>,
       _trust?: typeof viewServerRuntimeDecodedMutationTrust | UnhandledDecodedMutationTag<Topics>,
     ) {
-      yield* sourceOwnership.requirePublicMutationAllowed(mutation.topic, "runtimeCore");
+      yield* sourceOwnership.requirePublicMutationAllowed(mutation.topic);
       switch (mutation._tag) {
         case "CheckMutationAllowed":
           return;
@@ -203,23 +203,23 @@ export const makeRuntimeCoreMutationPipeline = <const Topics extends TopicDefini
   const checkedMutations: ViewServerRuntimeCoreCheckedMutations<Topics> = {
     publish: (topic, row) =>
       sourceOwnership
-        .requirePublicMutationAllowed(topic, "runtimeCore")
+        .requirePublicMutationAllowed(topic)
         .pipe(Effect.flatMap(() => internalMutations.publish(topic, row))),
     publishMany: (topic, rows) =>
       sourceOwnership
-        .requirePublicMutationAllowed(topic, "runtimeCore")
+        .requirePublicMutationAllowed(topic)
         .pipe(Effect.flatMap(() => internalMutations.publishMany(topic, rows))),
     patch: (topic, key, patch) =>
       sourceOwnership
-        .requirePublicMutationAllowed(topic, "runtimeCore")
+        .requirePublicMutationAllowed(topic)
         .pipe(Effect.flatMap(() => internalMutations.patch(topic, key, patch))),
     delete: (topic, key) =>
       sourceOwnership
-        .requirePublicMutationAllowed(topic, "runtimeCore")
+        .requirePublicMutationAllowed(topic)
         .pipe(Effect.flatMap(() => internalMutations.delete(topic, key))),
     reset: () =>
       sourceOwnership
-        .requirePublicResetAllowed("runtimeCore")
+        .requirePublicResetAllowed()
         .pipe(Effect.flatMap(() => internalMutations.reset())),
   };
   return {

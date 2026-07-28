@@ -1,7 +1,7 @@
 import { describe, expectTypeOf, it } from "@effect/vitest";
 import type { LiveQueryResult } from "effect-view-server/config";
 import { strategiesService } from "./grpc-descriptors";
-import { useLiveQuery, viewServer } from "./view-server.config";
+import { grpcSources, useLiveQuery, viewServer } from "./view-server.config";
 
 describe("materialized gRPC example type contracts", () => {
   it("preserves selected strategy row types", () => {
@@ -26,5 +26,21 @@ describe("materialized gRPC example type contracts", () => {
     ).toEqualTypeOf<"server_streaming">();
     expectTypeOf(viewServer.topics.strategies.source.lifecycle).toEqualTypeOf<"materialized">();
     expectTypeOf(viewServer.topics.strategies.source.options.client).toEqualTypeOf<string>();
+
+    grpcSources.materialized({
+      client: "strategies",
+      method: "streamStrategies",
+      request: () => ({ universe: "global" }),
+      map: ({ value }) => ({
+        id: String(`${value.strategyId}:${value.region}`),
+        strategyId: value.strategyId,
+        region: value.region,
+        status: value.status,
+        notional: value.notional,
+        updatedAt: value.updatedAt,
+      }),
+      // @ts-expect-error Materialized gRPC Source options are exact.
+      unsupported: true,
+    });
   });
 });

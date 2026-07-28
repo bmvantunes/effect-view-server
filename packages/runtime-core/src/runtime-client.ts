@@ -89,8 +89,7 @@ export const makeRuntimeCoreClient = Effect.fn("ViewServerRuntimeCore.client.mak
       };
       const { snapshotInternal, snapshot } = makeRuntimeCoreSnapshotQueryFacade<Topics>({
         snapshotQuery,
-        requirePublicReadAllowed: (topic) =>
-          sourceOwnership.requirePublicReadAllowed(topic, "runtimeCore"),
+        requirePublicReadAllowed: (topic) => sourceOwnership.requirePublicReadAllowed(topic),
       });
       const internalClient: ViewServerRuntimeCoreInternalClient<Topics> = {
         ...mutationPipeline.internalMutations,

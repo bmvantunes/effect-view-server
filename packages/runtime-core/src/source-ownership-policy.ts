@@ -11,7 +11,6 @@ import {
 } from "./runtime-error";
 import { makeTopicSourceBindings, type TopicSourceOwner } from "./source-binding-resolution";
 
-export type SourceOwnershipAccessProfile = "managedRuntime" | "runtimeCore";
 export type SourceOwnershipOwner = TopicSourceOwner;
 
 export type SourceOwnershipTopic = {
@@ -34,34 +33,18 @@ export type SourceOwnershipPolicy = {
   readonly leasedTopics: ReadonlySet<string>;
   readonly sourceOwnedTopics: ReadonlySet<string>;
   readonly topics: ReadonlyMap<string, SourceOwnershipTopic>;
-  readonly publicMutationDecision: (
-    topic: string,
-    profile: SourceOwnershipAccessProfile,
-  ) => SourceOwnershipDecision;
-  readonly publicReadDecision: (
-    topic: string,
-    profile: SourceOwnershipAccessProfile,
-  ) => SourceOwnershipDecision;
-  readonly publicSubscriptionDecision: (
-    topic: string,
-    profile: SourceOwnershipAccessProfile,
-  ) => SourceOwnershipDecision;
-  readonly publicResetDecision: (profile: SourceOwnershipAccessProfile) => SourceOwnershipDecision;
+  readonly publicMutationDecision: (topic: string) => SourceOwnershipDecision;
+  readonly publicReadDecision: (topic: string) => SourceOwnershipDecision;
+  readonly publicSubscriptionDecision: (topic: string) => SourceOwnershipDecision;
+  readonly publicResetDecision: () => SourceOwnershipDecision;
   readonly requirePublicMutationAllowed: (
     topic: string,
-    profile: SourceOwnershipAccessProfile,
   ) => Effect.Effect<void, ViewServerRuntimeError>;
-  readonly requirePublicReadAllowed: (
-    topic: string,
-    profile: SourceOwnershipAccessProfile,
-  ) => Effect.Effect<void, ViewServerRuntimeError>;
+  readonly requirePublicReadAllowed: (topic: string) => Effect.Effect<void, ViewServerRuntimeError>;
   readonly requirePublicSubscriptionAllowed: (
     topic: string,
-    profile: SourceOwnershipAccessProfile,
   ) => Effect.Effect<void, ViewServerRuntimeError>;
-  readonly requirePublicResetAllowed: (
-    profile: SourceOwnershipAccessProfile,
-  ) => Effect.Effect<void, ViewServerRuntimeError>;
+  readonly requirePublicResetAllowed: () => Effect.Effect<void, ViewServerRuntimeError>;
   readonly isLeasedTopic: (topic: string) => boolean;
   readonly isSourceOwnedTopic: (topic: string) => boolean;
   readonly hasSourceOwnedTopics: boolean;
@@ -107,26 +90,17 @@ export const makeSourceOwnershipPolicy = <const Topics extends TopicDefinitions>
   const sortedTopics = new Map(
     [...topics.entries()].sort(([left], [right]) => left.localeCompare(right)),
   );
-  const publicMutationDecision = (
-    topic: string,
-    _profile: SourceOwnershipAccessProfile,
-  ): SourceOwnershipDecision =>
+  const publicMutationDecision = (topic: string): SourceOwnershipDecision =>
     sortedSourceOwnedTopics.has(topic)
       ? rejectedDecision(sourceOwnedRuntimeMutationError(topic))
       : allowedDecision;
-  const publicReadDecision = (
-    topic: string,
-    _profile: SourceOwnershipAccessProfile,
-  ): SourceOwnershipDecision =>
+  const publicReadDecision = (topic: string): SourceOwnershipDecision =>
     sortedLeasedTopics.has(topic)
       ? rejectedDecision(sourceLeasedRuntimeReadError(topic))
       : allowedDecision;
-  const publicSubscriptionDecision = (
-    topic: string,
-    profile: SourceOwnershipAccessProfile,
-  ): SourceOwnershipDecision =>
-    sortedLeasedTopics.has(topic) ? allowedDecision : publicReadDecision(topic, profile);
-  const publicResetDecision = (_profile: SourceOwnershipAccessProfile): SourceOwnershipDecision =>
+  const publicSubscriptionDecision = (topic: string): SourceOwnershipDecision =>
+    sortedLeasedTopics.has(topic) ? allowedDecision : publicReadDecision(topic);
+  const publicResetDecision = (): SourceOwnershipDecision =>
     sortedSourceOwnedTopics.size === 0
       ? allowedDecision
       : rejectedDecision(sourceOwnedRuntimeResetError);
@@ -138,13 +112,10 @@ export const makeSourceOwnershipPolicy = <const Topics extends TopicDefinitions>
     publicReadDecision,
     publicSubscriptionDecision,
     publicResetDecision,
-    requirePublicMutationAllowed: (topic, profile) =>
-      decisionEffect(publicMutationDecision(topic, profile)),
-    requirePublicReadAllowed: (topic, profile) =>
-      decisionEffect(publicReadDecision(topic, profile)),
-    requirePublicSubscriptionAllowed: (topic, profile) =>
-      decisionEffect(publicSubscriptionDecision(topic, profile)),
-    requirePublicResetAllowed: (profile) => decisionEffect(publicResetDecision(profile)),
+    requirePublicMutationAllowed: (topic) => decisionEffect(publicMutationDecision(topic)),
+    requirePublicReadAllowed: (topic) => decisionEffect(publicReadDecision(topic)),
+    requirePublicSubscriptionAllowed: (topic) => decisionEffect(publicSubscriptionDecision(topic)),
+    requirePublicResetAllowed: () => decisionEffect(publicResetDecision()),
     isLeasedTopic: (topic) => sortedLeasedTopics.has(topic),
     isSourceOwnedTopic: (topic) => sortedSourceOwnedTopics.has(topic),
     hasSourceOwnedTopics: sortedSourceOwnedTopics.size > 0,

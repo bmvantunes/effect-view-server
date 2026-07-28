@@ -251,7 +251,7 @@ export const makeRuntimeCoreLiveClientModule = Effect.fn("ViewServerRuntimeCore.
       > => {
         const acquisition = subscribeQuery(topic, query);
         return sourceOwnership
-          .requirePublicSubscriptionAllowed(topic, "runtimeCore")
+          .requirePublicSubscriptionAllowed(topic)
           .pipe(Effect.flatMap(() => acquisition));
       };
       const subscribeRuntimeInternal: ViewServerRuntimeCoreInternalLiveClient<Topics>["subscribeRuntimeInternal"] =
@@ -292,7 +292,7 @@ export const makeRuntimeCoreLiveClientModule = Effect.fn("ViewServerRuntimeCore.
           subscribeQuery,
           subscribeObservedQuery,
           requirePublicReadAllowed: (topic) =>
-            sourceOwnership.requirePublicSubscriptionAllowed(topic, "runtimeCore"),
+            sourceOwnership.requirePublicSubscriptionAllowed(topic),
         });
       const subscribeRuntime = adaptRuntimeQuerySubscriber<Topics>(subscribeRuntimeQuery);
       const protocolQuerySubscriber: ViewServerRuntimeCoreProtocolQuerySubscriber<Topics> = {

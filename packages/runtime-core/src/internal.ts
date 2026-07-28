@@ -28,7 +28,6 @@ export type {
   ViewServerRuntimeCoreInternalMutations,
 } from "./source-mutation-pipeline";
 export type {
-  SourceOwnershipAccessProfile,
   SourceOwnershipDecision,
   SourceOwnershipOwner,
   SourceOwnershipPolicy,

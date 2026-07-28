@@ -2,6 +2,8 @@ import { describe, expectTypeOf, it } from "@effect/vitest";
 import {
   SourceAdapter,
   type SourceDefinitionOptionsFamily,
+  type SourceDefinitionRouteFields,
+  type SourceDefinitionRow,
   type SourceHealthForDefinition,
 } from "@effect-view-server/source-adapter";
 import { Schema } from "effect";
@@ -166,12 +168,44 @@ describe("Source Adapter config type contracts", () => {
     void config.topics.all.key;
     // @ts-expect-error Source-free Topic configuration never exposes a configurable key.
     void sourceFreeConfig.topics.manual.key;
-    expectTypeOf(mappedConfig.topics.mapped.source).toEqualTypeOf<
-      typeof mappedConfig.topics.mapped.source
-    >();
-    expectTypeOf(nestedMappedConfig.topics.nested.source).toEqualTypeOf<
-      typeof nestedMappedConfig.topics.nested.source
-    >();
+    expectTypeOf(mappedConfig.topics.mapped.source.lifecycle).toEqualTypeOf<"materialized">();
+    expectTypeOf(mappedConfig.topics.mapped.source.options.stream).toEqualTypeOf<string>();
+    expectTypeOf(mappedConfig.topics.mapped.source.options.initial.id).toEqualTypeOf<string>();
+    expectTypeOf(mappedConfig.topics.mapped.source.options.initial.region).toEqualTypeOf<string>();
+    expectTypeOf(mappedConfig.topics.mapped.source.options.initial.shard).toEqualTypeOf<bigint>();
+    expectTypeOf<
+      SourceDefinitionRow<typeof mappedConfig.topics.mapped.source>["id"]
+    >().toEqualTypeOf<string>();
+    expectTypeOf<
+      SourceDefinitionRow<typeof mappedConfig.topics.mapped.source>["region"]
+    >().toEqualTypeOf<string>();
+    expectTypeOf<
+      SourceDefinitionRow<typeof mappedConfig.topics.mapped.source>["shard"]
+    >().toEqualTypeOf<bigint>();
+    expectTypeOf<
+      SourceDefinitionRouteFields<typeof mappedConfig.topics.mapped.source>
+    >().toEqualTypeOf<readonly []>();
+    expectTypeOf(nestedMappedConfig.topics.nested.source.lifecycle).toEqualTypeOf<"materialized">();
+    expectTypeOf(
+      nestedMappedConfig.topics.nested.source.options.initial.metadata.region,
+    ).toEqualTypeOf<string>();
+    expectTypeOf(
+      nestedMappedConfig.topics.nested.source.options.initial.metadata.tags[0]?.name,
+    ).toEqualTypeOf<string | undefined>();
+    expectTypeOf<
+      SourceDefinitionRow<typeof nestedMappedConfig.topics.nested.source>["id"]
+    >().toEqualTypeOf<string>();
+    expectTypeOf<
+      SourceDefinitionRow<typeof nestedMappedConfig.topics.nested.source>["metadata"]["region"]
+    >().toEqualTypeOf<string>();
+    expectTypeOf<
+      SourceDefinitionRow<
+        typeof nestedMappedConfig.topics.nested.source
+      >["metadata"]["tags"][number]["name"]
+    >().toEqualTypeOf<string>();
+    expectTypeOf<
+      SourceDefinitionRouteFields<typeof nestedMappedConfig.topics.nested.source>
+    >().toEqualTypeOf<readonly []>();
     expectTypeOf(config.topics.routed.source.routeBy).toEqualTypeOf<readonly ["region", "shard"]>();
     expectTypeOf<
       ViewServerHealth<typeof config.topics>["sources"]["all"]

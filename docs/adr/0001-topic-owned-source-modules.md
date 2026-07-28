@@ -29,7 +29,7 @@ As specified by ADR 0006, the canonical source shape is one `source` property co
 
 Runtime options do not declare canonical source ownership or contain Source Adapter configuration. Per-source ownership and behavior stay in the one Topic-owned Source Definition. Concrete brokers, clients, credentials, endpoints, and platform resources belong to the Source Adapter's aggregate Layer supplied to the View Server Runtime Effect.
 
-The remaining runtime-owned transport helpers and transport-specific Topic properties are staged for deletion rather than becoming compatibility paths. The public facade and package subexports keep negative export tests for removed names so they cannot silently return.
+Runtime-owned transport helpers and transport-specific Topic properties have been removed rather than retained as compatibility paths. The public facade and package subexports keep negative export tests for those removed names so they cannot silently return.
 
 ## Consequences
 

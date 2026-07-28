@@ -77,6 +77,14 @@ const makeIdleGrpcClient = (
 const firstEvent = <A, E, R>(events: Stream.Stream<A, E, R>) =>
   Stream.runHead(events).pipe(Effect.map(Option.getOrThrow));
 
+const requireActive = <Health extends { readonly _tag: string }>(health: Health) =>
+  Effect.filterOrFail(
+    Effect.succeed(health),
+    (candidate): candidate is Extract<Health, { readonly _tag: "Active" }> =>
+      candidate._tag === "Active",
+    () => "Expected active Source Health.",
+  );
+
 describe("combined-sources runtime composition", () => {
   it.live("composes real Kafka and gRPC aggregate Layers through the generic runtime port", () =>
     Effect.gen(function* () {
@@ -100,64 +108,76 @@ describe("combined-sources runtime composition", () => {
         strategies: makeIdleGrpcClient(strategiesInvoked, strategiesFinalized),
       });
       const SourcesLive = Layer.mergeAll(KafkaLive, GrpcLive);
-      const runtime = yield* makeViewServerRuntime(viewServer, {
-        host: "127.0.0.1",
-        tcpPublishHost: "127.0.0.1",
-        tcpPublishPort: 0,
-        websocketPort: 0,
-      }).pipe(Effect.provide(SourcesLive));
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const runtime = yield* makeViewServerRuntime(viewServer, {
+            host: "127.0.0.1",
+            tcpPublishHost: "127.0.0.1",
+            tcpPublishPort: 0,
+            websocketPort: 0,
+          }).pipe(Effect.provide(SourcesLive));
+          yield* Effect.addFinalizer(() => runtime.close.pipe(Effect.exit, Effect.asVoid));
 
-      expect(runtime.tcpPublishUrl).toMatch(/^tcp:\/\/127\.0\.0\.1:\d+$/);
-      yield* Deferred.await(kafkaUsaAcquired);
-      yield* Deferred.await(kafkaLondonAcquired);
-      expect(yield* Deferred.await(strategiesInvoked)).toBe("streamStrategies");
+          expect(runtime.tcpPublishUrl).toMatch(/^tcp:\/\/127\.0\.0\.1:\d+$/);
+          yield* Deferred.await(kafkaUsaAcquired);
+          yield* Deferred.await(kafkaLondonAcquired);
+          expect(yield* Deferred.await(strategiesInvoked)).toBe("streamStrategies");
 
-      const tradesHealthSubscription = yield* runtime.liveClient.subscribeSourceHealth({
-        topic: "trades",
-      });
-      const strategiesHealthSubscription = yield* runtime.liveClient.subscribeSourceHealth({
-        topic: "strategies",
-      });
-      const tradesHealth = yield* firstEvent(tradesHealthSubscription.events);
-      const strategiesHealth = yield* firstEvent(strategiesHealthSubscription.events);
+          const tradesHealthSubscription = yield* runtime.liveClient.subscribeSourceHealth({
+            topic: "trades",
+          });
+          yield* Effect.addFinalizer(() =>
+            tradesHealthSubscription.close().pipe(Effect.exit, Effect.asVoid),
+          );
+          const strategiesHealthSubscription = yield* runtime.liveClient.subscribeSourceHealth({
+            topic: "strategies",
+          });
+          yield* Effect.addFinalizer(() =>
+            strategiesHealthSubscription.close().pipe(Effect.exit, Effect.asVoid),
+          );
+          const tradesHealth = yield* firstEvent(tradesHealthSubscription.events);
+          const strategiesHealth = yield* firstEvent(strategiesHealthSubscription.events);
 
-      expect({
-        kafkaAdapter: tradesHealth.adapter.name,
-        kafkaTarget: tradesHealth.target._tag,
-        grpcAdapter: strategiesHealth.adapter.name,
-        grpcTarget: strategiesHealth.target._tag,
-      }).toStrictEqual({
-        kafkaAdapter: "kafka",
-        kafkaTarget: "Materialized",
-        grpcAdapter: "grpc",
-        grpcTarget: "Materialized",
-      });
+          expect({
+            kafkaAdapter: tradesHealth.adapter.name,
+            kafkaTarget: tradesHealth.target._tag,
+            grpcAdapter: strategiesHealth.adapter.name,
+            grpcTarget: strategiesHealth.target._tag,
+          }).toStrictEqual({
+            kafkaAdapter: "kafka",
+            kafkaTarget: "Materialized",
+            grpcAdapter: "grpc",
+            grpcTarget: "Materialized",
+          });
 
-      const ordersSubscription = yield* runtime.liveClient.subscribe("orders", {
-        routeBy: { strategyId: "strategy-1", region: "eu" },
-        select: ["id", "customerId"],
-      });
-      expect(yield* Deferred.await(ordersInvoked)).toBe("streamOrders");
-      const ordersHealthSubscription = yield* runtime.liveClient.subscribeSourceHealth({
-        topic: "orders",
-        routeBy: { strategyId: "strategy-1", region: "eu" },
-      });
-      const ordersHealth = yield* firstEvent(ordersHealthSubscription.events);
-      expect({
-        adapter: ordersHealth._tag === "Active" ? ordersHealth.health.adapter.name : "inactive",
-        route: ordersHealth.route,
-        state: ordersHealth._tag,
-      }).toStrictEqual({
-        adapter: "grpc",
-        route: { strategyId: "strategy-1", region: "eu" },
-        state: "Active",
-      });
-
-      yield* ordersHealthSubscription.close();
-      yield* ordersSubscription.close();
-      yield* tradesHealthSubscription.close();
-      yield* strategiesHealthSubscription.close();
-      yield* runtime.close;
+          const ordersSubscription = yield* runtime.liveClient.subscribe("orders", {
+            routeBy: { strategyId: "strategy-1", region: "eu" },
+            select: ["id", "customerId"],
+          });
+          yield* Effect.addFinalizer(() =>
+            ordersSubscription.close().pipe(Effect.exit, Effect.asVoid),
+          );
+          expect(yield* Deferred.await(ordersInvoked)).toBe("streamOrders");
+          const ordersHealthSubscription = yield* runtime.liveClient.subscribeSourceHealth({
+            topic: "orders",
+            routeBy: { strategyId: "strategy-1", region: "eu" },
+          });
+          yield* Effect.addFinalizer(() =>
+            ordersHealthSubscription.close().pipe(Effect.exit, Effect.asVoid),
+          );
+          const ordersHealth = yield* firstEvent(ordersHealthSubscription.events);
+          const activeOrdersHealth = yield* requireActive(ordersHealth);
+          expect({
+            adapter: activeOrdersHealth.health.adapter.name,
+            route: activeOrdersHealth.route,
+            state: activeOrdersHealth._tag,
+          }).toStrictEqual({
+            adapter: "grpc",
+            route: { strategyId: "strategy-1", region: "eu" },
+            state: "Active",
+          });
+        }),
+      );
       yield* Deferred.await(kafkaUsaFinalized);
       yield* Deferred.await(kafkaLondonFinalized);
       yield* Deferred.await(strategiesFinalized);

@@ -106,11 +106,12 @@ describe("ColumnLiveViewEngine validation", () => {
       );
 
       expect(error).toBeInstanceOf(InvalidRowError);
-      expect(error).toMatchObject({
-        _tag: "InvalidRowError",
-        topic: "orders",
-        message: "Topic definition contains unsupported property: key.",
-      });
+      expect(error).toStrictEqual(
+        InvalidRowError.make({
+          topic: "orders",
+          message: "Topic definition contains unsupported property: key.",
+        }),
+      );
     }),
   );
 

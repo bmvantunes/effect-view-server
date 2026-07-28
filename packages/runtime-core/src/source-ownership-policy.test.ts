@@ -130,19 +130,19 @@ describe("SourceOwnershipPolicy", () => {
       });
       const policy = makeSourceOwnershipPolicy(sourceFree);
 
-      yield* policy.requirePublicMutationAllowed("externalOrders", "runtimeCore");
-      yield* policy.requirePublicReadAllowed("externalOrders", "runtimeCore");
-      yield* policy.requirePublicSubscriptionAllowed("externalOrders", "runtimeCore");
-      yield* policy.requirePublicResetAllowed("runtimeCore");
+      yield* policy.requirePublicMutationAllowed("externalOrders");
+      yield* policy.requirePublicReadAllowed("externalOrders");
+      yield* policy.requirePublicSubscriptionAllowed("externalOrders");
+      yield* policy.requirePublicResetAllowed();
 
       expect(policy.hasSourceOwnedTopics).toBe(false);
-      expect(policy.publicMutationDecision("externalOrders", "managedRuntime")).toStrictEqual({
+      expect(policy.publicMutationDecision("externalOrders")).toStrictEqual({
         _tag: "allowed",
       });
-      expect(policy.publicReadDecision("externalOrders", "managedRuntime")).toStrictEqual({
+      expect(policy.publicReadDecision("externalOrders")).toStrictEqual({
         _tag: "allowed",
       });
-      expect(policy.publicResetDecision("managedRuntime")).toStrictEqual({
+      expect(policy.publicResetDecision()).toStrictEqual({
         _tag: "allowed",
       });
     }),
@@ -152,32 +152,29 @@ describe("SourceOwnershipPolicy", () => {
     Effect.gen(function* () {
       const policy = makeSourceOwnershipPolicy(viewServer);
 
-      yield* policy.requirePublicReadAllowed("materializedOrders", "runtimeCore");
-      yield* policy.requirePublicSubscriptionAllowed("leasedOrders", "runtimeCore");
-      yield* policy.requirePublicSubscriptionAllowed("leasedOrders", "managedRuntime");
+      yield* policy.requirePublicReadAllowed("materializedOrders");
+      yield* policy.requirePublicSubscriptionAllowed("leasedOrders");
       const mutationError = yield* policy
-        .requirePublicMutationAllowed("materializedOrders", "managedRuntime")
+        .requirePublicMutationAllowed("materializedOrders")
         .pipe(Effect.flip);
-      const readError = yield* policy
-        .requirePublicReadAllowed("leasedOrders", "managedRuntime")
-        .pipe(Effect.flip);
-      const resetError = yield* policy.requirePublicResetAllowed("runtimeCore").pipe(Effect.flip);
+      const readError = yield* policy.requirePublicReadAllowed("leasedOrders").pipe(Effect.flip);
+      const resetError = yield* policy.requirePublicResetAllowed().pipe(Effect.flip);
 
       expect(mutationError).toStrictEqual(sourceOwnedMutationError("materializedOrders"));
       expect(readError).toStrictEqual(sourceLeasedReadError("leasedOrders"));
       expect(resetError).toStrictEqual(sourceOwnedResetError);
-      expect(policy.publicMutationDecision("leasedOrders", "runtimeCore")).toStrictEqual({
+      expect(policy.publicMutationDecision("leasedOrders")).toStrictEqual({
         _tag: "rejected",
         error: sourceOwnedMutationError("leasedOrders"),
       });
-      expect(policy.publicReadDecision("leasedOrders", "runtimeCore")).toStrictEqual({
+      expect(policy.publicReadDecision("leasedOrders")).toStrictEqual({
         _tag: "rejected",
         error: sourceLeasedReadError("leasedOrders"),
       });
-      expect(policy.publicSubscriptionDecision("leasedOrders", "runtimeCore")).toStrictEqual({
+      expect(policy.publicSubscriptionDecision("leasedOrders")).toStrictEqual({
         _tag: "allowed",
       });
-      expect(policy.publicResetDecision("managedRuntime")).toStrictEqual({
+      expect(policy.publicResetDecision()).toStrictEqual({
         _tag: "rejected",
         error: sourceOwnedResetError,
       });

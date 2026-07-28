@@ -566,10 +566,11 @@ describe("Runtime Core Source boundary validation", () => {
         Effect.provide(leasedFixture.layer),
       );
       const missingSnapshotRouteEffect: Effect.Effect<unknown, ViewServerRuntimeError> =
-        Reflect.apply(leasedRuntime.internalClient.snapshot, leasedRuntime.internalClient, [
+        leasedRuntime.internalClient.snapshot(
           "rows",
+          // @ts-expect-error Leased snapshot reads require a route.
           { select: ["id"] },
-        ]);
+        );
       const missingSnapshotRoute = yield* Effect.flip(missingSnapshotRouteEffect);
       const leasedFailures = yield* Effect.all([
         // @ts-expect-error Leased diagnostics require a route.

@@ -44,7 +44,7 @@ describe("Runtime Core Source Adapter vertical slice", () => {
         Effect.provide(fixture.layer),
       );
       const subscribeHostile = (input: unknown): Effect.Effect<unknown, unknown> =>
-        Reflect.apply(runtime.liveClient.subscribeSourceHealth, undefined, [input]);
+        Reflect.apply(runtime.liveClient.subscribeSourceHealth, runtime.liveClient, [input]);
       const hostile = new Proxy(
         {},
         {

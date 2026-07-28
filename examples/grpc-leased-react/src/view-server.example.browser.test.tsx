@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "@effect/vitest";
 import { render } from "vitest-browser-react";
 
+function MockViewServerProvider() {
+  return null;
+}
+
 vi.doMock("./view-server.config", () => ({
   useLiveQuery: () => ({
     rows: [
@@ -13,7 +17,7 @@ vi.doMock("./view-server.config", () => ({
     totalRows: 1,
   }),
   useViewServerHealthSummary: () => ({ status: "ready" }),
-  ViewServerProvider: () => null,
+  ViewServerProvider: MockViewServerProvider,
 }));
 
 describe("leased gRPC React example", () => {

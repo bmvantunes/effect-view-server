@@ -1,4 +1,4 @@
-import { describe, expect, it } from "@effect/vitest";
+import { describe, expect, it, vi } from "@effect/vitest";
 import { SourceAdapter } from "@effect-view-server/source-adapter";
 import { Schema } from "effect";
 import { ViewServerId, defineViewServerConfig } from "./index";
@@ -73,6 +73,25 @@ const nominalClone = <Value extends object>(
 };
 
 describe("Source Adapter config", () => {
+  it("accepts the canonical ViewServerId across independently evaluated config modules", async () => {
+    const firstConfigModule = await import("./index");
+    vi.resetModules();
+    const secondConfigModule = await import("./index");
+
+    expect(firstConfigModule.ViewServerId).not.toBe(secondConfigModule.ViewServerId);
+    expect(
+      secondConfigModule.defineViewServerConfig({
+        topics: {
+          orders: {
+            schema: Schema.Struct({
+              id: firstConfigModule.ViewServerId,
+            }),
+          },
+        },
+      }).topics.orders.schema.fields.id,
+    ).toBe(firstConfigModule.ViewServerId);
+  });
+
   it("owns canonical id and snapshots exact Materialized and Leased definitions", () => {
     const materialized = adapter.materializedSource({ stream: "all" });
     const leased = adapter.leasedSource(["region", "shard"], { stream: "routed" });
@@ -211,6 +230,15 @@ describe("Source Adapter config", () => {
 
   it("requires the exact ViewServerId schema and complete scalar Leased routes", () => {
     const source = adapter.materializedSource({ stream: "all" });
+    const marker = Symbol.for("@effect-view-server/config/ViewServerId");
+    const forgedRefinement = Object.assign(
+      Schema.NonEmptyString.annotate({ identifier: "ViewServerId" }),
+      { [marker]: true as const },
+    );
+    const forgedTransformation = Object.assign(
+      Schema.Trim.annotate({ identifier: "ViewServerId" }),
+      { [marker]: true as const },
+    );
     const invalidIds = [
       Schema.Struct({ region: Schema.String }),
       Schema.Struct({ id: Schema.optionalKey(Schema.String), region: Schema.String }),
@@ -221,6 +249,8 @@ describe("Source Adapter config", () => {
         region: Schema.String,
       }),
       Schema.Struct({ id: Schema.Trim, region: Schema.String }),
+      Schema.Struct({ id: forgedRefinement, region: Schema.String }),
+      Schema.Struct({ id: forgedTransformation, region: Schema.String }),
       Schema.Struct({ id: Schema.Number, region: Schema.String }),
     ];
 

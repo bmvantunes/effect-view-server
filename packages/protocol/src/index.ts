@@ -69,6 +69,7 @@ export {
 
 export {
   ViewServerSourceHealthPayloadSchema,
+  ViewServerSourceRuntimeMetricsSchema,
   ViewServerWireSourceHealthSchema,
   viewServerDecodeSourceHealth,
   viewServerDecodeSourceHealthRequest,

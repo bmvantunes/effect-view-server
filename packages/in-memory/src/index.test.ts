@@ -22,6 +22,14 @@ const viewServer = defineViewServerConfig({
   },
 });
 
+const sourceOwnedMutationError = (topic: string): ViewServerRuntimeError => ({
+  _tag: "ViewServerRuntimeError",
+  code: "UnsupportedQuery",
+  topic,
+  message:
+    "Source-owned topics do not support direct runtime mutations; publish through the configured Source Adapter or use an externally-published topic.",
+});
+
 describe("@effect-view-server/in-memory", () => {
   it.effect("adapts the shared runtime core to the public in-memory API", () =>
     Effect.gen(function* () {
@@ -565,62 +573,14 @@ describe("@effect-view-server/in-memory", () => {
           status: "ready",
           statusCode: "Ready",
         });
-        expect(firstPublish).toStrictEqual({
-          _tag: "ViewServerRuntimeError",
-          code: "UnsupportedQuery",
-          topic: "orders",
-          message:
-            "Source-owned topics do not support direct runtime mutations; publish through the configured Source Adapter or use an externally-published topic.",
-        });
-        expect(firstPublishMany).toStrictEqual({
-          _tag: "ViewServerRuntimeError",
-          code: "UnsupportedQuery",
-          topic: "orders",
-          message:
-            "Source-owned topics do not support direct runtime mutations; publish through the configured Source Adapter or use an externally-published topic.",
-        });
-        expect(firstPatch).toStrictEqual({
-          _tag: "ViewServerRuntimeError",
-          code: "UnsupportedQuery",
-          topic: "orders",
-          message:
-            "Source-owned topics do not support direct runtime mutations; publish through the configured Source Adapter or use an externally-published topic.",
-        });
-        expect(firstDelete).toStrictEqual({
-          _tag: "ViewServerRuntimeError",
-          code: "UnsupportedQuery",
-          topic: "orders",
-          message:
-            "Source-owned topics do not support direct runtime mutations; publish through the configured Source Adapter or use an externally-published topic.",
-        });
-        expect(secondPublish).toStrictEqual({
-          _tag: "ViewServerRuntimeError",
-          code: "UnsupportedQuery",
-          topic: "orders",
-          message:
-            "Source-owned topics do not support direct runtime mutations; publish through the configured Source Adapter or use an externally-published topic.",
-        });
-        expect(secondPublishMany).toStrictEqual({
-          _tag: "ViewServerRuntimeError",
-          code: "UnsupportedQuery",
-          topic: "orders",
-          message:
-            "Source-owned topics do not support direct runtime mutations; publish through the configured Source Adapter or use an externally-published topic.",
-        });
-        expect(secondPatch).toStrictEqual({
-          _tag: "ViewServerRuntimeError",
-          code: "UnsupportedQuery",
-          topic: "orders",
-          message:
-            "Source-owned topics do not support direct runtime mutations; publish through the configured Source Adapter or use an externally-published topic.",
-        });
-        expect(secondDelete).toStrictEqual({
-          _tag: "ViewServerRuntimeError",
-          code: "UnsupportedQuery",
-          topic: "orders",
-          message:
-            "Source-owned topics do not support direct runtime mutations; publish through the configured Source Adapter or use an externally-published topic.",
-        });
+        expect(firstPublish).toStrictEqual(sourceOwnedMutationError("orders"));
+        expect(firstPublishMany).toStrictEqual(sourceOwnedMutationError("orders"));
+        expect(firstPatch).toStrictEqual(sourceOwnedMutationError("orders"));
+        expect(firstDelete).toStrictEqual(sourceOwnedMutationError("orders"));
+        expect(secondPublish).toStrictEqual(sourceOwnedMutationError("orders"));
+        expect(secondPublishMany).toStrictEqual(sourceOwnedMutationError("orders"));
+        expect(secondPatch).toStrictEqual(sourceOwnedMutationError("orders"));
+        expect(secondDelete).toStrictEqual(sourceOwnedMutationError("orders"));
         expect(firstReset).toStrictEqual({
           _tag: "ViewServerRuntimeError",
           code: "UnsupportedQuery",

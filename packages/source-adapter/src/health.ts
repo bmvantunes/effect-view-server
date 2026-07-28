@@ -307,7 +307,48 @@ export const sourceHealthSchema = <
     sampledAtNanos: NonNegativeBigInt,
   });
 
-export const sourceHealthContractSchemas = <
+export type SourceHealthContractResult<
+  AdapterFailure,
+  Route extends Readonly<Record<string, unknown>>,
+  AdapterMetrics,
+  RejectionLocation,
+  Lifecycle extends SourceLifecycle,
+> = Lifecycle extends "leased"
+  ? LeasedSourceHealthResult<
+      Route,
+      SourceHealth<AdapterFailure, Route, AdapterMetrics, RejectionLocation, "leased">
+    >
+  : MaterializedSourceHealthResult<
+      SourceHealth<AdapterFailure, Route, AdapterMetrics, RejectionLocation, "materialized">
+    >;
+
+export function sourceHealthContractSchemas<
+  AdapterFailure,
+  Route extends Readonly<Record<string, unknown>>,
+  AdapterMetrics,
+  RejectionLocation,
+  const Lifecycle extends SourceLifecycle,
+>(input: {
+  readonly adapterFailure: Schema.Codec<AdapterFailure, unknown, never, never>;
+  readonly route: Schema.Codec<Route, unknown, never, never>;
+  readonly adapterMetrics: Schema.Codec<AdapterMetrics, unknown, never, never>;
+  readonly rejectionLocation: Schema.Codec<RejectionLocation, unknown, never, never>;
+  readonly lifecycle: Lifecycle;
+}): {
+  readonly health: Schema.Codec<
+    SourceHealth<AdapterFailure, Route, AdapterMetrics, RejectionLocation, Lifecycle>,
+    unknown,
+    never,
+    never
+  >;
+  readonly result: Schema.Codec<
+    SourceHealthContractResult<AdapterFailure, Route, AdapterMetrics, RejectionLocation, Lifecycle>,
+    unknown,
+    never,
+    never
+  >;
+};
+export function sourceHealthContractSchemas<
   AdapterFailure,
   Route extends Readonly<Record<string, unknown>>,
   AdapterMetrics,
@@ -318,7 +359,7 @@ export const sourceHealthContractSchemas = <
   readonly adapterMetrics: Schema.Codec<AdapterMetrics, unknown, never, never>;
   readonly rejectionLocation: Schema.Codec<RejectionLocation, unknown, never, never>;
   readonly lifecycle: SourceLifecycle;
-}) => {
+}): object {
   const health = sourceHealthSchema(input);
   return {
     health,
@@ -330,4 +371,4 @@ export const sourceHealthContractSchemas = <
             Schema.TaggedStruct("Active", { route: input.route, health }),
           ]),
   };
-};
+}

@@ -132,11 +132,12 @@ describe("ColumnLiveViewEngine validation", () => {
       );
 
       expect(error).toBeInstanceOf(InvalidRowError);
-      expect(error).toMatchObject({
-        _tag: "InvalidRowError",
-        topic: "orders",
-        message: "Topic row schema must define canonical id as ViewServerId.",
-      });
+      expect(error).toStrictEqual(
+        InvalidRowError.make({
+          message: "Topic row schema must define canonical id as ViewServerId.",
+          topic: "orders",
+        }),
+      );
     }),
   );
 

@@ -345,10 +345,85 @@ describe("Real View Server metrics route", () => {
         'view_server_source_bounded_buffer_lanes{topic="leased",adapter="source\\"adapter\\\\name",lifecycle="leased"} 1',
       );
       expect(lines).toContain(
-        'view_server_source_buffer_overflows_total{topic="leased",adapter="source\\"adapter\\\\name",lifecycle="leased"} 12',
+        'view_server_source_active_buffer_overflows{topic="leased",adapter="source\\"adapter\\\\name",lifecycle="leased"} 12',
       );
+      expect(lines).toContain(
+        'view_server_source_active_retries{topic="leased",adapter="source\\"adapter\\\\name",lifecycle="leased"} 2',
+      );
+      expect(lines).toContain(
+        'view_server_source_active_received_deliveries{topic="leased",adapter="source\\"adapter\\\\name",lifecycle="leased"} 4',
+      );
+      expect(lines).toContain(
+        'view_server_source_active_rejected_items{topic="leased",adapter="source\\"adapter\\\\name",lifecycle="leased"} 6',
+      );
+      expect(lines).toContain(
+        'view_server_source_active_attempted_mutations{topic="leased",adapter="source\\"adapter\\\\name",lifecycle="leased"} 8',
+      );
+      expect(lines).toContain(
+        'view_server_source_active_applied_upserts{topic="leased",adapter="source\\"adapter\\\\name",lifecycle="leased"} 10',
+      );
+      expect(lines).toContain(
+        'view_server_source_active_applied_deletes{topic="leased",adapter="source\\"adapter\\\\name",lifecycle="leased"} 12',
+      );
+      expect(lines).toContain(
+        'view_server_source_active_failed_mutations{topic="leased",adapter="source\\"adapter\\\\name",lifecycle="leased"} 14',
+      );
+      expect(lines).toContain(
+        'view_server_source_active_completed_settlements{topic="leased",adapter="source\\"adapter\\\\name",lifecycle="leased"} 16',
+      );
+      expect(lines).toContain(
+        'view_server_source_active_failed_settlements{topic="leased",adapter="source\\"adapter\\\\name",lifecycle="leased"} 18',
+      );
+      expect(lines).toContain("# TYPE view_server_source_active_retries gauge");
+      expect(lines).toContain("# TYPE view_server_source_active_received_deliveries gauge");
+      expect(lines).toContain("# TYPE view_server_source_active_rejected_items gauge");
+      expect(lines).toContain("# TYPE view_server_source_active_attempted_mutations gauge");
+      expect(lines).toContain("# TYPE view_server_source_active_applied_upserts gauge");
+      expect(lines).toContain("# TYPE view_server_source_active_applied_deletes gauge");
+      expect(lines).toContain("# TYPE view_server_source_active_failed_mutations gauge");
+      expect(lines).toContain("# TYPE view_server_source_active_completed_settlements gauge");
+      expect(lines).toContain("# TYPE view_server_source_active_failed_settlements gauge");
+      expect(lines).toContain("# TYPE view_server_source_active_buffer_overflows gauge");
       expect(lines.some((line) => line.includes("opaqueSequence"))).toBe(false);
       expect(lines.some((line) => line.includes('id="first"'))).toBe(false);
+
+      const missingMaterializedSources = new Proxy(health.sources, {
+        getOwnPropertyDescriptor: (target, property) =>
+          property === "materialized"
+            ? undefined
+            : Reflect.getOwnPropertyDescriptor(target, property),
+      });
+      const missingMaterializedLines = viewServerHealthMetrics(sourceMetricsConfig, {
+        ...health,
+        sources: missingMaterializedSources,
+      })
+        .trimEnd()
+        .split("\n");
+      expect(missingMaterializedLines).not.toContain(
+        'view_server_source_active_instances{topic="materialized",adapter="source\\"adapter\\\\name",lifecycle="materialized"} 1',
+      );
+      expect(missingMaterializedLines).toContain(
+        'view_server_source_active_instances{topic="leased",adapter="source\\"adapter\\\\name",lifecycle="leased"} 2',
+      );
+
+      const malformedMaterializedSources = new Proxy(health.sources, {
+        get: (target, property, receiver) =>
+          property === "materialized"
+            ? { status: { _tag: "Ready" }, metrics: { runtime: null } }
+            : Reflect.get(target, property, receiver),
+      });
+      const malformedMaterializedLines = viewServerHealthMetrics(sourceMetricsConfig, {
+        ...health,
+        sources: malformedMaterializedSources,
+      })
+        .trimEnd()
+        .split("\n");
+      expect(malformedMaterializedLines).toContain(
+        'view_server_source_active_instances{topic="materialized",adapter="source\\"adapter\\\\name",lifecycle="materialized"} 0',
+      );
+      expect(malformedMaterializedLines).toContain(
+        'view_server_source_active_instances{topic="leased",adapter="source\\"adapter\\\\name",lifecycle="leased"} 2',
+      );
 
       yield* inMemory.close;
     }).pipe(Effect.scoped),

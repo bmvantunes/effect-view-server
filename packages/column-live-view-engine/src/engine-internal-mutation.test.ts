@@ -4,10 +4,35 @@ import { Effect, Schema, Stream } from "effect";
 import { createColumnLiveViewEngine, InvalidRowError } from "./index";
 import { createColumnLiveViewEngineInternal } from "./internal";
 import { TopicRowStorage } from "./topic-row-storage";
+import { topicRowKey } from "./topic-row-preparation";
 import { expectSnapshotEvent, firstEvent, makeEventReader } from "../test-harness/events";
 import { order, viewServer } from "../test-harness/public-engine";
 
 describe("ColumnLiveViewEngine internal mutation", () => {
+  it.effect("constructs canonical-key errors only for invalid decoded keys", () =>
+    Effect.gen(function* () {
+      let invalidRowCalls = 0;
+      const invalidRow = (topic: string, message: string) => {
+        invalidRowCalls += 1;
+        return InvalidRowError.make({ topic, message });
+      };
+      const context = { keyField: "id", topic: "orders" };
+
+      const key = yield* topicRowKey(context, { id: "stable" }, invalidRow);
+      expect(key).toBe("stable");
+      expect(invalidRowCalls).toBe(0);
+
+      const error = yield* Effect.flip(topicRowKey(context, { id: 1 }, invalidRow));
+      expect(error).toStrictEqual(
+        InvalidRowError.make({
+          topic: "orders",
+          message: "Key field id must decode to a string.",
+        }),
+      );
+      expect(invalidRowCalls).toBe(1);
+    }),
+  );
+
   it.effect("observes producer terminal occurrence before the terminal queue is ready", () =>
     Effect.gen(function* () {
       const engine = yield* createColumnLiveViewEngineInternal({

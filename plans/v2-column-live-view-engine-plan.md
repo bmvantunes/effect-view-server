@@ -169,11 +169,9 @@ export const viewServer = defineViewServerConfig({
   topics: {
     orders: {
       schema: Order,
-      key: "id",
     },
     trades: {
       schema: Trade,
-      key: "id",
     },
   },
 });

@@ -4,13 +4,14 @@ import type {
   LiveQueryResult,
   TopicRow,
 } from "@effect-view-server/config";
-import { ViewServerId, viewServerUnsupportedRuntimeFieldDomain } from "@effect-view-server/config";
+import { viewServerUnsupportedRuntimeFieldDomain } from "@effect-view-server/config";
 import {
   snapshotViewServerQuery,
   viewServerQuerySnapshotErrorMessage,
 } from "@effect-view-server/effect-utils";
 import {
   snapshotViewServerTopics,
+  isViewServerIdSchema,
   viewServerRowSchemaFieldsMatchAst,
 } from "@effect-view-server/config/internal";
 import { Effect, Latch, Result, Schema, Semaphore } from "effect";
@@ -136,7 +137,7 @@ const inspectEngineTopics = <Topics extends DecodableTopicDefinitions>(
         error: invalidRow(topic, "Topic exposed row fields do not match the row schema AST."),
       };
     }
-    if (schema.fields["id"]?.ast !== ViewServerId.ast) {
+    if (!isViewServerIdSchema(schema.fields["id"])) {
       return {
         _tag: "Invalid",
         error: invalidRow(topic, "Topic row schema must define canonical id as ViewServerId."),

@@ -14,12 +14,16 @@ import {
 } from "@effect-view-server/config";
 import { createInMemoryViewServer as createCoreInMemoryViewServer } from "@effect-view-server/in-memory";
 import { makeViewServerRuntimeCore } from "@effect-view-server/runtime-core";
-import { Effect, Schedule, Schema, Scope, Stream } from "effect";
+import { Cause, Effect, Option, Schedule, Schema, Scope, Stream } from "effect";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
-import { Component, type ReactNode } from "react";
+import { Component, Suspense, type ReactNode } from "react";
 import { render } from "vitest-browser-react";
 import { createViewServerReact } from "./index";
-import { ViewServerReactClientProvider } from "./internal";
+import {
+  deleteMapEntryIfCurrent,
+  installMapEntryIfVacant,
+  ViewServerReactClientProvider,
+} from "./internal";
 import {
   createInMemoryViewServerReact,
   makeInMemoryViewServerReact,
@@ -32,6 +36,33 @@ declare module "vitest" {
     readonly viewServerSourceRemoteUrl: string;
   }
 }
+
+describe("deleteMapEntryIfCurrent", () => {
+  it("keeps a newer cache entry when an older finalizer runs late", () => {
+    const original = {};
+    const replacement = {};
+    const entries = new Map([["health", replacement]]);
+
+    deleteMapEntryIfCurrent(entries, "health", original);
+
+    expect(entries.get("health")).toBe(replacement);
+    deleteMapEntryIfCurrent(entries, "health", replacement);
+    expect(entries.has("health")).toBe(false);
+  });
+
+  it("does not replace a newer entry when an older atom recomputes", () => {
+    const original = {};
+    const replacement = {};
+    const entries = new Map([["health", replacement]]);
+
+    installMapEntryIfVacant(entries, "health", original);
+    expect(entries.get("health")).toBe(replacement);
+
+    entries.delete("health");
+    installMapEntryIfVacant(entries, "health", original);
+    expect(entries.get("health")).toBe(original);
+  });
+});
 
 const Order = Schema.Struct({
   id: ViewServerId,
@@ -977,7 +1008,7 @@ describe("createViewServerReact", () => {
       .element(view.getByRole("status", { name: "us source health" }))
       .toHaveTextContent(/^Inactive:us$/);
     await expect.poll(() => subscribeCount).toBe(2);
-    expect(leaseState.active).toBe(0);
+    await expect.poll(() => leaseState.active).toBe(0);
 
     const liveSubscription = await Effect.runPromise(
       runtime.liveClient.subscribe("orders", {
@@ -988,12 +1019,12 @@ describe("createViewServerReact", () => {
     await expect
       .element(view.getByRole("status", { name: "first source health" }))
       .toHaveTextContent(/^Active:react-browser-source$/);
-    expect(leaseState.active).toBe(1);
+    await expect.poll(() => leaseState.active).toBe(1);
     await Effect.runPromise(liveSubscription.close());
     await expect
       .element(view.getByRole("status", { name: "second source health" }))
       .toHaveTextContent(/^Inactive:eu$/);
-    expect(leaseState.active).toBe(0);
+    await expect.poll(() => leaseState.active).toBe(0);
 
     await view.rerender(
       <SourceHealthClientProvider client={trackedClient}>
@@ -1018,6 +1049,156 @@ describe("createViewServerReact", () => {
     await expect.poll(() => closeCount).toBe(3);
 
     await view.unmount();
+    await Effect.runPromise(runtime.close);
+  });
+
+  it("does not retain Source Health entries from discarded renders", async () => {
+    const leaseState = { active: 0 };
+    const runtime = await Effect.runPromise(
+      makeViewServerRuntimeCore(sourceHealthViewServer, {}).pipe(
+        Effect.provide(makeSourceHealthAdapterLayer(leaseState)),
+      ),
+    );
+    const subscribedInputKeys: Array<string> = [];
+    const subscribeSourceHealth: typeof runtime.liveClient.subscribeSourceHealth = (input) => {
+      subscribedInputKeys.push(Object.keys(input).join("|"));
+      return runtime.liveClient.subscribeSourceHealth(input);
+    };
+    const trackedClient = {
+      ...runtime.liveClient,
+      subscribeSourceHealth,
+    } satisfies ViewServerLiveClient<typeof sourceHealthViewServer.topics>;
+    const pending = new Promise<never>(() => undefined);
+
+    function DiscardedSourceHealthView(): ReactNode {
+      sourceHealthReact.useSourceHealth({
+        routeBy: { region: "eu" },
+        topic: "orders",
+      });
+      throw pending;
+    }
+
+    function CommittedSourceHealthView() {
+      const result = sourceHealthReact.useSourceHealth({
+        topic: "orders",
+        routeBy: { region: "eu" },
+      });
+      return (
+        <output role="status">
+          {AsyncResult.isSuccess(result) && result.value._tag === "Inactive"
+            ? result.value.route.region
+            : "Loading"}
+        </output>
+      );
+    }
+
+    const view = await render(
+      <SourceHealthClientProvider client={trackedClient}>
+        <Suspense fallback={<output role="status">Suspended</output>}>
+          <DiscardedSourceHealthView />
+        </Suspense>
+      </SourceHealthClientProvider>,
+    );
+    await expect.element(view.getByRole("status")).toHaveTextContent(/^Suspended$/);
+    expect(subscribedInputKeys).toStrictEqual([]);
+
+    await view.rerender(
+      <SourceHealthClientProvider client={trackedClient}>
+        <CommittedSourceHealthView />
+      </SourceHealthClientProvider>,
+    );
+    await expect.poll(() => subscribedInputKeys.length).toBe(1);
+    await expect.element(view.getByRole("status")).toHaveTextContent(/^eu$/);
+    expect(subscribedInputKeys).toStrictEqual(["topic|routeBy"]);
+
+    await view.unmount();
+    await Effect.runPromise(runtime.close);
+  });
+
+  it("surfaces hostile Source Health inputs as typed errors without crashing render", async () => {
+    const leaseState = { active: 0 };
+    const runtime = await Effect.runPromise(
+      makeViewServerRuntimeCore(sourceHealthViewServer, {}).pipe(
+        Effect.provide(makeSourceHealthAdapterLayer(leaseState)),
+      ),
+    );
+    type SourceHealthInput = {
+      readonly topic: "orders";
+      readonly routeBy: {
+        readonly region: string;
+      };
+    };
+    let getterReads = 0;
+
+    function HostileSourceHealthView(props: {
+      readonly label: string;
+      readonly input: SourceHealthInput;
+    }) {
+      const result = sourceHealthReact.useSourceHealth(props.input);
+      let text = "Loading";
+      if (AsyncResult.isSuccess(result)) {
+        text = "Success";
+      } else if (AsyncResult.isFailure(result)) {
+        const error = Option.getOrUndefined(Cause.findErrorOption(result.cause));
+        text =
+          error?._tag === "ViewServerRuntimeError" ? `error:${error.code}` : "error:Unexpected";
+      }
+      return (
+        <output aria-label={props.label} role="status">
+          {text}
+        </output>
+      );
+    }
+
+    const accessorInput = {
+      topic: "orders",
+      routeBy: { region: "eu" },
+    } satisfies SourceHealthInput;
+    Object.defineProperty(accessorInput, "routeBy", {
+      enumerable: true,
+      get: () => {
+        getterReads += 1;
+        throw new Error("Source Health accessor must not escape render.");
+      },
+    });
+    const proxyInput = new Proxy(
+      {
+        topic: "orders",
+        routeBy: { region: "us" },
+      } satisfies SourceHealthInput,
+      {
+        ownKeys: () => {
+          throw new Error("Source Health proxy trap must not escape render.");
+        },
+      },
+    );
+
+    const accessorView = await render(
+      <ProviderErrorBoundary>
+        <SourceHealthClientProvider client={runtime.liveClient}>
+          <HostileSourceHealthView label="accessor source health" input={accessorInput} />
+        </SourceHealthClientProvider>
+      </ProviderErrorBoundary>,
+    );
+    await expect
+      .element(accessorView.getByRole("status", { name: "accessor source health" }))
+      .toHaveTextContent(/^error:InvalidQuery$/);
+    expect(getterReads).toBe(0);
+    await accessorView.unmount();
+
+    const proxyView = await render(
+      <ProviderErrorBoundary>
+        <SourceHealthClientProvider client={runtime.liveClient}>
+          <HostileSourceHealthView label="proxy source health" input={proxyInput} />
+        </SourceHealthClientProvider>
+      </ProviderErrorBoundary>,
+    );
+    await expect
+      .element(proxyView.getByRole("status", { name: "proxy source health" }))
+      .toHaveTextContent(/^error:InvalidQuery$/);
+    await proxyView.unmount();
+
+    expect(leaseState.active).toBe(0);
     await Effect.runPromise(runtime.close);
   });
 

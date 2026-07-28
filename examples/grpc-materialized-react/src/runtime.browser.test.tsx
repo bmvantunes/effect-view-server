@@ -43,5 +43,6 @@ describe("materialized gRPC React example runtime", () => {
       ],
     ]);
     expect(runMain).toHaveBeenCalledOnce();
+    expect(runMain).not.toHaveBeenCalledWith(runtimeProgram);
   });
 });

@@ -30,13 +30,13 @@ describe("first-party browser contracts", () => {
         ? output.output.filter((entry) => entry.type === "chunk")
         : [],
     );
-    if (chunks.length === 0) {
-      throw new Error("The combined first-party browser fixture emitted no JavaScript chunk.");
-    }
     const code = chunks.map((chunk) => chunk.code).join("\n");
     const moduleIds = chunks.flatMap((chunk) => Object.keys(chunk.modules));
 
-    expect(code).toContain("browser-rows");
+    expect(chunks.length).toBeGreaterThan(0);
+    expect(
+      moduleIds.filter((id) => id.endsWith("/fixtures/first-party-contracts-browser.ts")),
+    ).toHaveLength(1);
     expect(
       moduleIds.filter(
         (id) =>

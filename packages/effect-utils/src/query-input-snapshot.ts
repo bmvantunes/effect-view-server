@@ -191,6 +191,14 @@ export type CapturedSourceHealthInput<Topic extends string = string> = {
   readonly route: ReadonlyArray<Readonly<Record<string, unknown>>>;
 };
 
+/**
+ * Captures an owned Source Health request without invoking input accessors.
+ *
+ * The `Topic` parameter preserves the caller's already-validated public input
+ * type; this utility proves only that the captured runtime value is a string.
+ * Runtime/client adapters must still validate configured Source ownership
+ * before using the result.
+ */
 export function captureSourceHealthInput<const Topic extends string>(
   input: unknown,
 ): Result.Result<CapturedSourceHealthInput<Topic>, unknown>;

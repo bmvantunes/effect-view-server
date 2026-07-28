@@ -17,7 +17,11 @@ import {
   ViewServerHealthSchema,
   type ViewServerWireHealth,
 } from "./protocol-health-schema";
-import { compileSourceHealthContract, requireExactSourceHealth } from "./source-health-wire";
+import {
+  compileSourceHealthContract,
+  requireExactSourceHealth,
+  type CompiledSourceHealthContract,
+} from "./source-health-wire";
 
 export {
   viewServerDecodeHealthSummaryEvent,
@@ -159,93 +163,81 @@ const sourceHealthCodecErrors = (topic: string) => ({
     invalidHealthRow(topic, `Aggregate Source Health is not wire-safe: ${message}`),
 });
 
-const encodeSources = Effect.fn("ViewServerProtocol.health.sources.encode")(function* <
+const projectSources = Effect.fn("ViewServerProtocol.health.sources.project")(function* <
   Topics extends TopicDefinitions,
+  Output,
 >(
   config: ViewServerTopicConfig<Topics>,
   candidate: { readonly sources?: unknown },
-): Effect.fn.Return<Readonly<Record<string, Schema.Json>>, ViewServerRuntimeError> {
+  project: (
+    topic: string,
+    contract: CompiledSourceHealthContract,
+    value: unknown,
+  ) => Effect.Effect<Output, ViewServerRuntimeError>,
+): Effect.fn.Return<Readonly<Record<string, Output>>, ViewServerRuntimeError> {
   const { keys, sources } = yield* sourceRecordKeys(candidate);
   const sourceTopics = yield* validateSourceTopicKeys(config, keys);
-  const encoded: Record<string, Schema.Json> = {};
+  const projected: Record<string, Output> = {};
   for (const topic of sourceTopics) {
     const contract = yield* compileSourceHealthContract(config, topic).pipe(
       Effect.mapError((error) => invalidHealthRow(topic, error.message)),
     );
-    const value = readProperty(sources, topic);
-    if (contract.lifecycle === "materialized") {
-      yield* requireExactSourceHealth(topic, contract, value).pipe(
-        Effect.mapError((error) => invalidHealthRow(topic, error.message)),
-      );
-      encoded[topic] = yield* encodeJsonFieldValue(
-        contract.health,
-        value,
-        sourceHealthCodecErrors(topic),
-      );
-      continue;
-    }
-    if (!Array.isArray(value)) {
-      return yield* Effect.fail(
-        invalidHealthRow(topic, `Leased aggregate Source Health for ${topic} must be an array.`),
-      );
-    }
-    const active: Array<Schema.Json> = [];
-    for (const health of value) {
-      yield* requireExactSourceHealth(topic, contract, health).pipe(
-        Effect.mapError((error) => invalidHealthRow(topic, error.message)),
-      );
-      active.push(
-        yield* encodeJsonFieldValue(contract.health, health, sourceHealthCodecErrors(topic)),
-      );
-    }
-    encoded[topic] = active;
+    projected[topic] = yield* project(topic, contract, readProperty(sources, topic));
   }
-  return encoded;
+  return projected;
 });
 
-const decodeSources = Effect.fn("ViewServerProtocol.health.sources.decode")(function* <
-  Topics extends TopicDefinitions,
+const projectSourceValues = Effect.fn("ViewServerProtocol.health.sourceValues.project")(function* <
+  Output,
 >(
-  config: ViewServerTopicConfig<Topics>,
-  candidate: { readonly sources?: unknown },
-): Effect.fn.Return<Readonly<Record<string, unknown>>, ViewServerRuntimeError> {
-  const { keys, sources } = yield* sourceRecordKeys(candidate);
-  const sourceTopics = yield* validateSourceTopicKeys(config, keys);
-  const decoded: Record<string, unknown> = {};
-  for (const topic of sourceTopics) {
-    const contract = yield* compileSourceHealthContract(config, topic).pipe(
+  topic: string,
+  contract: CompiledSourceHealthContract,
+  value: unknown,
+  project: (
+    value: unknown,
+    errors: ReturnType<typeof sourceHealthCodecErrors>,
+  ) => Effect.Effect<Output, ViewServerRuntimeError>,
+): Effect.fn.Return<Output | ReadonlyArray<Output>, ViewServerRuntimeError> {
+  if (contract.lifecycle === "materialized") {
+    yield* requireExactSourceHealth(topic, contract, value).pipe(
       Effect.mapError((error) => invalidHealthRow(topic, error.message)),
     );
-    const value = readProperty(sources, topic);
-    if (contract.lifecycle === "materialized") {
-      yield* requireExactSourceHealth(topic, contract, value).pipe(
-        Effect.mapError((error) => invalidHealthRow(topic, error.message)),
-      );
-      decoded[topic] = yield* decodeJsonFieldValue(
-        contract.health,
-        value,
-        sourceHealthCodecErrors(topic),
-      );
-      continue;
-    }
-    if (!Array.isArray(value)) {
-      return yield* Effect.fail(
-        invalidHealthRow(topic, `Leased aggregate Source Health for ${topic} must be an array.`),
-      );
-    }
-    const active: Array<unknown> = [];
-    for (const health of value) {
-      yield* requireExactSourceHealth(topic, contract, health).pipe(
-        Effect.mapError((error) => invalidHealthRow(topic, error.message)),
-      );
-      active.push(
-        yield* decodeJsonFieldValue(contract.health, health, sourceHealthCodecErrors(topic)),
-      );
-    }
-    decoded[topic] = active;
+    return yield* project(value, sourceHealthCodecErrors(topic));
   }
-  return decoded;
+  if (!Array.isArray(value)) {
+    return yield* Effect.fail(
+      invalidHealthRow(topic, `Leased aggregate Source Health for ${topic} must be an array.`),
+    );
+  }
+  const active: Array<Output> = [];
+  for (const health of value) {
+    yield* requireExactSourceHealth(topic, contract, health).pipe(
+      Effect.mapError((error) => invalidHealthRow(topic, error.message)),
+    );
+    active.push(yield* project(health, sourceHealthCodecErrors(topic)));
+  }
+  return active;
 });
+
+const encodeSources = <Topics extends TopicDefinitions>(
+  config: ViewServerTopicConfig<Topics>,
+  candidate: { readonly sources?: unknown },
+): Effect.Effect<Readonly<Record<string, Schema.Json>>, ViewServerRuntimeError> =>
+  projectSources(config, candidate, (topic, contract, value) =>
+    projectSourceValues(topic, contract, value, (health, errors) =>
+      encodeJsonFieldValue(contract.health, health, errors),
+    ),
+  );
+
+const decodeSources = <Topics extends TopicDefinitions>(
+  config: ViewServerTopicConfig<Topics>,
+  candidate: { readonly sources?: unknown },
+): Effect.Effect<Readonly<Record<string, unknown>>, ViewServerRuntimeError> =>
+  projectSources(config, candidate, (topic, contract, value) =>
+    projectSourceValues(topic, contract, value, (health, errors) =>
+      decodeJsonFieldValue(contract.health, health, errors),
+    ),
+  );
 
 export const viewServerEncodeHealth = Effect.fn("ViewServerProtocol.health.encode")(function* <
   const Topics extends TopicDefinitions,

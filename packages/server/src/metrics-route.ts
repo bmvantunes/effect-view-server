@@ -3,8 +3,11 @@ import type {
   ViewServerHealth,
   ViewServerTopicConfig,
 } from "@effect-view-server/config";
-import { viewServerEncodeHealth } from "@effect-view-server/protocol";
-import { Effect } from "effect";
+import {
+  ViewServerSourceRuntimeMetricsSchema,
+  viewServerEncodeHealth,
+} from "@effect-view-server/protocol";
+import { Effect, Result, Schema } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import { validateViewServerHttpRequest, viewServerAuthErrorResponse } from "./auth";
 import type { ViewServerWebSocketServerInput } from "./server-types";
@@ -51,55 +54,28 @@ type SourceMetricStatus =
   | "Exhausted"
   | "Stopping";
 
-type SourceMetricLane = {
-  readonly buffer:
-    | {
-        readonly _tag: "Unbuffered";
-      }
-    | {
-        readonly _tag: "Bounded";
-        readonly capacity: number;
-        readonly depth: number;
-        readonly highWaterMark: number;
-        readonly overflowCount: bigint;
-      };
-};
+const SourceMetricHealthSchema = Schema.Struct({
+  status: Schema.Struct({
+    _tag: Schema.Literals([
+      "Starting",
+      "Ready",
+      "Degraded",
+      "WaitingToRetry",
+      "Reacquiring",
+      "Exhausted",
+      "Stopping",
+    ]),
+  }),
+  metrics: Schema.Struct({
+    runtime: ViewServerSourceRuntimeMetricsSchema,
+  }),
+});
+type SourceMetricHealth = typeof SourceMetricHealthSchema.Type;
 
-type SourceMetricHealth = {
-  readonly status: {
-    readonly _tag: SourceMetricStatus;
-  };
-  readonly metrics: {
-    readonly runtime: {
-      readonly startedAtNanos: bigint;
-      readonly lastAttemptStartedAtNanos: bigint;
-      readonly lastDeliveryAtNanos: bigint | null;
-      readonly lastRejectionAtNanos: bigint | null;
-      readonly lastAppliedMutationAtNanos: bigint | null;
-      readonly lastTerminationAtNanos: bigint | null;
-      readonly currentAttempt: bigint;
-      readonly retryCount: bigint;
-      readonly receivedDeliveryCount: bigint;
-      readonly rejectedItemCount: bigint;
-      readonly attemptedMutationCount: bigint;
-      readonly appliedUpsertCount: bigint;
-      readonly appliedDeleteCount: bigint;
-      readonly failedMutationCount: bigint;
-      readonly completedSettlementCount: bigint;
-      readonly failedSettlementCount: bigint;
-      readonly retainedRowCount: number;
-      readonly lanes: ReadonlyArray<SourceMetricLane>;
-    };
-  };
+const validatedSourceMetricHealth = (candidate: unknown): SourceMetricHealth | undefined => {
+  const decoded = Schema.decodeUnknownResult(SourceMetricHealthSchema)(candidate);
+  return Result.isSuccess(decoded) ? decoded.success : undefined;
 };
-
-function validatedSourceMetricHealth(candidate: unknown): SourceMetricHealth;
-function validatedSourceMetricHealth(candidate: unknown): unknown {
-  // The aggregate health codec validates the configured Source Health schema
-  // immediately before metrics projection. This restores only the fixed SDK
-  // metrics shared by every adapter; adapter-owned metrics remain opaque.
-  return candidate;
-}
 
 type SourceMetricTotals = {
   readonly statuses: Record<SourceMetricStatus, number>;
@@ -340,24 +316,24 @@ export const viewServerHealthMetrics = <const Topics extends TopicDefinitions>(
     "# TYPE view_server_source_last_termination_at_nanos gauge",
     "# HELP view_server_source_current_attempt Highest current attempt number.",
     "# TYPE view_server_source_current_attempt gauge",
-    "# HELP view_server_source_retries_total Source retries across active logical source instances.",
-    "# TYPE view_server_source_retries_total counter",
-    "# HELP view_server_source_received_deliveries_total Received deliveries across active logical source instances.",
-    "# TYPE view_server_source_received_deliveries_total counter",
-    "# HELP view_server_source_rejected_items_total Rejected source items across active logical source instances.",
-    "# TYPE view_server_source_rejected_items_total counter",
-    "# HELP view_server_source_attempted_mutations_total Attempted source mutations across active logical source instances.",
-    "# TYPE view_server_source_attempted_mutations_total counter",
-    "# HELP view_server_source_applied_upserts_total Applied source upserts across active logical source instances.",
-    "# TYPE view_server_source_applied_upserts_total counter",
-    "# HELP view_server_source_applied_deletes_total Applied source deletes across active logical source instances.",
-    "# TYPE view_server_source_applied_deletes_total counter",
-    "# HELP view_server_source_failed_mutations_total Failed source mutations across active logical source instances.",
-    "# TYPE view_server_source_failed_mutations_total counter",
-    "# HELP view_server_source_completed_settlements_total Completed source settlements across active logical source instances.",
-    "# TYPE view_server_source_completed_settlements_total counter",
-    "# HELP view_server_source_failed_settlements_total Failed source settlements across active logical source instances.",
-    "# TYPE view_server_source_failed_settlements_total counter",
+    "# HELP view_server_source_active_retries Source retries across active logical source instances.",
+    "# TYPE view_server_source_active_retries gauge",
+    "# HELP view_server_source_active_received_deliveries Received deliveries across active logical source instances.",
+    "# TYPE view_server_source_active_received_deliveries gauge",
+    "# HELP view_server_source_active_rejected_items Rejected source items across active logical source instances.",
+    "# TYPE view_server_source_active_rejected_items gauge",
+    "# HELP view_server_source_active_attempted_mutations Attempted source mutations across active logical source instances.",
+    "# TYPE view_server_source_active_attempted_mutations gauge",
+    "# HELP view_server_source_active_applied_upserts Applied source upserts across active logical source instances.",
+    "# TYPE view_server_source_active_applied_upserts gauge",
+    "# HELP view_server_source_active_applied_deletes Applied source deletes across active logical source instances.",
+    "# TYPE view_server_source_active_applied_deletes gauge",
+    "# HELP view_server_source_active_failed_mutations Failed source mutations across active logical source instances.",
+    "# TYPE view_server_source_active_failed_mutations gauge",
+    "# HELP view_server_source_active_completed_settlements Completed source settlements across active logical source instances.",
+    "# TYPE view_server_source_active_completed_settlements gauge",
+    "# HELP view_server_source_active_failed_settlements Failed source settlements across active logical source instances.",
+    "# TYPE view_server_source_active_failed_settlements gauge",
     "# HELP view_server_source_retained_rows Retained source-owned rows across active logical source instances.",
     "# TYPE view_server_source_retained_rows gauge",
     "# HELP view_server_source_delivery_lanes Active source delivery lanes.",
@@ -370,8 +346,8 @@ export const viewServerHealthMetrics = <const Topics extends TopicDefinitions>(
     "# TYPE view_server_source_buffer_depth gauge",
     "# HELP view_server_source_buffer_high_water_mark Total bounded source buffer high-water mark.",
     "# TYPE view_server_source_buffer_high_water_mark gauge",
-    "# HELP view_server_source_buffer_overflows_total Source buffer overflows across active logical source instances.",
-    "# TYPE view_server_source_buffer_overflows_total counter",
+    "# HELP view_server_source_active_buffer_overflows Source buffer overflows across active logical source instances.",
+    "# TYPE view_server_source_active_buffer_overflows gauge",
   ];
 
   for (const [topicName, topic] of Object.entries(health.engine.topics)) {
@@ -449,13 +425,16 @@ export const viewServerHealthMetrics = <const Topics extends TopicDefinitions>(
     if (source === undefined) {
       continue;
     }
+    if (!Object.hasOwn(health.sources, topicName)) {
+      continue;
+    }
     const candidate: unknown = Reflect.get(health.sources, topicName);
-    const active = (Array.isArray(candidate) ? candidate : [candidate]).map(
-      validatedSourceMetricHealth,
-    );
     const totals = emptySourceMetricTotals();
-    for (const sourceHealth of active) {
-      addSourceMetricHealth(totals, sourceHealth);
+    for (const value of Array.isArray(candidate) ? candidate : [candidate]) {
+      const sourceHealth = validatedSourceMetricHealth(value);
+      if (sourceHealth !== undefined) {
+        addSourceMetricHealth(totals, sourceHealth);
+      }
     }
     const labels = {
       topic: topicName,
@@ -497,28 +476,28 @@ export const viewServerHealthMetrics = <const Topics extends TopicDefinitions>(
         labels,
       ),
       metricLine("view_server_source_current_attempt", totals.currentAttempt, labels),
-      metricLine("view_server_source_retries_total", totals.retryCount, labels),
+      metricLine("view_server_source_active_retries", totals.retryCount, labels),
       metricLine(
-        "view_server_source_received_deliveries_total",
+        "view_server_source_active_received_deliveries",
         totals.receivedDeliveryCount,
         labels,
       ),
-      metricLine("view_server_source_rejected_items_total", totals.rejectedItemCount, labels),
+      metricLine("view_server_source_active_rejected_items", totals.rejectedItemCount, labels),
       metricLine(
-        "view_server_source_attempted_mutations_total",
+        "view_server_source_active_attempted_mutations",
         totals.attemptedMutationCount,
         labels,
       ),
-      metricLine("view_server_source_applied_upserts_total", totals.appliedUpsertCount, labels),
-      metricLine("view_server_source_applied_deletes_total", totals.appliedDeleteCount, labels),
-      metricLine("view_server_source_failed_mutations_total", totals.failedMutationCount, labels),
+      metricLine("view_server_source_active_applied_upserts", totals.appliedUpsertCount, labels),
+      metricLine("view_server_source_active_applied_deletes", totals.appliedDeleteCount, labels),
+      metricLine("view_server_source_active_failed_mutations", totals.failedMutationCount, labels),
       metricLine(
-        "view_server_source_completed_settlements_total",
+        "view_server_source_active_completed_settlements",
         totals.completedSettlementCount,
         labels,
       ),
       metricLine(
-        "view_server_source_failed_settlements_total",
+        "view_server_source_active_failed_settlements",
         totals.failedSettlementCount,
         labels,
       ),
@@ -528,7 +507,7 @@ export const viewServerHealthMetrics = <const Topics extends TopicDefinitions>(
       metricLine("view_server_source_buffer_capacity", totals.bufferCapacity, labels),
       metricLine("view_server_source_buffer_depth", totals.bufferDepth, labels),
       metricLine("view_server_source_buffer_high_water_mark", totals.bufferHighWaterMark, labels),
-      metricLine("view_server_source_buffer_overflows_total", totals.bufferOverflowCount, labels),
+      metricLine("view_server_source_active_buffer_overflows", totals.bufferOverflowCount, labels),
     );
   }
 

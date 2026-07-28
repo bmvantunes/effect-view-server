@@ -3,8 +3,8 @@ import runtimeConfig from "../packages/runtime/vite.config";
 
 describe("runtime benchmark coverage policy", () => {
   it("does not retain transport-specific benchmark harnesses", () => {
-    expect(runtimeConfig.test?.coverage?.include ?? []).not.toContain(
-      "test-harness/grpc-benchmark-memory.ts",
-    );
+    const include = runtimeConfig.test?.coverage?.include;
+    expect(include).toStrictEqual(["src/**/*.ts"]);
+    expect(include).not.toContain("test-harness/grpc-benchmark-memory.ts");
   });
 });

@@ -40,8 +40,21 @@ import type {
 import { Cause, Effect, Result, Stream } from "effect";
 import * as Atom from "effect/unstable/reactivity/Atom";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
-import { createContext, useContext, useInsertionEffect, useMemo, type ReactNode } from "react";
-import { ViewServerReactClientProvider, ViewServerReactConfig } from "./internal";
+import {
+  createContext,
+  useContext,
+  useInsertionEffect,
+  useLayoutEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react";
+import {
+  deleteMapEntryIfCurrent,
+  installMapEntryIfVacant,
+  ViewServerReactClientProvider,
+  ViewServerReactConfig,
+} from "./internal";
 import {
   makeLiveQueryViewport,
   makeLiveQueryViewportAtom,
@@ -87,6 +100,13 @@ export type ViewServerProviderProps = ViewServerClientOptions & {
 const ignoreSubscriptionCloseFailure = ignoreLoggedTypedFailuresPreserveNonTypedFailures(
   "Ignoring React subscription close failure.",
 );
+
+const invalidSourceHealthInputError = (): ViewServerRuntimeError => ({
+  _tag: "ViewServerRuntimeError",
+  code: "InvalidQuery",
+  message: "Source Health input must be one exact { topic, routeBy? } object.",
+  topic: "<invalid>",
+});
 
 export type UseLiveQueryHook<Topics extends TopicDefinitions> = <
   Topic extends Extract<keyof Topics, string>,
@@ -135,6 +155,12 @@ export const createViewServerReact = <const Topics extends TopicDefinitions>(
   }[ViewServerSourceOwnedTopic<Topics>];
   type SourceHealthAtomEntry<Health extends SourceHealthResult = SourceHealthResult> = {
     readonly atom: Atom.Atom<UseSourceHealthResult<Health>>;
+    commit(
+      subscribe: () => Effect.Effect<
+        ViewServerSourceHealthSubscription<Health>,
+        ViewServerRuntimeError | ViewServerTransportError
+      >,
+    ): SourceHealthAtomEntry<Health>;
   };
   const sourceHealthEntries = new WeakMap<
     object,
@@ -173,25 +199,37 @@ export const createViewServerReact = <const Topics extends TopicDefinitions>(
     if (existing !== undefined) {
       return existing;
     }
-    const evict = () => {
-      entries.delete(key);
-    };
-    const entry = {
+    let currentSubscribe = subscribe;
+    const source = Atom.make(() =>
+      Stream.scoped(
+        Stream.unwrap(
+          Effect.gen(function* () {
+            const subscription = yield* currentSubscribe();
+            return subscription.events.pipe(
+              Stream.ensuring(subscription.close().pipe(ignoreSubscriptionCloseFailure)),
+            );
+          }),
+        ),
+      ),
+    );
+    const entry: SourceHealthAtomEntry = {
       atom: Atom.make((get) => {
-        get.addFinalizer(evict);
-        return Stream.scoped(
-          Stream.unwrap(
-            Effect.gen(function* () {
-              const subscription = yield* subscribe();
-              return subscription.events.pipe(
-                Stream.ensuring(subscription.close().pipe(ignoreSubscriptionCloseFailure)),
-              );
-            }),
-          ),
-        );
+        installMapEntryIfVacant(entries, key, entry);
+        get.addFinalizer(() => {
+          deleteMapEntryIfCurrent(entries, key, entry);
+        });
+        return get(source);
       }),
+      commit: (committedSubscribe) => {
+        const committed = entries.get(key);
+        if (committed !== undefined && committed !== entry) {
+          return committed.commit(committedSubscribe);
+        }
+        currentSubscribe = committedSubscribe;
+        entries.set(key, entry);
+        return entry;
+      },
     };
-    entries.set(key, entry);
     return entry;
   }
 
@@ -303,17 +341,45 @@ export const createViewServerReact = <const Topics extends TopicDefinitions>(
     const client = useClient();
     const registry = useContext(AtomReact.RegistryContext);
     const inputIdentity = useMemo(() => {
-      const capturedInput = snapshotViewServerQuery(input);
-      const key = stableQueryKey(capturedInput);
-      return { input: capturedInput, key };
+      const capturedInput = Result.try(() => snapshotViewServerQuery(input));
+      if (Result.isFailure(capturedInput)) {
+        return {
+          _tag: "Invalid" as const,
+          key: "invalid",
+        };
+      }
+      return {
+        _tag: "Valid" as const,
+        input: capturedInput.success,
+        key: stableQueryKey(capturedInput.success),
+      };
     }, [input]);
-    const entry = sourceHealthEntry(
-      registry,
-      client,
-      `${inputIdentity.input.topic}:${inputIdentity.key}`,
-      () => client.subscribeSourceHealth(inputIdentity.input),
+    type Health = ViewServerSourceHealthResultForTopic<Topics, Input["topic"]>;
+    const subscribe = useMemo(
+      () => () =>
+        inputIdentity._tag === "Invalid"
+          ? Effect.fail(invalidSourceHealthInputError())
+          : client.subscribeSourceHealth(inputIdentity.input),
+      [client, inputIdentity],
     );
-    return AtomReact.useAtomValue(entry.atom);
+    const entry = sourceHealthEntry<Health>(registry, client, inputIdentity.key, subscribe);
+    const pendingAtom = useMemo(
+      () =>
+        Atom.make(
+          AsyncResult.initial<
+            Health,
+            ViewServerRuntimeError | ViewServerTransportError | Cause.NoSuchElementError
+          >(true),
+        ),
+      [],
+    );
+    const [committedEntry, setCommittedEntry] = useState<
+      SourceHealthAtomEntry<Health> | undefined
+    >();
+    useLayoutEffect(() => {
+      setCommittedEntry(entry.commit(subscribe));
+    }, [entry, subscribe]);
+    return AtomReact.useAtomValue(committedEntry === entry ? entry.atom : pendingAtom);
   }
 
   function useLiveQueryViewport<Topic extends Extract<keyof Topics, string>>(

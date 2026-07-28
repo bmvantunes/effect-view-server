@@ -1,4 +1,5 @@
 export { validateDecodedRow } from "./decoded-row-validation";
+export { isViewServerIdSchema } from "./view-server-id";
 export type {
   ViewServerRuntimeDecodedMutation,
   ViewServerRuntimeDecodedMutationClient,

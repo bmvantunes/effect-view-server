@@ -43,6 +43,7 @@ describe("Invalid health payload wire inputs", () => {
       expect(Object.hasOwn(normalizedHealth, "extraRoot")).toBe(false);
       expect(Object.hasOwn(normalizedHealth.transport, "extraTransport")).toBe(false);
       expect(Object.hasOwn(normalizedHealth.engine.topics.orders, "extraTopic")).toBe(false);
+      expect(Object.hasOwn(normalizedHealth.engine.topics.badjson, "extraTopic")).toBe(false);
 
       const malformedHealthStatus = yield* Effect.flip(
         viewServerDecodeHealth(viewServer, {

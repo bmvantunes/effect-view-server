@@ -77,10 +77,9 @@ const multiSourceViewServer = defineViewServerConfig({
 });
 const leasedRuntimeEffect = makeViewServerRuntime(leasedViewServer);
 const materializedRuntimeEffect = makeViewServerRuntime(materializedViewServer);
-const sourceOwnedRuntimeEffect = makeViewServerRuntime(materializedViewServer);
 declare const leasedRuntime: Effect.Success<typeof leasedRuntimeEffect>;
 declare const materializedRuntime: Effect.Success<typeof materializedRuntimeEffect>;
-declare const sourceOwnedRuntime: Effect.Success<typeof sourceOwnedRuntimeEffect>;
+declare const sourceOwnedRuntime: typeof materializedRuntime;
 
 type MultiSourceVisible = typeof multiSourceViewServer.topics.orders extends {
   readonly source: object;
@@ -108,7 +107,7 @@ describe("Runtime client and source ownership contracts", () => {
       ViewServerRuntime<typeof viewServer.topics>["close"]
     >();
     expectTypeOf<Effect.Services<typeof runtimeEffect>>().toEqualTypeOf<never>();
-    expectTypeOf<Effect.Services<typeof sourceOwnedRuntimeEffect>>().not.toEqualTypeOf<never>();
+    expectTypeOf<Effect.Services<typeof materializedRuntimeEffect>>().not.toEqualTypeOf<never>();
     expectTypeOf<Effect.Success<typeof runEffect>>().toEqualTypeOf<never>();
     expectTypeOf<Effect.Services<typeof runEffect>>().toEqualTypeOf<never>();
     expectTypeOf<Effect.Error<typeof runEffect>>().toEqualTypeOf<

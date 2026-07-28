@@ -251,10 +251,50 @@ describe("Aggregate Source Health wire contract", () => {
     Effect.gen(function* () {
       const encoded = yield* viewServerEncodeHealth(config, aggregateHealth);
       const decoded = yield* viewServerDecodeHealth(config, encoded);
+      const encodedCounters = yield* Schema.decodeUnknownEffect(
+        Schema.Struct({
+          sources: Schema.Struct({
+            materialized: Schema.Struct({
+              metrics: Schema.Struct({
+                runtime: Schema.Struct({
+                  currentAttempt: Schema.String,
+                }),
+              }),
+            }),
+            leased: Schema.Array(
+              Schema.Struct({
+                metrics: Schema.Struct({
+                  adapter: Schema.Struct({
+                    observed: Schema.String,
+                  }),
+                }),
+              }),
+            ),
+          }),
+        }),
+      )(encoded);
 
       expect(yield* viewServerEncodeHealth(config, decoded)).toStrictEqual(encoded);
-      expect(JSON.stringify(encoded)).toContain('"currentAttempt":"2"');
-      expect(JSON.stringify(encoded)).toContain('"observed":"13"');
+      expect(encodedCounters).toStrictEqual({
+        sources: {
+          materialized: {
+            metrics: {
+              runtime: {
+                currentAttempt: "2",
+              },
+            },
+          },
+          leased: [
+            {
+              metrics: {
+                adapter: {
+                  observed: "13",
+                },
+              },
+            },
+          ],
+        },
+      });
       expect(Object.keys(encoded.sources)).toStrictEqual(["materialized", "leased"]);
       expect(Object.hasOwn(encoded.sources, "manual")).toBe(false);
     }),
@@ -359,7 +399,7 @@ describe("Aggregate Source Health wire contract", () => {
       expect(leasedCardinality.message).toBe(
         "Leased aggregate Source Health for leased must be an array.",
       );
-      expect(materializedCardinality.message).toContain(
+      expect(materializedCardinality.message).toBe(
         "Source Health adapter identity must match aggregate-health-fixture.",
       );
       expect(identity.message).toBe(

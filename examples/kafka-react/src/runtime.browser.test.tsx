@@ -45,5 +45,6 @@ describe("Kafka React example runtime", () => {
       ],
     ]);
     expect(runMain).toHaveBeenCalledOnce();
+    expect(runMain).not.toHaveBeenCalledWith(runtimeProgram);
   });
 });

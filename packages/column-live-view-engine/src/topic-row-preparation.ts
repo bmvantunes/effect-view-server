@@ -116,18 +116,18 @@ const validateDecodedTopicRow = Effect.fn("ColumnLiveViewEngine.topicRow.decoded
   },
 );
 
-const topicRowKey = Effect.fn("ColumnLiveViewEngine.topicRow.key")(function <Error>(
-  context: TopicRowPreparationContext,
+export const topicRowKey = Effect.fn("ColumnLiveViewEngine.topicRow.key")(function* <Error>(
+  context: Pick<TopicRowPreparationContext, "keyField" | "topic">,
   row: RowObject,
   invalidRow: InvalidRowErrorFactory<Error>,
-): Effect.Effect<string, Error> {
+) {
   const key = fieldValue(row, context.keyField);
-  const invalidKey = invalidRow.bind(
-    undefined,
-    context.topic,
-    `Key field ${context.keyField} must decode to a string.`,
-  );
-  return Effect.succeed(key).pipe(Effect.filterOrFail(Predicate.isString, invalidKey));
+  if (!Predicate.isString(key)) {
+    return yield* Effect.fail(
+      invalidRow(context.topic, `Key field ${context.keyField} must decode to a string.`),
+    );
+  }
+  return key;
 });
 
 const inspectTopicPatch = Effect.fn("ColumnLiveViewEngine.topicRow.patch.inspect")(function* <

@@ -5,6 +5,7 @@ import type {
   ViewServerTopicConfig,
 } from "@effect-view-server/config";
 import {
+  SourceRuntimeMetricsSchema,
   sourceHealthContractSchemas,
   type SourceHealthResultForDefinition,
 } from "@effect-view-server/source-adapter";
@@ -20,6 +21,7 @@ export const ViewServerSourceHealthPayloadSchema = Schema.Struct({
 });
 
 export const ViewServerWireSourceHealthSchema = Schema.Json;
+export const ViewServerSourceRuntimeMetricsSchema = SourceRuntimeMetricsSchema;
 
 export type ViewServerSourceHealthPayload = typeof ViewServerSourceHealthPayloadSchema.Type;
 export type ViewServerWireSourceHealth = typeof ViewServerWireSourceHealthSchema.Type;

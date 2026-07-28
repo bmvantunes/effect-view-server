@@ -1,5 +1,8 @@
 import type { ViewServerRuntimeError } from "@effect-view-server/config";
-import type { ViewServerRuntimeCoreOptionsFor } from "@effect-view-server/runtime-core";
+import type {
+  GroupedIncrementalAdmissionLimits,
+  ViewServerRuntimeCoreOptionsFor,
+} from "@effect-view-server/runtime-core";
 import type { ViewServerWebSocketServerOptions } from "@effect-view-server/server";
 import { Effect } from "effect";
 import type { ViewServerRuntimeOptions, ViewServerRuntimeTopicDefinitions } from "./runtime-types";
@@ -31,12 +34,16 @@ const runtimeOptionKeys = new Set<PropertyKey>([
   "websocketPort",
 ]);
 
-const groupedIncrementalAdmissionLimitKeys = new Set<PropertyKey>([
-  "maxGroups",
-  "maxMembers",
-  "maxMembersPerGroup",
-  "maxRetainedValueEntries",
-]);
+const groupedIncrementalAdmissionLimitKeyRecord = {
+  maxGroups: true,
+  maxMembers: true,
+  maxMembersPerGroup: true,
+  maxRetainedValueEntries: true,
+} satisfies { readonly [Key in keyof GroupedIncrementalAdmissionLimits]-?: true };
+
+const groupedIncrementalAdmissionLimitKeys = new Set<PropertyKey>(
+  Reflect.ownKeys(groupedIncrementalAdmissionLimitKeyRecord),
+);
 
 const runtimeOptionsError = (message: string): ViewServerRuntimeError => ({
   _tag: "ViewServerRuntimeError",

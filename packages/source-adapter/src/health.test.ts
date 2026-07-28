@@ -1,4 +1,4 @@
-import { describe, expect, it } from "@effect/vitest";
+import { describe, expect, expectTypeOf, it } from "@effect/vitest";
 import { Effect, Exit, Schema } from "effect";
 import {
   SourceBufferMetricsSchema,
@@ -219,6 +219,20 @@ describe("Source Health schemas", () => {
         ...input,
         lifecycle: "leased",
       });
+      expectTypeOf<typeof materialized.result.Type>().toEqualTypeOf<
+        typeof materialized.health.Type
+      >();
+      expectTypeOf<typeof leased.result.Type>().toEqualTypeOf<
+        | {
+            readonly _tag: "Inactive";
+            readonly route: typeof Route.Type;
+          }
+        | {
+            readonly _tag: "Active";
+            readonly route: typeof Route.Type;
+            readonly health: typeof leased.health.Type;
+          }
+      >();
       const health = {
         adapter: { name: "health-fixture", version: "1" },
         target: { _tag: "Materialized" },
@@ -259,6 +273,24 @@ describe("Source Health schemas", () => {
       ).toStrictEqual({
         _tag: "Inactive",
         route: { region: "eu" },
+      });
+      const leasedHealth = {
+        ...health,
+        target: {
+          _tag: "Leased",
+          route: { region: "eu" },
+        },
+      };
+      expect(
+        yield* Schema.decodeUnknownEffect(leased.result)({
+          _tag: "Active",
+          route: { region: "eu" },
+          health: leasedHealth,
+        }),
+      ).toStrictEqual({
+        _tag: "Active",
+        route: { region: "eu" },
+        health: leasedHealth,
       });
     }),
   );

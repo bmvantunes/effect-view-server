@@ -17,27 +17,10 @@ import type { RouteFieldKey } from "./query-filter";
 import type { RowFromSchema, RowSchema } from "./topic-contract";
 import { viewServerRouteFieldSchemaHasCompleteScalarDomain } from "./route-field-contract";
 import { viewServerUnsupportedRuntimeFieldDomain } from "./schema-field-metadata";
+import { isViewServerIdSchema, ViewServerId } from "./view-server-id";
 
 export { viewSchema } from "./view-schema";
-
-const ViewServerIdSchemaTypeId: unique symbol = Symbol("@effect-view-server/config/ViewServerId");
-
-export interface ViewServerIdSchema extends Schema.Codec<string, string, never, never> {
-  readonly [ViewServerIdSchemaTypeId]: true;
-}
-
-/**
- * The one canonical Topic Row identifier schema.
- *
- * Its decoded and encoded values remain plain strings. The schema-level nominal
- * marker lets configuration type checks reject arbitrary string refinements
- * before runtime.
- */
-export const ViewServerId: ViewServerIdSchema = Object.freeze(
-  Object.assign(Schema.String.annotate({ identifier: "ViewServerId" }), {
-    [ViewServerIdSchemaTypeId]: true as const,
-  }),
-);
+export { ViewServerId, type ViewServerIdSchema } from "./view-server-id";
 
 export type {
   Aggregate,
@@ -348,7 +331,7 @@ export function defineViewServerConfig(
         `View Server topic ${topic} exposed row fields do not match the row schema AST.`,
       );
     }
-    if (schema.fields["id"]?.ast !== ViewServerId.ast) {
+    if (!isViewServerIdSchema(schema.fields["id"])) {
       throw new Error(
         `View Server topic ${topic} row schema must define canonical id as ViewServerId.`,
       );

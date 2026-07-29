@@ -30,7 +30,7 @@ An external item that intentionally produces no mutation is a Source No-Op Item,
 
 A Source Item Rejection represents one item-local decode, Mapping, canonical-ID, Route Field congruence, or Topic Schema failure when the underlying ordered source remains usable. It contains the exact schema-backed safe failure, adapter-owned safe source location, `rejectedAtNanos`, and an adapter-owned Rejection Settlement synchronous construction callback that receives the complete rejection-recording `Exit` and returns its settlement Effect; the raw payload is never included automatically. View Server records the rejection, increments `rejectedItemCount`, changes active health to sticky `Degraded`, and runs settlement before consuming the next lane event. Successful rejection recording and settlement continue the lane. Recording or settlement failure terminates the attempt. Kafka commits the rejected offset only after both succeed so later partition records remain consumable; gRPC uses an infallible no-op callback and pulls the next decoded response only when its response stream remains valid. A transport or framing failure that prevents safe continuation remains a Stream failure rather than a rejection.
 
-This follows Effect beta.100's Stream distinction: a `Result.fail` produced by `Stream.filterMapEffect` rejects an element while the Stream continues, whereas failure of the surrounding Effect enters the Stream error channel. Source Lane Events retain that semantic split but make a rejection explicit because View Server must settle it sequentially, expose its exact typed diagnostic, and retain sticky Degraded health rather than silently filtering it away.
+This follows Effect beta.100's Stream distinction: `Stream.filterMapEffect` retains an element when the callback Effect succeeds with `Result.succeed`, drops it when that Effect succeeds with `Result.fail`, and enters the Stream error channel when the Effect itself fails. Source Item Rejection is instead an explicit adapter-level Source Lane Event because View Server must settle an invalid item sequentially, expose its exact typed diagnostic, and retain sticky Degraded health rather than silently filtering it away.
 
 Adapter-specific APIs may retain ergonomic Local Row Key and Mapping functions. They must assemble and Schema-validate the final complete Topic Row with its canonical Topic Row ID before constructing an Upsert. Delete events do not need a row value. Under ADR 0011, a compaction-capable Kafka tombstone derives its complete policy-specific canonical ID only from Region, partition, and the exact serialized key bytes, without a Local Row Key callback or null-value Mapping; a delete-only null value is rejected. For Leased Feeds, View Server derives any internal partitioned storage identity from Feed Route plus Topic Row ID; that identity never enters the Source Adapter API.
 
@@ -115,6 +115,20 @@ type SourceItemRejectionDiagnostic<E, Location> = {
   readonly rejectedAtNanos: bigint;
 };
 
+type SourceItemRejectionReason<E, Location> = {
+  readonly _tag: "SourceItemRejection";
+  readonly latestRejection: SourceItemRejectionDiagnostic<E, Location>;
+};
+
+type AdapterMaintenanceFailureReason = {
+  readonly _tag: "AdapterMaintenanceFailure";
+};
+
+type SourceDegradationReasons<E, Location> =
+  | readonly [SourceItemRejectionReason<E, Location>]
+  | readonly [AdapterMaintenanceFailureReason]
+  | readonly [SourceItemRejectionReason<E, Location>, AdapterMaintenanceFailureReason];
+
 type SourceStatus<E, Location> =
   | {
       readonly _tag: "Starting";
@@ -130,7 +144,7 @@ type SourceStatus<E, Location> =
       readonly _tag: "Degraded";
       readonly attempt: bigint;
       readonly degradedAtNanos: bigint;
-      readonly latestRejection: SourceItemRejectionDiagnostic<E, Location>;
+      readonly reasons: SourceDegradationReasons<E, Location>;
     }
   | {
       readonly _tag: "WaitingToRetry";

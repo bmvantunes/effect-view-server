@@ -8,7 +8,9 @@ Issues #385 and #386 implemented the first-party Kafka and gRPC integrations.
 ADR 0011 supersedes this decision's universal uninterruptible Source Settlement
 rule with an accepted target contract that issue #402 will implement: callback
 application remains exactly once, while the returned settlement Effect is owned
-and interrupted by the Source Attempt Scope.
+and interrupted by the Source Attempt Scope. ADR 0011 also supersedes this
+decision's rejection-only `Degraded` payload with the accepted canonical
+non-empty degradation-reason tuple; the older payload is no longer normative.
 
 ## Context
 

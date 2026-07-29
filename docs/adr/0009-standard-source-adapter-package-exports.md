@@ -5,7 +5,8 @@
 Accepted. Issue #384 implements and verifies the View Server SDK exports and the
 reusable published-adapter package conformance contract. Issues #385 and #386
 implement the first-party Kafka and gRPC `/contract`, `/server`, and `/node`
-exports.
+exports. ADR 0011 supersedes this decision's Kafka `localRowKey`, tombstone, and
+canonical-ID composition examples with cleanup-policy-specific identity.
 
 ## Context
 

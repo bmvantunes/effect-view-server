@@ -5,7 +5,12 @@
 Accepted and implemented. Issues #384–#387 deliver the shared-config Source
 Definition, nominal Layer-provided runtime, browser-safe SDK facade, server
 facade, testing facade, package-boundary verification, first-party Kafka and
-gRPC aggregate Layers, and the final canonical-only migration.
+gRPC aggregate Layers, and the final canonical-only migration. ADR 0011
+supersedes only this decision's illustrative Kafka Source Definition snippet:
+every Kafka source now declares mandatory cleanup and retention policies,
+compaction-capable sources expose no `localRowKey`, and delete-only sources
+retain the value-aware callback. The one-shared-config and package-boundary
+decision remains unchanged.
 
 ## Context
 

@@ -2,13 +2,13 @@
 
 ## Status
 
-Accepted. The generic Source Attempt, lane, delivery, rejection, settlement,
-supervision, diagnostics, and conformance contracts are implemented by issue
-#384. The first-party Kafka and gRPC implementations are implemented by issues
-#385 and #386. ADR 0011 supersedes this decision's universal uninterruptible
-Source Settlement rule with an accepted target contract implemented by issue
-#402: callback application remains exactly once, while the returned settlement
-Effect is owned and interrupted by the Source Attempt Scope.
+Accepted. Issue #384 implemented the generic Source Attempt, lane, delivery,
+rejection, settlement, supervision, diagnostics, and conformance contracts.
+Issues #385 and #386 implemented the first-party Kafka and gRPC integrations.
+ADR 0011 supersedes this decision's universal uninterruptible Source Settlement
+rule with an accepted target contract that issue #402 will implement: callback
+application remains exactly once, while the returned settlement Effect is owned
+and interrupted by the Source Attempt Scope.
 
 ## Context
 

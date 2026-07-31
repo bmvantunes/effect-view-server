@@ -46,39 +46,41 @@ describe("kafka example type contracts", () => {
       readonly ["london"]
     >();
 
-    kafka.source({
-      // @ts-expect-error Kafka Source topics must be strings.
+    const validSourceOptions = {
+      cleanupPolicy: "delete" as const,
+      retentionPolicy: "Infinity" as const,
+      topic: "view-server-valid-option",
+      regions: ["usa"] as const,
+      value: kafka.json(() => Schema.toCodecJson(KafkaOrder)),
+      key: kafka.string(),
+      localRowKey: ({ key }: { readonly key: string }) => key,
+      map: ({
+        value,
+        region,
+      }: {
+        readonly value: typeof KafkaOrder.Type;
+        readonly region: "usa";
+      }) => ({
+        customerId: value.customerId,
+        status: value.status,
+        price: value.price,
+        region: String(region),
+        updatedAt: value.updatedAt,
+      }),
+      startFrom: "latest" as const,
+    };
+    const numericTopicSource = {
+      ...validSourceOptions,
       topic: 42,
-      regions: ["usa"],
-      value: kafka.json(() => Schema.toCodecJson(KafkaOrder)),
-      key: kafka.string(),
-      localRowKey: ({ key }) => key,
-      map: ({ value, region }) => ({
-        customerId: value.customerId,
-        status: value.status,
-        price: value.price,
-        region: String(region),
-        updatedAt: value.updatedAt,
-      }),
-      startFrom: "latest",
-    });
+    };
+    // @ts-expect-error Kafka Source topics must be strings.
+    kafka.source(numericTopicSource);
 
-    kafka.source({
-      topic: "view-server-invalid-option",
-      regions: ["usa"],
-      value: kafka.json(() => Schema.toCodecJson(KafkaOrder)),
-      key: kafka.string(),
-      localRowKey: ({ key }) => key,
-      map: ({ value, region }) => ({
-        customerId: value.customerId,
-        status: value.status,
-        price: value.price,
-        region: String(region),
-        updatedAt: value.updatedAt,
-      }),
-      startFrom: "latest",
-      // @ts-expect-error Kafka Source options are exact.
+    const unsupportedSourceOption = {
+      ...validSourceOptions,
       unsupported: true,
-    });
+    };
+    // @ts-expect-error Kafka Source options are exact.
+    kafka.source(unsupportedSourceOption);
   });
 });

@@ -7,17 +7,24 @@ import {
   type SourceTermination,
 } from "effect-view-server/source-adapter";
 import { Context, Effect, Option, Schedule, Schema } from "effect";
+import type * as KafkaPublicContract from "@effect-view-server/kafka/contract";
 import {
   KafkaSourceAdapter,
   kafka,
   type KafkaAdapterFailure,
   type KafkaCapturedStartPosition,
+  type KafkaCodec,
   type KafkaCodecDecodeInput,
   type KafkaCodecFailure,
   type KafkaCodecValue,
+  type KafkaCompactionKeyCodecDecodeInput,
+  type KafkaCompactionMappingInput,
+  type KafkaCompactionSourceDefinition,
+  type KafkaDeleteMappingInput,
   type KafkaMaterializedMetrics,
-  type KafkaRegionMetrics,
-  type KafkaSourceDefinition,
+  type KafkaMaterializedRegionMetrics,
+  type KafkaDeleteSourceDefinition,
+  type KafkaLocalRowKeyInput,
   type KafkaSourceRetryPolicy,
 } from "@effect-view-server/kafka/contract";
 
@@ -27,15 +34,42 @@ const JsonValueRow = Schema.Struct({
 const canonicalJsonValueCodec = Schema.toCodecJson(JsonValueRow);
 const key = kafka.string();
 const value = kafka.json(() => canonicalJsonValueCodec);
+// @ts-expect-error cleanup-ambiguous Kafka source input is not a public contract.
+type RemovedKafkaSourceInput = KafkaPublicContract.KafkaSourceInput<
+  readonly ["eu"],
+  "delete",
+  typeof key,
+  typeof value,
+  (input: KafkaLocalRowKeyInput<"eu", typeof key, typeof value>) => string,
+  (input: KafkaDeleteMappingInput<"eu", typeof key, typeof value>) => object
+>;
+// @ts-expect-error delete-only compatibility Mapping alias is not a public contract.
+type RemovedKafkaMappingInput = KafkaPublicContract.KafkaMappingInput<
+  "eu",
+  typeof key,
+  typeof value
+>;
+expectTypeOf<RemovedKafkaSourceInput>();
+expectTypeOf<RemovedKafkaMappingInput>();
+const decodedDeleteRowId = kafka.decodeRowId("eu:0:kYWJj", "delete");
+const decodedCompactionRowId = kafka.decodeRowId("eu:0:kYWJj", "compact");
+expectTypeOf(decodedDeleteRowId._tag).toEqualTypeOf<"Delete">();
+expectTypeOf(decodedCompactionRowId._tag).toEqualTypeOf<"Compaction">();
+// @ts-expect-error row-ID decoding requires the Topic cleanup policy to disambiguate identities.
+kafka.decodeRowId("eu:0:kYWJj");
+// @ts-expect-error row-ID decoding rejects cleanup policies outside the Kafka contract.
+kafka.decodeRowId("eu:0:kYWJj", "archive");
 const source = kafka.source({
+  cleanupPolicy: "delete",
+  retentionPolicy: "Infinity",
   topic: "orders-source",
   regions: ["eu", "us"],
   key,
   value,
-  localRowKey: ({ key, region, metadata }) => {
+  localRowKey: ({ key, value, region }) => {
     expectTypeOf(key).toEqualTypeOf<string>();
+    expectTypeOf(value).toEqualTypeOf<{ readonly price: number }>();
     expectTypeOf(region).toEqualTypeOf<"eu" | "us">();
-    expectTypeOf(metadata.sourceRegion).toEqualTypeOf<"eu" | "us">();
     return key;
   },
   map: ({ key, value, region, localRowKey, metadata }) => {
@@ -52,6 +86,8 @@ const source = kafka.source({
   startFrom: "earliest",
 });
 const extraRowSource = kafka.source({
+  cleanupPolicy: "delete",
+  retentionPolicy: "Infinity",
   topic: "orders-source",
   regions: ["eu", "us"],
   key,
@@ -69,6 +105,8 @@ const conditionalRowSource = Math.random() > 0.5 ? source : extraRowSource;
 const invalidConditionalRowSource: typeof source = conditionalRowSource;
 const retrySource = kafka.source(
   {
+    cleanupPolicy: "delete",
+    retentionPolicy: "Infinity",
     topic: "orders-source",
     regions: ["eu"],
     key,
@@ -80,6 +118,8 @@ const retrySource = kafka.source(
   Schedule.identity<SourceTermination<KafkaAdapterFailure<"eu">>>(),
 );
 const committedSource = kafka.source({
+  cleanupPolicy: "delete",
+  retentionPolicy: "Infinity",
   topic: "orders-source",
   regions: ["eu"],
   key,
@@ -93,6 +133,8 @@ const committedSource = kafka.source({
   },
 });
 const timestampSource = kafka.source({
+  cleanupPolicy: "delete",
+  retentionPolicy: "Infinity",
   topic: "orders-source",
   regions: ["eu"],
   key,
@@ -106,6 +148,8 @@ const timestampSource = kafka.source({
   },
 });
 const durationSource = kafka.source({
+  cleanupPolicy: "delete",
+  retentionPolicy: "Infinity",
   topic: "orders-source",
   regions: ["eu"],
   key,
@@ -130,6 +174,47 @@ const custom = kafka.codec({
           _tag: "CustomCodecFailure" as const,
         });
   },
+});
+const compactionKey = kafka.compactionKey.string();
+const customCompactionKey = kafka.compactionKey.codec({
+  name: "custom-compaction-key",
+  decode: (input) => {
+    expectTypeOf(input).toEqualTypeOf<KafkaCompactionKeyCodecDecodeInput>();
+    // @ts-expect-error compaction identity decoding cannot observe Kafka metadata.
+    void input.metadata;
+    // @ts-expect-error compaction identity decoding cannot observe a Region.
+    void input.region;
+    return Effect.succeed(input.bytes.length);
+  },
+});
+const compactSource = kafka.source({
+  cleanupPolicy: "compact",
+  retentionPolicy: "match-kafka-retention",
+  topic: "compacted-orders-source",
+  regions: ["eu", "us"],
+  key: compactionKey,
+  value,
+  map: ({ key, value, region, metadata }) => {
+    expectTypeOf(key).toEqualTypeOf<string>();
+    expectTypeOf(value).toEqualTypeOf<{ readonly price: number }>();
+    expectTypeOf(region).toEqualTypeOf<"eu" | "us">();
+    expectTypeOf(metadata.partition).toEqualTypeOf<number>();
+    return {
+      price: value.price,
+      region,
+    };
+  },
+  startFrom: "earliest",
+});
+const compactAndDeleteSource = kafka.source({
+  cleanupPolicy: "compact-and-delete",
+  retentionPolicy: "5 minutes",
+  topic: "retained-compacted-orders-source",
+  regions: ["eu"],
+  key: kafka.compactionKey.bytes(),
+  value,
+  map: ({ value }) => ({ price: value.price }),
+  startFrom: "latest",
 });
 
 declare const unsafeAny: any;
@@ -177,6 +262,10 @@ describe("Kafka Source Adapter type contract", () => {
     expectTypeOf<KafkaCodecValue<typeof custom>>().toEqualTypeOf<{
       readonly decodedBytes: number;
     }>();
+    expectTypeOf<KafkaCodecValue<typeof customCompactionKey>>().toEqualTypeOf<number>();
+    // @ts-expect-error compaction key codecs are intentionally distinct from ordinary codecs.
+    const ordinaryCodec: KafkaCodec<unknown, unknown> = compactionKey;
+    expectTypeOf(ordinaryCodec).not.toBeAny();
     expectTypeOf(value).not.toHaveProperty("schema");
     expectTypeOf<KafkaCodecFailure<typeof value>>().toEqualTypeOf<{
       readonly _tag: "KafkaCodecError";
@@ -197,13 +286,26 @@ describe("Kafka Source Adapter type contract", () => {
     expectTypeOf<
       Exclude<CustomCodecFailure, { readonly _tag: "KafkaCodecError" | "CustomCodecFailure" }>
     >().toEqualTypeOf<never>();
+    expectTypeOf(KafkaSourceAdapter).not.toBeAny();
     expectTypeOf(source.adapter).toEqualTypeOf<typeof KafkaSourceAdapter>();
     expectTypeOf(source.lifecycle).toEqualTypeOf<"materialized">();
     expectTypeOf(source.options.regions).toEqualTypeOf<readonly ["eu", "us"]>();
     expectTypeOf(invalidConditionalRowSource).not.toBeAny();
     expectTypeOf(source).toExtend<
-      KafkaSourceDefinition<readonly ["eu", "us"], typeof key, typeof value>
+      KafkaDeleteSourceDefinition<readonly ["eu", "us"], typeof key, typeof value>
     >();
+    expectTypeOf(compactSource).toExtend<
+      KafkaCompactionSourceDefinition<
+        readonly ["eu", "us"],
+        "compact",
+        typeof compactionKey,
+        typeof value
+      >
+    >();
+    expectTypeOf(
+      compactAndDeleteSource.options.cleanupPolicy,
+    ).toEqualTypeOf<"compact-and-delete">();
+    expectTypeOf(compactSource.options).not.toHaveProperty("localRowKey");
     expectTypeOf<SourceDefinitionRetryServices<typeof source>>().toEqualTypeOf<never>();
     expectTypeOf<SourceDefinitionRetryServices<typeof retrySource>>().toEqualTypeOf<never>();
     type RetryPolicy = Extract<typeof retrySource.retry, { readonly _tag: "Override" }>["policy"];
@@ -232,21 +334,44 @@ describe("Kafka Source Adapter type contract", () => {
     >();
     expectTypeOf<
       Extract<
-        Health["status"],
-        { readonly _tag: "Degraded" }
-      >["latestRejection"]["location"]["region"]
+        Extract<
+          Extract<Health["status"], { readonly _tag: "Degraded" }>["reasons"][number],
+          { readonly _tag: "SourceItemRejection" }
+        >["latestRejection"]["location"]["region"],
+        string
+      >
     >().toEqualTypeOf<"eu" | "us">();
     expectTypeOf<Health["metrics"]["adapter"]["regions"][number]["region"]>().toEqualTypeOf<
       "eu" | "us"
     >();
     expectTypeOf<KafkaMaterializedMetrics<readonly ["eu", "us"]>["regions"]>().toEqualTypeOf<
-      readonly [KafkaRegionMetrics<"eu">, KafkaRegionMetrics<"us">]
+      readonly [KafkaMaterializedRegionMetrics<"eu">, KafkaMaterializedRegionMetrics<"us">]
     >();
     expectTypeOf<Health["metrics"]["adapter"]["regions"]>().toEqualTypeOf<
-      readonly [KafkaRegionMetrics<"eu">, KafkaRegionMetrics<"us">]
+      readonly [KafkaMaterializedRegionMetrics<"eu">, KafkaMaterializedRegionMetrics<"us">]
     >();
     expectTypeOf<Health["metrics"]["adapter"]["regions"][0]["region"]>().toEqualTypeOf<"eu">();
     expectTypeOf<Health["metrics"]["adapter"]["regions"][1]["region"]>().toEqualTypeOf<"us">();
+    expectTypeOf<
+      Health["metrics"]["adapter"]["regions"][number]["retention"]["dueBacklog"]
+    >().toEqualTypeOf<number>();
+    expectTypeOf<
+      Health["metrics"]["adapter"]["regions"][number]["retention"]["expirationRetryFailures"]
+    >().toEqualTypeOf<bigint>();
+    expectTypeOf<
+      NonNullable<
+        Health["metrics"]["adapter"]["regions"][number]["retention"]["latestExpirationFailure"]
+      >["region"]
+    >().toEqualTypeOf<"eu" | "us">();
+    expectTypeOf<
+      Health["metrics"]["adapter"]["regions"][number]["retention"]["lastSweepAtNanos"]
+    >().toEqualTypeOf<bigint | null>();
+    expectTypeOf<
+      Health["metrics"]["adapter"]["regions"][number]["retention"]["lastSweepDurationNanos"]
+    >().toEqualTypeOf<bigint | null>();
+    expectTypeOf<
+      Health["metrics"]["adapter"]["regions"][number]["retention"]["sweepIntervalNanos"]
+    >().toEqualTypeOf<bigint>();
     // @ts-expect-error materialized Kafka health always has one metric per configured Region.
     const emptyRegionMetrics: Health["metrics"]["adapter"]["regions"] = [];
     expectTypeOf(emptyRegionMetrics).not.toBeAny();
@@ -332,61 +457,207 @@ describe("Kafka Source Adapter type contract", () => {
       readonly format: "protobuf";
     }>();
 
-    kafka.source({
+    const validDeleteSourceOptions = {
+      cleanupPolicy: "delete" as const,
+      retentionPolicy: "Infinity" as const,
       topic: "orders-source",
+      regions: ["eu"] as const,
+      key,
+      value,
+      localRowKey: ({ key }: { readonly key: string }) => key,
+      map: ({ value }: { readonly value: { readonly price: number } }) => ({
+        price: value.price,
+      }),
+      startFrom: "earliest" as const,
+    };
+    kafka.source({
+      ...validDeleteSourceOptions,
+      localRowKey: (input) => {
+        expectTypeOf(input.key).toEqualTypeOf<string>();
+        expectTypeOf(input.value).toEqualTypeOf<{ readonly price: number }>();
+        expectTypeOf(input.region).toEqualTypeOf<"eu">();
+        // @ts-expect-error delete-only localRowKey cannot observe Kafka metadata.
+        void input.metadata;
+        // @ts-expect-error delete-only localRowKey cannot observe a partition.
+        void input.partition;
+        // @ts-expect-error delete-only localRowKey cannot observe an offset.
+        void input.offset;
+        return input.key;
+      },
+    });
+    const missingCleanupPolicy = {
+      retentionPolicy: "Infinity",
+      topic: "orders-source",
+      regions: ["eu"] as const,
+      key,
+      value,
+      localRowKey: ({ key }: { readonly key: string }) => key,
+      map: ({ value }: { readonly value: { readonly price: number } }) => ({
+        price: value.price,
+      }),
+      startFrom: "earliest" as const,
+    };
+    // @ts-expect-error cleanupPolicy is mandatory for every Kafka source.
+    kafka.source(missingCleanupPolicy);
+
+    const unknownCleanupPolicy = {
+      ...validDeleteSourceOptions,
+      cleanupPolicy: "archive" as const,
+    };
+    // @ts-expect-error cleanupPolicy accepts only delete, compact, and compact-and-delete.
+    kafka.source(unknownCleanupPolicy);
+
+    const missingRetentionPolicy = {
+      cleanupPolicy: "delete",
+      topic: "orders-source",
+      regions: ["eu"] as const,
+      key,
+      value,
+      localRowKey: ({ key }: { readonly key: string }) => key,
+      map: ({ value }: { readonly value: { readonly price: number } }) => ({
+        price: value.price,
+      }),
+      startFrom: "earliest" as const,
+    };
+    // @ts-expect-error retentionPolicy is mandatory for every Kafka source.
+    kafka.source(missingRetentionPolicy);
+
+    const invalidRetentionPolicy = {
+      ...validDeleteSourceOptions,
+      retentionPolicy: true,
+    };
+    // @ts-expect-error retentionPolicy accepts only the documented policies and Effect Duration inputs.
+    kafka.source(invalidRetentionPolicy);
+
+    const compactionWithOrdinaryKey = {
+      cleanupPolicy: "compact" as const,
+      retentionPolicy: "Infinity" as const,
+      topic: "orders-source",
+      regions: ["eu"] as const,
+      key,
+      value,
+      map: ({ value }: { readonly value: { readonly price: number } }) => ({
+        price: value.price,
+      }),
+      startFrom: "earliest" as const,
+    };
+    // @ts-expect-error compaction-capable sources require a metadata-free compaction key codec.
+    kafka.source(compactionWithOrdinaryKey);
+
+    const compactionWithoutKey = {
+      cleanupPolicy: "compact" as const,
+      retentionPolicy: "Infinity" as const,
+      topic: "orders-source",
+      regions: ["eu"] as const,
+      value,
+      map: ({ value }: { readonly value: { readonly price: number } }) => ({
+        price: value.price,
+      }),
+      startFrom: "earliest" as const,
+    };
+    // @ts-expect-error compaction-capable sources require an explicit compaction key codec.
+    kafka.source(compactionWithoutKey);
+
+    const deleteWithCompactionKey = {
+      ...validDeleteSourceOptions,
+      key: compactionKey,
+    };
+    // @ts-expect-error delete-only sources require a metadata-aware ordinary key codec.
+    kafka.source(deleteWithCompactionKey);
+
+    const compactionWithLocalRowKey = {
+      cleanupPolicy: "compact-and-delete",
+      retentionPolicy: "Infinity",
+      topic: "orders-source",
+      regions: ["eu"] satisfies readonly ["eu"],
+      key: compactionKey,
+      value,
+      map: (input: KafkaCompactionMappingInput<"eu", typeof compactionKey, typeof value>) => ({
+        price: input.value.price,
+      }),
+      startFrom: "earliest",
+      localRowKey: ({ key }: { readonly key: string }) => key,
+    };
+    // @ts-expect-error compaction-capable identity is canonical and cannot accept localRowKey.
+    kafka.source(compactionWithLocalRowKey);
+
+    const deleteWithRemovedRowKey = {
+      ...validDeleteSourceOptions,
+      rowKey: ({ key }: { readonly key: string }) => key,
+    };
+    // @ts-expect-error rowKey was removed; delete-only sources use localRowKey.
+    kafka.source(deleteWithRemovedRowKey);
+
+    kafka.source({
+      cleanupPolicy: "compact",
+      retentionPolicy: "match-kafka-retention",
+      topic: "private-identity-inputs",
       regions: ["eu"],
-      // @ts-expect-error Kafka key codecs cannot be any.
+      key: compactionKey,
+      value,
+      map: (input) => {
+        // @ts-expect-error canonical identity is injected after Mapping and is never observable.
+        void input.id;
+        // @ts-expect-error exact serialized Kafka key bytes are private identity material.
+        void input.serializedKeyBytes;
+        // @ts-expect-error compaction-capable Mapping has no delete-only Local Row Key.
+        void input.localRowKey;
+        return { price: input.value.price };
+      },
+      startFrom: "earliest",
+    });
+
+    const compactionMapReturnsId = {
+      cleanupPolicy: "compact" as const,
+      retentionPolicy: "match-kafka-retention" as const,
+      topic: "mapper-owned-identity",
+      regions: ["eu"] satisfies readonly ["eu"],
+      key: compactionKey,
+      value,
+      map: (input: KafkaCompactionMappingInput<"eu", typeof compactionKey, typeof value>) => ({
+        id: "application-owned",
+        price: input.value.price,
+      }),
+      startFrom: "earliest" as const,
+    };
+    // @ts-expect-error compaction Mapping cannot return or replace canonical identity.
+    kafka.source(compactionMapReturnsId);
+
+    const anyKeySource = {
+      ...validDeleteSourceOptions,
       key: unsafeAny,
-      value,
-      localRowKey: ({ key }) => String(key),
-      map: ({ value }) => ({ price: value.price }),
-      startFrom: "earliest",
-    });
+    };
+    // @ts-expect-error Kafka key codecs cannot be any.
+    kafka.source(anyKeySource);
 
-    kafka.source({
-      topic: "orders-source",
-      regions: ["eu"],
-      key,
-      // @ts-expect-error Kafka value codecs cannot be any.
+    const anyValueSource = {
+      ...validDeleteSourceOptions,
       value: unsafeAny,
-      localRowKey: ({ key }) => key,
       map: () => ({ price: 1 }),
-      startFrom: "earliest",
-    });
+    };
+    // @ts-expect-error Kafka value codecs cannot be any.
+    kafka.source(anyValueSource);
 
-    kafka.source({
-      topic: "orders-source",
-      regions: ["eu"],
-      key,
-      value,
-      localRowKey: ({ key }: { readonly key: string }) => key,
-      map: ({ value }) => ({ price: value.price }),
-      startFrom: "latest",
-      // @ts-expect-error Kafka Source options are exact.
+    const sourceWithInlineExtra = {
+      ...validDeleteSourceOptions,
       extra: true,
-    });
+    };
+    // @ts-expect-error Kafka Source options are exact.
+    kafka.source(sourceWithInlineExtra);
 
-    kafka.source({
-      topic: "orders-source",
-      // @ts-expect-error Kafka regions must be a non-empty tuple.
+    const emptyRegionsSource = {
+      ...validDeleteSourceOptions,
       regions: [],
-      key,
-      value,
-      localRowKey: ({ key }: { readonly key: string }) => key,
-      map: ({ value }) => ({ price: value.price }),
-      startFrom: "earliest",
-    });
+    };
+    // @ts-expect-error Kafka regions must be a non-empty tuple.
+    kafka.source(emptyRegionsSource);
 
-    kafka.source({
-      topic: "orders-source",
-      // @ts-expect-error every Kafka Region tuple member must reject any.
+    const anyRegionMemberSource = {
+      ...validDeleteSourceOptions,
       regions: ["eu", unsafeAny],
-      key,
-      value,
-      localRowKey: ({ key }) => key,
-      map: ({ value }) => ({ price: value.price }),
-      startFrom: "earliest",
-    });
+    };
+    // @ts-expect-error every Kafka Region tuple member must reject any.
+    kafka.source(anyRegionMemberSource);
 
     // @ts-expect-error Kafka definitions must be constructed through kafka.source.
     KafkaSourceAdapter.materializedSource({
@@ -421,148 +692,96 @@ describe("Kafka Source Adapter type contract", () => {
       startFrom: "earliest",
     });
 
-    kafka.source({
-      topic: "orders-source",
-      regions: ["eu"],
-      key,
-      value,
-      // @ts-expect-error localRowKey cannot erase its result to any.
+    const anyLocalRowKeySource = {
+      ...validDeleteSourceOptions,
       localRowKey: () => unsafeAny,
-      map: ({ value }) => ({ price: value.price }),
-      startFrom: "earliest",
-    });
+    };
+    // @ts-expect-error localRowKey cannot erase its result to any.
+    kafka.source(anyLocalRowKeySource);
 
-    kafka.source({
-      topic: "orders-source",
-      regions: ["eu"],
-      key,
-      value,
-      // @ts-expect-error localRowKey cannot return never.
+    const neverLocalRowKeySource = {
+      ...validDeleteSourceOptions,
       localRowKey: () => unsafeNever,
-      map: ({ value }) => ({ price: value.price }),
-      startFrom: "earliest",
-    });
+    };
+    // @ts-expect-error localRowKey cannot return never.
+    kafka.source(neverLocalRowKeySource);
 
-    kafka.source({
-      topic: "orders-source",
-      regions: ["eu"],
-      key,
-      value,
-      // @ts-expect-error localRowKey must return a string.
+    const numericLocalRowKeySource = {
+      ...validDeleteSourceOptions,
       localRowKey: () => 1,
-      map: ({ value }) => ({ price: value.price }),
-      startFrom: "earliest",
-    });
+    };
+    // @ts-expect-error localRowKey must return a string.
+    kafka.source(numericLocalRowKeySource);
 
-    kafka.source({
-      topic: "orders-source",
-      regions: ["eu"],
-      key,
-      value,
-      localRowKey: ({ key }) => key,
-      // @ts-expect-error Mapping cannot return Effect.
-      map: ({ value }) => Effect.succeed({ price: value.price }),
-      startFrom: "earliest",
-    });
+    const effectMappingSource = {
+      ...validDeleteSourceOptions,
+      map: () => Effect.succeed({ price: 1 }),
+    };
+    // @ts-expect-error Mapping cannot return Effect.
+    kafka.source(effectMappingSource);
 
-    kafka.source({
-      topic: "orders-source",
-      regions: ["eu"],
-      key,
-      value,
-      localRowKey: ({ key }) => key,
-      // @ts-expect-error Mapping cannot return Promise.
-      map: async ({ value }) => ({ price: value.price }),
-      startFrom: "earliest",
-    });
+    const promiseMappingSource = {
+      ...validDeleteSourceOptions,
+      map: async () => ({ price: 1 }),
+    };
+    // @ts-expect-error Mapping cannot return Promise.
+    kafka.source(promiseMappingSource);
 
-    kafka.source({
-      topic: "orders-source",
-      regions: ["eu"],
-      key,
-      value,
-      localRowKey: ({ key }) => key,
-      // @ts-expect-error Mapping cannot return Option.
-      map: ({ value }) => Option.some({ price: value.price }),
-      startFrom: "earliest",
-    });
+    const optionMappingSource = {
+      ...validDeleteSourceOptions,
+      map: () => Option.some({ price: 1 }),
+    };
+    // @ts-expect-error Mapping cannot return Option.
+    kafka.source(optionMappingSource);
 
-    kafka.source({
-      topic: "orders-source",
-      regions: ["eu"],
-      key,
-      value,
-      localRowKey: ({ key }) => key,
-      // @ts-expect-error Mapping cannot return undefined.
+    const undefinedMappingSource = {
+      ...validDeleteSourceOptions,
       map: () => undefined,
-      startFrom: "earliest",
-    });
+    };
+    // @ts-expect-error Mapping cannot return undefined.
+    kafka.source(undefinedMappingSource);
 
-    kafka.source({
-      topic: "orders-source",
-      regions: ["eu"],
-      key,
-      value,
-      localRowKey: ({ key }: { readonly key: string }) => key,
-      // @ts-expect-error Mapping cannot return id; the Adapter owns it.
-      map: ({ value }) => ({ id: "owned", price: value.price }),
-      startFrom: "earliest",
-    });
+    const idMappingSource = {
+      ...validDeleteSourceOptions,
+      map: () => ({ id: "owned", price: 1 }),
+    };
+    // @ts-expect-error Mapping cannot return id; the Adapter owns it.
+    kafka.source(idMappingSource);
 
-    kafka.source({
-      topic: "orders-source",
-      regions: ["eu"],
-      key,
-      value,
-      localRowKey: ({ key }: { readonly key: string }) => key,
-      // @ts-expect-error Mapping cannot erase its result to any.
+    const anyMappingSource = {
+      ...validDeleteSourceOptions,
       map: () => unsafeAny,
-      startFrom: "earliest",
-    });
+    };
+    // @ts-expect-error Mapping cannot erase its result to any.
+    kafka.source(anyMappingSource);
 
-    kafka.source({
-      topic: "orders-source",
-      regions: ["eu"],
-      key,
-      value,
-      localRowKey: ({ key }) => key,
-      // @ts-expect-error Mapping cannot return never.
+    const neverMappingSource = {
+      ...validDeleteSourceOptions,
       map: () => unsafeNever,
-      startFrom: "earliest",
-    });
+    };
+    // @ts-expect-error Mapping cannot return never.
+    kafka.source(neverMappingSource);
 
-    kafka.source({
-      // @ts-expect-error Kafka source Topics cannot be any.
+    const anyTopicSource = {
+      ...validDeleteSourceOptions,
       topic: unsafeAny,
-      regions: ["eu"],
-      key,
-      value,
-      localRowKey: ({ key }) => key,
-      map: ({ value }) => ({ price: value.price }),
-      startFrom: "earliest",
-    });
+    };
+    // @ts-expect-error Kafka source Topics cannot be any.
+    kafka.source(anyTopicSource);
 
-    kafka.source({
-      topic: "orders-source",
-      // @ts-expect-error Kafka source Regions cannot be any.
+    const anyRegionsSource = {
+      ...validDeleteSourceOptions,
       regions: unsafeAny,
-      key,
-      value,
-      localRowKey: ({ key }) => key,
-      map: ({ value }) => ({ price: value.price }),
-      startFrom: "earliest",
-    });
+    };
+    // @ts-expect-error Kafka source Regions cannot be any.
+    kafka.source(anyRegionsSource);
 
-    kafka.source({
-      topic: "orders-source",
-      regions: ["eu"],
-      key,
-      value,
-      localRowKey: ({ key }) => key,
-      map: ({ value }) => ({ price: value.price }),
-      // @ts-expect-error Kafka Start Position cannot be any.
+    const anyStartSource = {
+      ...validDeleteSourceOptions,
       startFrom: unsafeAny,
-    });
+    };
+    // @ts-expect-error Kafka Start Position cannot be any.
+    kafka.source(anyStartSource);
 
     const timestampWithExtra = {
       mode: "timestamp" as const,
@@ -570,133 +789,72 @@ describe("Kafka Source Adapter type contract", () => {
       fallback: "earliest" as const,
       extra: true,
     };
-    kafka.source({
-      topic: "orders-source",
-      regions: ["eu"],
-      key,
-      value,
-      localRowKey: ({ key }) => key,
-      map: ({ value }) => ({ price: value.price }),
-      // @ts-expect-error Start Position branches are exact through variables.
+    const extraTimestampSource = {
+      ...validDeleteSourceOptions,
       startFrom: timestampWithExtra,
-    });
+    };
+    // @ts-expect-error Start Position branches are exact through variables.
+    kafka.source(extraTimestampSource);
 
-    kafka.source({
-      topic: "orders-source",
-      regions: ["eu"],
-      key,
-      value,
-      localRowKey: ({ key }) => key,
-      map: ({ value }) => ({ price: value.price }),
+    const numericCommittedGroupSource = {
+      ...validDeleteSourceOptions,
       startFrom: {
-        mode: "committed",
-        // @ts-expect-error committed starts require a string consumer group ID.
+        mode: "committed" as const,
         consumerGroupId: 1,
-        fallback: "earliest",
+        fallback: "earliest" as const,
       },
-    });
+    };
+    // @ts-expect-error committed starts require a string consumer group ID.
+    kafka.source(numericCommittedGroupSource);
 
-    kafka.source({
-      topic: "orders-source",
-      regions: ["eu"],
-      key,
-      value,
-      localRowKey: ({ key }) => key,
-      map: ({ value }) => ({ price: value.price }),
+    const numericTimestampSource = {
+      ...validDeleteSourceOptions,
       startFrom: {
-        mode: "timestamp",
-        // @ts-expect-error timestamp starts require epoch nanoseconds as bigint.
+        mode: "timestamp" as const,
         atNanos: 1,
-        fallback: "latest",
+        fallback: "latest" as const,
       },
-    });
+    };
+    // @ts-expect-error timestamp starts require epoch nanoseconds as bigint.
+    kafka.source(numericTimestampSource);
 
-    kafka.source({
-      topic: "orders-source",
-      regions: ["eu"],
-      key,
-      value,
-      localRowKey: ({ key }) => key,
-      map: ({ value }) => ({ price: value.price }),
+    const invalidDurationFallbackSource = {
+      ...validDeleteSourceOptions,
       startFrom: {
-        mode: "durationAgo",
+        mode: "durationAgo" as const,
         duration: "5 minutes",
-        // @ts-expect-error structured starts require an exact fallback.
         fallback: "middle",
       },
-    });
+    };
+    // @ts-expect-error structured starts require an exact fallback.
+    kafka.source(invalidDurationFallbackSource);
 
-    kafka.source({
-      topic: "orders-source",
-      regions: ["eu"],
-      key,
-      value,
-      localRowKey: ({ key }) => key,
-      map: ({ value }) => ({ price: value.price }),
-      // @ts-expect-error committed starts require consumerGroupId.
+    const missingCommittedGroupSource = {
+      ...validDeleteSourceOptions,
       startFrom: {
-        mode: "committed",
-        fallback: "fail",
+        mode: "committed" as const,
+        fallback: "fail" as const,
       },
-    });
+    };
+    // @ts-expect-error committed starts require consumerGroupId.
+    kafka.source(missingCommittedGroupSource);
 
     const sourceWithExtra = {
-      topic: "orders-source",
-      regions: ["eu"] as const,
-      key,
-      value,
-      localRowKey: ({ key }: { readonly key: string }) => key,
-      map: ({ value }: { readonly value: { readonly price: number } }) => ({
-        price: value.price,
-      }),
-      startFrom: "earliest" as const,
+      ...validDeleteSourceOptions,
       extra: true,
     };
     // @ts-expect-error Source options are exact through variables.
     kafka.source(sourceWithExtra);
 
     // @ts-expect-error retry policies cannot be any.
-    kafka.source(
-      {
-        topic: "orders-source",
-        regions: ["eu"],
-        key,
-        value,
-        localRowKey: ({ key }) => key,
-        map: ({ value }) => ({ price: value.price }),
-        startFrom: "earliest",
-      },
-      unsafeAny,
-    );
-
-    kafka.source(
-      {
-        topic: "orders-source",
-        regions: ["eu"],
-        key,
-        value,
-        localRowKey: ({ key }) => key,
-        map: ({ value }) => ({ price: value.price }),
-        startFrom: "earliest",
-      },
-      // @ts-expect-error retry overrides must be Source Retry Policy schedules.
-      123,
-    );
-
-    kafka.source(
-      {
-        topic: "orders-source",
-        regions: ["eu"],
-        key,
-        value,
-        localRowKey: ({ key }) => key,
-        map: ({ value }) => ({ price: value.price }),
-        startFrom: "earliest",
-      },
-      // @ts-expect-error retry inputs must use this definition's exact Region failure.
+    kafka.source(validDeleteSourceOptions, unsafeAny);
+    // @ts-expect-error retry overrides must be Source Retry Policy schedules.
+    kafka.source(validDeleteSourceOptions, 123);
+    const wrongRegionRetry =
       Schedule.identity<
         import("effect-view-server/source-adapter").SourceTermination<KafkaAdapterFailure<"apac">>
-      >(),
-    );
+      >();
+    // @ts-expect-error retry inputs must use this definition's exact Region failure.
+    kafka.source(validDeleteSourceOptions, wrongRegionRetry);
   });
 });

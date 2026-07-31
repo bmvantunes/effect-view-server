@@ -53,6 +53,21 @@ later valid deliveries continue. Ready and Degraded sources keep dependent Live
 Queries ready; retry or reacquisition makes them stale; exhaustion makes them
 error while retained rows and subscriptions remain.
 
+Kafka expiration Delete failures use a separate active maintenance-failure
+ledger. A failed row remains indexed and retryable on later sweeps, ingestion
+continues, and the failure becomes immediately visible at Source, Topic, and
+aggregate View Server health. Repeated failures for one row generation increase
+the cumulative retry counter without increasing failed-work backlog
+cardinality. A successful retry or an authoritative replacement/removal clears
+the active identity; the latest safe failure and cumulative counter remain
+available in Kafka metrics for the logical source lifetime.
+
+Kafka Region metrics include the declared and observed cleanup policies,
+configured and resolved retention, tracked/due/failed backlog counts, expired
+and authoritative-expired Delete counts, cumulative expiration retry failures,
+the latest exact safe expiration failure, last sweep epoch/duration, and sweep
+interval.
+
 ## Infrastructure health
 
 `GET /health` shares the WebSocket server. It reads the runtime-cached health

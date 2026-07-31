@@ -3,6 +3,7 @@ import {
   SourceAdapter,
   type SourceAdapterDescriptor,
   type SourceApplicationExit,
+  type SourceApplicationTransition,
   type SourceAdapterFailure,
   type SourceAdapterHandle,
   type SourceAttempt,
@@ -20,7 +21,9 @@ import {
   type SourceHealthForDefinition,
   type SourceLifecycleDeclaration,
   type SourceLifecycleMetricsInput,
+  type SourceMaintenanceOperation,
   type SourceMutation,
+  type SourceStatus,
   type SourceToolkit,
 } from "./index";
 import {
@@ -30,6 +33,9 @@ import {
   type NonPausableSourceBuffer,
   type SourceAdapterServerDefinitionEntry,
   type SourceAdapterServerLifecycle,
+  type SourceApplicationStateModule,
+  type SourceApplicationStateRegistration,
+  type SourceApplicationStateSweepInput,
 } from "./server";
 import { Chunk, Context, Effect, Layer, Schedule, Schema, Scope, Stream } from "effect";
 
@@ -185,8 +191,8 @@ expectTypeOf<
 }>();
 expectTypeOf<
   Extract<
-    RegionalHealth["status"],
-    { readonly _tag: "Degraded" }
+    Extract<RegionalHealth["status"], { readonly _tag: "Degraded" }>["reasons"][number],
+    { readonly _tag: "SourceItemRejection" }
   >["latestRejection"]["location"]["region"]
 >().toEqualTypeOf<"eu" | "us">();
 expectTypeOf<RegionalHealth["metrics"]["adapter"]["regions"][number]["region"]>().toEqualTypeOf<
@@ -496,6 +502,8 @@ declare const settlementToolkit: SourceToolkit<
 declare const wrongSettlement: (
   exit: SourceApplicationExit,
 ) => Effect.Effect<void, string, AdapterDependency>;
+declare const foreignTransition: SourceApplicationTransition<"payments">;
+declare const ordersTransition: SourceApplicationTransition<"orders">;
 declare const typedMutation: SourceMutation<{
   readonly id: string;
   readonly value: number;
@@ -543,10 +551,129 @@ const voidAdapter = SourceAdapter.make({
 });
 const voidDefinition = voidAdapter.materializedSource(undefined);
 
+type ApplicationState = {
+  readonly count: number;
+};
+type ApplicationCommand = {
+  readonly delta: number;
+};
+type ApplicationMetrics = {
+  readonly count: number;
+};
+type ApplicationSweepOutcome = {
+  readonly attempted: number;
+};
+
+const applicationState = SourceAdapterServer.applicationState({
+  sweepIntervalNanos: 15n,
+  initialState: (input): ApplicationState => {
+    expectTypeOf(input.topic).toEqualTypeOf<string>();
+    expectTypeOf(input.lifetimeScope).toEqualTypeOf<Scope.Scope>();
+    expectTypeOf(input.definition).toEqualTypeOf<unknown>();
+    expectTypeOf(input.target._tag).toEqualTypeOf<"Materialized" | "Leased">();
+    return { count: 0 };
+  },
+  reduce: (state: ApplicationState, command: ApplicationCommand): ApplicationState => ({
+    count: state.count + command.delta,
+  }),
+  cancelledMaintenanceWorkIds: (
+    state: ApplicationState,
+    command: ApplicationCommand,
+  ): ReadonlyArray<string> => {
+    void state;
+    return command.delta === 0 ? ["unchanged"] : [];
+  },
+  acquireTransition: (state: ApplicationState, command: ApplicationCommand) => {
+    void state;
+    void command;
+    return Effect.succeed(() => undefined);
+  },
+  metrics: (state: ApplicationState): ApplicationMetrics => ({ count: state.count }),
+  runDueSweep: <Topic extends string>(
+    input: SourceApplicationStateSweepInput<Topic, ApplicationState, ApplicationCommand>,
+  ): Effect.Effect<ApplicationSweepOutcome> => {
+    expectTypeOf(input.epochNowNanos).toEqualTypeOf<bigint>();
+    expectTypeOf(input.state).toEqualTypeOf<ApplicationState>();
+    input.update({ delta: 1 });
+    return Effect.succeed({ attempted: 0 });
+  },
+});
+expectTypeOf(applicationState).toEqualTypeOf<
+  SourceApplicationStateRegistration<
+    ApplicationState,
+    ApplicationCommand,
+    ApplicationMetrics,
+    ApplicationSweepOutcome
+  >
+>();
+
+declare const applicationStateScope: Scope.Scope;
+const applicationStateModule = applicationState.forLifetime(applicationStateScope, "orders");
+declare const paymentsApplicationStateModule: SourceApplicationStateModule<
+  "payments",
+  ApplicationState,
+  ApplicationCommand,
+  ApplicationMetrics,
+  ApplicationSweepOutcome
+>;
+expectTypeOf(applicationStateModule).toEqualTypeOf<
+  SourceApplicationStateModule<
+    "orders",
+    ApplicationState,
+    ApplicationCommand,
+    ApplicationMetrics,
+    ApplicationSweepOutcome
+  >
+>();
+const preparedApplicationTransition = applicationStateModule.prepare({ delta: 1 });
+expectTypeOf<
+  Effect.Success<typeof preparedApplicationTransition>["transition"]["topic"]
+>().toEqualTypeOf<"orders">();
+expectTypeOf<Effect.Services<typeof preparedApplicationTransition>>().toEqualTypeOf<Scope.Scope>();
+
+const StatefulMetrics = Schema.Struct({
+  count: Schema.Number,
+});
+const statefulAdapter = SourceAdapter.make({
+  identity: { name: "stateful-type-fixture" },
+  failure: Failure,
+  materialized: {
+    applicationState: "required",
+    metrics: StatefulMetrics,
+    rejectionLocation: Location,
+    definitionOptions: SourceAdapter.definitionOptions<void>(),
+  },
+  leased: undefined,
+});
+const statefulLifecycle: SourceAdapterServerLifecycle<
+  typeof Failure.Type,
+  NonNullable<typeof statefulAdapter.materialized>,
+  "materialized",
+  never
+> = {
+  applicationState,
+  acquire: () =>
+    Effect.succeed(
+      SourceAdapterServer.attempt([
+        SourceAdapterServer.lane({
+          id: "stateful",
+          events: Stream.never,
+        }),
+      ]),
+    ),
+  metrics: () => Effect.succeed({ count: 0 }),
+  retry: Schedule.recurs(0),
+};
+const statefulLayer = SourceAdapterServer.make(statefulAdapter, {
+  materialized: statefulLifecycle,
+});
+
 describe("Source Adapter public type contracts", () => {
   it("preserves exact declaration and definition inference without as const", () => {
     expectTypeOf(adapter.identity.name).toEqualTypeOf<"type-fixture">();
     expectTypeOf(adapter.identity.version).toEqualTypeOf<"1" | undefined>();
+    // @ts-expect-error Application State belongs to the server lifecycle, not diagnostic identity.
+    void adapter.identity.applicationState;
     expectTypeOf<SourceAdapterFailure<typeof adapter>>().toEqualTypeOf<typeof Failure.Type>();
     expectTypeOf(adapterDescriptor).toEqualTypeOf<
       Omit<typeof adapter, "materializedSource" | "leasedSource">
@@ -772,6 +899,552 @@ describe("Source Adapter public type contracts", () => {
     expectTypeOf(operations).not.toBeAny();
   });
 
+  it("keeps Source Application State synchronous, exact, and topic-bound", () => {
+    expectTypeOf(statefulLayer).not.toBeAny();
+    expectTypeOf(applicationStateModule.metrics()).toEqualTypeOf<ApplicationMetrics>();
+    expectTypeOf(
+      applicationStateModule.runDueSweep(1n, () =>
+        Effect.succeed({
+          _tag: "Inactive",
+        }),
+      ),
+    ).toEqualTypeOf<Effect.Effect<ApplicationSweepOutcome>>();
+    const ordersPrepared = applicationStateModule.prepare({ delta: 1 });
+    const paymentsPrepared = paymentsApplicationStateModule.prepare({ delta: 1 });
+    expectTypeOf<
+      Effect.Success<typeof ordersPrepared>["transition"]["topic"]
+    >().toEqualTypeOf<"orders">();
+    expectTypeOf<
+      Effect.Success<typeof paymentsPrepared>["transition"]["topic"]
+    >().toEqualTypeOf<"payments">();
+    const invalidForeignMaintenance = applicationStateModule.runDueSweep(
+      1n,
+      // @ts-expect-error maintenance execution cannot accept an operation from another Topic.
+      (_operation: SourceMaintenanceOperation<"payments">) => Effect.succeed({ _tag: "Inactive" }),
+    );
+    expectTypeOf(invalidForeignMaintenance).not.toBeAny();
+
+    const transitionDelivery = preparedApplicationTransition.pipe(
+      Effect.flatMap((prepared) =>
+        topicToolkit.delivery(typedMutation, undefined, prepared.transition),
+      ),
+    );
+    expectTypeOf<Effect.Success<typeof transitionDelivery>>().toEqualTypeOf<
+      SourceDelivery<
+        {
+          readonly id: string;
+          readonly value: number;
+        },
+        typeof Failure.Type
+      >
+    >();
+
+    const invalidForeignTransition = topicToolkit.delivery(
+      typedMutation,
+      undefined,
+      // @ts-expect-error a Topic-Bound Toolkit rejects an Application Transition from another Topic.
+      foreignTransition,
+    );
+    expectTypeOf(invalidForeignTransition).not.toBeAny();
+    const invalidBatchedTransition = topicToolkit.delivery(
+      // @ts-expect-error Application Transitions require exactly one Source Mutation.
+      Chunk.of(typedMutation),
+      undefined,
+      ordersTransition,
+    );
+    expectTypeOf(invalidBatchedTransition).not.toBeAny();
+
+    // @ts-expect-error Application State Modules do not expose raw state reads.
+    applicationStateModule.select();
+    // @ts-expect-error Application State Modules do not expose raw state writes.
+    applicationStateModule.update({ delta: 1 });
+    // @ts-expect-error Application State Modules do not expose deadline indexes.
+    void applicationStateModule.deadlines;
+
+    const _effectReducer: SourceApplicationStateRegistration<
+      ApplicationState,
+      ApplicationCommand,
+      ApplicationMetrics,
+      ApplicationSweepOutcome
+    > = SourceAdapterServer.applicationState({
+      sweepIntervalNanos: 1n,
+      initialState: (): ApplicationState => ({ count: 0 }),
+      // @ts-expect-error Source Application State reducers must be synchronous.
+      reduce: (state: ApplicationState) => Effect.succeed(state),
+      metrics: (state: ApplicationState): ApplicationMetrics => ({ count: state.count }),
+      runDueSweep: () => Effect.succeed({ attempted: 0 }),
+    });
+    const _promiseReducer: SourceApplicationStateRegistration<
+      ApplicationState,
+      ApplicationCommand,
+      ApplicationMetrics,
+      ApplicationSweepOutcome
+    > = SourceAdapterServer.applicationState({
+      sweepIntervalNanos: 1n,
+      initialState: (): ApplicationState => ({ count: 0 }),
+      // @ts-expect-error Source Application State reducers cannot return Promises.
+      reduce: (state: ApplicationState) => Promise.resolve(state),
+      metrics: (state: ApplicationState): ApplicationMetrics => ({ count: state.count }),
+      runDueSweep: () => Effect.succeed({ attempted: 0 }),
+    });
+    const _asyncReducer: SourceApplicationStateRegistration<
+      ApplicationState,
+      ApplicationCommand,
+      ApplicationMetrics,
+      ApplicationSweepOutcome
+    > = SourceAdapterServer.applicationState({
+      sweepIntervalNanos: 1n,
+      initialState: (): ApplicationState => ({ count: 0 }),
+      // @ts-expect-error Source Application State reducers cannot be async.
+      reduce: async (state: ApplicationState) => state,
+      metrics: (state: ApplicationState): ApplicationMetrics => ({ count: state.count }),
+      runDueSweep: () => Effect.succeed({ attempted: 0 }),
+    });
+    const _fallibleReducer: SourceApplicationStateRegistration<
+      ApplicationState,
+      ApplicationCommand,
+      ApplicationMetrics,
+      ApplicationSweepOutcome
+    > = SourceAdapterServer.applicationState({
+      sweepIntervalNanos: 1n,
+      initialState: (): ApplicationState => ({ count: 0 }),
+      // @ts-expect-error Source Application State reducers cannot return fallible Effects.
+      reduce: () => Effect.fail("reducer failed"),
+      metrics: (state: ApplicationState): ApplicationMetrics => ({ count: state.count }),
+      runDueSweep: () => Effect.succeed({ attempted: 0 }),
+    });
+    // @ts-expect-error Source Application State initialization cannot be async.
+    const _asyncInitial = SourceAdapterServer.applicationState({
+      sweepIntervalNanos: 1n,
+      initialState: async () => ({ count: 0 }),
+      reduce: (state: Promise<ApplicationState>) => state,
+      metrics: () => ({ count: 0 }),
+      runDueSweep: () => Effect.succeed({ attempted: 0 }),
+    });
+    // @ts-expect-error Source Application State initialization cannot return a Promise.
+    const _promiseInitial = SourceAdapterServer.applicationState({
+      sweepIntervalNanos: 1n,
+      initialState: () => Promise.resolve({ count: 0 }),
+      reduce: (state: Promise<ApplicationState>) => state,
+      metrics: () => ({ count: 0 }),
+      runDueSweep: () => Effect.succeed({ attempted: 0 }),
+    });
+    // @ts-expect-error Source Application State initialization cannot return an Effect.
+    const _effectInitial = SourceAdapterServer.applicationState({
+      sweepIntervalNanos: 1n,
+      initialState: () => Effect.succeed({ count: 0 }),
+      reduce: (state: Effect.Effect<ApplicationState>) => state,
+      metrics: () => ({ count: 0 }),
+      runDueSweep: () => Effect.succeed({ attempted: 0 }),
+    });
+    // @ts-expect-error Source Application State metrics cannot be async.
+    const _asyncMetrics = SourceAdapterServer.applicationState({
+      sweepIntervalNanos: 1n,
+      initialState: (): ApplicationState => ({ count: 0 }),
+      reduce: (state: ApplicationState): ApplicationState => state,
+      metrics: async (state: ApplicationState) => ({ count: state.count }),
+      runDueSweep: () => Effect.succeed({ attempted: 0 }),
+    });
+    // @ts-expect-error Source Application State metrics cannot return a Promise.
+    const _promiseMetrics = SourceAdapterServer.applicationState({
+      sweepIntervalNanos: 1n,
+      initialState: (): ApplicationState => ({ count: 0 }),
+      reduce: (state: ApplicationState): ApplicationState => state,
+      metrics: (state: ApplicationState) => Promise.resolve({ count: state.count }),
+      runDueSweep: () => Effect.succeed({ attempted: 0 }),
+    });
+    // @ts-expect-error Source Application State metrics cannot return an Effect.
+    const _effectMetrics = SourceAdapterServer.applicationState({
+      sweepIntervalNanos: 1n,
+      initialState: (): ApplicationState => ({ count: 0 }),
+      reduce: (state: ApplicationState): ApplicationState => state,
+      metrics: (state: ApplicationState) => Effect.succeed({ count: state.count }),
+      runDueSweep: () => Effect.succeed({ attempted: 0 }),
+    });
+    const _wrongInitial: SourceApplicationStateRegistration<
+      ApplicationState,
+      ApplicationCommand,
+      ApplicationMetrics,
+      ApplicationSweepOutcome
+    > = SourceAdapterServer.applicationState({
+      sweepIntervalNanos: 1n,
+      // @ts-expect-error Source Application State initialization must return the declared state.
+      initialState: () => ({ other: 0 }),
+      reduce: (state: ApplicationState): ApplicationState => state,
+      metrics: (state: ApplicationState): ApplicationMetrics => ({ count: state.count }),
+      runDueSweep: () => Effect.succeed({ attempted: 0 }),
+    });
+    const _wrongReducer: SourceApplicationStateRegistration<
+      ApplicationState,
+      ApplicationCommand,
+      ApplicationMetrics,
+      ApplicationSweepOutcome
+    > = SourceAdapterServer.applicationState({
+      sweepIntervalNanos: 1n,
+      initialState: (): ApplicationState => ({ count: 0 }),
+      // @ts-expect-error Source Application State reducers must return the declared state.
+      reduce: () => ({ other: 0 }),
+      metrics: (state: ApplicationState): ApplicationMetrics => ({ count: state.count }),
+      runDueSweep: () => Effect.succeed({ attempted: 0 }),
+    });
+    const _undefinedReducer: SourceApplicationStateRegistration<
+      ApplicationState,
+      ApplicationCommand,
+      ApplicationMetrics,
+      ApplicationSweepOutcome
+    > = SourceAdapterServer.applicationState({
+      sweepIntervalNanos: 1n,
+      initialState: (): ApplicationState => ({ count: 0 }),
+      // @ts-expect-error Source Application State reducers cannot return undefined.
+      reduce: () => undefined,
+      metrics: (state: ApplicationState): ApplicationMetrics => ({ count: state.count }),
+      runDueSweep: () => Effect.succeed({ attempted: 0 }),
+    });
+    // @ts-expect-error Source Application State metrics must return the declared snapshot.
+    const _wrongMetrics: SourceApplicationStateRegistration<
+      ApplicationState,
+      ApplicationCommand,
+      ApplicationMetrics,
+      ApplicationSweepOutcome
+    > = SourceAdapterServer.applicationState({
+      sweepIntervalNanos: 1n,
+      initialState: (): ApplicationState => ({ count: 0 }),
+      reduce: (state: ApplicationState): ApplicationState => state,
+      metrics: () => ({ other: 0 }),
+      runDueSweep: () => Effect.succeed({ attempted: 0 }),
+    });
+    // @ts-expect-error Source Application State descriptors require sweepIntervalNanos.
+    SourceAdapterServer.applicationState({
+      initialState: (): ApplicationState => ({ count: 0 }),
+      reduce: (state: ApplicationState): ApplicationState => state,
+      metrics: (state: ApplicationState): ApplicationMetrics => ({ count: state.count }),
+      runDueSweep: () => Effect.succeed({ attempted: 0 }),
+    });
+    // @ts-expect-error Source Application State descriptors require initialState.
+    SourceAdapterServer.applicationState({
+      sweepIntervalNanos: 1n,
+      reduce: (state: ApplicationState): ApplicationState => state,
+      metrics: (state: ApplicationState): ApplicationMetrics => ({ count: state.count }),
+      runDueSweep: () => Effect.succeed({ attempted: 0 }),
+    });
+    // @ts-expect-error Source Application State descriptors require reduce.
+    SourceAdapterServer.applicationState({
+      sweepIntervalNanos: 1n,
+      initialState: (): ApplicationState => ({ count: 0 }),
+      metrics: (state: ApplicationState): ApplicationMetrics => ({ count: state.count }),
+      runDueSweep: () => Effect.succeed({ attempted: 0 }),
+    });
+    // @ts-expect-error Source Application State descriptors require metrics.
+    SourceAdapterServer.applicationState({
+      sweepIntervalNanos: 1n,
+      initialState: (): ApplicationState => ({ count: 0 }),
+      reduce: (state: ApplicationState): ApplicationState => state,
+      runDueSweep: () => Effect.succeed({ attempted: 0 }),
+    });
+    // @ts-expect-error Source Application State descriptors require runDueSweep.
+    SourceAdapterServer.applicationState({
+      sweepIntervalNanos: 1n,
+      initialState: (): ApplicationState => ({ count: 0 }),
+      reduce: (state: ApplicationState): ApplicationState => state,
+      metrics: (state: ApplicationState): ApplicationMetrics => ({ count: state.count }),
+    });
+    SourceAdapterServer.applicationState({
+      sweepIntervalNanos: 1n,
+      initialState: (): ApplicationState => ({ count: 0 }),
+      reduce: (state: ApplicationState): ApplicationState => state,
+      metrics: (state: ApplicationState): ApplicationMetrics => ({ count: state.count }),
+      runDueSweep: () => Effect.succeed({ attempted: 0 }),
+      // @ts-expect-error Source Application State descriptors reject unknown capabilities.
+      unknownCapability: () => undefined,
+    });
+    SourceAdapterServer.applicationState({
+      sweepIntervalNanos: 1n,
+      initialState: (): ApplicationState => ({ count: 0 }),
+      reduce: (state: ApplicationState): ApplicationState => state,
+      // @ts-expect-error cancelled work IDs must be strings.
+      cancelledMaintenanceWorkIds: () => [1],
+      metrics: (state: ApplicationState): ApplicationMetrics => ({ count: state.count }),
+      runDueSweep: () => Effect.succeed({ attempted: 0 }),
+    });
+    SourceAdapterServer.applicationState({
+      sweepIntervalNanos: 1n,
+      initialState: (): ApplicationState => ({ count: 0 }),
+      reduce: (state: ApplicationState): ApplicationState => state,
+      // @ts-expect-error transition acquisition must return an infallible scoped release Effect.
+      acquireTransition: () => Effect.fail("cannot acquire"),
+      metrics: (state: ApplicationState): ApplicationMetrics => ({ count: state.count }),
+      runDueSweep: () => Effect.succeed({ attempted: 0 }),
+    });
+    SourceAdapterServer.applicationState({
+      sweepIntervalNanos: 1n,
+      initialState: (): ApplicationState => ({ count: 0 }),
+      reduce: (state: ApplicationState): ApplicationState => state,
+      metrics: (state: ApplicationState): ApplicationMetrics => ({ count: state.count }),
+      // @ts-expect-error Source Application State sweeps return Effects, never Promises.
+      runDueSweep: async () => ({ attempted: 0 }),
+    });
+    expectTypeOf([
+      _asyncInitial,
+      _promiseInitial,
+      _effectInitial,
+      _asyncMetrics,
+      _promiseMetrics,
+      _effectMetrics,
+      _wrongInitial,
+      _wrongReducer,
+      _undefinedReducer,
+      _wrongMetrics,
+    ]).not.toBeAny();
+    // This deliberately invalid Effect error channel is the contract under test.
+    // @effect-diagnostics missingEffectError:off
+    const _fallibleSweep: SourceApplicationStateRegistration<
+      ApplicationState,
+      ApplicationCommand,
+      ApplicationMetrics,
+      ApplicationSweepOutcome
+    > = SourceAdapterServer.applicationState({
+      sweepIntervalNanos: 1n,
+      initialState: (): ApplicationState => ({ count: 0 }),
+      reduce: (state: ApplicationState): ApplicationState => state,
+      metrics: (state: ApplicationState): ApplicationMetrics => ({ count: state.count }),
+      // @ts-expect-error Source Application State sweeps are infallible at their public seam.
+      runDueSweep: () => Effect.fail("sweep failed"),
+    });
+    expectTypeOf(_fallibleSweep).not.toBeAny();
+    // @effect-diagnostics missingEffectError:on
+
+    SourceAdapterServer.make(statefulAdapter, {
+      // @ts-expect-error stateful lifecycle implementations must provide Application State.
+      materialized: {
+        acquire: statefulLifecycle.acquire,
+        metrics: statefulLifecycle.metrics,
+        retry: Schedule.recurs(0),
+      },
+    });
+    SourceAdapterServer.make(adapter, {
+      materialized: {
+        ...materializedLifecycle,
+        // @ts-expect-error stateless lifecycle implementations reject Application State.
+        applicationState,
+      },
+      leased: leasedLifecycle,
+    });
+  });
+
+  it("requires exact non-empty Source degradation reasons", () => {
+    type Status = SourceStatus<typeof Failure.Type, typeof Location.Type>;
+    const validMaintenanceStatus: Status = {
+      _tag: "Degraded",
+      attempt: 1n,
+      degradedAtNanos: 2n,
+      reasons: [{ _tag: "AdapterMaintenanceFailure" }],
+    };
+    const validCombinedStatus: Status = {
+      _tag: "Degraded",
+      attempt: 1n,
+      degradedAtNanos: 2n,
+      reasons: [
+        {
+          _tag: "SourceItemRejection",
+          latestRejection: {
+            failure: {
+              _tag: "AdapterFailure",
+              failure: {
+                _tag: "TypeFixtureFailure",
+                message: "safe diagnostic",
+              },
+            },
+            location: { partition: 1, offset: 2n },
+            rejectedAtNanos: 3n,
+          },
+        },
+        { _tag: "AdapterMaintenanceFailure" },
+      ],
+    };
+    expectTypeOf(validMaintenanceStatus).toExtend<Status>();
+    expectTypeOf(validCombinedStatus).toExtend<Status>();
+
+    const invalidEmptyReasons: Status = {
+      _tag: "Degraded",
+      attempt: 1n,
+      degradedAtNanos: 2n,
+      // @ts-expect-error degraded Source Health requires at least one safe reason.
+      reasons: [],
+    };
+    const invalidMaintenanceDiagnostic: Status = {
+      _tag: "Degraded",
+      attempt: 1n,
+      degradedAtNanos: 2n,
+      reasons: [
+        {
+          _tag: "AdapterMaintenanceFailure",
+          // @ts-expect-error maintenance degradation intentionally exposes no unsafe diagnostics.
+          message: "unsafe detail",
+        },
+      ],
+    };
+    const invalidReasonOrder: Status = {
+      _tag: "Degraded",
+      attempt: 1n,
+      degradedAtNanos: 2n,
+      reasons: [
+        { _tag: "AdapterMaintenanceFailure" },
+        {
+          // @ts-expect-error combined reasons have one canonical source-then-maintenance order.
+          _tag: "SourceItemRejection",
+          latestRejection: {
+            failure: {
+              _tag: "AdapterFailure",
+              failure: {
+                _tag: "TypeFixtureFailure",
+                message: "safe diagnostic",
+              },
+            },
+            location: { partition: 1, offset: 2n },
+            rejectedAtNanos: 3n,
+          },
+        },
+      ],
+    };
+    const invalidDuplicateReasons: Status = {
+      _tag: "Degraded",
+      attempt: 1n,
+      degradedAtNanos: 2n,
+      reasons: [
+        {
+          _tag: "SourceItemRejection",
+          latestRejection: {
+            failure: {
+              _tag: "AdapterFailure",
+              failure: {
+                _tag: "TypeFixtureFailure",
+                message: "first",
+              },
+            },
+            location: { partition: 1, offset: 2n },
+            rejectedAtNanos: 3n,
+          },
+        },
+        {
+          // @ts-expect-error one degradation episode cannot contain duplicate rejection reasons.
+          _tag: "SourceItemRejection",
+          latestRejection: {
+            failure: {
+              _tag: "AdapterFailure",
+              failure: {
+                _tag: "TypeFixtureFailure",
+                message: "second",
+              },
+            },
+            location: { partition: 1, offset: 3n },
+            rejectedAtNanos: 4n,
+          },
+        },
+      ],
+    };
+    const invalidUnknownReason: Status = {
+      _tag: "Degraded",
+      attempt: 1n,
+      degradedAtNanos: 2n,
+      reasons: [
+        {
+          // @ts-expect-error degradation reasons are a closed transport-neutral union.
+          _tag: "UnknownDegradationReason",
+        },
+      ],
+    };
+    const invalidOptionalRejection: Status = {
+      _tag: "Degraded",
+      attempt: 1n,
+      degradedAtNanos: 2n,
+      reasons: [
+        {
+          _tag: "SourceItemRejection",
+          // @ts-expect-error rejection diagnostics are mandatory for rejection degradation.
+          latestRejection: undefined,
+        },
+      ],
+    };
+    const invalidLegacyOnlyStatus: Status = {
+      _tag: "Degraded",
+      attempt: 1n,
+      degradedAtNanos: 2n,
+      // @ts-expect-error the former top-level rejection payload is not a degradation reason tuple.
+      latestRejection: {
+        failure: {
+          _tag: "AdapterFailure",
+          failure: {
+            _tag: "TypeFixtureFailure",
+            message: "legacy",
+          },
+        },
+        location: { partition: 1, offset: 2n },
+        rejectedAtNanos: 3n,
+      },
+    };
+    const invalidSurplusStatus: Status = {
+      _tag: "Degraded",
+      attempt: 1n,
+      degradedAtNanos: 2n,
+      reasons: [{ _tag: "AdapterMaintenanceFailure" }],
+      // @ts-expect-error Source Status values reject surplus fields.
+      message: "unsafe detail",
+    };
+    const invalidFailureBinding: Status = {
+      _tag: "Degraded",
+      attempt: 1n,
+      degradedAtNanos: 2n,
+      reasons: [
+        {
+          _tag: "SourceItemRejection",
+          latestRejection: {
+            failure: {
+              _tag: "AdapterFailure",
+              // @ts-expect-error rejection failures remain bound to the Adapter failure Schema.
+              failure: { _tag: "ForeignFailure", message: "foreign" },
+            },
+            location: { partition: 1, offset: 2n },
+            rejectedAtNanos: 3n,
+          },
+        },
+      ],
+    };
+    const invalidLocationBinding: Status = {
+      _tag: "Degraded",
+      attempt: 1n,
+      degradedAtNanos: 2n,
+      reasons: [
+        {
+          _tag: "SourceItemRejection",
+          latestRejection: {
+            failure: {
+              _tag: "AdapterFailure",
+              failure: {
+                _tag: "TypeFixtureFailure",
+                message: "location",
+              },
+            },
+            // @ts-expect-error rejection locations remain bound to their exact Schema.
+            location: { region: "eu" },
+            rejectedAtNanos: 3n,
+          },
+        },
+      ],
+    };
+    expectTypeOf([
+      invalidEmptyReasons,
+      invalidMaintenanceDiagnostic,
+      invalidReasonOrder,
+      invalidDuplicateReasons,
+      invalidUnknownReason,
+      invalidOptionalRejection,
+      invalidLegacyOnlyStatus,
+      invalidSurplusStatus,
+      invalidFailureBinding,
+      invalidLocationBinding,
+    ]).not.toBeAny();
+  });
+
   it("preserves Delivery, lane, attempt, and settlement generics", () => {
     type Row = {
       readonly id: string;
@@ -804,7 +1477,10 @@ describe("Source Adapter public type contracts", () => {
         offset: 1n,
       },
       rejectedAtNanos: 1n,
-      settlement,
+      settlement: (exit) => {
+        expectTypeOf(exit).toEqualTypeOf<SourceApplicationExit>();
+        return AdapterDependency.pipe(Effect.asVoid);
+      },
     });
     const events = AdapterDependency.pipe(
       Effect.as(
@@ -857,6 +1533,57 @@ describe("Source Adapter public type contracts", () => {
       settlement: wrongSettlement,
     });
     expectTypeOf(invalidSettlementRejection).not.toBeAny();
+    const invalidVoidSettlementRejection = settlementToolkit.reject({
+      failure: {
+        _tag: "AdapterFailure",
+        failure: {
+          _tag: "TypeFixtureFailure",
+          message: "rejected",
+        },
+      },
+      location: {
+        partition: 1,
+        offset: 1n,
+      },
+      rejectedAtNanos: 1n,
+      // @ts-expect-error Rejection settlements must return an Effect, not void.
+      settlement: () => undefined,
+    });
+    expectTypeOf(invalidVoidSettlementRejection).not.toBeAny();
+    const invalidPromiseSettlementRejection = settlementToolkit.reject({
+      failure: {
+        _tag: "AdapterFailure",
+        failure: {
+          _tag: "TypeFixtureFailure",
+          message: "rejected",
+        },
+      },
+      location: {
+        partition: 1,
+        offset: 1n,
+      },
+      rejectedAtNanos: 1n,
+      // @ts-expect-error Rejection settlements must return an Effect, not a Promise.
+      settlement: () => Promise.resolve(),
+    });
+    expectTypeOf(invalidPromiseSettlementRejection).not.toBeAny();
+    const invalidAsyncSettlementRejection = settlementToolkit.reject({
+      failure: {
+        _tag: "AdapterFailure",
+        failure: {
+          _tag: "TypeFixtureFailure",
+          message: "rejected",
+        },
+      },
+      location: {
+        partition: 1,
+        offset: 1n,
+      },
+      rejectedAtNanos: 1n,
+      // @ts-expect-error Rejection settlements must not be async.
+      settlement: async () => undefined,
+    });
+    expectTypeOf(invalidAsyncSettlementRejection).not.toBeAny();
     // @effect-diagnostics missingEffectError:on
     const invalidMutationDelivery = settlementToolkit.delivery(
       // @ts-expect-error Delivery mutations must use the Toolkit's exact Topic Row.

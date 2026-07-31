@@ -1,6 +1,7 @@
-import { Context, Effect, Layer, Result, Schedule, Scope, Stream } from "effect";
+import { Chunk, Context, Effect, Layer, Result, Schedule, Scope, Stream } from "effect";
 import {
   decodeSourceToolkitUpsert,
+  isSourceApplicationStateRegistration,
   isSourceAdapterHandle,
   isSourceAttempt,
   isSourceDefinition,
@@ -10,19 +11,28 @@ import {
   makeSourceDelivery,
   makeSourceItemRejection,
   makeRuntimeSourceFailure,
+  makeSourceApplicationTransition,
+  makeSourceApplicationStateRegistration as makeNominalSourceApplicationStateRegistration,
   markSourceToolkit,
+  makeSourceMaintenanceOperation,
+  makeSourceTransitionDelivery,
   resolveSourceAdapterHandle,
 } from "./model";
 import type {
   SourceAdapterFailure,
   SourceAdapterDescriptor,
   SourceAdapterRuntimeService,
+  SourceApplicationExit,
+  SourceApplicationTransition,
+  SourceApplicationStateRegistration as SourceApplicationStateRegistrationDescriptor,
+  SourceApplicationStateRegistrationBindingInput,
   SourceAttempt,
   SourceBufferMetrics,
   SourceDeliveryLane,
   SourceExecutionFailure,
   SourceDefinitionOptionsFamily,
   SourceDefinitionAny,
+  SourceDelivery,
   SourceLifecycleDeclaration,
   SourceLifecycleFactoryInput,
   SourceLifecycle,
@@ -30,10 +40,15 @@ import type {
   SourceLifecycleMetrics,
   SourceLifecycleMetricsInput,
   SourceLifecycleOptions,
+  SourceMaintenanceOperation,
+  SourceMaintenanceResult,
+  SourceMutation,
   SourceRuntimeLifecycle,
+  SourceSettlement,
   SourceToolkit,
   SourceTermination,
 } from "./model";
+export { currentEpochNanos, epochNanosFromWallMillis } from "./epoch-clock";
 export {
   SourceBuffer,
   makeBackpressurableSourceBuffer,
@@ -75,19 +90,50 @@ const closeToolkitEnvironment = <
 >(
   toolkit: SourceToolkit<Row, AdapterFailure, RejectionLocation, never, Topic>,
   context: Context.Context<Services>,
-): SourceToolkit<Row, AdapterFailure, RejectionLocation, Services, Topic> =>
-  markSourceToolkit({
+): SourceToolkit<Row, AdapterFailure, RejectionLocation, Services, Topic> => {
+  function delivery(
+    mutations: Chunk.NonEmptyChunk<SourceMutation<Row>>,
+    settlement?: SourceSettlement<AdapterFailure, Services>,
+  ): Effect.Effect<
+    SourceDelivery<Row, AdapterFailure, Services>,
+    SourceExecutionFailure<AdapterFailure>
+  >;
+  function delivery(
+    mutation: SourceMutation<Row>,
+    settlement: SourceSettlement<AdapterFailure, Services> | undefined,
+    transition: SourceApplicationTransition<Topic>,
+  ): Effect.Effect<
+    SourceDelivery<Row, AdapterFailure, Services>,
+    SourceExecutionFailure<AdapterFailure>
+  >;
+  function delivery(
+    mutationsOrMutation: Chunk.NonEmptyChunk<SourceMutation<Row>> | SourceMutation<Row>,
+    settlement?: SourceSettlement<AdapterFailure, Services>,
+    transition?: SourceApplicationTransition<Topic>,
+  ): Effect.Effect<
+    SourceDelivery<Row, AdapterFailure, Services>,
+    SourceExecutionFailure<AdapterFailure>
+  > {
+    const closedSettlement =
+      settlement === undefined
+        ? undefined
+        : (exit: SourceApplicationExit) => settlement(exit).pipe(Effect.provide(context));
+    if (transition === undefined && Chunk.isChunk(mutationsOrMutation)) {
+      return toolkit.delivery(mutationsOrMutation, closedSettlement);
+    }
+    if (transition !== undefined && !Chunk.isChunk(mutationsOrMutation)) {
+      return toolkit.delivery(mutationsOrMutation, closedSettlement, transition);
+    }
+    return Effect.die(
+      new TypeError("Closed Source Toolkit received an invalid transition delivery shape."),
+    );
+  }
+  return markSourceToolkit({
     topic: toolkit.topic,
     upsert: toolkit.upsert,
     decodeUpsert: (row) => decodeSourceToolkitUpsert(toolkit, row),
     delete: toolkit.delete,
-    delivery: (mutations, settlement) =>
-      toolkit.delivery(
-        mutations,
-        settlement === undefined
-          ? undefined
-          : (exit) => settlement(exit).pipe(Effect.provide(context)),
-      ),
+    delivery,
     reject: (input) => {
       const settlement = input.settlement;
       return toolkit.reject({
@@ -102,6 +148,7 @@ const closeToolkitEnvironment = <
       });
     },
   });
+};
 
 export type SourceAdapterServerLifecycle<
   AdapterFailure,
@@ -137,7 +184,12 @@ export type SourceAdapterServerLifecycle<
       Topic
     >,
   ) => Effect.Effect<
-    SourceAttempt<Row, AdapterFailure, SourceLifecycleLocation<Declaration>, Services>,
+    SourceAttempt<
+      Row,
+      AdapterFailure,
+      SourceLifecycleLocation<Declaration>,
+      Services | Scope.Scope
+    >,
     SourceExecutionFailure<AdapterFailure>,
     Services | Scope.Scope
   >;
@@ -154,7 +206,13 @@ export type SourceAdapterServerLifecycle<
     >,
   ) => Effect.Effect<SourceLifecycleMetrics<Declaration>, never, Services>;
   readonly retry: Schedule.Schedule<unknown, SourceTermination<AdapterFailure>, never, Services>;
-};
+} & (Declaration extends { readonly applicationState: "required" }
+  ? {
+      readonly applicationState: SourceApplicationStateRegistrationDescriptor;
+    }
+  : {
+      readonly applicationState?: never;
+    });
 
 export type SourceAdapterServerImplementations<Adapter, Services> =
   (AdapterMaterialized<Adapter> extends SourceLifecycleDeclarationAny
@@ -183,7 +241,7 @@ export type SourceAdapterServerImplementations<Adapter, Services> =
         });
 
 const closeLaneEnvironment = <Row extends object, AdapterFailure, RejectionLocation, Services>(
-  lane: SourceDeliveryLane<Row, AdapterFailure, RejectionLocation, Services>,
+  lane: SourceDeliveryLane<Row, AdapterFailure, RejectionLocation, Services | Scope.Scope>,
   context: Context.Context<Services>,
   scope: Scope.Scope,
 ): SourceDeliveryLane<Row, AdapterFailure, RejectionLocation> => ({
@@ -192,11 +250,21 @@ const closeLaneEnvironment = <Row extends object, AdapterFailure, RejectionLocat
     Stream.mapEffect((event) => {
       const closed = Result.try(() => {
         if (event._tag === "SourceDelivery") {
-          return isSourceDelivery(event)
-            ? makeSourceDelivery<Row, AdapterFailure>(event.mutations, (exit) =>
-                event
-                  .settle(exit)
-                  .pipe(Effect.provideService(Scope.Scope, scope), Effect.provide(context)),
+          if (!isSourceDelivery(event)) {
+            return undefined;
+          }
+          const settlement = (exit: SourceApplicationExit) =>
+            event
+              .settle(exit)
+              .pipe(Effect.provideService(Scope.Scope, scope), Effect.provide(context));
+          if (event.transition === undefined) {
+            return makeSourceDelivery<Row, AdapterFailure>(event.mutations, settlement);
+          }
+          return Chunk.size(event.mutations) === 1
+            ? makeSourceTransitionDelivery<Row, AdapterFailure>(
+                Chunk.headNonEmpty(event.mutations),
+                settlement,
+                event.transition,
               )
             : undefined;
         }
@@ -227,7 +295,7 @@ const closeLaneEnvironment = <Row extends object, AdapterFailure, RejectionLocat
 });
 
 const closeAttemptEnvironment = <Row extends object, AdapterFailure, RejectionLocation, Services>(
-  attempt: SourceAttempt<Row, AdapterFailure, RejectionLocation, Services>,
+  attempt: SourceAttempt<Row, AdapterFailure, RejectionLocation, Services | Scope.Scope>,
   context: Context.Context<Services>,
   scope: Scope.Scope,
 ): Effect.Effect<
@@ -301,6 +369,9 @@ const closeLifecycleEnvironment = <
     },
   );
   return {
+    ...(implementation.applicationState === undefined
+      ? {}
+      : { applicationState: implementation.applicationState }),
     acquire,
     metrics,
     ...(implementation.initialLaneIds === undefined
@@ -331,6 +402,26 @@ const validateImplementations = (
     throw new TypeError(
       "Source Adapter Server must implement exactly the declared Leased lifecycle.",
     );
+  }
+  for (const lifecycle of ["materialized", "leased"] as const) {
+    const declaration = Reflect.get(adapter, lifecycle);
+    const implementation = Reflect.get(implementations, lifecycle);
+    if (typeof implementation !== "object" || implementation === null) {
+      continue;
+    }
+    const registration = Reflect.get(implementation, "applicationState");
+    const required =
+      typeof declaration === "object" &&
+      declaration !== null &&
+      Reflect.get(declaration, "applicationState") === "required";
+    if (
+      (required && !isSourceApplicationStateRegistration(registration)) ||
+      (!required && registration !== undefined)
+    ) {
+      throw new TypeError(
+        `Source Adapter Server ${lifecycle} application state registration must exactly match its lifecycle declaration.`,
+      );
+    }
   }
 };
 
@@ -453,6 +544,365 @@ export type SourceAdapterServerDefinitionEntry<
   readonly definition: SourceAdapterServerDefinition<Adapter>;
 };
 
+export type SourceApplicationStateMaintenanceInput<State, Command> = {
+  readonly id: string;
+  readonly workId: string;
+  readonly isCurrent: (state: State) => boolean;
+  readonly onSuccess: Command;
+  readonly onFailure: (exit: SourceApplicationExit) => Command;
+  readonly onStale: Command;
+};
+
+export type SourceApplicationStateSweepInput<Topic extends string, State, Command> = {
+  readonly epochNowNanos: bigint;
+  readonly state: State;
+  readonly update: (command: Command) => void;
+  readonly operation: (
+    input: SourceApplicationStateMaintenanceInput<State, Command>,
+  ) => SourceMaintenanceOperation<Topic>;
+  readonly execute: (
+    operation: SourceMaintenanceOperation<Topic>,
+  ) => Effect.Effect<SourceMaintenanceResult>;
+};
+
+export type SourceApplicationStatePreparedTransition<Topic extends string = string> = {
+  readonly transition: SourceApplicationTransition<Topic>;
+  readonly release: Effect.Effect<void>;
+};
+
+const SourceApplicationStateModuleStateTypeId: unique symbol = Symbol.for(
+  "@effect-view-server/source-adapter/ApplicationStateModuleState",
+);
+
+const preserveSourceApplicationState = <State>(state: State): State => state;
+
+export type SourceApplicationStateModule<
+  Topic extends string,
+  State,
+  Command,
+  Metrics,
+  SweepOutcome,
+> = {
+  readonly [SourceApplicationStateModuleStateTypeId]: (state: State) => State;
+  readonly prepare: (
+    command: Command,
+  ) => Effect.Effect<SourceApplicationStatePreparedTransition<Topic>, never, Scope.Scope>;
+  readonly metrics: () => Metrics;
+  readonly runDueSweep: (
+    epochNowNanos: bigint,
+    execute: (
+      operation: SourceMaintenanceOperation<Topic>,
+    ) => Effect.Effect<SourceMaintenanceResult>,
+  ) => Effect.Effect<SweepOutcome>;
+};
+
+type InternalSourceApplicationStateModule<State, Command, Metrics, SweepOutcome> = {
+  readonly topic: string;
+  readonly lifetimeIdentity: object;
+  readonly [SourceApplicationStateModuleStateTypeId]: (state: State) => State;
+  readonly prepare: <const Topic extends string>(
+    topic: Topic,
+    command: Command,
+  ) => Effect.Effect<SourceApplicationStatePreparedTransition<Topic>, never, Scope.Scope>;
+  readonly metrics: () => Metrics;
+  readonly runDueSweep: <const Topic extends string>(
+    topic: Topic,
+    epochNowNanos: bigint,
+    execute: (
+      operation: SourceMaintenanceOperation<Topic>,
+    ) => Effect.Effect<SourceMaintenanceResult>,
+  ) => Effect.Effect<SweepOutcome>;
+};
+
+const makeSourceApplicationStateModule = <State, Command, Metrics, SweepOutcome>(input: {
+  readonly topic: string;
+  readonly initialState: State;
+  readonly reduce: (state: State, command: Command) => State;
+  readonly cancelledMaintenanceWorkIds: (state: State, command: Command) => ReadonlyArray<string>;
+  readonly acquireTransition: (
+    state: State,
+    command: Command,
+  ) => Effect.Effect<() => void, never, Scope.Scope>;
+  readonly metrics: (state: State) => Metrics;
+  readonly runDueSweep: <Topic extends string>(
+    input: SourceApplicationStateSweepInput<Topic, State, Command>,
+  ) => Effect.Effect<SweepOutcome>;
+}): InternalSourceApplicationStateModule<State, Command, Metrics, SweepOutcome> => {
+  let state = input.initialState;
+  const lifetimeIdentity = Object.freeze({});
+  const dispatch = (command: Command): void => {
+    const next = input.reduce(state, command);
+    if (
+      Effect.isEffect(next) ||
+      (typeof next === "object" && next !== null && "then" in next) ||
+      (typeof next === "object" && next !== null && (next === state || !Object.isFrozen(next)))
+    ) {
+      throw new TypeError(
+        "Source Application State reducer must return a new immutable state synchronously.",
+      );
+    }
+    state = next;
+  };
+  const operation = <const Topic extends string>(
+    topic: Topic,
+    maintenance: SourceApplicationStateMaintenanceInput<State, Command>,
+  ): SourceMaintenanceOperation<Topic> =>
+    makeSourceMaintenanceOperation({
+      topic,
+      id: maintenance.id,
+      workId: maintenance.workId,
+      lifetimeIdentity,
+      isCurrent: () => maintenance.isCurrent(state),
+      onSuccess: () => dispatch(maintenance.onSuccess),
+      onFailure: (exit) => dispatch(maintenance.onFailure(exit)),
+      onStale: () => dispatch(maintenance.onStale),
+    });
+  return Object.freeze({
+    topic: input.topic,
+    lifetimeIdentity,
+    [SourceApplicationStateModuleStateTypeId]: preserveSourceApplicationState<State>,
+    prepare: <const Topic extends string>(topic: Topic, command: Command) =>
+      Effect.suspend(() => {
+        const cancelledMaintenanceWorkIds = Object.freeze(
+          Array.from(input.cancelledMaintenanceWorkIds(state, command)),
+        );
+        return input.acquireTransition(state, command).pipe(
+          Effect.map((release) => {
+            const transition = makeSourceApplicationTransition(
+              topic,
+              () => {
+                dispatch(command);
+                release();
+              },
+              cancelledMaintenanceWorkIds,
+              lifetimeIdentity,
+            );
+            return {
+              transition,
+              release: Effect.sync(release),
+            };
+          }),
+        );
+      }),
+    metrics: () => input.metrics(state),
+    runDueSweep: <const Topic extends string>(
+      topic: Topic,
+      epochNowNanos: bigint,
+      execute: (
+        operation: SourceMaintenanceOperation<Topic>,
+      ) => Effect.Effect<SourceMaintenanceResult>,
+    ) =>
+      input.runDueSweep({
+        epochNowNanos,
+        state,
+        update: dispatch,
+        operation: (maintenance) => operation(topic, maintenance),
+        execute,
+      }),
+  });
+};
+
+const bindSourceApplicationStateModule = <
+  const Topic extends string,
+  State,
+  Command,
+  Metrics,
+  SweepOutcome,
+>(
+  module: InternalSourceApplicationStateModule<State, Command, Metrics, SweepOutcome>,
+  topic: Topic,
+): SourceApplicationStateModule<Topic, State, Command, Metrics, SweepOutcome> => {
+  if (module.topic !== topic) {
+    throw new TypeError(
+      `Source Application State is bound to topic "${module.topic}", not "${topic}".`,
+    );
+  }
+  return Object.freeze({
+    [SourceApplicationStateModuleStateTypeId]: module[SourceApplicationStateModuleStateTypeId],
+    prepare: (command) => module.prepare(topic, command),
+    metrics: module.metrics,
+    runDueSweep: (epochNowNanos, execute) => module.runDueSweep(topic, epochNowNanos, execute),
+  });
+};
+
+const hasExactRegistrationKeys = (
+  value: object,
+  requiredKeys: ReadonlyArray<string>,
+  optionalKeys: ReadonlyArray<string>,
+): boolean => {
+  const keys = Result.try(() => Reflect.ownKeys(value));
+  const allowedKeys = [...requiredKeys, ...optionalKeys];
+  if (
+    Result.isFailure(keys) ||
+    keys.success.length < requiredKeys.length ||
+    keys.success.length > allowedKeys.length ||
+    keys.success.some((key) => typeof key !== "string" || !allowedKeys.includes(key)) ||
+    requiredKeys.some((key) => !keys.success.includes(key))
+  ) {
+    return false;
+  }
+  return keys.success.every((key) => {
+    const descriptor = Result.try(() => Object.getOwnPropertyDescriptor(value, key));
+    return (
+      Result.isSuccess(descriptor) &&
+      descriptor.success !== undefined &&
+      descriptor.success.enumerable === true &&
+      "value" in descriptor.success
+    );
+  });
+};
+
+const hasInspectableSynchronousFunction = (value: unknown): boolean => {
+  if (typeof value !== "function") {
+    return false;
+  }
+  const constructor = Result.try(() => Reflect.get(value, "constructor"));
+  if (Result.isFailure(constructor)) {
+    return false;
+  }
+  const constructorName = Result.try(() => Reflect.get(constructor.success, "name"));
+  return Result.isSuccess(constructorName) && constructorName.success !== "AsyncFunction";
+};
+
+export type SourceApplicationStateRegistration<State, Command, Metrics, SweepOutcome> =
+  SourceApplicationStateRegistrationDescriptor<
+    <const Topic extends string>(
+      lifetimeScope: Scope.Scope,
+      topic: Topic,
+    ) => SourceApplicationStateModule<Topic, State, Command, Metrics, SweepOutcome>
+  >;
+
+type SourceSynchronousValue<Value> = Value &
+  (Value extends Effect.Effect<unknown, unknown, unknown>
+    ? never
+    : Value extends PromiseLike<unknown>
+      ? never
+      : unknown);
+
+type SourceAsynchronousValue = Effect.Effect<unknown, unknown, unknown> | PromiseLike<unknown>;
+
+type RejectSourceAsynchronousValue<Value> = [Extract<Value, SourceAsynchronousValue>] extends [
+  never,
+]
+  ? unknown
+  : never;
+
+export const makeSourceApplicationStateRegistration = <State, Command, Metrics, SweepOutcome>(
+  input: {
+    readonly sweepIntervalNanos: bigint;
+    readonly initialState: (
+      input: SourceApplicationStateRegistrationBindingInput,
+    ) => SourceSynchronousValue<State>;
+    readonly reduce: (state: State, command: Command) => SourceSynchronousValue<State>;
+    readonly cancelledMaintenanceWorkIds?: (
+      state: State,
+      command: Command,
+    ) => ReadonlyArray<string>;
+    readonly acquireTransition?: (
+      state: State,
+      command: Command,
+    ) => Effect.Effect<() => void, never, Scope.Scope>;
+    readonly metrics: (state: State) => SourceSynchronousValue<Metrics>;
+    readonly runDueSweep: <Topic extends string>(
+      input: SourceApplicationStateSweepInput<Topic, State, Command>,
+    ) => Effect.Effect<SweepOutcome>;
+  } & RejectSourceAsynchronousValue<State> &
+    RejectSourceAsynchronousValue<Metrics>,
+): SourceApplicationStateRegistration<State, Command, Metrics, SweepOutcome> => {
+  if (
+    !hasExactRegistrationKeys(
+      input,
+      ["sweepIntervalNanos", "initialState", "reduce", "metrics", "runDueSweep"],
+      ["cancelledMaintenanceWorkIds", "acquireTransition"],
+    ) ||
+    typeof input.sweepIntervalNanos !== "bigint" ||
+    input.sweepIntervalNanos <= 0n ||
+    !hasInspectableSynchronousFunction(input.initialState) ||
+    !hasInspectableSynchronousFunction(input.reduce) ||
+    (input.cancelledMaintenanceWorkIds !== undefined &&
+      !hasInspectableSynchronousFunction(input.cancelledMaintenanceWorkIds)) ||
+    (input.acquireTransition !== undefined &&
+      !hasInspectableSynchronousFunction(input.acquireTransition)) ||
+    !hasInspectableSynchronousFunction(input.metrics) ||
+    !hasInspectableSynchronousFunction(input.runDueSweep)
+  ) {
+    throw new TypeError(
+      "Source Application State registration requires exact synchronous state capabilities and a positive finite sweep interval.",
+    );
+  }
+  const modules = new WeakMap<
+    Scope.Scope,
+    InternalSourceApplicationStateModule<State, Command, Metrics, SweepOutcome>
+  >();
+  return makeNominalSourceApplicationStateRegistration({
+    bind: (binding) => {
+      if (modules.has(binding.lifetimeScope)) {
+        throw new TypeError(
+          "Source Application State registration cannot bind one logical lifetime twice.",
+        );
+      }
+      const initialState = input.initialState(binding);
+      if (
+        typeof initialState === "object" &&
+        initialState !== null &&
+        !Object.isFrozen(initialState)
+      ) {
+        throw new TypeError("Source Application State initial state must be immutable.");
+      }
+      const initialMetrics = input.metrics(initialState);
+      if (
+        Effect.isEffect(initialMetrics) ||
+        (typeof initialMetrics === "object" && initialMetrics !== null && "then" in initialMetrics)
+      ) {
+        throw new TypeError("Source Application State metrics must return a synchronous snapshot.");
+      }
+      modules.set(
+        binding.lifetimeScope,
+        makeSourceApplicationStateModule<State, Command, Metrics, SweepOutcome>({
+          topic: binding.topic,
+          initialState,
+          reduce: input.reduce,
+          cancelledMaintenanceWorkIds: input.cancelledMaintenanceWorkIds ?? (() => []),
+          acquireTransition: input.acquireTransition ?? (() => Effect.succeed(() => undefined)),
+          metrics: input.metrics,
+          runDueSweep: input.runDueSweep,
+        }),
+      );
+    },
+    forLifetime: <const Topic extends string>(lifetimeScope: Scope.Scope, topic: Topic) => {
+      const module = modules.get(lifetimeScope);
+      if (module === undefined) {
+        throw new TypeError(
+          "Source Application State registration is not bound to this logical lifetime.",
+        );
+      }
+      return bindSourceApplicationStateModule(module, topic);
+    },
+    lifetimeIdentity: (lifetimeScope) => {
+      const module = modules.get(lifetimeScope);
+      if (module === undefined) {
+        throw new TypeError(
+          "Source Application State registration is not bound to this logical lifetime.",
+        );
+      }
+      return module.lifetimeIdentity;
+    },
+    unbind: (lifetimeScope) => {
+      modules.delete(lifetimeScope);
+    },
+    sweepIntervalNanos: input.sweepIntervalNanos,
+    runDueSweep: (lifetimeScope, epochNowNanos, execute) => {
+      const module = modules.get(lifetimeScope);
+      if (module === undefined) {
+        throw new TypeError(
+          "Source Application State registration is not bound to this logical lifetime.",
+        );
+      }
+      return module.runDueSweep(module.topic, epochNowNanos, execute);
+    },
+  });
+};
+
 const sourceDefinitionUsesAdapter = <const Adapter extends SourceDefinitionAny["adapter"]>(
   value: unknown,
   adapter: Adapter,
@@ -488,6 +938,7 @@ export const collectSourceAdapterDefinitions = <
 };
 
 export const SourceAdapterServer = {
+  applicationState: makeSourceApplicationStateRegistration,
   attempt: makeSourceAttempt,
   definitions: collectSourceAdapterDefinitions,
   lane: makeSourceDeliveryLane,

@@ -964,6 +964,9 @@ importers:
       '@effect-view-server/config':
         specifier: workspace:*
         version: link:../config
+      '@effect-view-server/effect-utils':
+        specifier: workspace:*
+        version: link:../effect-utils
       '@effect-view-server/grpc':
         specifier: workspace:*
         version: link:../grpc
@@ -1120,6 +1123,9 @@ importers:
       '@effect-view-server/config':
         specifier: workspace:*
         version: link:../config
+      '@effect-view-server/runtime':
+        specifier: workspace:*
+        version: link:../runtime
       '@effect-view-server/runtime-core':
         specifier: workspace:*
         version: link:../runtime-core

@@ -5,11 +5,13 @@ import {
   SourceAdapter,
   type SourceDeliveryLane,
   type SourceExecutionFailure,
+  type SourceRuntimeFailure,
   type SourceStatus,
 } from "@effect-view-server/source-adapter";
 import {
   decodeSourceToolkitUpsert,
   makeRuntimeSourceFailure,
+  makeSourceApplicationTransition,
   makeSourceDelivery,
 } from "@effect-view-server/source-adapter/internal";
 import {
@@ -1338,23 +1340,209 @@ describe("Runtime Core adversarial Source runtime", () => {
         _tag: "Degraded",
         attempt: 1n,
         degradedAtNanos: 0n,
+        reasons: [
+          {
+            _tag: "SourceItemRejection",
+            latestRejection: {
+              failure: {
+                _tag: "RuntimeFailure",
+                failure: {
+                  _tag: "InvalidSourceDelivery",
+                  message: "valid runtime rejection",
+                },
+              },
+              location: {
+                lane: "fixture",
+                offset: 2n,
+              },
+              rejectedAtNanos: 2n,
+            },
+          },
+        ],
+      });
+      expect(yield* Deferred.await(runtimeFailureSettlement)).toStrictEqual(Exit.void);
+      yield* runtimeFailureRuntime.close;
+    }),
+  );
+
+  it.effect("keeps degradation sticky but hidden through retry, exhaustion, and stopping", () =>
+    Effect.gen(function* () {
+      const fixture = yield* SourceFixture.make(Row);
+      const config = defineViewServerConfig({
+        topics: {
+          rows: {
+            schema: Row,
+            source: fixture.materializedSource(
+              { label: "sticky-degradation" },
+              Schedule.spaced("2 seconds").pipe(Schedule.upTo({ times: 1 })),
+            ),
+          },
+        },
+      });
+      const context = yield* Layer.build(fixture.layer);
+      const service = Context.get(context, fixture.adapter.runtimeService);
+      const materialized = materializedLifecycle(service);
+      const failFirstAttempt = yield* Deferred.make<void>();
+      const secondAcquisitionStarted = yield* Deferred.make<void>();
+      const releaseSecondAcquisition = yield* Deferred.make<void>();
+      const failSecondAttempt = yield* Deferred.make<void>();
+      const streamFailure = yield* fixture.adapter
+        .failure(SourceFixture.failure("sticky degradation retry", "stream"))
+        .pipe(Effect.orDie);
+      let acquisitions = 0;
+      const acquire: typeof materialized.acquire = (input) =>
+        Effect.gen(function* () {
+          acquisitions += 1;
+          if (acquisitions === 2) {
+            yield* Deferred.succeed(secondAcquisitionStarted, undefined);
+            yield* Deferred.await(releaseSecondAcquisition);
+            return SourceAdapterServer.attempt([
+              SourceAdapterServer.lane({
+                id: "sticky-degradation",
+                events: Stream.fromEffect(
+                  Deferred.await(failSecondAttempt).pipe(
+                    Effect.andThen(Effect.fail(streamFailure)),
+                  ),
+                ),
+              }),
+            ]);
+          }
+          const rejection = yield* input.toolkit.reject({
+            failure: makeRuntimeSourceFailure({
+              _tag: "InvalidSourceDelivery",
+              message: "sticky degradation rejection",
+            }),
+            location: {
+              lane: "sticky-degradation",
+              offset: 1n,
+            },
+            rejectedAtNanos: 1n,
+            settlement: () => Effect.void,
+          });
+          return SourceAdapterServer.attempt([
+            SourceAdapterServer.lane({
+              id: "sticky-degradation",
+              events: Stream.make(rejection).pipe(
+                Stream.concat(
+                  Stream.fromEffect(
+                    Deferred.await(failFirstAttempt).pipe(
+                      Effect.andThen(Effect.fail(streamFailure)),
+                    ),
+                  ),
+                ),
+              ),
+            }),
+          ]);
+        });
+      const lifecycle = new Proxy(materialized, {
+        get: (target, property, receiver) =>
+          property === "acquire" ? acquire : Reflect.get(target, property, receiver),
+      });
+      const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(
+        Effect.provideService(fixture.adapter.runtimeService, {
+          ...service,
+          materialized: lifecycle,
+        }),
+      );
+      const healthWith = (tag: SourceStatus<unknown, unknown>["_tag"]) =>
+        Effect.acquireUseRelease(
+          runtime.liveClient.subscribeSourceHealth({ topic: "rows" }),
+          (diagnostics) =>
+            diagnostics.events.pipe(
+              Stream.filter((health) => health.status._tag === tag),
+              Stream.take(1),
+              Stream.runHead,
+              Effect.map(
+                Option.getOrThrowWith(
+                  () => new Error(`Source diagnostics ended before ${tag} was observed.`),
+                ),
+              ),
+            ),
+          (diagnostics) => diagnostics.close().pipe(Effect.ignore),
+        );
+      const rejectionReason = {
+        _tag: "SourceItemRejection",
         latestRejection: {
           failure: {
             _tag: "RuntimeFailure",
             failure: {
               _tag: "InvalidSourceDelivery",
-              message: "valid runtime rejection",
+              message: "sticky degradation rejection",
             },
           },
           location: {
-            lane: "fixture",
-            offset: 2n,
+            lane: "sticky-degradation",
+            offset: 1n,
           },
-          rejectedAtNanos: 2n,
+          rejectedAtNanos: 1n,
         },
+      } as const;
+      const termination = {
+        _tag: "Failed",
+        failure: {
+          _tag: "AdapterFailure",
+          failure: SourceFixture.failure("sticky degradation retry", "stream"),
+        },
+      } as const;
+
+      expect((yield* healthWith("Degraded")).status).toStrictEqual({
+        _tag: "Degraded",
+        attempt: 1n,
+        degradedAtNanos: 0n,
+        reasons: [rejectionReason],
       });
-      expect(yield* Deferred.await(runtimeFailureSettlement)).toStrictEqual(Exit.void);
-      yield* runtimeFailureRuntime.close;
+      yield* Deferred.succeed(failFirstAttempt, undefined);
+      expect((yield* healthWith("WaitingToRetry")).status).toStrictEqual({
+        _tag: "WaitingToRetry",
+        nextAttempt: 2n,
+        termination,
+        retryAtNanos: 2_000_000_000n,
+      });
+
+      const reacquiringFiber = yield* healthWith("Reacquiring").pipe(Effect.forkChild);
+      yield* TestClock.adjust("2 seconds");
+      yield* Deferred.await(secondAcquisitionStarted);
+      expect((yield* Fiber.join(reacquiringFiber)).status).toStrictEqual({
+        _tag: "Reacquiring",
+        previousTermination: termination,
+        attempt: 2n,
+        startedAtNanos: 2_000_000_000n,
+      });
+      yield* Deferred.succeed(releaseSecondAcquisition, undefined);
+      expect((yield* healthWith("Degraded")).status).toStrictEqual({
+        _tag: "Degraded",
+        attempt: 2n,
+        degradedAtNanos: 0n,
+        reasons: [rejectionReason],
+      });
+
+      yield* Deferred.succeed(failSecondAttempt, undefined);
+      expect((yield* healthWith("Exhausted")).status).toStrictEqual({
+        _tag: "Exhausted",
+        exhaustion: {
+          _tag: "RetryExhausted",
+          lastTermination: termination,
+        },
+        exhaustedAtNanos: 2_000_000_000n,
+      });
+      const stoppingDiagnostics = yield* runtime.liveClient.subscribeSourceHealth({
+        topic: "rows",
+      });
+      const stoppingFiber = yield* stoppingDiagnostics.events.pipe(
+        Stream.filter((health) => health.status._tag === "Stopping"),
+        Stream.take(1),
+        Stream.runHead,
+        Effect.map(Option.getOrThrow),
+        Effect.forkChild({ startImmediately: true }),
+      );
+      yield* runtime.close;
+      expect((yield* Fiber.join(stoppingFiber)).status).toStrictEqual({
+        _tag: "Stopping",
+        reason: "runtime-shutdown",
+        stoppingAtNanos: 2_000_000_000n,
+      });
+      yield* stoppingDiagnostics.close().pipe(Effect.ignore);
+      expect(acquisitions).toBe(2);
     }),
   );
 
@@ -1499,6 +1687,39 @@ describe("Runtime Core adversarial Source runtime", () => {
             }),
           ]),
         );
+      const invalidTransitionDelivery: typeof materialized.acquire = (input) =>
+        invokeHostile(input.toolkit.delivery, input.toolkit, [
+          {},
+          undefined,
+          makeSourceApplicationTransition("rows", () => undefined, [], Object.freeze({})),
+        ]).pipe(Effect.andThen(Effect.die(new Error("Invalid transition delivery accepted."))));
+      const forgedTransitionBatch: typeof materialized.acquire = (input) =>
+        Effect.gen(function* () {
+          const mutation = yield* decodeSourceToolkitUpsert(input.toolkit, {
+            id: "forged-transition-batch",
+            region: "eu",
+            value: "valid",
+          });
+          const delivery = yield* input.toolkit.delivery(
+            mutation,
+            undefined,
+            makeSourceApplicationTransition(
+              input.toolkit.topic,
+              () => undefined,
+              [],
+              Object.freeze({}),
+            ),
+          );
+          const forged = nominalClone(delivery, {
+            mutations: Chunk.make(mutation, mutation),
+          });
+          return SourceAdapterServer.attempt([
+            SourceAdapterServer.lane({
+              id: "forged-transition-batch",
+              events: Stream.make(forged),
+            }),
+          ]);
+        });
       const invalidSettlementReturn: typeof materialized.acquire = (input) =>
         Effect.gen(function* () {
           const mutation = yield* decodeSourceToolkitUpsert(input.toolkit, {
@@ -1632,7 +1853,14 @@ describe("Runtime Core adversarial Source runtime", () => {
 
       const expectInvalidDefinition = Effect.fn(
         "RuntimeCore.sourceAdversarial.expectInvalidDefinition",
-      )(function* (acquire: typeof materialized.acquire, message: string) {
+      )(function* (
+        acquire: typeof materialized.acquire,
+        message: string,
+        failure: SourceRuntimeFailure = {
+          _tag: "InvalidSourceDefinition",
+          message,
+        },
+      ) {
         const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(
           Effect.provideService(fixture.adapter.runtimeService, {
             ...service,
@@ -1649,10 +1877,7 @@ describe("Runtime Core adversarial Source runtime", () => {
           _tag: "Failed",
           failure: {
             _tag: "RuntimeFailure",
-            failure: {
-              _tag: "InvalidSourceDefinition",
-              message,
-            },
+            failure,
           },
         });
         yield* runtime.close;
@@ -1663,7 +1888,15 @@ describe("Runtime Core adversarial Source runtime", () => {
       );
       yield* expectInvalidDefinition(
         invalidDeliverySettlement,
-        "rows: Source Delivery requires one or more nominal Source Mutations.",
+        "rows: Source Delivery settlement must be an Effect function.",
+      );
+      yield* expectInvalidDefinition(
+        invalidTransitionDelivery,
+        "rows: Source Application Transition requires exactly one nominal Source Mutation.",
+      );
+      yield* expectInvalidDefinition(
+        forgedTransitionBatch,
+        "rows: Source Application Transition requires exactly one nominal Source Mutation.",
       );
       yield* expectInvalidDefinition(
         invalidRejectionSettlement,
@@ -1696,10 +1929,18 @@ describe("Runtime Core adversarial Source runtime", () => {
       yield* expectInvalidDefinition(
         throwingSettlement,
         "rows: Source settlement must return an Effect without throwing.",
+        {
+          _tag: "InvalidSourceSettlement",
+          message: "Source Settlement callback threw before returning an Effect",
+        },
       );
       yield* expectInvalidDefinition(
         hostileSettlementReturn,
         "rows: Source settlement must return an Effect without throwing.",
+        {
+          _tag: "InvalidSourceSettlement",
+          message: "Source Settlement callback threw before returning an Effect",
+        },
       );
       yield* expectInvalidDefinition(
         negativeForgedRejection,

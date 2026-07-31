@@ -1,20 +1,30 @@
 export {
   decodeSourceToolkitUpsert,
   isSourceAdapterHandle,
+  isSourceApplicationStateRegistration,
   isSourceAttempt,
+  isSourceApplicationTransition,
   isSourceDefinition,
   isSourceDelivery,
   isSourceItemRejection,
   isSourceMutation,
+  isSourceMaintenanceOperation,
   isSourceToolkit,
   validateSourceDefinition,
   makeRuntimeSourceFailure,
   makeSourceAttempt,
+  makeSourceApplicationStateRegistration,
+  makeSourceApplicationTransition,
   makeSourceDelete,
   makeSourceDelivery,
+  makeSourceTransitionDelivery,
   makeSourceItemRejection,
+  makeSourceMaintenanceOperation,
   makeSourceUpsert,
   markSourceToolkit,
+  resolveSourceApplicationTransition,
+  resolveSourceApplicationStateRegistration,
+  resolveSourceMaintenanceOperation,
   sourceModelInternals,
 } from "./model";
 export type {
@@ -22,4 +32,5 @@ export type {
   SourceAdapterServiceIdentifier,
   SourceRuntimeLifecycle,
 } from "./model";
+export { currentEpochNanos, epochNanosFromWallMillis } from "./epoch-clock";
 export * from "./health";

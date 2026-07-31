@@ -9,13 +9,20 @@ import {
   type SourceAdapterConformanceTransportObservation,
   type SourceAdapterPackageInspectionOptions,
 } from "@effect-view-server/source-adapter-conformance-host";
+import {
+  makeSourceApplicationTransition,
+  makeSourceTransitionDelivery,
+  resolveSourceApplicationTransition,
+} from "@effect-view-server/source-adapter/internal";
 import type { SourceApplicationExit } from "effect-view-server/source-adapter";
 import {
+  Chunk,
   Config,
   Context,
   Deferred,
   Effect,
   Layer,
+  Option,
   Queue,
   Schedule,
   Schema,
@@ -25,6 +32,7 @@ import {
 import {
   KafkaSourceAdapter,
   kafka,
+  kafkaRowId,
   type KafkaAdapterFailure,
   type KafkaMaterializedMetrics,
   type KafkaRegionMetrics,
@@ -119,6 +127,28 @@ const emptyRegionMetrics = (region: string): KafkaRegionMetrics => ({
   closeFailures: 0n,
 });
 
+const foreverRetentionMetrics = (cleanupPolicy: "delete" | "compact") => ({
+  declaredCleanupPolicy: cleanupPolicy,
+  observedCleanupPolicy: cleanupPolicy,
+  configuredRetention: { _tag: "Forever" as const },
+  resolvedRetention: { _tag: "Forever" as const },
+  trackedRows: 0,
+  dueBacklog: 0,
+  expiredRows: 0n,
+  authoritativeExpiredDeletes: 0n,
+  failedWorkBacklog: 0,
+  expirationRetryFailures: 0n,
+  latestExpirationFailure: null,
+  lastSweepAtNanos: null,
+  lastSweepDurationNanos: null,
+  sweepIntervalNanos: 900_000_000_000n,
+});
+
+const emptyMaterializedRegionMetrics = (region: string) => ({
+  ...emptyRegionMetrics(region),
+  retention: foreverRetentionMetrics("compact"),
+});
+
 const recordMetadata = (
   target: SourceAdapterConformanceTarget,
   offset: bigint,
@@ -173,6 +203,7 @@ const makeKafkaConformanceDriver = Effect.fn("KafkaSourceAdapter.conformance.dri
   let finalizerBlock: Deferred.Deferred<void> | undefined;
   let finalizerStarted = false;
   let metricActiveGroupId: unknown = "conformance:rows";
+  let transitionDefect: Error | undefined;
   const activity = yield* SubscriptionRef.make(0n);
   const observe = (): SourceAdapterConformanceTransportObservation => ({
     acquisitions: counts.acquisitions,
@@ -230,6 +261,29 @@ const makeKafkaConformanceDriver = Effect.fn("KafkaSourceAdapter.conformance.dri
   });
 
   const productionLayer = makeKafkaServerLayer({
+    brokerContracts: [
+      {
+        viewServerTopic: "rows",
+        sourceTopic: "conformance",
+        region: "primary",
+        cleanupPolicy: "compact",
+        retentionPolicy: { _tag: "Forever" },
+        observedCleanupPolicy: "compact",
+        observedRetentionMs: -1n,
+        resolvedRetention: { _tag: "Forever" },
+      },
+      {
+        viewServerTopic: "rows",
+        sourceTopic: "conformance",
+        region: "sibling",
+        cleanupPolicy: "compact",
+        retentionPolicy: { _tag: "Forever" },
+        observedCleanupPolicy: "compact",
+        observedRetentionMs: -1n,
+        resolvedRetention: { _tag: "Forever" },
+      },
+    ],
+    retentionSweepIntervalNanos: 900_000_000_000n,
     consumerGroupPrefix: "conformance",
     regions: new Map([
       ["primary", region("primary")],
@@ -254,6 +308,12 @@ const makeKafkaConformanceDriver = Effect.fn("KafkaSourceAdapter.conformance.dri
         adapter: service.adapter,
         leased: service.leased,
         materialized: {
+          ...(materialized.applicationState === undefined
+            ? {}
+            : { applicationState: materialized.applicationState }),
+          ...(materialized.initialLaneIds === undefined
+            ? {}
+            : { initialLaneIds: materialized.initialLaneIds }),
           acquire: (input) =>
             Effect.gen(function* () {
               const attempt = yield* materialized.acquire(input);
@@ -288,6 +348,34 @@ const makeKafkaConformanceDriver = Effect.fn("KafkaSourceAdapter.conformance.dri
                   "events",
                   lane.events.pipe(
                     Stream.mapEffect((event) => {
+                      if (
+                        transitionDefect !== undefined &&
+                        event._tag === "SourceDelivery" &&
+                        event.transition !== undefined
+                      ) {
+                        const defect = transitionDefect;
+                        transitionDefect = undefined;
+                        const transition = Option.getOrThrow(
+                          Option.fromUndefinedOr(
+                            resolveSourceApplicationTransition(event.transition),
+                          ),
+                        );
+                        return Effect.succeed(
+                          makeSourceTransitionDelivery(
+                            Chunk.headNonEmpty(event.mutations),
+                            event.settle,
+                            makeSourceApplicationTransition(
+                              transition.topic,
+                              () => {
+                                transition.apply();
+                                throw defect;
+                              },
+                              transition.cancelledMaintenanceWorkIds,
+                              transition.lifetimeIdentity,
+                            ),
+                          ),
+                        );
+                      }
                       let corruptionApplied = true;
                       if (event._tag === "SourceDelivery") {
                         for (const mutation of event.mutations) {
@@ -440,10 +528,18 @@ const makeKafkaConformanceDriver = Effect.fn("KafkaSourceAdapter.conformance.dri
       );
     }
     if (input._tag === "CorruptLaterMutation") {
-      corruptions.set(`${input.target.lane}:${input.laterRow.id}`, {
-        field: input.field,
-        value: input.value,
-      });
+      corruptions.set(
+        kafkaRowId({
+          cleanupPolicy: "compact",
+          region: input.target.lane,
+          partition: input.target.lane === "primary" ? 0 : 1,
+          serializedKeyBytes: textEncoder.encode(input.laterRow.id),
+        }),
+        {
+          field: input.field,
+          value: input.value,
+        },
+      );
       return offerMutation(
         input.target,
         {
@@ -462,6 +558,17 @@ const makeKafkaConformanceDriver = Effect.fn("KafkaSourceAdapter.conformance.dri
             input.settle,
           ),
         ),
+      );
+    }
+    if (input._tag === "TransitionDefect") {
+      transitionDefect = new Error("conformance transition defect");
+      return offerMutation(
+        input.target,
+        {
+          _tag: "Upsert",
+          row: input.row,
+        },
+        input.settle,
       );
     }
     if (input._tag === "Reject") {
@@ -526,11 +633,12 @@ const makeKafkaConformanceDriver = Effect.fn("KafkaSourceAdapter.conformance.dri
   const makeDefinition = (retry?: KafkaSourceRetryPolicy<"primary" | "sibling">) =>
     kafka.source(
       {
+        cleanupPolicy: "compact",
+        retentionPolicy: "Infinity",
         topic: "conformance",
         regions: ["primary", "sibling"],
-        key: kafka.string(),
+        key: kafka.compactionKey.string(),
         value: kafka.json(() => Schema.toCodecJson(ConformanceWireRow)),
-        localRowKey: ({ key }) => key,
         map: ({ value }) => ({
           region: value.region,
           value: value.value,
@@ -555,7 +663,13 @@ const makeKafkaConformanceDriver = Effect.fn("KafkaSourceAdapter.conformance.dri
         rowId: (
           target: Extract<SourceAdapterConformanceTarget, { readonly _tag: "Materialized" }>,
           localId: string,
-        ) => `${target.lane}:${localId}`,
+        ) =>
+          kafkaRowId({
+            cleanupPolicy: "compact",
+            region: target.lane,
+            partition: target.lane === "primary" ? 0 : 1,
+            serializedKeyBytes: textEncoder.encode(localId),
+          }),
         updatedMetrics: {
           activeGroupId: "conformance-updated:rows",
           start: {
@@ -564,7 +678,10 @@ const makeKafkaConformanceDriver = Effect.fn("KafkaSourceAdapter.conformance.dri
               mode: "earliest",
             },
           },
-          regions: [emptyRegionMetrics("primary"), emptyRegionMetrics("sibling")],
+          regions: [
+            emptyMaterializedRegionMetrics("primary"),
+            emptyMaterializedRegionMetrics("sibling"),
+          ],
         },
       },
       leased: undefined,
@@ -600,24 +717,29 @@ const member = (value: unknown, key: string, label: string): unknown => {
   return Reflect.get(value, key);
 };
 
-const builtDefinition = (contractModule: object): unknown => {
+const definitionInput = (contractModule: object): unknown => {
   const builtKafka = member(contractModule, "kafka", "Kafka contract module");
   const stringCodec = callable(member(builtKafka, "string", "Kafka helper"), "kafka.string");
+  return {
+    cleanupPolicy: "delete",
+    retentionPolicy: "Infinity",
+    topic: "conformance",
+    regions: ["primary", "sibling"],
+    key: Reflect.apply(stringCodec, undefined, []),
+    value: Reflect.apply(stringCodec, undefined, []),
+    localRowKey: (input: { readonly key: string }) => input.key,
+    map: (input: { readonly region: string; readonly value: string }) => ({
+      region: input.region,
+      value: input.value,
+    }),
+    startFrom: "earliest",
+  };
+};
+
+const builtDefinition = (contractModule: object): unknown => {
+  const builtKafka = member(contractModule, "kafka", "Kafka contract module");
   const source = callable(member(builtKafka, "source", "Kafka helper"), "kafka.source");
-  return Reflect.apply(source, undefined, [
-    {
-      topic: "conformance",
-      regions: ["primary", "sibling"],
-      key: Reflect.apply(stringCodec, undefined, []),
-      value: Reflect.apply(stringCodec, undefined, []),
-      localRowKey: (input: { readonly key: string }) => input.key,
-      map: (input: { readonly region: string; readonly value: string }) => ({
-        region: input.region,
-        value: input.value,
-      }),
-      startFrom: "earliest",
-    },
-  ]);
+  return Reflect.apply(source, undefined, [definitionInput(contractModule)]);
 };
 
 const packageRoot = fileURLToPath(new URL("..", import.meta.url));
@@ -642,18 +764,21 @@ const packageInspection: SourceAdapterPackageInspectionOptions = {
       {
         lifecycle: "materialized",
         definitionExport: ["kafka", "source"],
-        definitionArguments: (contractModule) => {
-          const definition = builtDefinition(contractModule);
-          if (typeof definition !== "object" || definition === null) {
-            throw new TypeError("Kafka definition probe did not create an object.");
-          }
-          return [Reflect.get(definition, "options")];
-        },
+        definitionArguments: (contractModule) => [definitionInput(contractModule)],
         metrics: {
           valid: {
             activeGroupId: "conformance:rows",
             start: { _tag: "Pending" },
-            regions: [emptyRegionMetrics("primary"), emptyRegionMetrics("sibling")],
+            regions: [
+              {
+                ...emptyRegionMetrics("primary"),
+                retention: foreverRetentionMetrics("delete"),
+              },
+              {
+                ...emptyRegionMetrics("sibling"),
+                retention: foreverRetentionMetrics("delete"),
+              },
+            ],
           },
           invalid: {
             activeGroupId: 1,
@@ -690,6 +815,7 @@ const packageInspection: SourceAdapterPackageInspectionOptions = {
   platforms: [
     {
       export: "./node",
+      exactLayerAcquisition: "external-validation-failure",
       viewServer: (contractModule: object) => ({
         topics: {
           rows: {
@@ -701,10 +827,18 @@ const packageInspection: SourceAdapterPackageInspectionOptions = {
         consumerGroupPrefix: "conformance",
         regions: {
           primary: {
-            bootstrapServers: "localhost:9092",
+            bootstrapServers: "127.0.0.1:1",
+            connectTimeout: 1,
+            requestTimeout: 1,
+            retries: false,
+            timeout: 1,
           },
           sibling: {
-            bootstrapServers: "localhost:9093",
+            bootstrapServers: "127.0.0.1:1",
+            connectTimeout: 1,
+            requestTimeout: 1,
+            retries: false,
+            timeout: 1,
           },
         },
       },
@@ -748,10 +882,18 @@ const packageInspection: SourceAdapterPackageInspectionOptions = {
         consumerGroupPrefix: Config.succeed("conformance"),
         regions: {
           primary: {
-            bootstrapServers: Config.succeed("localhost:9092"),
+            bootstrapServers: Config.succeed("127.0.0.1:1"),
+            connectTimeout: Config.succeed(1),
+            requestTimeout: Config.succeed(1),
+            retries: Config.succeed(false),
+            timeout: Config.succeed(1),
           },
           sibling: {
-            bootstrapServers: Config.succeed("localhost:9093"),
+            bootstrapServers: Config.succeed("127.0.0.1:1"),
+            connectTimeout: Config.succeed(1),
+            requestTimeout: Config.succeed(1),
+            retries: Config.succeed(false),
+            timeout: Config.succeed(1),
           },
         },
       },

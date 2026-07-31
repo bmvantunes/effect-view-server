@@ -22,6 +22,7 @@ export type ViewServerRuntimeCoreInstance<Topics extends TopicDefinitions> = {
   readonly client: ViewServerRuntimeCorePublicClient<Topics>;
   readonly liveClient: ViewServerRuntimeCorePublicLiveClient<Topics>;
   readonly serverLiveClient: ViewServerRuntimeCoreServerLiveClient<Topics>;
+  readonly fatal: Effect.Effect<never, ViewServerRuntimeError>;
   readonly close: Effect.Effect<void>;
   readonly requestHealthRefresh: Effect.Effect<void>;
   readonly refreshHealth: Effect.Effect<ViewServerHealth<Topics>, ViewServerRuntimeError>;

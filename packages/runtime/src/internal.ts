@@ -5,7 +5,7 @@ import type {
   ViewServerRuntimeCoreOptionsFor,
   ViewServerSourceRequirements,
 } from "@effect-view-server/runtime-core";
-import { Effect, Exit, Layer, Scope } from "effect";
+import { Effect, Exit, Fiber, Layer, Option, Scope } from "effect";
 import type { HttpServerError } from "effect/unstable/http";
 import {
   makeDefaultRuntimeDependencies,
@@ -87,6 +87,8 @@ type ViewServerRuntimeFactoryError =
   | HttpServerError.ServeError
   | ViewServerRuntimeError
   | ViewServerTcpPublishIngressError;
+
+const runtimeFatalSignals = new WeakMap<object, Effect.Effect<never, ViewServerRuntimeError>>();
 
 type MakeViewServerRuntimeWithDependencies = {
   <const Topics extends ViewServerRuntimeTopicDefinitions>(
@@ -198,11 +200,27 @@ const makeViewServerRuntimeFromResolvedOptions = Effect.fn(
             ),
             (resource) => resource.close,
           );
-    const close: Effect.Effect<void> = (yield* Effect.cached(
-      Scope.close(runtimeScope, Exit.void),
-    )).pipe(Effect.uninterruptible);
+    const closeRuntimeScope = Scope.close(runtimeScope, Exit.void).pipe(Effect.uninterruptible);
+    const fatalWatcher = yield* Effect.forkDetach(
+      runtimeCore.fatal.pipe(
+        Effect.catchCause(() => closeRuntimeScope.pipe(Effect.forkDetach, Effect.asVoid)),
+      ),
+      { startImmediately: true },
+    );
+    const cachedCloseFiber = yield* Effect.cached(
+      Fiber.interrupt(fatalWatcher).pipe(
+        Effect.asVoid,
+        Effect.andThen(closeRuntimeScope),
+        Effect.forkDetach({ startImmediately: true }),
+        Effect.uninterruptible,
+      ),
+    );
+    const close: Effect.Effect<void> = cachedCloseFiber.pipe(
+      Effect.flatMap(Fiber.join),
+      Effect.asVoid,
+    );
     const publicLiveClient = toPublicLiveClient(runtimeCore.liveClient, close);
-    return {
+    const runtime: ViewServerRuntime<Topics> = {
       url: server.url,
       healthUrl: server.healthUrl,
       metricsUrl: server.metricsUrl,
@@ -212,6 +230,8 @@ const makeViewServerRuntimeFromResolvedOptions = Effect.fn(
       health: runtimeCore.client.health,
       close,
     };
+    runtimeFatalSignals.set(runtime, runtimeCore.fatal);
+    return runtime;
   });
   return yield* startup.pipe(
     Effect.onExit((exit) =>
@@ -248,7 +268,12 @@ const makeViewServerRuntimeLaunchLayer = <
         : makeViewServerRuntimeWithDependencies(dependencies, config, options),
       (runtime) => runtime.close,
       { interruptible: true },
-    ).pipe(Effect.tap(logRuntimeStarted)),
+    ).pipe(
+      Effect.tap(logRuntimeStarted),
+      Effect.flatMap((runtime) =>
+        Option.getOrThrow(Option.fromNullishOr(runtimeFatalSignals.get(runtime))),
+      ),
+    ),
   );
 
 export const runViewServerRuntimeWithDependencies: <

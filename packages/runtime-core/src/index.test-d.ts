@@ -210,6 +210,7 @@ describe("runtime-core type contracts", () => {
 
     expectTypeOf(rejectQueryUnion).toBeFunction();
     expectTypeOf<Effect.Error<typeof publish>>().toEqualTypeOf<ViewServerRuntimeError>();
+    expectTypeOf(runtimeCore.fatal).toEqualTypeOf<Effect.Effect<never, ViewServerRuntimeError>>();
     expectTypeOf<Effect.Success<typeof runtimeCoreEffect>>().toEqualTypeOf<typeof runtimeCore>();
     expectTypeOf<Effect.Services<typeof materializedSourceRuntimeCoreEffect>>().toEqualTypeOf<
       Context.Service.Identifier<typeof sourceAdapter.runtimeService>

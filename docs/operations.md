@@ -12,6 +12,14 @@ replica identity. For example, each Kafka-consuming deployment supplies a
 stable `consumerGroupPrefix`; the Kafka Layer derives an exact group for every
 View Server Topic. Do not copy those concerns into generic runtime options.
 
+Kafka deployments must also grant `DESCRIBE_CONFIGS` for every bound external
+topic. Layer acquisition batches and validates cleanup and retention
+configuration per Region before any listener or consumer starts. Treat a
+broker-contract validation failure as a fatal deployment misconfiguration, not
+a health-only incident. Policy changes require a coordinated
+stop/change/restart because the validated broker contract is a startup
+snapshot.
+
 Use Kubernetes rolling updates carefully. A replacement pod should become ready
 only after its required sources are available and aggregate runtime health is
 ready.

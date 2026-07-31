@@ -252,14 +252,44 @@ describe("client type contracts", () => {
       MaterializedResult["status"],
       { readonly _tag: "Degraded" }
     >;
+    type MaterializedRejection = Extract<
+      MaterializedDegraded["reasons"][number],
+      { readonly _tag: "SourceItemRejection" }
+    >["latestRejection"];
     type MaterializedAdapterFailure = Extract<
-      MaterializedDegraded["latestRejection"]["failure"],
+      MaterializedRejection["failure"],
       { readonly _tag: "AdapterFailure" }
     >;
+    type MaterializedMaintenance = Extract<
+      MaterializedDegraded["reasons"][number],
+      { readonly _tag: "AdapterMaintenanceFailure" }
+    >;
+    type MaterializedCombined = Extract<
+      MaterializedDegraded["reasons"],
+      readonly [
+        { readonly _tag: "SourceItemRejection" },
+        { readonly _tag: "AdapterMaintenanceFailure" },
+      ]
+    >;
+    type MaterializedExhausted = Extract<
+      MaterializedResult["status"],
+      { readonly _tag: "Exhausted" }
+    >;
+    type MaterializedInvalidSettlement = Extract<
+      Extract<
+        MaterializedExhausted["exhaustion"]["lastTermination"],
+        { readonly _tag: "Failed" }
+      >["failure"],
+      { readonly _tag: "RuntimeFailure" }
+    >["failure"];
     type LeasedActive = Extract<LeasedResult, { readonly _tag: "Active" }>;
     type LeasedDegraded = Extract<LeasedActive["health"]["status"], { readonly _tag: "Degraded" }>;
+    type LeasedRejection = Extract<
+      LeasedDegraded["reasons"][number],
+      { readonly _tag: "SourceItemRejection" }
+    >["latestRejection"];
     type LeasedAdapterFailure = Extract<
-      LeasedDegraded["latestRejection"]["failure"],
+      LeasedRejection["failure"],
       { readonly _tag: "AdapterFailure" }
     >;
     expectTypeOf<MaterializedResult["metrics"]["adapter"]["observed"]>().toEqualTypeOf<bigint>();
@@ -267,9 +297,20 @@ describe("client type contracts", () => {
       MaterializedAdapterFailure["failure"]["_tag"]
     >().toEqualTypeOf<"ClientTypeSourceFailure">();
     expectTypeOf<MaterializedAdapterFailure["failure"]["message"]>().toEqualTypeOf<string>();
-    expectTypeOf<MaterializedDegraded["latestRejection"]["location"]>().toEqualTypeOf<{
+    expectTypeOf<MaterializedRejection["location"]>().toEqualTypeOf<{
       readonly offset: bigint;
     }>();
+    expectTypeOf<MaterializedMaintenance>().toEqualTypeOf<{
+      readonly _tag: "AdapterMaintenanceFailure";
+    }>();
+    expectTypeOf<MaterializedCombined[0]["_tag"]>().toEqualTypeOf<"SourceItemRejection">();
+    expectTypeOf<MaterializedCombined[1]["_tag"]>().toEqualTypeOf<"AdapterMaintenanceFailure">();
+    expectTypeOf<
+      Extract<
+        MaterializedInvalidSettlement,
+        { readonly _tag: "InvalidSourceSettlement" }
+      >["message"]
+    >().toEqualTypeOf<"Source Settlement callback threw before returning an Effect">();
     expectTypeOf<LeasedResult["_tag"]>().toEqualTypeOf<"Inactive" | "Active">();
     expectTypeOf<LeasedResult["route"]>().toEqualTypeOf<{
       readonly region: string;
@@ -296,7 +337,7 @@ describe("client type contracts", () => {
       LeasedAdapterFailure["failure"]["_tag"]
     >().toEqualTypeOf<"ClientTypeSourceFailure">();
     expectTypeOf<LeasedAdapterFailure["failure"]["message"]>().toEqualTypeOf<string>();
-    expectTypeOf<LeasedDegraded["latestRejection"]["location"]>().toEqualTypeOf<{
+    expectTypeOf<LeasedRejection["location"]>().toEqualTypeOf<{
       readonly offset: bigint;
     }>();
 

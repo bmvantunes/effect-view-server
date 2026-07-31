@@ -108,6 +108,7 @@ export type SourceAdapterPackagePlatformProbe = {
   readonly extraResources: unknown;
   readonly duplicateResources: unknown;
   readonly exactConfigResources: unknown;
+  readonly exactLayerAcquisition?: "runtime-service" | "external-validation-failure";
 };
 
 export type SourceAdapterPackageInspectionOptions = {
@@ -1005,6 +1006,7 @@ const allContractChecks = (
 
 const allPlatformChecks = (
   evidence: SourceAdapterPackagePlatformEvidence,
+  probe: SourceAdapterPackagePlatformProbe,
 ): ReadonlyArray<readonly [string, boolean]> => [
   ["hasLayer", typeof Reflect.get(evidence.module, "layer") === "function"],
   ["hasLayerConfig", typeof Reflect.get(evidence.module, "layerConfig") === "function"],
@@ -1012,8 +1014,18 @@ const allPlatformChecks = (
   ["rejectsMissingResources", Exit.isFailure(evidence.missingResources)],
   ["rejectsExtraResources", Exit.isFailure(evidence.extraResources)],
   ["rejectsDuplicateResources", Exit.isFailure(evidence.duplicateResources)],
-  ["providesExactRuntimeService", Exit.isSuccess(evidence.exactRuntimeService)],
-  ["providesExactConfigRuntimeService", Exit.isSuccess(evidence.exactConfigRuntimeService)],
+  [
+    "honorsExactRuntimeAcquisition",
+    probe.exactLayerAcquisition === "external-validation-failure"
+      ? Exit.isFailure(evidence.exactRuntimeService)
+      : Exit.isSuccess(evidence.exactRuntimeService),
+  ],
+  [
+    "honorsExactConfigRuntimeAcquisition",
+    probe.exactLayerAcquisition === "external-validation-failure"
+      ? Exit.isFailure(evidence.exactConfigRuntimeService)
+      : Exit.isSuccess(evidence.exactConfigRuntimeService),
+  ],
 ];
 
 export const validateSourceAdapterPackageConformance = (
@@ -1113,7 +1125,8 @@ export const validateSourceAdapterPackageConformance = (
       });
     }
   }
-  for (const platformExport of platformExports) {
+  for (const probe of options.platforms) {
+    const platformExport = probe.export;
     const checks = snapshot.platforms[platformExport];
     if (checks === undefined) {
       issues.push({
@@ -1122,7 +1135,7 @@ export const validateSourceAdapterPackageConformance = (
       });
       continue;
     }
-    for (const [check, passed] of allPlatformChecks(checks)) {
+    for (const [check, passed] of allPlatformChecks(checks, probe)) {
       if (!passed) {
         issues.push({
           code: "PlatformCheckFailed",

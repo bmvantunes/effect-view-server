@@ -8,7 +8,12 @@ import {
   type KafkaAdapterFailure,
   type KafkaRegionMetrics,
 } from "./contract";
-import { layer, layerConfig, type KafkaRequiredRegion } from "./node";
+import {
+  layer,
+  layerConfig,
+  type KafkaBrokerContractValidationFailure,
+  type KafkaRequiredRegion,
+} from "./node";
 import type {
   KafkaServerRecord,
   KafkaServerRegion,
@@ -28,6 +33,8 @@ const config = defineViewServerConfig({
     orders: {
       schema: Row,
       source: kafka.source({
+        cleanupPolicy: "delete",
+        retentionPolicy: "Infinity",
         topic: "source-orders",
         regions: ["eu", "us"],
         key: kafka.string(),
@@ -110,6 +117,7 @@ describe("Kafka Node type contract", () => {
     expectTypeOf<KafkaRequiredRegion<ConditionalSourceViewServer>>().toEqualTypeOf<"eu" | "us">();
     const runtimeLayer = layer(config, {
       consumerGroupPrefix: "replica",
+      retentionSweepInterval: "15 minutes",
       regions: {
         eu: { bootstrapServers: "eu:9092" },
         us: { bootstrapServers: ["us:9092"] },
@@ -117,7 +125,8 @@ describe("Kafka Node type contract", () => {
     });
     expectTypeOf(runtimeLayer).toEqualTypeOf<
       Layer.Layer<
-        import("effect").Context.Service.Identifier<typeof KafkaSourceAdapter.runtimeService>
+        import("effect").Context.Service.Identifier<typeof KafkaSourceAdapter.runtimeService>,
+        KafkaBrokerContractValidationFailure
       >
     >();
     const securedLayer = layer(config, {
@@ -171,6 +180,15 @@ describe("Kafka Node type contract", () => {
     expectTypeOf(securedLayer).toEqualTypeOf<typeof runtimeLayer>();
     expectTypeOf(alternateSecuredLayer).toEqualTypeOf<typeof runtimeLayer>();
 
+    layer(config, {
+      consumerGroupPrefix: "replica",
+      // @ts-expect-error retention sweep cadence accepts only Effect Duration inputs.
+      retentionSweepInterval: true,
+      regions: {
+        eu: { bootstrapServers: "eu:9092" },
+        us: { bootstrapServers: "us:9092" },
+      },
+    });
     layer(config, {
       consumerGroupPrefix: "replica",
       // @ts-expect-error every referenced Region is required.
@@ -273,6 +291,7 @@ describe("Kafka Node type contract", () => {
   it("preserves Config errors for aggregate Layer config", () => {
     const configured = layerConfig(config, {
       consumerGroupPrefix: Config.succeed("replica"),
+      retentionSweepInterval: Config.succeed("15 minutes"),
       regions: {
         eu: {
           bootstrapServers: Config.succeed("eu:9092"),
@@ -285,11 +304,21 @@ describe("Kafka Node type contract", () => {
     expectTypeOf(configured).toEqualTypeOf<
       Layer.Layer<
         import("effect").Context.Service.Identifier<typeof KafkaSourceAdapter.runtimeService>,
-        Config.ConfigError
+        Config.ConfigError | KafkaBrokerContractValidationFailure
       >
     >();
     // @ts-expect-error aggregate Config Layer options cannot be any.
     layerConfig(config, unsafeAny);
+
+    layerConfig(config, {
+      consumerGroupPrefix: Config.succeed("replica"),
+      // @ts-expect-error Config-wrapped retention sweep cadence accepts only Effect Duration inputs.
+      retentionSweepInterval: Config.succeed(true),
+      regions: {
+        eu: { bootstrapServers: Config.succeed("eu:9092") },
+        us: { bootstrapServers: Config.succeed("us:9092") },
+      },
+    });
 
     const configWithTopLevelExtra = {
       consumerGroupPrefix: Config.succeed("replica"),

@@ -14,7 +14,7 @@ import {
 } from "@effect-view-server/config";
 import { createInMemoryViewServer as createCoreInMemoryViewServer } from "@effect-view-server/in-memory";
 import { makeViewServerRuntimeCore } from "@effect-view-server/runtime-core";
-import { Cause, Effect, Option, Schedule, Schema, Scope, Stream } from "effect";
+import { Cause, Effect, Option, Queue, Schedule, Schema, Scope, Stream } from "effect";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import { Component, Suspense, type ReactNode } from "react";
 import { render } from "vitest-browser-react";
@@ -34,6 +34,7 @@ declare module "vitest" {
   export interface ProvidedContext {
     readonly viewServerRemoteUrl: string;
     readonly viewServerSourceRemoteUrl: string;
+    readonly viewServerDiagnosticRemoteUrl: string;
   }
 }
 
@@ -112,6 +113,101 @@ const sourceAdapter = SourceAdapter.make({
   },
 });
 
+const DiagnosticNonNegativeBigInt = Schema.BigInt.check(Schema.isGreaterThanOrEqualToBigInt(0n));
+const DiagnosticKafkaExpirationFailure = Schema.Struct({
+  region: Schema.Literal("eu"),
+  topic: Schema.Literal("source-orders"),
+  id: Schema.NonEmptyString,
+  generation: Schema.BigInt.check(Schema.isGreaterThanBigInt(0n)),
+  failedAtNanos: DiagnosticNonNegativeBigInt,
+  message: Schema.Literal("Kafka retention expiration Delete failed."),
+});
+const DiagnosticKafkaRetentionMetrics = Schema.Struct({
+  declaredCleanupPolicy: Schema.Literal("compact-and-delete"),
+  observedCleanupPolicy: Schema.Literal("compact-and-delete"),
+  configuredRetention: Schema.TaggedStruct("Finite", {
+    durationNanos: Schema.Literal(5_000_000_000n),
+  }),
+  resolvedRetention: Schema.TaggedStruct("Finite", {
+    durationNanos: Schema.Literal(5_000_000_000n),
+  }),
+  trackedRows: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  dueBacklog: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  expiredRows: DiagnosticNonNegativeBigInt,
+  authoritativeExpiredDeletes: DiagnosticNonNegativeBigInt,
+  failedWorkBacklog: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  expirationRetryFailures: DiagnosticNonNegativeBigInt,
+  latestExpirationFailure: Schema.NullOr(DiagnosticKafkaExpirationFailure),
+  lastSweepAtNanos: Schema.NullOr(DiagnosticNonNegativeBigInt),
+  lastSweepDurationNanos: Schema.NullOr(DiagnosticNonNegativeBigInt),
+  sweepIntervalNanos: Schema.Literal(900_000_000_000n),
+});
+const DiagnosticKafkaMetrics = Schema.Struct({
+  activeGroupId: Schema.Literal("browser:diagnostics"),
+  start: Schema.TaggedStruct("Resolved", {
+    position: Schema.Struct({
+      mode: Schema.Literal("earliest"),
+    }),
+  }),
+  regions: Schema.Tuple([
+    Schema.Struct({
+      region: Schema.Literal("eu"),
+      assignments: Schema.Array(
+        Schema.Struct({
+          partition: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+          offset: DiagnosticNonNegativeBigInt,
+          lag: DiagnosticNonNegativeBigInt,
+        }),
+      ),
+      commits: DiagnosticNonNegativeBigInt,
+      commitFailures: DiagnosticNonNegativeBigInt,
+      decoded: DiagnosticNonNegativeBigInt,
+      decodeFailures: DiagnosticNonNegativeBigInt,
+      mapped: DiagnosticNonNegativeBigInt,
+      mappingFailures: DiagnosticNonNegativeBigInt,
+      rejections: DiagnosticNonNegativeBigInt,
+      reconnects: DiagnosticNonNegativeBigInt,
+      rebalances: DiagnosticNonNegativeBigInt,
+      closes: DiagnosticNonNegativeBigInt,
+      closeFailures: DiagnosticNonNegativeBigInt,
+      retention: DiagnosticKafkaRetentionMetrics,
+    }),
+  ]),
+});
+const DiagnosticKafkaRejectionLocation = Schema.Struct({
+  region: Schema.Literal("eu"),
+  topic: Schema.Literal("source-orders"),
+  partition: Schema.Literal(0),
+  offset: DiagnosticNonNegativeBigInt,
+  phase: Schema.Literal("mapping"),
+  message: Schema.NonEmptyString,
+});
+const diagnosticRemoteAdapter = SourceAdapter.make({
+  identity: {
+    name: "kafka",
+    version: "1",
+  },
+  failure: Schema.Never,
+  materialized: {
+    metrics: DiagnosticKafkaMetrics,
+    rejectionLocation: DiagnosticKafkaRejectionLocation,
+    definitionOptions: SourceAdapter.definitionOptions<undefined>(),
+  },
+  leased: undefined,
+});
+const DiagnosticRemoteRow = Schema.Struct({
+  id: ViewServerId,
+  value: Schema.String,
+});
+const diagnosticRemoteViewServer = defineViewServerConfig({
+  topics: {
+    diagnostics: {
+      schema: DiagnosticRemoteRow,
+      source: diagnosticRemoteAdapter.materializedSource(undefined),
+    },
+  },
+});
+
 const sourceHealthViewServer = defineViewServerConfig({
   topics: {
     orders: {
@@ -121,11 +217,23 @@ const sourceHealthViewServer = defineViewServerConfig({
   },
 });
 
+const diagnosticHealthViewServer = defineViewServerConfig({
+  topics: {
+    orders: {
+      schema: SourceHealthOrder,
+      source: sourceAdapter.materializedSource(undefined),
+    },
+  },
+});
+
 const react = createViewServerReact(viewServer);
 const { useLiveQuery, useViewServerHealth, useViewServerHealthSummary } = react;
 const ViewServerClientProvider = react[ViewServerReactClientProvider];
 const sourceHealthReact = createViewServerReact(sourceHealthViewServer);
 const SourceHealthClientProvider = sourceHealthReact[ViewServerReactClientProvider];
+const diagnosticHealthReact = createViewServerReact(diagnosticHealthViewServer);
+const DiagnosticHealthClientProvider = diagnosticHealthReact[ViewServerReactClientProvider];
+const diagnosticRemoteReact = createViewServerReact(diagnosticRemoteViewServer);
 
 const makeSourceHealthAdapterLayer = (leaseState: { active: number }) =>
   SourceAdapterServer.make(sourceAdapter, {
@@ -1257,6 +1365,133 @@ describe("createViewServerReact", () => {
     await Effect.runPromise(local.close);
   });
 
+  it("renders combined maintenance degradation and InvalidSourceSettlement diagnostics", async () => {
+    const leaseState = { active: 0 };
+    const runtime = await Effect.runPromise(
+      makeViewServerRuntimeCore(diagnosticHealthViewServer, {}).pipe(
+        Effect.provide(makeSourceHealthAdapterLayer(leaseState)),
+      ),
+    );
+    const advanceDiagnostics = await Effect.runPromise(Queue.unbounded<void>());
+    const subscribeSourceHealth: typeof runtime.liveClient.subscribeSourceHealth = (input) =>
+      runtime.liveClient.subscribeSourceHealth(input).pipe(
+        Effect.map((subscription) => ({
+          close: subscription.close,
+          events: subscription.events.pipe(
+            Stream.take(1),
+            Stream.flatMap((result) => {
+              const combined = {
+                ...result,
+                status: {
+                  _tag: "Degraded",
+                  attempt: 1n,
+                  degradedAtNanos: 20n,
+                  reasons: [
+                    {
+                      _tag: "SourceItemRejection",
+                      latestRejection: {
+                        failure: {
+                          _tag: "RuntimeFailure",
+                          failure: {
+                            _tag: "InvalidSourceDelivery",
+                            message: "invalid browser source item",
+                          },
+                        },
+                        location: { offset: 42n },
+                        rejectedAtNanos: 21n,
+                      },
+                    },
+                    {
+                      _tag: "AdapterMaintenanceFailure",
+                    },
+                  ],
+                },
+                sampledAtNanos: 22n,
+              } as const;
+              const invalidSettlement = {
+                ...result,
+                status: {
+                  _tag: "Exhausted",
+                  exhaustion: {
+                    _tag: "RetryExhausted",
+                    lastTermination: {
+                      _tag: "Failed",
+                      failure: {
+                        _tag: "RuntimeFailure",
+                        failure: {
+                          _tag: "InvalidSourceSettlement",
+                          message: "Source Settlement callback threw before returning an Effect",
+                        },
+                      },
+                    },
+                  },
+                  exhaustedAtNanos: 23n,
+                },
+                sampledAtNanos: 24n,
+              } as const;
+              return Stream.make(combined).pipe(
+                Stream.concat(
+                  Stream.fromEffect(
+                    Queue.take(advanceDiagnostics).pipe(Effect.as(invalidSettlement)),
+                  ),
+                ),
+              );
+            }),
+          ),
+        })),
+      );
+    const diagnosticClient = {
+      ...runtime.liveClient,
+      subscribeSourceHealth,
+    } satisfies ViewServerLiveClient<typeof diagnosticHealthViewServer.topics>;
+
+    function DiagnosticView() {
+      const result = diagnosticHealthReact.useSourceHealth({
+        topic: "orders",
+      });
+      if (!AsyncResult.isSuccess(result)) {
+        return <output role="status">Loading</output>;
+      }
+      const status = result.value.status;
+      if (status._tag === "Degraded") {
+        return (
+          <output role="status">
+            {`${status._tag}:${status.reasons.map((reason) => reason._tag).join("+")}`}
+          </output>
+        );
+      }
+      if (
+        status._tag === "Exhausted" &&
+        status.exhaustion.lastTermination._tag === "Failed" &&
+        status.exhaustion.lastTermination.failure._tag === "RuntimeFailure"
+      ) {
+        return (
+          <output role="status">
+            {`${status._tag}:${status.exhaustion.lastTermination.failure.failure._tag}`}
+          </output>
+        );
+      }
+      return <output role="status">{status._tag}</output>;
+    }
+
+    const view = await render(
+      <DiagnosticHealthClientProvider client={diagnosticClient}>
+        <DiagnosticView />
+      </DiagnosticHealthClientProvider>,
+    );
+    await expect
+      .element(view.getByRole("status"))
+      .toHaveTextContent(/^Degraded:SourceItemRejection\+AdapterMaintenanceFailure$/);
+
+    await Effect.runPromise(Queue.offer(advanceDiagnostics, undefined));
+    await expect
+      .element(view.getByRole("status"))
+      .toHaveTextContent(/^Exhausted:InvalidSourceSettlement$/);
+
+    await view.unmount();
+    await Effect.runPromise(runtime.close);
+  });
+
   it("streams the same Source Health contract through the remote provider", async () => {
     function RemoteSourceHealthView() {
       const result = sourceHealthReact.useSourceHealth({
@@ -1297,6 +1532,73 @@ describe("createViewServerReact", () => {
     await expect.element(view.getByText("Inactive:remote", { exact: true })).toBeVisible();
     await view.unmount();
     await Effect.runPromise(remoteClient.close);
+  });
+
+  it("streams exact Kafka maintenance episodes and settlement failures to remote browsers", async () => {
+    function RemoteDiagnosticView() {
+      const result = diagnosticRemoteReact.useSourceHealth({
+        topic: "diagnostics",
+      });
+      if (!AsyncResult.isSuccess(result)) {
+        return <output role="status">Loading</output>;
+      }
+      const health = result.value;
+      if (health.status._tag === "Degraded") {
+        const retention = health.metrics.adapter.regions[0].retention;
+        return (
+          <output role="status">
+            {[
+              "Degraded",
+              health.status.degradedAtNanos,
+              health.status.reasons.map((reason) => reason._tag).join("+"),
+              `backlog=${retention.failedWorkBacklog}`,
+              `failure=${retention.latestExpirationFailure?.message ?? "none"}`,
+              `retries=${retention.expirationRetryFailures}`,
+            ].join(":")}
+          </output>
+        );
+      }
+      if (health.status._tag === "Ready") {
+        return <output role="status">{`Ready:${health.status.readyAtNanos}`}</output>;
+      }
+      if (
+        health.status._tag === "Exhausted" &&
+        health.status.exhaustion.lastTermination._tag === "Failed" &&
+        health.status.exhaustion.lastTermination.failure._tag === "RuntimeFailure"
+      ) {
+        return (
+          <output role="status">
+            {`Exhausted:${health.status.exhaustion.lastTermination.failure.failure._tag}`}
+          </output>
+        );
+      }
+      return <output role="status">{health.status._tag}</output>;
+    }
+
+    const view = await render(
+      <diagnosticRemoteReact.ViewServerProvider url={inject("viewServerDiagnosticRemoteUrl")}>
+        <RemoteDiagnosticView />
+      </diagnosticRemoteReact.ViewServerProvider>,
+    );
+    const status = view.getByRole("status");
+    await expect
+      .element(status)
+      .toHaveTextContent(
+        /^Degraded:100:AdapterMaintenanceFailure:backlog=1:failure=Kafka retention expiration Delete failed\.:retries=2$/,
+      );
+    await expect
+      .element(status)
+      .toHaveTextContent(
+        /^Degraded:100:SourceItemRejection\+AdapterMaintenanceFailure:backlog=1:failure=Kafka retention expiration Delete failed\.:retries=2$/,
+      );
+    await expect.element(status).toHaveTextContent(/^Ready:150$/);
+    await expect
+      .element(status)
+      .toHaveTextContent(
+        /^Degraded:200:AdapterMaintenanceFailure:backlog=1:failure=Kafka retention expiration Delete failed\.:retries=2$/,
+      );
+    await expect.element(status).toHaveTextContent(/^Exhausted:InvalidSourceSettlement$/);
+    await view.unmount();
   });
 
   it("reuses subscriptions when recursive where syntax has the same engine meaning", async () => {

@@ -28,7 +28,7 @@ describe("benchmark baseline runner", () => {
       task: sourceTask.args,
     }).toStrictEqual({
       benchmarkScope: "kafka-source-adapter",
-      expectedMutationCount: 4_986,
+      expectedMutationCount: 184_986,
       iterations: undefined,
       minimumSampleCount: 5,
       outputJsonPath: ".artifacts/source-lanes-64rows-64partitions.json",
@@ -55,7 +55,7 @@ describe("benchmark baseline runner", () => {
     ).toStrictEqual([
       {
         benchmarkScope: "kafka-source-adapter",
-        expectedMutationCount: 155_994,
+        expectedMutationCount: 335_994,
         iterations: "5",
         minimumSampleCount: 5,
         partitions: "64",

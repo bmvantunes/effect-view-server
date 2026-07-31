@@ -117,6 +117,8 @@ const publicKafkaSourceViewServer = defineViewServerConfig({
         regions: ["eu"],
         key: publicKafkaSource.string(),
         value: publicKafkaSourceValue,
+        cleanupPolicy: "delete",
+        retentionPolicy: "match-kafka-retention",
         localRowKey: ({ key }) => key,
         map: ({ value }) => ({ price: value.price }),
         startFrom: "earliest",

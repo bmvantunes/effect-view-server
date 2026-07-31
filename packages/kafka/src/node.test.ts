@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "@effect/vitest";
+import { beforeEach, describe, expect, expectTypeOf, it } from "@effect/vitest";
 // Vitest's mock transform requires this API to come directly from "vitest";
 // the @effect/vitest re-export cannot be hoisted.
 import { vi } from "vitest";
@@ -8,13 +8,18 @@ import type {
   SourceApplicationExit,
   SourceRuntimeFailure,
 } from "effect-view-server/source-adapter";
+import { runViewServerRuntime } from "@effect-view-server/runtime";
 import { Buffer } from "node:buffer";
 import {
+  Cause,
   Config,
   Effect,
   Exit,
+  Fiber,
   Layer as EffectLayer,
+  Logger,
   Option,
+  References,
   Schedule,
   Schema,
   Scope,
@@ -28,7 +33,7 @@ import {
   type KafkaSourceRetryPolicy,
   type KafkaStartPosition,
 } from "./contract";
-import { layer, layerConfig } from "./node";
+import { layer, layerConfig, type KafkaBrokerContractValidationFailure } from "./node";
 import { kafkaNodeInternals } from "./node-internal";
 
 const platformatic = vi.hoisted(() => {
@@ -43,6 +48,17 @@ const platformatic = vi.hoisted(() => {
       readonly rejectUnauthorized?: boolean;
       readonly servername?: string;
     };
+  };
+  type AdminOptions = {
+    readonly bootstrapBrokers: ReadonlyArray<string>;
+    readonly clientId: string;
+  };
+  type DescribeConfigsInput = {
+    readonly resources: ReadonlyArray<{
+      readonly resourceType: number;
+      readonly resourceName: string;
+      readonly configurationKeys?: ReadonlyArray<string>;
+    }>;
   };
   type OffsetInput = {
     readonly topics: ReadonlyArray<string>;
@@ -175,6 +191,18 @@ const platformatic = vi.hoisted(() => {
   }
 
   type State = {
+    readonly admins: Array<Admin>;
+    readonly describeConfigCalls: Array<{
+      readonly clientId: string;
+      readonly input: DescribeConfigsInput;
+    }>;
+    readonly brokerConfigs: Map<
+      string,
+      {
+        readonly cleanupPolicy: string;
+        readonly retentionMs: string;
+      }
+    >;
     readonly consumers: Array<Consumer>;
     readonly offsetCalls: Array<{
       readonly groupId: string;
@@ -192,6 +220,10 @@ const platformatic = vi.hoisted(() => {
     readonly offsetsByTimestamp: Map<bigint, ReadonlyArray<bigint>>;
     readonly committedByGroup: Map<string, ReadonlyArray<bigint>>;
     failNextConstruction: boolean;
+    failNextAdminConstruction: boolean;
+    failNextAdminClose: boolean;
+    failNextDescribeConfigs: boolean;
+    blockNextDescribeConfigs: boolean;
     failNextListOffsets: boolean;
     failNextListCommitted: boolean;
     failNextConsume: boolean;
@@ -204,6 +236,9 @@ const platformatic = vi.hoisted(() => {
     failNextStopLagMonitoring: boolean;
   };
   const state: State = {
+    admins: [],
+    describeConfigCalls: [],
+    brokerConfigs: new Map(),
     consumers: [],
     offsetCalls: [],
     committedCalls: [],
@@ -212,6 +247,10 @@ const platformatic = vi.hoisted(() => {
     offsetsByTimestamp: new Map(),
     committedByGroup: new Map(),
     failNextConstruction: false,
+    failNextAdminConstruction: false,
+    failNextAdminClose: false,
+    failNextDescribeConfigs: false,
+    blockNextDescribeConfigs: false,
     failNextListOffsets: false,
     failNextListCommitted: false,
     failNextConsume: false,
@@ -223,6 +262,75 @@ const platformatic = vi.hoisted(() => {
     failNextStartLagMonitoring: false,
     failNextStopLagMonitoring: false,
   };
+
+  class Admin {
+    readonly options: AdminOptions;
+    closed = false;
+
+    constructor(options: AdminOptions) {
+      if (state.failNextAdminConstruction) {
+        state.failNextAdminConstruction = false;
+        throw new Error("admin construction failed");
+      }
+      this.options = options;
+      state.admins.push(this);
+    }
+
+    describeConfigs(input: DescribeConfigsInput): Promise<
+      ReadonlyArray<{
+        readonly resourceType: 2;
+        readonly resourceName: string;
+        readonly configs: ReadonlyArray<{
+          readonly name: string;
+          readonly value: string;
+        }>;
+      }>
+    > {
+      state.describeConfigCalls.push({
+        clientId: this.options.clientId,
+        input,
+      });
+      if (state.failNextDescribeConfigs) {
+        state.failNextDescribeConfigs = false;
+        return Promise.reject(new Error("describe configs failed"));
+      }
+      if (state.blockNextDescribeConfigs) {
+        state.blockNextDescribeConfigs = false;
+        return new Promise(() => undefined);
+      }
+      return Promise.resolve(
+        input.resources.map((resource) => {
+          const configured = state.brokerConfigs.get(resource.resourceName) ?? {
+            cleanupPolicy: "delete",
+            retentionMs: "-1",
+          };
+          return {
+            resourceType: 2,
+            resourceName: resource.resourceName,
+            configs: [
+              {
+                name: "cleanup.policy",
+                value: configured.cleanupPolicy,
+              },
+              {
+                name: "retention.ms",
+                value: configured.retentionMs,
+              },
+            ],
+          };
+        }),
+      );
+    }
+
+    close(): Promise<void> {
+      this.closed = true;
+      if (state.failNextAdminClose) {
+        state.failNextAdminClose = false;
+        return Promise.reject(new Error("admin close failed"));
+      }
+      return Promise.resolve();
+    }
+  }
 
   class Consumer {
     readonly options: ConsumerOptions;
@@ -351,6 +459,9 @@ const platformatic = vi.hoisted(() => {
   }
 
   const reset = (): void => {
+    state.admins.splice(0);
+    state.describeConfigCalls.splice(0);
+    state.brokerConfigs.clear();
     state.consumers.splice(0);
     state.offsetCalls.splice(0);
     state.committedCalls.splice(0);
@@ -359,6 +470,10 @@ const platformatic = vi.hoisted(() => {
     state.offsetsByTimestamp.clear();
     state.committedByGroup.clear();
     state.failNextConstruction = false;
+    state.failNextAdminConstruction = false;
+    state.failNextAdminClose = false;
+    state.failNextDescribeConfigs = false;
+    state.blockNextDescribeConfigs = false;
     state.failNextListOffsets = false;
     state.failNextListCommitted = false;
     state.failNextConsume = false;
@@ -372,6 +487,7 @@ const platformatic = vi.hoisted(() => {
   };
 
   return {
+    Admin,
     Consumer,
     reset,
     state,
@@ -379,6 +495,10 @@ const platformatic = vi.hoisted(() => {
 });
 
 vi.mock("@platformatic/kafka", () => ({
+  Admin: platformatic.Admin,
+  ConfigResourceTypes: {
+    TOPIC: 2,
+  },
   Consumer: platformatic.Consumer,
 }));
 
@@ -390,6 +510,8 @@ const Order = Schema.Struct({
 
 const makeConfig = (startFrom: KafkaStartPosition, retry?: KafkaSourceRetryPolicy<"eu">) => {
   const sourceOptions = {
+    cleanupPolicy: "delete" as const,
+    retentionPolicy: "Infinity" as const,
     topic: "source-orders",
     regions: ["eu"] satisfies readonly ["eu"],
     key: kafka.string(),
@@ -431,6 +553,46 @@ const makeConfig = (startFrom: KafkaStartPosition, retry?: KafkaSourceRetryPolic
     },
   });
 };
+
+const makeBatchedBrokerConfig = () =>
+  defineViewServerConfig({
+    topics: {
+      inventory: {
+        schema: Order,
+        source: kafka.source({
+          cleanupPolicy: "delete",
+          retentionPolicy: "match-kafka-retention",
+          topic: "source-inventory",
+          regions: ["eu"],
+          key: kafka.string(),
+          value: kafka.json(() => Schema.toCodecJson(Schema.Struct({ price: Schema.Number }))),
+          localRowKey: ({ key }) => key,
+          map: ({ value, region }) => ({
+            price: value.price,
+            region: String(region),
+          }),
+          startFrom: "earliest",
+        }),
+      },
+      orders: {
+        schema: Order,
+        source: kafka.source({
+          cleanupPolicy: "delete",
+          retentionPolicy: "match-kafka-retention",
+          topic: "source-orders",
+          regions: ["eu", "us"],
+          key: kafka.string(),
+          value: kafka.json(() => Schema.toCodecJson(Schema.Struct({ price: Schema.Number }))),
+          localRowKey: ({ key }) => key,
+          map: ({ value, region }) => ({
+            price: value.price,
+            region: String(region),
+          }),
+          startFrom: "earliest",
+        }),
+      },
+    },
+  });
 
 const makeConfigWithMalformedTopic = () => {
   const config = makeConfig("earliest");
@@ -513,11 +675,352 @@ const message = (input: {
   toJSON: () => ({}),
 });
 
+const foreverRetentionMetrics = () => ({
+  declaredCleanupPolicy: "delete" as const,
+  observedCleanupPolicy: "delete" as const,
+  configuredRetention: { _tag: "Forever" as const },
+  resolvedRetention: { _tag: "Forever" as const },
+  trackedRows: 0,
+  dueBacklog: 0,
+  expiredRows: 0n,
+  authoritativeExpiredDeletes: 0n,
+  failedWorkBacklog: 0,
+  expirationRetryFailures: 0n,
+  latestExpirationFailure: null,
+  lastSweepAtNanos: null,
+  lastSweepDurationNanos: null,
+  sweepIntervalNanos: 900_000_000_000n,
+});
+
 beforeEach(() => {
   platformatic.reset();
 });
 
 describe("Kafka Node Adapter", () => {
+  it.effect(
+    "crashes composed production runtime startup before every listener and consumer on batched broker violations",
+    () =>
+      Effect.gen(function* () {
+        platformatic.state.brokerConfigs.set("source-inventory", {
+          cleanupPolicy: "compact",
+          retentionMs: "60000",
+        });
+        platformatic.state.brokerConfigs.set("source-orders", {
+          cleanupPolicy: "delete",
+          retentionMs: "invalid",
+        });
+        const config = makeBatchedBrokerConfig();
+        const listenerMessages: Array<string> = [];
+        const logger = Logger.make<unknown, void>((options) => {
+          const messages = Array.isArray(options.message) ? options.message : [];
+          for (const message of messages) {
+            if (typeof message === "string" && message.includes("listening at")) {
+              listenerMessages.push(message);
+            }
+          }
+        });
+        const startup = runViewServerRuntime(config, {
+          host: "127.0.0.1",
+          tcpPublishHost: "127.0.0.1",
+          tcpPublishPort: 0,
+          websocketPort: 0,
+        }).pipe(
+          Effect.provide(
+            EffectLayer.mergeAll(
+              layer(config, {
+                consumerGroupPrefix: "replica",
+                regions: {
+                  eu: { bootstrapServers: "eu:9092" },
+                  us: { bootstrapServers: "us:9092" },
+                },
+              }),
+              Logger.layer([logger]),
+              EffectLayer.succeed(References.MinimumLogLevel, "Trace"),
+            ),
+          ),
+        );
+        type StartupError = Effect.Error<typeof startup>;
+        expectTypeOf<
+          Extract<StartupError, { readonly _tag: "KafkaBrokerContractValidationFailure" }>
+        >().toEqualTypeOf<KafkaBrokerContractValidationFailure>();
+
+        const failure = yield* Effect.flip(startup);
+
+        expect(failure).toStrictEqual({
+          _tag: "KafkaBrokerContractValidationFailure",
+          message: "Kafka broker cleanup and retention validation failed before runtime startup.",
+          issues: [
+            {
+              _tag: "CleanupPolicyMismatch",
+              region: "eu",
+              topic: "source-inventory",
+              declared: "delete",
+              observed: "compact",
+            },
+            {
+              _tag: "InvalidRetentionMs",
+              region: "eu",
+              topic: "source-orders",
+            },
+            {
+              _tag: "InvalidRetentionMs",
+              region: "us",
+              topic: "source-orders",
+            },
+          ],
+        });
+        expect({
+          admins: platformatic.state.admins.map((admin) => admin.closed),
+          consumers: platformatic.state.consumers.length,
+          describeCalls: platformatic.state.describeConfigCalls.length,
+          listenerMessages,
+        }).toStrictEqual({
+          admins: [true, true],
+          consumers: 0,
+          describeCalls: 2,
+          listenerMessages: [],
+        });
+      }),
+  );
+
+  it.effect("batches broker contract discovery once per Region before consumer startup", () =>
+    Effect.gen(function* () {
+      platformatic.state.brokerConfigs.set("source-inventory", {
+        cleanupPolicy: " delete ",
+        retentionMs: "60000",
+      });
+      platformatic.state.brokerConfigs.set("source-orders", {
+        cleanupPolicy: "delete",
+        retentionMs: "120000",
+      });
+      const config = makeBatchedBrokerConfig();
+      yield* Effect.scoped(
+        EffectLayer.build(
+          layer(config, {
+            consumerGroupPrefix: "replica",
+            retentionSweepInterval: "2 minutes",
+            regions: {
+              eu: { bootstrapServers: "eu:9092" },
+              us: { bootstrapServers: "us:9092" },
+            },
+          }),
+        ),
+      );
+
+      expect({
+        admins: platformatic.state.admins.map((admin) => ({
+          brokers: admin.options.bootstrapBrokers,
+          clientId: admin.options.clientId,
+          closed: admin.closed,
+        })),
+        calls: platformatic.state.describeConfigCalls,
+        consumers: platformatic.state.consumers.length,
+      }).toStrictEqual({
+        admins: [
+          {
+            brokers: ["eu:9092"],
+            clientId: "effect-view-server-eu-broker-validation",
+            closed: true,
+          },
+          {
+            brokers: ["us:9092"],
+            clientId: "effect-view-server-us-broker-validation",
+            closed: true,
+          },
+        ],
+        calls: [
+          {
+            clientId: "effect-view-server-eu-broker-validation",
+            input: {
+              resources: [
+                {
+                  resourceType: 2,
+                  resourceName: "source-inventory",
+                  configurationKeys: ["cleanup.policy", "retention.ms"],
+                },
+                {
+                  resourceType: 2,
+                  resourceName: "source-orders",
+                  configurationKeys: ["cleanup.policy", "retention.ms"],
+                },
+              ],
+            },
+          },
+          {
+            clientId: "effect-view-server-us-broker-validation",
+            input: {
+              resources: [
+                {
+                  resourceType: 2,
+                  resourceName: "source-orders",
+                  configurationKeys: ["cleanup.policy", "retention.ms"],
+                },
+              ],
+            },
+          },
+        ],
+        consumers: 0,
+      });
+    }),
+  );
+
+  it.effect(
+    "fails Layer acquisition safely before any consumer for unavailable broker config",
+    () =>
+      Effect.gen(function* () {
+        const config = makeConfig("earliest");
+        platformatic.state.failNextDescribeConfigs = true;
+        platformatic.state.failNextAdminClose = true;
+        const failure = yield* Effect.scoped(
+          EffectLayer.build(
+            layer(config, {
+              consumerGroupPrefix: "replica",
+              regions: {
+                eu: { bootstrapServers: "eu:9092" },
+              },
+            }),
+          ),
+        ).pipe(Effect.flip);
+
+        expect(failure).toStrictEqual({
+          _tag: "KafkaBrokerContractValidationFailure",
+          message: "Kafka broker cleanup and retention validation failed before runtime startup.",
+          issues: [
+            {
+              _tag: "BrokerConfigurationUnavailable",
+              region: "eu",
+              topic: "source-orders",
+            },
+          ],
+        });
+        expect({
+          admins: platformatic.state.admins.map((admin) => admin.closed),
+          consumers: platformatic.state.consumers.length,
+        }).toStrictEqual({
+          admins: [true],
+          consumers: 0,
+        });
+      }),
+  );
+
+  it.effect("finalizes an in-flight Admin discovery when startup validation is interrupted", () =>
+    Effect.gen(function* () {
+      platformatic.state.blockNextDescribeConfigs = true;
+      const config = makeConfig("earliest");
+      const acquisition = yield* Effect.scoped(
+        EffectLayer.build(
+          layer(config, {
+            consumerGroupPrefix: "replica",
+            regions: {
+              eu: { bootstrapServers: "eu:9092" },
+            },
+          }),
+        ),
+      ).pipe(Effect.forkChild({ startImmediately: true }));
+
+      yield* awaitCondition(() => platformatic.state.describeConfigCalls.length === 1);
+      yield* Fiber.interrupt(acquisition);
+      const interrupted = yield* Fiber.await(acquisition);
+
+      expect(Exit.isFailure(interrupted) && Cause.hasInterruptsOnly(interrupted.cause)).toBe(true);
+      expect({
+        admins: platformatic.state.admins.map((admin) => admin.closed),
+        consumers: platformatic.state.consumers.length,
+      }).toStrictEqual({
+        admins: [true],
+        consumers: 0,
+      });
+    }),
+  );
+
+  it.effect("fails Layer acquisition for construction, cleanup, and retention violations", () =>
+    Effect.gen(function* () {
+      const config = makeConfig("earliest");
+      const acquire = () =>
+        Effect.scoped(
+          EffectLayer.build(
+            layer(config, {
+              consumerGroupPrefix: "replica",
+              regions: {
+                eu: { bootstrapServers: "eu:9092" },
+              },
+            }),
+          ),
+        ).pipe(Effect.flip);
+
+      platformatic.state.failNextAdminConstruction = true;
+      expect(yield* acquire()).toStrictEqual({
+        _tag: "KafkaBrokerContractValidationFailure",
+        message: "Kafka broker cleanup and retention validation failed before runtime startup.",
+        issues: [
+          {
+            _tag: "BrokerConfigurationUnavailable",
+            region: "eu",
+            topic: "source-orders",
+          },
+        ],
+      });
+      expect(platformatic.state.consumers).toStrictEqual([]);
+
+      platformatic.reset();
+      platformatic.state.brokerConfigs.set("source-orders", {
+        cleanupPolicy: "compact",
+        retentionMs: "-1",
+      });
+      expect(yield* acquire()).toStrictEqual({
+        _tag: "KafkaBrokerContractValidationFailure",
+        message: "Kafka broker cleanup and retention validation failed before runtime startup.",
+        issues: [
+          {
+            _tag: "CleanupPolicyMismatch",
+            region: "eu",
+            topic: "source-orders",
+            declared: "delete",
+            observed: "compact",
+          },
+        ],
+      });
+      expect(platformatic.state.consumers).toStrictEqual([]);
+
+      platformatic.reset();
+      platformatic.state.brokerConfigs.set("source-orders", {
+        cleanupPolicy: "delete",
+        retentionMs: "invalid",
+      });
+      expect(yield* acquire()).toStrictEqual({
+        _tag: "KafkaBrokerContractValidationFailure",
+        message: "Kafka broker cleanup and retention validation failed before runtime startup.",
+        issues: [
+          {
+            _tag: "InvalidRetentionMs",
+            region: "eu",
+            topic: "source-orders",
+          },
+        ],
+      });
+      expect(platformatic.state.consumers).toStrictEqual([]);
+
+      platformatic.reset();
+      platformatic.state.brokerConfigs.set("source-orders", {
+        cleanupPolicy: "delete,unknown",
+        retentionMs: "-1",
+      });
+      expect(yield* acquire()).toStrictEqual({
+        _tag: "KafkaBrokerContractValidationFailure",
+        message: "Kafka broker cleanup and retention validation failed before runtime startup.",
+        issues: [
+          {
+            _tag: "MalformedBrokerConfiguration",
+            region: "eu",
+            topic: "source-orders",
+            configuration: "cleanup.policy",
+          },
+        ],
+      });
+      expect(platformatic.state.consumers).toStrictEqual([]);
+    }),
+  );
+
   it.effect("records mapping rejection metrics on the bound consumer state", () =>
     Effect.gen(function* () {
       platformatic.state.offsetsByTimestamp.set(-1n, [100n]);
@@ -696,8 +1199,8 @@ describe("Kafka Node Adapter", () => {
         });
         expect(snapshot).toStrictEqual({
           rows: [
-            { id: "eu:one", price: 1, region: "eu" },
-            { id: "eu:two", price: 3, region: "eu" },
+            { id: "eu:0:one", price: 1, region: "eu" },
+            { id: "eu:0:two", price: 3, region: "eu" },
           ],
           totalRows: 2,
           version: 3,
@@ -723,6 +1226,7 @@ describe("Kafka Node Adapter", () => {
           rebalances: 0n,
           closes: 1n,
           closeFailures: 0n,
+          retention: foreverRetentionMetrics(),
         });
         yield* diagnostics.close();
 
@@ -790,7 +1294,7 @@ describe("Kafka Node Adapter", () => {
             select: ["id", "price", "region"],
           }),
         ).toStrictEqual({
-          rows: [{ id: "eu:rebuilt", price: 1, region: "eu" }],
+          rows: [{ id: "eu:0:rebuilt", price: 1, region: "eu" }],
           totalRows: 1,
           version: 1,
           status: "ready",
@@ -983,6 +1487,7 @@ describe("Kafka Node Adapter", () => {
           rebalances: 1n,
           closes: 1n,
           closeFailures: 0n,
+          retention: foreverRetentionMetrics(),
         });
 
         yield* diagnostics.close();
@@ -1816,6 +2321,7 @@ describe("Kafka Node Adapter", () => {
         rebalances: 0n,
         closes: 0n,
         closeFailures: 1n,
+        retention: foreverRetentionMetrics(),
       });
       yield* diagnostics.close();
       yield* runtime.close;
@@ -2123,6 +2629,7 @@ describe("Kafka Node Adapter", () => {
     ).toStrictEqual({
       consumerGroupPrefix: "replica",
       regions: new Map([["eu", { bootstrapServers: ["one:9092"] }]]),
+      retentionSweepIntervalNanos: 900_000_000_000n,
     });
     expect(propertyReads).toBe(0);
     const hostileOptions = new Proxy(
@@ -2214,6 +2721,160 @@ describe("Kafka Node Adapter", () => {
         Reflect.apply(kafkaNodeInternals.snapshotLayerOptions, undefined, [validConfig, malformed]),
       ).toThrowError("Kafka Node Layer requires exactly consumerGroupPrefix and regions.");
     }
+
+    expect([
+      kafkaNodeInternals.capturedRetentionPolicy({ _tag: "MatchKafkaRetention" }),
+      kafkaNodeInternals.capturedRetentionPolicy({ _tag: "Forever" }),
+      kafkaNodeInternals.capturedRetentionPolicy({
+        _tag: "Finite",
+        durationNanos: 1n,
+      }),
+    ]).toStrictEqual([
+      { _tag: "MatchKafkaRetention" },
+      { _tag: "Forever" },
+      { _tag: "Finite", durationNanos: 1n },
+    ]);
+    for (const malformed of [null, {}, { _tag: "Finite", durationNanos: 0n }]) {
+      expect(() =>
+        Reflect.apply(kafkaNodeInternals.capturedRetentionPolicy, undefined, [malformed]),
+      ).toThrowError("Kafka source contains an invalid retention policy.");
+    }
+    expect(kafkaNodeInternals.retentionSweepIntervalNanos(undefined)).toBe(900_000_000_000n);
+    expect(kafkaNodeInternals.retentionSweepIntervalNanos("2 seconds")).toBe(2_000_000_000n);
+    for (const malformed of [0, "Infinity", {}]) {
+      expect(() =>
+        Reflect.apply(kafkaNodeInternals.retentionSweepIntervalNanos, undefined, [malformed]),
+      ).toThrowError(
+        "Kafka Node Layer retentionSweepInterval must be a positive finite Effect Duration.",
+      );
+    }
+
+    const declarations = kafkaNodeInternals.kafkaBrokerDeclarations(makeBatchedBrokerConfig());
+    expect(declarations).toStrictEqual([
+      {
+        cleanupPolicy: "delete",
+        region: "eu",
+        retentionPolicy: { _tag: "MatchKafkaRetention" },
+        sourceTopic: "source-inventory",
+        viewServerTopic: "inventory",
+      },
+      {
+        cleanupPolicy: "delete",
+        region: "eu",
+        retentionPolicy: { _tag: "MatchKafkaRetention" },
+        sourceTopic: "source-orders",
+        viewServerTopic: "orders",
+      },
+      {
+        cleanupPolicy: "delete",
+        region: "us",
+        retentionPolicy: { _tag: "MatchKafkaRetention" },
+        sourceTopic: "source-orders",
+        viewServerTopic: "orders",
+      },
+    ]);
+    expect(
+      kafkaNodeInternals.kafkaBrokerDeclarations(makeConfigWithNonKafkaDefinitions()),
+    ).toHaveLength(1);
+    const malformedBrokerOptions: ReadonlyArray<unknown> = [
+      null,
+      {},
+      {
+        topic: "",
+        cleanupPolicy: "delete",
+        regions: ["eu"],
+        retentionPolicy: { _tag: "Forever" },
+      },
+      {
+        topic: "source",
+        cleanupPolicy: "invalid",
+        regions: ["eu"],
+        retentionPolicy: { _tag: "Forever" },
+      },
+      {
+        topic: "source",
+        cleanupPolicy: "delete",
+        regions: [],
+        retentionPolicy: { _tag: "Forever" },
+      },
+      {
+        topic: "source",
+        cleanupPolicy: "delete",
+        regions: [""],
+        retentionPolicy: { _tag: "Forever" },
+      },
+    ];
+    for (const options of malformedBrokerOptions) {
+      expect(() =>
+        Reflect.apply(kafkaNodeInternals.kafkaBrokerDeclarations, undefined, [
+          {
+            topics: {
+              malformed: {
+                source: {
+                  adapter: KafkaSourceAdapter,
+                  options,
+                },
+              },
+            },
+          },
+        ]),
+      ).toThrow(KafkaSourceConfigurationError);
+    }
+
+    const validBrokerConfigs = [
+      { name: "cleanup.policy", value: "delete" },
+      { name: "retention.ms", value: "-1" },
+    ];
+    expect(kafkaNodeInternals.configValue(validBrokerConfigs, "cleanup.policy")).toBe("delete");
+    expect(kafkaNodeInternals.configValue([], "cleanup.policy")).toBeUndefined();
+    expect(
+      kafkaNodeInternals.configValue(
+        [
+          { name: "cleanup.policy", value: "delete" },
+          { name: "cleanup.policy", value: "compact" },
+        ],
+        "cleanup.policy",
+      ),
+    ).toBeUndefined();
+    expect(
+      kafkaNodeInternals.configValue([{ name: "cleanup.policy", value: 1 }], "cleanup.policy"),
+    ).toBeUndefined();
+    const validBrokerResource = {
+      resourceType: 2,
+      resourceName: "source-orders",
+      configs: validBrokerConfigs,
+    };
+    expect(kafkaNodeInternals.brokerConfigResource(validBrokerResource)).toStrictEqual({
+      resourceName: "source-orders",
+      cleanupPolicy: "delete",
+      retentionMs: "-1",
+    });
+    for (const malformed of [
+      null,
+      { ...validBrokerResource, resourceType: 1 },
+      { ...validBrokerResource, resourceName: "" },
+      { ...validBrokerResource, configs: null },
+      {
+        ...validBrokerResource,
+        configs: [{ name: "cleanup.policy", value: "delete" }],
+      },
+    ]) {
+      expect(
+        Reflect.apply(kafkaNodeInternals.brokerConfigResource, undefined, [malformed]),
+      ).toBeUndefined();
+    }
+    expect(
+      kafkaNodeInternals.snapshotAdminResponse([
+        validBrokerResource,
+        { resourceType: 1, resourceName: "ignored", configs: [] },
+      ]),
+    ).toStrictEqual([
+      {
+        resourceName: "source-orders",
+        cleanupPolicy: "delete",
+        retentionMs: "-1",
+      },
+    ]);
 
     const metrics = kafkaNodeInternals.emptyMutableMetrics();
     metrics.assignments.set(0, {

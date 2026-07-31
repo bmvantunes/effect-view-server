@@ -475,6 +475,10 @@ export const reactInMemoryTask = (browser, rowCount, env = {}) => {
 
 export const kafkaSourceAdapterTask = (rowCount, partitionCount, env = {}) => {
   const outputJsonPath = `.artifacts/source-lanes-${rowCount}rows-${partitionCount}partitions.json`;
+  const retentionRowCount = Number.parseInt(
+    env["VIEW_SERVER_KAFKA_RETENTION_BENCH_ROWS"] ?? "10000",
+    10,
+  );
   const measuredIterations = minimumSampleCountFrom(
     env,
     "VIEW_SERVER_KAFKA_SOURCE_BENCH_ITERATIONS",
@@ -493,7 +497,8 @@ export const kafkaSourceAdapterTask = (rowCount, partitionCount, env = {}) => {
       ...env,
     },
     expectedMutationCount:
-      (rowCount * 13 - 1) * (measuredIterations + warmupIterations),
+      (rowCount * 13 - 1 + retentionRowCount * 3) *
+      (measuredIterations + warmupIterations),
     label: `Kafka Source Adapter ${rowCount} rows ${partitionCount} partitions`,
     minimumSampleCount: minimumSampleCountFrom(
       env,

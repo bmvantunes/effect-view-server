@@ -1,4 +1,4 @@
-import { isSourceDefinition } from "@effect-view-server/source-adapter/internal";
+import { isSourceDefinition } from "@effect-view-server/source-adapter/definition";
 import type {
   SourceDefinitionAny,
   SourceDefinitionLifecycle,

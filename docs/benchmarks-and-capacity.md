@@ -19,7 +19,10 @@ vp run -w bench:baseline:grpc-source-adapter
 The Kafka profile contains transport-neutral JSON and protobuf Source Lane
 tasks, a 2,000-record mixed-codec burst, sustained mixed-codec ingestion,
 multi-region/partition work, and a real Apache Kafka broker task using the
-production Platformatic Node Adapter with commit observation. The gRPC profile
+production Platformatic Node Adapter with commit observation. It also measures
+finite-retention ingestion/index overhead, large due sweeps, and post-sweep
+query convergence. Run the Kafka gates serially so broker, ingestion, and sweep
+measurements do not compete for CPU or Kafka resources. The gRPC profile
 measures 1,000-row Materialized batches, 50 Leased routes with sharing and
 health, and 50,000-row retained capacity through the production Source Adapter
 Module. Neither profile depends on a privileged transport branch in the generic

@@ -45,6 +45,8 @@ import {
   sourceHealthContractSchemas,
 } from "@effect-view-server/source-adapter";
 import {
+  isSourceApplicationStateRegistration,
+  isSourceApplicationTransition,
   isSourceAttempt,
   isSourceDelivery,
   isSourceItemRejection,
@@ -52,16 +54,22 @@ import {
   makeSourceDelete,
   makeSourceDelivery,
   makeSourceItemRejection,
+  makeSourceTransitionDelivery,
   makeSourceUpsert,
   markSourceToolkit,
+  resolveSourceApplicationTransition,
+  resolveSourceApplicationStateRegistration,
+  resolveSourceMaintenanceOperation,
+  currentEpochNanos,
+  epochNanosFromWallMillis as epochNanos,
   validateSourceDefinition,
   type SourceAdapterRuntimeService,
   type SourceRuntimeLifecycle,
 } from "@effect-view-server/source-adapter/internal";
 import {
   BigDecimal,
+  Cause,
   Chunk,
-  Clock,
   Context,
   Deferred,
   Duration,
@@ -70,6 +78,7 @@ import {
   Exit,
   Fiber,
   Option,
+  Ref,
   Result,
   Schedule,
   Schema,
@@ -232,11 +241,23 @@ type AppliedSourceMutation =
       readonly id: string;
     };
 
+type PreparedSourceMutation =
+  | {
+      readonly _tag: "Upsert";
+      readonly id: string;
+      readonly row: object;
+    }
+  | {
+      readonly _tag: "Delete";
+      readonly id: string;
+    };
+
 type SourceLogicalRuntime = {
   readonly entry: SourceRuntimeEntry;
   readonly target: SourceTarget<Readonly<Record<string, unknown>>>;
   readonly health: SubscriptionRef.SubscriptionRef<Option.Option<RuntimeSourceHealth>>;
   readonly status: SubscriptionRef.SubscriptionRef<SourceStatus<unknown, unknown>>;
+  readonly activate: Effect.Effect<void>;
   readonly run: Effect.Effect<void>;
   readonly stop: (
     reason: import("@effect-view-server/source-adapter").SourceStoppingReason,
@@ -277,6 +298,7 @@ export type RuntimeCoreSourceManager<Topics extends TopicDefinitions> = {
   ) => ViewServerLiveSubscription<Row>;
   readonly overlayHealth: (health: RuntimeCoreBaseHealth<Topics>) => ViewServerHealth<Topics>;
   readonly close: Effect.Effect<void>;
+  readonly fatal: Effect.Effect<never, ViewServerRuntimeError>;
 };
 
 export type RuntimeCoreSourceManagerConstructionOptions = {
@@ -284,7 +306,24 @@ export type RuntimeCoreSourceManagerConstructionOptions = {
   readonly leaseHandoff?: RuntimeCoreResourceHandoffOptions;
   readonly leaseSubscriberHandoff?: RuntimeCoreResourceHandoffOptions;
   readonly sourceHealthHandoff?: RuntimeCoreResourceHandoffOptions;
+  readonly afterApplicationStateBind?: Effect.Effect<void>;
+  readonly afterMutationApplication?: Effect.Effect<void>;
   readonly afterSourceHealthObservationClose?: Effect.Effect<void>;
+  readonly settlementHandoff?: {
+    readonly afterApplicationExit?: Effect.Effect<void>;
+    readonly afterCallbackApplication?: Effect.Effect<void>;
+    readonly afterHandoffCompleted?: Effect.Effect<void>;
+    readonly afterHandoffObserved?: Effect.Effect<void>;
+    readonly beforeReturnedEffectRestore?: Effect.Effect<void>;
+    readonly afterFatalCompleted?: Effect.Effect<void>;
+    readonly afterSettlementChildFork?: Effect.Effect<void>;
+    readonly afterSettlementChildRegistration?: Effect.Effect<void>;
+    readonly afterFailureCounted?: (failedSettlementCount: bigint) => Effect.Effect<void>;
+    readonly beforeOrdinaryTerminationClaim?: Effect.Effect<void>;
+    readonly duringReturnedEffectPromotion?: Effect.Effect<void>;
+  };
+  readonly afterAttemptCancellationRequested?: Effect.Effect<void>;
+  readonly beforeAttemptTerminationClaim?: Effect.Effect<void>;
 };
 
 const runtimeError = (
@@ -297,6 +336,48 @@ const runtimeError = (
   topic,
   message,
 });
+
+const fatalRuntimeCause = <Error>(
+  topic: string,
+  cause: Cause.Cause<Error>,
+  message: string,
+): Cause.Cause<ViewServerRuntimeError> => {
+  const rootFailure = runtimeError(topic, message);
+  const preserved = Cause.map(cause, () => rootFailure);
+  return Option.isSome(Cause.findErrorOption(preserved))
+    ? preserved
+    : Cause.combine(Cause.fail(rootFailure), preserved);
+};
+
+const maintenanceSupervisorCause = (
+  topic: string,
+  exit: Exit.Exit<unknown, ViewServerRuntimeError>,
+  closing: boolean,
+): Cause.Cause<ViewServerRuntimeError> | undefined => {
+  if (Exit.isFailure(exit)) {
+    return Cause.hasInterruptsOnly(exit.cause) && closing
+      ? undefined
+      : fatalRuntimeCause(
+          topic,
+          exit.cause,
+          "Source maintenance supervisor failed fatally and closed the complete runtime.",
+        );
+  }
+  return Cause.fail(
+    runtimeError(
+      topic,
+      "Source maintenance supervisor stopped unexpectedly and closed the complete runtime.",
+    ),
+  );
+};
+
+const fatalSourceApplicationCause = (
+  topic: string,
+  cause: Cause.Cause<SourceRuntimeError>,
+  message: string,
+): Cause.Cause<ViewServerRuntimeError> => {
+  return fatalRuntimeCause(topic, cause, message);
+};
 
 const sourceRuntimeFailure = (failure: SourceRuntimeError): SourceExecutionError => ({
   _tag: "RuntimeFailure",
@@ -450,6 +531,16 @@ const resolveEntries = Effect.fn("ViewServerRuntimeCore.source.entries.resolve")
         ),
       );
     }
+    const requiresApplicationState = declaration.applicationState === "required";
+    const hasApplicationState = isSourceApplicationStateRegistration(lifecycle.applicationState);
+    if (requiresApplicationState !== hasApplicationState) {
+      return yield* Effect.fail(
+        runtimeError(
+          topic,
+          "Source Adapter runtime service Application State registration does not match its lifecycle declaration.",
+        ),
+      );
+    }
     entries.set(topic, {
       topic,
       schema: binding.schema,
@@ -569,9 +660,87 @@ type LogicalRuntimeInput<Topics extends TopicDefinitions> = {
   readonly feedRouteReference?: string;
   readonly ownedStorageKeys?: Set<string>;
   readonly ownerScope: Scope.Scope;
+  readonly constructionOptions: RuntimeCoreSourceManagerConstructionOptions;
   readonly onHealth: (health: RuntimeSourceHealth) => Effect.Effect<void>;
   readonly onStatus: (status: SourceStatus<unknown, unknown>) => Effect.Effect<void>;
+  readonly onFatal: (cause: Cause.Cause<ViewServerRuntimeError>) => Effect.Effect<void>;
 };
+
+type SourceAttemptArbitrationState = "Open" | "CancellationWon" | "OrdinaryTerminationWon";
+
+type SourceAttemptArbitration = {
+  readonly cancel: Effect.Effect<boolean>;
+  readonly cancellationWon: Effect.Effect<boolean>;
+  readonly claimOrdinaryTermination: Effect.Effect<boolean>;
+  readonly promoteReturnedEffect: (fiber: Fiber.Fiber<unknown, unknown>) => Effect.Effect<boolean>;
+  readonly settlementFibers: Map<
+    Fiber.Fiber<unknown, unknown>,
+    "CallbackHandoff" | "ReturnedEffect"
+  >;
+};
+
+const makeSourceAttemptArbitration = Effect.fn(
+  "ViewServerRuntimeCore.source.attempt.arbitration.make",
+)(function* (duringReturnedEffectPromotion: Effect.Effect<void> = Effect.void) {
+  const state = yield* Ref.make<SourceAttemptArbitrationState>("Open");
+  const lock = Semaphore.makeUnsafe(1);
+  const settlementFibers = new Map<
+    Fiber.Fiber<unknown, unknown>,
+    "CallbackHandoff" | "ReturnedEffect"
+  >();
+  const claimCancellation = Ref.modify(state, (current) => {
+    const result: readonly [boolean, SourceAttemptArbitrationState] =
+      current === "Open" ? [true, "CancellationWon"] : [false, current];
+    return result;
+  });
+  const cancel = lock
+    .withPermit(
+      Effect.gen(function* () {
+        const cancellationWon = yield* claimCancellation;
+        yield* Effect.sync(() => {
+          for (const [fiber, phase] of settlementFibers) {
+            if (phase === "ReturnedEffect") {
+              fiber.interruptUnsafe();
+            }
+          }
+        });
+        return cancellationWon;
+      }),
+    )
+    .pipe(Effect.uninterruptible);
+  const promoteReturnedEffect = (fiber: Fiber.Fiber<unknown, unknown>): Effect.Effect<boolean> =>
+    lock
+      .withPermit(
+        Effect.gen(function* () {
+          const cancellationWon = yield* Ref.get(state).pipe(
+            Effect.map((current) => current === "CancellationWon"),
+          );
+          if (cancellationWon) {
+            return true;
+          }
+          yield* duringReturnedEffectPromotion;
+          yield* Effect.sync(() => {
+            settlementFibers.set(fiber, "ReturnedEffect");
+          });
+          return false;
+        }),
+      )
+      .pipe(Effect.uninterruptible);
+  const claimOrdinaryTermination = Ref.modify(state, (current) => {
+    const result: readonly [boolean, SourceAttemptArbitrationState] =
+      current === "CancellationWon"
+        ? [false, current]
+        : [true, current === "Open" ? "OrdinaryTerminationWon" : current];
+    return result;
+  });
+  return {
+    cancel,
+    cancellationWon: Ref.get(state).pipe(Effect.map((current) => current === "CancellationWon")),
+    claimOrdinaryTermination,
+    promoteReturnedEffect,
+    settlementFibers,
+  } satisfies SourceAttemptArbitration;
+});
 
 function snapshotDecodedMetrics<Value>(value: Value): Value;
 function snapshotDecodedMetrics(value: unknown, active?: WeakSet<object>): unknown;
@@ -655,7 +824,7 @@ function freezeDecodedMetrics(value: unknown, active = new WeakSet<object>()): u
 const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")(function* <
   Topics extends TopicDefinitions,
 >(input: LogicalRuntimeInput<Topics>) {
-  const startedAtNanos = yield* Clock.currentTimeNanos;
+  const startedAtNanos = yield* currentEpochNanos;
   let currentAttempt = 1n;
   let retryCount = 0n;
   let receivedDeliveryCount = 0n;
@@ -685,10 +854,64 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
   let stableLaneIds: ReadonlyArray<string> | undefined;
   const materializedRetainedIds = new Set<string>();
   const scope = yield* Scope.fork(input.ownerScope, "sequential");
+  const applicationStateRegistration =
+    input.entry.lifecycle.applicationState === undefined
+      ? undefined
+      : resolveSourceApplicationStateRegistration(input.entry.lifecycle.applicationState);
+  let applicationLifetimeIdentity: object | undefined;
+  if (input.entry.lifecycle.applicationState !== undefined) {
+    if (applicationStateRegistration === undefined) {
+      return yield* Effect.fail(
+        runtimeError(
+          input.entry.topic,
+          "Source Application State registration lost its nominal linkage.",
+        ),
+      );
+    }
+    yield* Effect.uninterruptible(
+      Effect.gen(function* () {
+        yield* Effect.try({
+          try: () =>
+            applicationStateRegistration.bind({
+              topic: input.entry.topic,
+              definition: input.entry.definition.options,
+              lifetimeScope: scope,
+              target: input.target,
+            }),
+          catch: () =>
+            runtimeError(
+              input.entry.topic,
+              "Source Application State registration could not initialize its logical lifetime.",
+            ),
+        });
+        yield* input.constructionOptions.afterApplicationStateBind ?? Effect.void;
+        yield* Scope.addFinalizer(
+          scope,
+          Effect.sync(() => {
+            applicationStateRegistration.unbind(scope);
+          }),
+        );
+      }),
+    );
+    applicationLifetimeIdentity = yield* Effect.try({
+      try: () => applicationStateRegistration.lifetimeIdentity(scope),
+      catch: () =>
+        runtimeError(
+          input.entry.topic,
+          "Source Application State registration could not identify its logical lifetime.",
+        ),
+    });
+  }
   const metricFailureObservation = makeMetricFailureObservation();
   let declaredLaneFailure: SourceExecutionError | undefined;
-  let supervisorFiber: Fiber.Fiber<void> | undefined;
+  let cancelActiveAttempt: Effect.Effect<boolean> = Effect.succeed(false);
+  const supervisorFiber = yield* Deferred.make<Fiber.Fiber<void>>();
+  let maintenanceFiber: Fiber.Fiber<void> | undefined;
   const healthLock = Semaphore.makeUnsafe(1);
+  const lifecycleGate = Semaphore.makeUnsafe(1);
+  const failedMaintenanceWork = new Set<string>();
+  let maintenanceActive = false;
+  let closing = false;
 
   const validateLaneBufferMetrics = Effect.fn(
     "ViewServerRuntimeCore.source.metrics.buffer.validate",
@@ -801,7 +1024,7 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
     status: SourceStatus<unknown, unknown>,
     adapterMetrics: unknown,
   ) {
-    const sampledAtNanos = yield* Clock.currentTimeNanos;
+    const sampledAtNanos = yield* currentEpochNanos;
     const runtimeMetricsResult = yield* runtimeMetrics().pipe(Effect.result);
     if (Result.isFailure(runtimeMetricsResult)) {
       yield* metricFailureObservation.record(Result.fail(runtimeMetricsResult.failure));
@@ -827,6 +1050,9 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
   ) {
     yield* healthLock.withPermit(
       Effect.gen(function* () {
+        if (closing && nextStatus._tag !== "Stopping") {
+          return;
+        }
         yield* SubscriptionRef.set(status, nextStatus);
         if (hasCachedAdapterMetrics) {
           yield* publishHealth(nextStatus, cachedAdapterMetrics);
@@ -835,6 +1061,85 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
       }),
     );
     yield* Effect.yieldNow;
+  });
+
+  const degradationReasons = ():
+    | import("@effect-view-server/source-adapter").SourceDegradationReasons<unknown, unknown>
+    | undefined => {
+    const maintenance = failedMaintenanceWork.size > 0;
+    if (latestRejection === undefined) {
+      return maintenance
+        ? [
+            {
+              _tag: "AdapterMaintenanceFailure",
+            },
+          ]
+        : undefined;
+    }
+    const rejection: import("@effect-view-server/source-adapter").SourceItemRejectionReason<
+      unknown,
+      unknown
+    > = {
+      _tag: "SourceItemRejection",
+      latestRejection,
+    };
+    if (!maintenance) {
+      return [rejection];
+    }
+    return [
+      rejection,
+      {
+        _tag: "AdapterMaintenanceFailure",
+      },
+    ];
+  };
+
+  const sameDegradationReasons = (
+    left: import("@effect-view-server/source-adapter").SourceDegradationReasons<unknown, unknown>,
+    right: import("@effect-view-server/source-adapter").SourceDegradationReasons<unknown, unknown>,
+  ): boolean => {
+    const leftRejection =
+      left[0]._tag === "SourceItemRejection" ? left[0].latestRejection : undefined;
+    const rightRejection =
+      right[0]._tag === "SourceItemRejection" ? right[0].latestRejection : undefined;
+    const leftMaintenance = left.some((reason) => reason._tag === "AdapterMaintenanceFailure");
+    const rightMaintenance = right.some((reason) => reason._tag === "AdapterMaintenanceFailure");
+    return leftRejection === rightRejection && leftMaintenance === rightMaintenance;
+  };
+
+  const publishDegradationLedger = Effect.fn(
+    "ViewServerRuntimeCore.source.health.publishDegradationLedger",
+  )(function* () {
+    const reasons = degradationReasons();
+    const currentStatus = SubscriptionRef.getUnsafe(status);
+    if (reasons === undefined) {
+      degradedAtNanos = undefined;
+      if (currentStatus._tag === "Ready") {
+        return;
+      }
+      const readyAtNanos = yield* currentEpochNanos;
+      yield* publish({
+        _tag: "Ready",
+        attempt: currentAttempt,
+        readyAtNanos,
+      });
+      return;
+    }
+    degradedAtNanos ??= yield* currentEpochNanos;
+    if (
+      currentStatus._tag === "Degraded" &&
+      currentStatus.attempt === currentAttempt &&
+      currentStatus.degradedAtNanos === degradedAtNanos &&
+      sameDegradationReasons(currentStatus.reasons, reasons)
+    ) {
+      return;
+    }
+    yield* publish({
+      _tag: "Degraded",
+      attempt: currentAttempt,
+      degradedAtNanos,
+      reasons,
+    });
   });
 
   const validateAdapterMetrics = Effect.fn("ViewServerRuntimeCore.source.metrics.adapter.validate")(
@@ -965,19 +1270,44 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
           return Effect.succeed(makeSourceUpsert(row));
         }),
       );
-    return markSourceToolkit<object, unknown, unknown, never, string>({
-      topic: input.entry.topic,
-      upsert: decodeUpsert,
-      decodeUpsert,
-      delete: (id) =>
-        typeof id === "string" && id.length > 0
-          ? Effect.succeed(makeSourceDelete(id))
-          : Effect.fail(sourceIdError(input.entry.topic)),
-      delivery: (mutations, settlement) => {
+    function delivery(
+      mutations: Chunk.NonEmptyChunk<SourceMutation>,
+      settlement?: import("@effect-view-server/source-adapter").SourceSettlement<unknown>,
+    ): Effect.Effect<
+      import("@effect-view-server/source-adapter").SourceDelivery<object, unknown>,
+      SourceExecutionError
+    >;
+    function delivery(
+      mutation: SourceMutation,
+      settlement:
+        | import("@effect-view-server/source-adapter").SourceSettlement<unknown>
+        | undefined,
+      transition: import("@effect-view-server/source-adapter").SourceApplicationTransition,
+    ): Effect.Effect<
+      import("@effect-view-server/source-adapter").SourceDelivery<object, unknown>,
+      SourceExecutionError
+    >;
+    function delivery(
+      mutationsOrMutation: Chunk.Chunk<SourceMutation> | SourceMutation,
+      settlement?: import("@effect-view-server/source-adapter").SourceSettlement<unknown>,
+      transition?: import("@effect-view-server/source-adapter").SourceApplicationTransition,
+    ): Effect.Effect<
+      import("@effect-view-server/source-adapter").SourceDelivery<object, unknown>,
+      SourceExecutionError
+    > {
+      if (settlement !== undefined && typeof settlement !== "function") {
+        return Effect.fail(
+          sourceDefinitionError(
+            input.entry.topic,
+            "Source Delivery settlement must be an Effect function.",
+          ),
+        );
+      }
+      if (transition === undefined) {
         if (
-          Chunk.size(mutations) === 0 ||
-          !Chunk.every(mutations, isSourceMutation) ||
-          (settlement !== undefined && typeof settlement !== "function")
+          !Chunk.isChunk(mutationsOrMutation) ||
+          !Chunk.isNonEmpty(mutationsOrMutation) ||
+          !Chunk.every(mutationsOrMutation, isSourceMutation)
         ) {
           return Effect.fail(
             sourceDefinitionError(
@@ -986,8 +1316,29 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
             ),
           );
         }
-        return Effect.succeed(makeSourceDelivery(mutations, settlement));
-      },
+        return Effect.succeed(makeSourceDelivery(mutationsOrMutation, settlement));
+      }
+      if (!isSourceMutation(mutationsOrMutation) || !isSourceApplicationTransition(transition)) {
+        return Effect.fail(
+          sourceDefinitionError(
+            input.entry.topic,
+            "Source Application Transition requires exactly one nominal Source Mutation.",
+          ),
+        );
+      }
+      return Effect.succeed(
+        makeSourceTransitionDelivery(mutationsOrMutation, settlement, transition),
+      );
+    }
+    return markSourceToolkit<object, unknown, unknown, never, string>({
+      topic: input.entry.topic,
+      upsert: decodeUpsert,
+      decodeUpsert,
+      delete: (id) =>
+        typeof id === "string" && id.length > 0
+          ? Effect.succeed(makeSourceDelete(id))
+          : Effect.fail(sourceIdError(input.entry.topic)),
+      delivery,
       reject: (rejection) =>
         Effect.gen(function* () {
           if (rejection.settlement !== undefined && typeof rejection.settlement !== "function") {
@@ -1030,7 +1381,7 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
   const applicationFailure = (error: ViewServerRuntimeError): SourceRuntimeError =>
     sourceApplicationFailure(error.message);
 
-  const applyMutationOperation = Effect.fn("ViewServerRuntimeCore.source.mutation.operation")(
+  const prepareMutationOperation = Effect.fn("ViewServerRuntimeCore.source.mutation.prepare")(
     function* (mutation: SourceMutation) {
       if (mutation._tag === "Upsert") {
         const row = yield* validateDecodedRow(input.entry.schema, mutation.row).pipe(
@@ -1055,82 +1406,110 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
         ) {
           return yield* Effect.fail(sourceRouteFailure(input.entry.topic));
         }
-        if (
-          input.feedKey !== undefined &&
-          input.partitionKey !== undefined &&
-          input.ownedStorageKeys !== undefined
-        ) {
-          const ownedStorageKeys = input.ownedStorageKeys;
-          const storageKey = internalStorageKey(input.entry.topic, input.feedKey, id);
-          const previouslyOwned = ownedStorageKeys.has(storageKey);
-          ownedStorageKeys.add(storageKey);
-          yield* input.mutations
-            .publishRowsWithStorageKeys(
-              input.entry.topic,
-              [{ storageKey, row }],
-              input.partitionKey,
-            )
-            .pipe(
-              Effect.tapError(() =>
-                Effect.sync(() => {
-                  if (!previouslyOwned) {
-                    ownedStorageKeys.delete(storageKey);
-                  }
-                }),
-              ),
-              Effect.mapError(applicationFailure),
-            );
-          return {
-            _tag: "Upsert",
-            id,
-          } satisfies AppliedSourceMutation;
-        }
-        yield* input.mutations
-          .publishRows(input.entry.topic, [row])
-          .pipe(Effect.mapError(applicationFailure));
         return {
           _tag: "Upsert",
           id,
-        } satisfies AppliedSourceMutation;
+          row,
+        } satisfies PreparedSourceMutation;
       }
       if (mutation.id.length === 0) {
         return yield* Effect.fail(sourceIdFailure(input.entry.topic));
       }
+      return {
+        _tag: "Delete",
+        id: mutation.id,
+      } satisfies PreparedSourceMutation;
+    },
+  );
+
+  const applyPreparedMutationOperation = Effect.fn(
+    "ViewServerRuntimeCore.source.mutation.operation",
+  )(function* (mutation: PreparedSourceMutation) {
+    if (mutation._tag === "Upsert") {
       if (
         input.feedKey !== undefined &&
         input.partitionKey !== undefined &&
         input.ownedStorageKeys !== undefined
       ) {
+        const ownedStorageKeys = input.ownedStorageKeys;
         const storageKey = internalStorageKey(input.entry.topic, input.feedKey, mutation.id);
+        const previouslyOwned = ownedStorageKeys.has(storageKey);
+        ownedStorageKeys.add(storageKey);
         yield* input.mutations
-          .deleteStorageKey(input.entry.topic, storageKey, input.partitionKey)
-          .pipe(Effect.mapError(applicationFailure));
-        input.ownedStorageKeys.delete(storageKey);
+          .publishRowsWithStorageKeys(
+            input.entry.topic,
+            [{ storageKey, row: mutation.row }],
+            input.partitionKey,
+          )
+          .pipe(
+            Effect.tapError(() =>
+              Effect.sync(() => {
+                if (!previouslyOwned) {
+                  ownedStorageKeys.delete(storageKey);
+                }
+              }),
+            ),
+            Effect.mapError(applicationFailure),
+          );
         return {
-          _tag: "Delete",
+          _tag: "Upsert",
           id: mutation.id,
         } satisfies AppliedSourceMutation;
       }
       yield* input.mutations
-        .delete(input.entry.topic, mutation.id)
+        .publishRows(input.entry.topic, [mutation.row])
         .pipe(Effect.mapError(applicationFailure));
+      return {
+        _tag: "Upsert",
+        id: mutation.id,
+      } satisfies AppliedSourceMutation;
+    }
+    if (
+      input.feedKey !== undefined &&
+      input.partitionKey !== undefined &&
+      input.ownedStorageKeys !== undefined
+    ) {
+      const storageKey = internalStorageKey(input.entry.topic, input.feedKey, mutation.id);
+      yield* input.mutations
+        .deleteStorageKey(input.entry.topic, storageKey, input.partitionKey)
+        .pipe(Effect.mapError(applicationFailure));
+      input.ownedStorageKeys.delete(storageKey);
       return {
         _tag: "Delete",
         id: mutation.id,
       } satisfies AppliedSourceMutation;
-    },
-  );
+    }
+    yield* input.mutations
+      .delete(input.entry.topic, mutation.id)
+      .pipe(Effect.mapError(applicationFailure));
+    return {
+      _tag: "Delete",
+      id: mutation.id,
+    } satisfies AppliedSourceMutation;
+  });
 
-  const applyMutation = Effect.fn("ViewServerRuntimeCore.source.mutation.apply")(function* (
+  const prepareMutation = Effect.fn("ViewServerRuntimeCore.source.mutation.validate")(function* (
     mutation: SourceMutation,
   ) {
     attemptedMutationCount += 1n;
-    const application = yield* Effect.exit(applyMutationOperation(mutation));
+    const preparation = yield* Effect.exit(prepareMutationOperation(mutation));
+    if (Exit.isFailure(preparation)) {
+      failedMutationCount += 1n;
+      return yield* Effect.failCause(preparation.cause);
+    }
+    return preparation.value;
+  });
+
+  const applyPreparedMutation = Effect.fn("ViewServerRuntimeCore.source.mutation.apply")(function* (
+    mutation: PreparedSourceMutation,
+  ) {
+    const application = yield* Effect.exit(applyPreparedMutationOperation(mutation));
     if (Exit.isFailure(application)) {
       failedMutationCount += 1n;
       return yield* Effect.failCause(application.cause);
     }
-    lastAppliedMutationAtNanos = yield* Clock.currentTimeNanos;
+    yield* input.constructionOptions.afterMutationApplication ?? Effect.void;
+    lastAppliedMutationAtNanos = yield* currentEpochNanos;
     if (application.value._tag === "Upsert") {
       appliedUpsertCount += 1n;
       if (input.ownedStorageKeys === undefined) {
@@ -1144,7 +1523,194 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
     }
   });
 
-  const settle = Effect.fn("ViewServerRuntimeCore.source.settle")(function* (
+  const applyMutation = Effect.fn("ViewServerRuntimeCore.source.mutation.prepareAndApply")(
+    function* (mutation: SourceMutation) {
+      const prepared = yield* prepareMutation(mutation);
+      return yield* applyPreparedMutation(prepared);
+    },
+  );
+
+  const runMaintenance = Effect.fn("ViewServerRuntimeCore.source.maintenance.run")(function* (
+    operation: import("@effect-view-server/source-adapter").SourceMaintenanceOperation,
+  ): Effect.fn.Return<import("@effect-view-server/source-adapter").SourceMaintenanceResult> {
+    return yield* lifecycleGate.withPermit(
+      Effect.uninterruptibleMask(() =>
+        Effect.gen(function* () {
+          const internal = resolveSourceMaintenanceOperation(operation);
+          if (internal === undefined) {
+            return {
+              _tag: "Inactive",
+            } satisfies import("@effect-view-server/source-adapter").SourceMaintenanceResult;
+          }
+          if (
+            internal.topic !== input.entry.topic ||
+            internal.lifetimeIdentity !== applicationLifetimeIdentity
+          ) {
+            yield* input.onFatal(
+              Cause.fail(
+                runtimeError(
+                  input.entry.topic,
+                  "Source Maintenance Operation is bound to a different Topic or logical lifetime.",
+                ),
+              ),
+            );
+            return {
+              _tag: "Inactive",
+            } satisfies import("@effect-view-server/source-adapter").SourceMaintenanceResult;
+          }
+          const currentStatus = SubscriptionRef.getUnsafe(status);
+          if (
+            !maintenanceActive ||
+            (currentStatus._tag !== "Ready" && currentStatus._tag !== "Degraded")
+          ) {
+            return {
+              _tag: "Inactive",
+            } satisfies import("@effect-view-server/source-adapter").SourceMaintenanceResult;
+          }
+          const current = yield* Effect.exit(Effect.sync(internal.isCurrent));
+          if (Exit.isFailure(current)) {
+            yield* input.onFatal(
+              fatalRuntimeCause(
+                input.entry.topic,
+                current.cause,
+                "Source maintenance state validation failed fatally and stopped the complete runtime.",
+              ),
+            );
+            return {
+              _tag: "Applied",
+              exit: Exit.failCause(current.cause),
+            } satisfies import("@effect-view-server/source-adapter").SourceMaintenanceResult;
+          }
+          if (!current.value) {
+            const stale = yield* Effect.exit(Effect.sync(internal.onStale));
+            if (Exit.isFailure(stale)) {
+              yield* input.onFatal(
+                fatalRuntimeCause(
+                  input.entry.topic,
+                  stale.cause,
+                  "Source maintenance stale transition failed fatally and stopped the complete runtime.",
+                ),
+              );
+              return {
+                _tag: "Applied",
+                exit: Exit.failCause(stale.cause),
+              } satisfies import("@effect-view-server/source-adapter").SourceMaintenanceResult;
+            }
+            failedMaintenanceWork.delete(internal.workId);
+            yield* publishDegradationLedger();
+            return {
+              _tag: "Stale",
+            } satisfies import("@effect-view-server/source-adapter").SourceMaintenanceResult;
+          }
+          const applicationExit = yield* Effect.exit(applyMutation(makeSourceDelete(internal.id)));
+          if (Exit.isSuccess(applicationExit)) {
+            const transitioned = yield* Effect.exit(Effect.sync(internal.onSuccess));
+            if (Exit.isFailure(transitioned)) {
+              yield* input.onFatal(
+                fatalRuntimeCause(
+                  input.entry.topic,
+                  transitioned.cause,
+                  "Source maintenance success transition failed fatally and stopped the complete runtime.",
+                ),
+              );
+              return {
+                _tag: "Applied",
+                exit: Exit.failCause(transitioned.cause),
+              } satisfies import("@effect-view-server/source-adapter").SourceMaintenanceResult;
+            }
+            failedMaintenanceWork.delete(internal.workId);
+            yield* publishDegradationLedger();
+            return {
+              _tag: "Applied",
+              exit: applicationExit,
+            } satisfies import("@effect-view-server/source-adapter").SourceMaintenanceResult;
+          }
+          let maintenanceExit: import("@effect-view-server/source-adapter").SourceApplicationExit =
+            applicationExit;
+          if (!Cause.hasInterruptsOnly(applicationExit.cause)) {
+            const transitioned = yield* Effect.exit(
+              Effect.sync(() => internal.onFailure(applicationExit)),
+            );
+            if (Exit.isFailure(transitioned)) {
+              const transitionCause = Cause.hasDies(applicationExit.cause)
+                ? Cause.combine(transitioned.cause, applicationExit.cause)
+                : transitioned.cause;
+              yield* input.onFatal(
+                fatalRuntimeCause(
+                  input.entry.topic,
+                  transitionCause,
+                  "Source maintenance failure transition failed fatally and stopped the complete runtime.",
+                ),
+              );
+              maintenanceExit = Exit.failCause(transitionCause);
+            } else if (Cause.hasDies(applicationExit.cause)) {
+              yield* input.onFatal(
+                fatalSourceApplicationCause(
+                  input.entry.topic,
+                  applicationExit.cause,
+                  "Source maintenance execution failed fatally and stopped the complete runtime.",
+                ),
+              );
+            }
+            failedMaintenanceWork.add(internal.workId);
+            yield* publishDegradationLedger();
+          }
+          return {
+            _tag: "Applied",
+            exit: maintenanceExit,
+          } satisfies import("@effect-view-server/source-adapter").SourceMaintenanceResult;
+        }),
+      ),
+    );
+  });
+
+  const maintenanceRegistration = applicationStateRegistration;
+  const runDueSweepIfActive =
+    maintenanceRegistration === undefined
+      ? undefined
+      : lifecycleGate
+          .withPermit(
+            Effect.sync(() => {
+              const currentStatus = SubscriptionRef.getUnsafe(status);
+              return (
+                maintenanceActive &&
+                (currentStatus._tag === "Ready" || currentStatus._tag === "Degraded")
+              );
+            }),
+          )
+          .pipe(
+            Effect.flatMap((active) =>
+              active
+                ? currentEpochNanos.pipe(
+                    Effect.flatMap((epochNowNanos) =>
+                      maintenanceRegistration.runDueSweep(scope, epochNowNanos, runMaintenance),
+                    ),
+                  )
+                : Effect.void,
+            ),
+          );
+
+  const supervisedMaintenance =
+    maintenanceRegistration === undefined || runDueSweepIfActive === undefined
+      ? undefined
+      : Effect.uninterruptibleMask((restore) =>
+          Effect.exit(
+            restore(
+              Effect.forever(
+                Effect.sleep(maintenanceRegistration.sweepIntervalNanos).pipe(
+                  Effect.andThen(runDueSweepIfActive),
+                ),
+              ),
+            ),
+          ).pipe(
+            Effect.flatMap((exit) => {
+              const cause = maintenanceSupervisorCause(input.entry.topic, exit, closing);
+              return cause === undefined ? Effect.void : input.onFatal(cause);
+            }),
+          ),
+        );
+
+  const settlementEffect = Effect.fn("ViewServerRuntimeCore.source.settlement.capture")(function* (
     settlement: import("@effect-view-server/source-adapter").SourceSettlement<unknown>,
     applicationExit: import("@effect-view-server/source-adapter").SourceApplicationExit,
   ) {
@@ -1154,10 +1720,10 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
         return Effect.isEffect(candidate) ? Option.some(candidate) : Option.none();
       },
       catch: () =>
-        sourceDefinitionError(
-          input.entry.topic,
-          "Source settlement must return an Effect without throwing.",
-        ),
+        sourceRuntimeFailure({
+          _tag: "InvalidSourceSettlement",
+          message: "Source Settlement callback threw before returning an Effect",
+        }),
     });
     if (Option.isNone(settlementResult)) {
       return yield* Effect.fail(
@@ -1167,24 +1733,38 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
         ),
       );
     }
-    yield* Effect.uninterruptible(settlementResult.value).pipe(
+    // Narrow inference workaround: keep the returned settlement Effect as data.
+    // A plain return is inferred as a nested Effect by Effect.gen rather than as
+    // this helper's success value.
+    return yield* Effect.succeed(settlementResult.value);
+  });
+
+  const recordFailedSettlement = Effect.sync(() => {
+    failedSettlementCount += 1n;
+    return failedSettlementCount;
+  }).pipe(
+    Effect.flatMap(
+      (count) =>
+        input.constructionOptions.settlementHandoff?.afterFailureCounted?.(count) ?? Effect.void,
+    ),
+  );
+
+  const observeSettlement = (
+    effect: Effect.Effect<void, unknown>,
+  ): Effect.Effect<void, SourceExecutionError> =>
+    effect.pipe(
       Effect.tap(() =>
         Effect.sync(() => {
           completedSettlementCount += 1n;
         }),
       ),
       Effect.tapError((settlementFailure) =>
-        Effect.sync(() => {
-          failedSettlementCount += 1n;
-        }).pipe(
+        recordFailedSettlement.pipe(
           Effect.andThen(
-            Exit.isFailure(applicationExit)
-              ? Effect.logError("Source settlement failed after mutation application failure.", {
-                  topic: input.entry.topic,
-                  applicationCause: applicationExit.cause,
-                  settlementFailure,
-                })
-              : Effect.void,
+            Effect.logError("Source settlement returned a typed failure.", {
+              topic: input.entry.topic,
+              settlementFailure,
+            }),
           ),
         ),
       ),
@@ -1196,9 +1776,196 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
           }) as const,
       ),
     );
+
+  const applyWithSettlement = Effect.fn(
+    "ViewServerRuntimeCore.source.application.applyWithSettlement",
+  )(function* (
+    arbitration: SourceAttemptArbitration,
+    operation: (
+      restore: <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>,
+      executeTransition: (effect: Effect.Effect<void>) => Effect.Effect<void>,
+    ) => Effect.Effect<void, SourceRuntimeError>,
+    settlement: import("@effect-view-server/source-adapter").SourceSettlement<unknown>,
+  ) {
+    return yield* Effect.uninterruptibleMask((restore) =>
+      Effect.gen(function* () {
+        let transitionDefect = false;
+        const executeTransition = (effect: Effect.Effect<void>): Effect.Effect<void> => {
+          transitionDefect = true;
+          return effect.pipe(
+            Effect.onExit((exit) =>
+              Effect.sync(() => {
+                transitionDefect = Exit.isFailure(exit);
+              }),
+            ),
+          );
+        };
+        const permits = yield* restore(lifecycleGate.take(1));
+        const applicationExit = yield* Effect.exit(
+          Effect.suspend(() => operation(restore, executeTransition)),
+        );
+        yield* lifecycleGate.release(permits);
+        yield* input.constructionOptions.settlementHandoff?.afterApplicationExit ?? Effect.void;
+        const attemptScope = yield* Effect.scope;
+        const handoff =
+          yield* Deferred.make<Result.Result<Effect.Effect<void, unknown>, SourceExecutionError>>();
+        const settlementFiberRegistration = yield* Deferred.make<Fiber.Fiber<unknown, unknown>>();
+        const settlementChild = Effect.uninterruptible(
+          Deferred.await(settlementFiberRegistration),
+        ).pipe(
+          Effect.flatMap((registeredSettlementFiber) =>
+            Effect.gen(function* () {
+              const captured = yield* Effect.uninterruptible(
+                Effect.gen(function* () {
+                  const capturedSettlement = yield* settlementEffect(
+                    settlement,
+                    applicationExit,
+                  ).pipe(Effect.result);
+                  if (Result.isFailure(capturedSettlement)) {
+                    yield* recordFailedSettlement;
+                  }
+                  yield* (
+                    input.constructionOptions.settlementHandoff?.afterCallbackApplication ??
+                      Effect.void
+                  );
+                  yield* Deferred.succeed(handoff, capturedSettlement);
+                  yield* (
+                    input.constructionOptions.settlementHandoff?.afterHandoffCompleted ??
+                      Effect.void
+                  );
+                  return capturedSettlement;
+                }),
+              );
+              if (Result.isFailure(captured)) {
+                if (yield* arbitration.cancellationWon) {
+                  return {
+                    _tag: "CancellationWon" as const,
+                  };
+                }
+                return {
+                  _tag: "Completed" as const,
+                  exit: Exit.fail(captured.failure),
+                };
+              }
+              if (yield* arbitration.promoteReturnedEffect(registeredSettlementFiber)) {
+                return {
+                  _tag: "CancellationWon" as const,
+                };
+              }
+              yield* (
+                input.constructionOptions.settlementHandoff?.beforeReturnedEffectRestore ??
+                  Effect.void
+              );
+              const settlementExit = yield* Effect.exit(
+                restore(observeSettlement(captured.success)),
+              );
+              if (transitionDefect && Exit.isFailure(settlementExit)) {
+                yield* Effect.logError(
+                  "Source fatal-path settlement ended unsuccessfully after handoff.",
+                  {
+                    topic: input.entry.topic,
+                    cause: settlementExit.cause,
+                  },
+                );
+              }
+              return {
+                _tag: "Completed" as const,
+                exit: settlementExit,
+              };
+            }).pipe(
+              Effect.ensuring(
+                Effect.sync(() => {
+                  arbitration.settlementFibers.delete(registeredSettlementFiber);
+                }),
+              ),
+            ),
+          ),
+        );
+        const settlementFiber = yield* Effect.forkIn(settlementChild, attemptScope, {
+          startImmediately: true,
+        });
+        yield* input.constructionOptions.settlementHandoff?.afterSettlementChildFork ?? Effect.void;
+        arbitration.settlementFibers.set(settlementFiber, "CallbackHandoff");
+        yield* (
+          input.constructionOptions.settlementHandoff?.afterSettlementChildRegistration ??
+            Effect.void
+        );
+        yield* Deferred.succeed(settlementFiberRegistration, settlementFiber);
+        const capturedSettlement = yield* Deferred.await(handoff);
+        yield* input.constructionOptions.settlementHandoff?.afterHandoffObserved ?? Effect.void;
+        if (transitionDefect && Exit.isFailure(applicationExit)) {
+          if (Result.isFailure(capturedSettlement)) {
+            yield* Effect.logError("Source fatal-path settlement callback failed before handoff.", {
+              topic: input.entry.topic,
+              failure: capturedSettlement.failure,
+            });
+          }
+          yield* input.onFatal(
+            fatalSourceApplicationCause(
+              input.entry.topic,
+              applicationExit.cause,
+              "Source application transition failed and stopped the complete runtime.",
+            ),
+          );
+          yield* input.constructionOptions.settlementHandoff?.afterFatalCompleted ?? Effect.void;
+          return yield* Effect.failCause(applicationExit.cause);
+        }
+        const settlementOutcome = (yield* arbitration.cancellationWon)
+          ? yield* Fiber.join(settlementFiber)
+          : yield* restore(Fiber.join(settlementFiber));
+        if (settlementOutcome._tag === "CancellationWon") {
+          return yield* restore(Effect.interrupt);
+        }
+        const settlementFailed = Exit.isFailure(settlementOutcome.exit);
+        const applicationFailed = Exit.isFailure(applicationExit);
+        if (!settlementFailed && !applicationFailed) {
+          return;
+        }
+        yield* (
+          input.constructionOptions.settlementHandoff?.beforeOrdinaryTerminationClaim ?? Effect.void
+        );
+        if (!(yield* arbitration.claimOrdinaryTermination)) {
+          yield* Effect.logError(
+            "Source application failure was secondary to attempt cancellation.",
+            {
+              topic: input.entry.topic,
+              applicationFailed,
+              settlementFailed,
+            },
+          );
+          return yield* restore(Effect.interrupt);
+        }
+        if (Exit.isFailure(settlementOutcome.exit)) {
+          return yield* Effect.failCause(settlementOutcome.exit.cause);
+        }
+        const applicationCause = Option.getOrThrow(Exit.getCause(applicationExit));
+        if (Cause.hasDies(applicationCause)) {
+          return yield* Effect.fail(
+            sourceApplicationFailure(
+              "Source mutation application defected and terminated the Source Attempt.",
+            ),
+          );
+        }
+        return yield* Effect.failCause(applicationCause);
+      }),
+    );
   });
 
+  const handoffAttemptTermination = (
+    arbitration: SourceAttemptArbitration,
+    failure: SourceTermination<unknown>,
+  ): Effect.Effect<never, SourceTermination<unknown>> =>
+    Effect.gen(function* () {
+      yield* input.constructionOptions.beforeAttemptTerminationClaim ?? Effect.void;
+      return yield* arbitration.claimOrdinaryTermination.pipe(
+        Effect.flatMap((ordinaryTerminationWon) =>
+          ordinaryTerminationWon ? Effect.fail(failure) : Effect.interrupt,
+        ),
+      );
+    });
+
   const laneEvent = Effect.fn("ViewServerRuntimeCore.source.lane.event")(function* (
+    arbitration: SourceAttemptArbitration,
     laneId: string,
     event: import("@effect-view-server/source-adapter").SourceLaneEvent<object, unknown, unknown>,
   ) {
@@ -1212,45 +1979,41 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
       );
     }
     if (isSourceItemRejection(event)) {
-      return yield* Effect.acquireUseRelease(
-        Effect.void,
-        () =>
-          Effect.gen(function* () {
-            if (event.diagnostic.rejectedAtNanos < 0n) {
-              return yield* Effect.fail(
-                sourceDefinitionFailure(
-                  input.entry.topic,
-                  "Source Rejection timestamp must be non-negative epoch nanoseconds.",
+      return yield* applyWithSettlement(
+        arbitration,
+        (restore) =>
+          restore(
+            Effect.gen(function* () {
+              if (event.diagnostic.rejectedAtNanos < 0n) {
+                return yield* Effect.fail(
+                  sourceDefinitionFailure(
+                    input.entry.topic,
+                    "Source Rejection timestamp must be non-negative epoch nanoseconds.",
+                  ),
+                );
+              }
+              const failure = yield* validateRejectionFailure(event.diagnostic.failure);
+              const location = yield* Schema.decodeUnknownEffect(
+                input.entry.declaration.rejectionLocation,
+              )(event.diagnostic.location).pipe(
+                Effect.mapError(() =>
+                  sourceDefinitionFailure(
+                    input.entry.topic,
+                    "Source Rejection Location does not satisfy its declared Schema.",
+                  ),
                 ),
               );
-            }
-            const failure = yield* validateRejectionFailure(event.diagnostic.failure);
-            const location = yield* Schema.decodeUnknownEffect(
-              input.entry.declaration.rejectionLocation,
-            )(event.diagnostic.location).pipe(
-              Effect.mapError(() =>
-                sourceDefinitionFailure(
-                  input.entry.topic,
-                  "Source Rejection Location does not satisfy its declared Schema.",
-                ),
-              ),
-            );
-            latestRejection = {
-              failure,
-              location,
-              rejectedAtNanos: event.diagnostic.rejectedAtNanos,
-            };
-            rejectedItemCount += 1n;
-            lastRejectionAtNanos = event.diagnostic.rejectedAtNanos;
-            degradedAtNanos ??= yield* Clock.currentTimeNanos;
-            yield* publish({
-              _tag: "Degraded",
-              attempt: currentAttempt,
-              degradedAtNanos,
-              latestRejection,
-            });
-          }),
-        (_resource, applicationExit) => settle(event.settle, applicationExit),
+              latestRejection = {
+                failure,
+                location,
+                rejectedAtNanos: event.diagnostic.rejectedAtNanos,
+              };
+              rejectedItemCount += 1n;
+              lastRejectionAtNanos = event.diagnostic.rejectedAtNanos;
+              yield* publishDegradationLedger();
+            }),
+          ),
+        event.settle,
       ).pipe(
         Effect.mapError((failure) =>
           failure._tag === "AdapterFailure" || failure._tag === "RuntimeFailure"
@@ -1268,11 +2031,50 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
       );
     }
     receivedDeliveryCount += 1n;
-    lastDeliveryAtNanos = yield* Clock.currentTimeNanos;
-    yield* Effect.acquireUseRelease(
-      Effect.void,
-      () => Effect.forEach(event.mutations, applyMutation, { discard: true }),
-      (_resource, applicationExit) => settle(event.settle, applicationExit),
+    lastDeliveryAtNanos = yield* currentEpochNanos;
+    yield* applyWithSettlement(
+      arbitration,
+      (restore, executeTransition) =>
+        Effect.gen(function* () {
+          if (event.transition !== undefined) {
+            if (Chunk.size(event.mutations) !== 1) {
+              return yield* Effect.fail(
+                sourceDefinitionFailure(
+                  input.entry.topic,
+                  "Source Application Transition requires exactly one nominal Source Mutation.",
+                ),
+              );
+            }
+            const transition = Option.getOrThrow(
+              Option.fromUndefinedOr(resolveSourceApplicationTransition(event.transition)),
+            );
+            if (
+              applicationLifetimeIdentity === undefined ||
+              transition.topic !== input.entry.topic ||
+              transition.lifetimeIdentity !== applicationLifetimeIdentity
+            ) {
+              return yield* executeTransition(
+                Effect.die(
+                  runtimeError(
+                    input.entry.topic,
+                    "Source Application Transition is bound to a different Topic or logical lifetime.",
+                  ),
+                ),
+              );
+            }
+            const mutation = Chunk.headNonEmpty(event.mutations);
+            const preparedMutation = yield* Effect.interruptible(prepareMutation(mutation));
+            yield* applyPreparedMutation(preparedMutation);
+            yield* executeTransition(Effect.sync(transition.apply));
+            for (const workId of transition.cancelledMaintenanceWorkIds) {
+              failedMaintenanceWork.delete(workId);
+            }
+            yield* publishDegradationLedger();
+            return;
+          }
+          yield* restore(Effect.forEach(event.mutations, applyMutation, { discard: true }));
+        }),
+      event.settle,
     ).pipe(
       Effect.mapError((failure) =>
         failure._tag === "AdapterFailure" || failure._tag === "RuntimeFailure"
@@ -1282,22 +2084,22 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
     );
   });
 
-  const runLane = (lane: SourceLane) =>
+  const runLane = (arbitration: SourceAttemptArbitration, lane: SourceLane) =>
     lane.events.pipe(
-      Stream.runForEach((event) => laneEvent(lane.id, event)),
+      Stream.runForEach((event) => laneEvent(arbitration, lane.id, event)),
       Effect.catch((failure) =>
         validateFailure(failure).pipe(
           Effect.catch((validationFailure) => Effect.succeed(validationFailure)),
           Effect.flatMap((validatedFailure) =>
-            Effect.fail<SourceTermination<unknown>>({
-              _tag: "Failed",
+            handoffAttemptTermination(arbitration, {
+              _tag: "Failed" as const,
               failure: validatedFailure,
             }),
           ),
         ),
       ),
       Effect.andThen(
-        Effect.fail<SourceTermination<unknown>>({
+        handoffAttemptTermination(arbitration, {
           _tag: "UnexpectedCompletion",
         }),
       ),
@@ -1305,8 +2107,9 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
 
   const runAttempt = Effect.fn("ViewServerRuntimeCore.source.attempt.run")(function* (
     previous: SourceTermination<unknown> | undefined,
+    arbitration: SourceAttemptArbitration,
   ) {
-    lastAttemptStartedAtNanos = yield* Clock.currentTimeNanos;
+    lastAttemptStartedAtNanos = yield* currentEpochNanos;
     if (previous !== undefined) {
       currentAttempt += 1n;
       retryCount += 1n;
@@ -1329,8 +2132,8 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
           validateFailure(failure).pipe(
             Effect.catch((validationFailure) => Effect.succeed(validationFailure)),
             Effect.flatMap((validatedFailure) =>
-              Effect.fail<SourceTermination<unknown>>({
-                _tag: "Failed",
+              handoffAttemptTermination(arbitration, {
+                _tag: "Failed" as const,
                 failure: validatedFailure,
               }),
             ),
@@ -1338,13 +2141,13 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
         ),
       );
     if (!isSourceAttempt(attempt)) {
-      return yield* Effect.fail({
-        _tag: "Failed",
+      return yield* handoffAttemptTermination(arbitration, {
+        _tag: "Failed" as const,
         failure: sourceDefinitionError(
           input.entry.topic,
           "Lifecycle acquisition returned a structurally forged Source Attempt.",
         ),
-      } satisfies SourceTermination<unknown>);
+      });
     }
     const laneMetadata = Result.try(() =>
       attempt.lanes.map((lane) => ({
@@ -1365,13 +2168,13 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
       ) ||
       new Set(laneMetadata.success.map((lane) => lane.id)).size !== laneMetadata.success.length
     ) {
-      return yield* Effect.fail({
-        _tag: "Failed",
+      return yield* handoffAttemptTermination(arbitration, {
+        _tag: "Failed" as const,
         failure: sourceDefinitionError(
           input.entry.topic,
           "Source Attempt requires non-empty unique lane IDs, Streams, and buffer metrics.",
         ),
-      } satisfies SourceTermination<unknown>);
+      });
     }
     const nextLaneIds = laneMetadata.success
       .map((lane) => lane.id)
@@ -1381,13 +2184,13 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
       (stableLaneIds.length !== nextLaneIds.length ||
         stableLaneIds.some((laneId, index) => laneId !== nextLaneIds[index]))
     ) {
-      return yield* Effect.fail({
-        _tag: "Failed",
+      return yield* handoffAttemptTermination(arbitration, {
+        _tag: "Failed" as const,
         failure: sourceDefinitionError(
           input.entry.topic,
           "Source Delivery Lane IDs must remain stable across retries.",
         ),
-      } satisfies SourceTermination<unknown>);
+      });
     }
     stableLaneIds ??= nextLaneIds;
     laneCounters.clear();
@@ -1396,23 +2199,32 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
         buffer: lane.bufferMetrics,
       });
     }
-    const readyAtNanos = yield* Clock.currentTimeNanos;
+    const readyAtNanos = yield* currentEpochNanos;
     const stickyDegradedAtNanos = degradedAtNanos ?? readyAtNanos;
-    yield* publish(
-      latestRejection === undefined
-        ? {
-            _tag: "Ready",
-            attempt: currentAttempt,
-            readyAtNanos,
-          }
-        : {
-            _tag: "Degraded",
-            attempt: currentAttempt,
-            degradedAtNanos: stickyDegradedAtNanos,
-            latestRejection,
-          },
+    const reasons = degradationReasons();
+    yield* lifecycleGate.withPermit(
+      Effect.sync(() => {
+        maintenanceActive = true;
+      }).pipe(
+        Effect.andThen(
+          publish(
+            reasons === undefined
+              ? {
+                  _tag: "Ready",
+                  attempt: currentAttempt,
+                  readyAtNanos,
+                }
+              : {
+                  _tag: "Degraded",
+                  attempt: currentAttempt,
+                  degradedAtNanos: stickyDegradedAtNanos,
+                  reasons,
+                },
+          ),
+        ),
+      ),
     );
-    const laneWorkers = attempt.lanes.map(runLane);
+    const laneWorkers = attempt.lanes.map((lane) => runLane(arbitration, lane));
     return yield* Effect.all(laneWorkers, {
       concurrency: "unbounded",
       discard: true,
@@ -1424,26 +2236,31 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
     const attempt = previousTermination === undefined ? currentAttempt : currentAttempt + 1n;
     return Effect.scoped(
       Effect.gen(function* () {
+        const arbitration = yield* makeSourceAttemptArbitration(
+          input.constructionOptions.settlementHandoff?.duringReturnedEffectPromotion,
+        );
+        cancelActiveAttempt = arbitration.cancel;
+        yield* Effect.addFinalizer(() => arbitration.cancel.pipe(Effect.asVoid));
         if (declaredLaneFailure !== undefined) {
-          return yield* Effect.fail<SourceTermination<unknown>>({
-            _tag: "Failed",
+          return yield* handoffAttemptTermination(arbitration, {
+            _tag: "Failed" as const,
             failure: declaredLaneFailure,
           });
         }
         const metricFailure = yield* Deferred.make<SourceExecutionError>();
         const registration = yield* metricFailureObservation.register(metricFailure);
         if (registration._tag === "Failed") {
-          return yield* Effect.fail<SourceTermination<unknown>>({
-            _tag: "Failed",
+          return yield* handoffAttemptTermination(arbitration, {
+            _tag: "Failed" as const,
             failure: registration.failure,
           });
         }
         return yield* Effect.raceFirst(
-          runAttempt(previousTermination),
+          runAttempt(previousTermination, arbitration),
           Deferred.await(metricFailure).pipe(
             Effect.flatMap((failure) =>
-              Effect.fail<SourceTermination<unknown>>({
-                _tag: "Failed",
+              handoffAttemptTermination(arbitration, {
+                _tag: "Failed" as const,
                 failure,
               }),
             ),
@@ -1451,10 +2268,13 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
         ).pipe(Effect.ensuring(metricFailureObservation.unregister(metricFailure)));
       }).pipe(
         Effect.tapError((termination) =>
-          Effect.gen(function* () {
-            previousTermination = termination;
-            lastTerminationAtNanos = yield* Clock.currentTimeNanos;
-          }),
+          lifecycleGate.withPermit(
+            Effect.gen(function* () {
+              maintenanceActive = false;
+              previousTermination = termination;
+              lastTerminationAtNanos = yield* currentEpochNanos;
+            }),
+          ),
         ),
       ),
     ).pipe(
@@ -1467,7 +2287,7 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
   const onRetry = Effect.fn("ViewServerRuntimeCore.source.retry.waiting")(function* (
     metadata: Schedule.Metadata<unknown, SourceTermination<unknown>>,
   ) {
-    const decidedAtNanos = yield* Clock.currentTimeNanos;
+    const decidedAtNanos = yield* currentEpochNanos;
     const delayNanos = Duration.toNanos(metadata.duration);
     if (Option.isNone(delayNanos)) {
       return yield* Effect.fail<SourceTermination<unknown>>({
@@ -1494,7 +2314,7 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
         );
   const run = retried.pipe(
     Effect.catch((termination) =>
-      Clock.currentTimeNanos.pipe(
+      currentEpochNanos.pipe(
         Effect.flatMap((exhaustedAtNanos) =>
           publish({
             _tag: "Exhausted",
@@ -1510,38 +2330,80 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
     Effect.provideService(Scope.Scope, scope),
     Effect.provide(input.context),
   );
+  const supervisedRun = Effect.exit(run).pipe(
+    Effect.flatMap((exit) =>
+      Exit.isSuccess(exit) || closing
+        ? Effect.void
+        : input.onFatal(
+            fatalRuntimeCause(
+              input.entry.topic,
+              exit.cause,
+              "Source supervisor failed fatally and stopped the complete runtime.",
+            ),
+          ),
+    ),
+  );
 
   const stop = Effect.fn("ViewServerRuntimeCore.source.stop")(function* (
     reason: import("@effect-view-server/source-adapter").SourceStoppingReason,
   ) {
-    const stoppingAtNanos = yield* Clock.currentTimeNanos;
-    yield* publish({ _tag: "Stopping", reason, stoppingAtNanos });
-    yield* Fiber.interrupt(Option.getOrThrow(Option.fromUndefinedOr(supervisorFiber))).pipe(
-      Effect.asVoid,
+    closing = true;
+    yield* cancelActiveAttempt;
+    yield* input.constructionOptions.afterAttemptCancellationRequested ?? Effect.void;
+    const activeSupervisorFiber = yield* Deferred.await(supervisorFiber);
+    yield* Effect.sync(() => {
+      activeSupervisorFiber.interruptUnsafe();
+    });
+    if (maintenanceFiber !== undefined) {
+      yield* Fiber.interrupt(maintenanceFiber).pipe(Effect.asVoid);
+    }
+    yield* lifecycleGate.withPermit(
+      Effect.gen(function* () {
+        const stoppingAtNanos = yield* currentEpochNanos;
+        maintenanceActive = false;
+        yield* publish({
+          _tag: "Stopping",
+          reason,
+          stoppingAtNanos,
+        });
+      }),
     );
+    yield* Fiber.interrupt(activeSupervisorFiber).pipe(Effect.asVoid);
     yield* Scope.close(scope, Exit.void);
   });
+
+  declaredLaneFailure = yield* initializeDeclaredLanes();
+  yield* sampleAdapterMetrics();
+  const activate = (yield* Effect.cached(
+    Effect.gen(function* () {
+      if (supervisedMaintenance !== undefined) {
+        maintenanceFiber = yield* Effect.forkIn(supervisedMaintenance, scope, {
+          startImmediately: true,
+        });
+      }
+      const activatedSupervisorFiber = yield* Effect.forkIn(supervisedRun, scope, {
+        startImmediately: true,
+      });
+      yield* Deferred.succeed(supervisorFiber, activatedSupervisorFiber);
+      yield* Effect.forkIn(
+        Effect.forever(Effect.sleep("1 second").pipe(Effect.andThen(sampleAdapterMetrics()))),
+        scope,
+        {
+          startImmediately: true,
+        },
+      );
+    }),
+  )).pipe(Effect.uninterruptible);
 
   const logical: SourceLogicalRuntime = {
     entry: input.entry,
     target: input.target,
     health,
     status,
+    activate,
     run,
     stop,
   };
-  declaredLaneFailure = yield* initializeDeclaredLanes();
-  yield* sampleAdapterMetrics();
-  supervisorFiber = yield* Effect.forkIn(run, scope, {
-    startImmediately: true,
-  });
-  yield* Effect.forkIn(
-    Effect.forever(Effect.sleep("1 second").pipe(Effect.andThen(sampleAdapterMetrics()))),
-    scope,
-    {
-      startImmediately: true,
-    },
-  );
   return logical;
 });
 
@@ -1690,7 +2552,7 @@ const sourceAvailabilityEvent = (
       code: "Ready",
       message:
         status._tag === "Degraded"
-          ? "Source delivery continues with one or more settled item rejections."
+          ? "Source delivery continues with active degradation diagnostics."
           : "Source is ready.",
     };
   }
@@ -1921,6 +2783,12 @@ export const makeRuntimeCoreSourceManager = Effect.fn("ViewServerRuntimeCore.sou
           };
           const managerScope = yield* Scope.make("sequential");
           yield* markAcquired(Scope.close(managerScope, Exit.void));
+          const fatalSignal = yield* Deferred.make<Cause.Cause<ViewServerRuntimeError>>();
+          const onFatal = (cause: Cause.Cause<ViewServerRuntimeError>): Effect.Effect<void> =>
+            Deferred.succeed(fatalSignal, cause).pipe(Effect.asVoid);
+          const fatal = Deferred.await(fatalSignal).pipe(
+            Effect.flatMap((cause) => Effect.failCause(cause)),
+          );
           const materialized = new Map<string, SourceLogicalRuntime>();
           type ManagedLeasedSource = {
             readonly entry: SourceRuntimeEntry;
@@ -1974,6 +2842,7 @@ export const makeRuntimeCoreSourceManager = Effect.fn("ViewServerRuntimeCore.sou
               mutations: sourceMutations,
               context,
               ownerScope: managerScope,
+              constructionOptions,
               onHealth: (health) =>
                 Effect.sync(() => {
                   sourceHealthSnapshots.set(sourceKey, {
@@ -1990,8 +2859,12 @@ export const makeRuntimeCoreSourceManager = Effect.fn("ViewServerRuntimeCore.sou
                     status,
                   });
                 }).pipe(Effect.andThen(onHealthChange)),
+              onFatal,
             });
             materialized.set(entry.topic, runtime);
+          }
+          for (const runtime of materialized.values()) {
+            yield* runtime.activate;
           }
           const cleanupLease = Effect.fn("ViewServerRuntimeCore.source.lease.cleanup")(
             (lease: ManagedLeasedSource) =>
@@ -2108,6 +2981,7 @@ export const makeRuntimeCoreSourceManager = Effect.fn("ViewServerRuntimeCore.sou
                                 mutations: sourceMutations,
                                 context,
                                 ownerScope: scope,
+                                constructionOptions,
                                 partitionKey: partition.key,
                                 feedKey,
                                 feedRouteReference: `leased-feed-${leaseSequence}`,
@@ -2128,7 +3002,9 @@ export const makeRuntimeCoreSourceManager = Effect.fn("ViewServerRuntimeCore.sou
                                       status,
                                     });
                                   }).pipe(Effect.andThen(onHealthChange)),
+                                onFatal,
                               });
+                              yield* runtime.activate;
                               acquiredLease.runtime = runtime;
                               yield* constructionOptions.leaseHandoff?.beforeReturn ?? Effect.void;
                               const diagnostics = leasedDiagnostics.get(feedKey);
@@ -2461,6 +3337,7 @@ export const makeRuntimeCoreSourceManager = Effect.fn("ViewServerRuntimeCore.sou
             decorateMaterialized,
             overlayHealth,
             close,
+            fatal,
           };
         }),
       constructionOptions.handoff,
@@ -2475,12 +3352,15 @@ export const sourceLeaseTerminalObserver: ColumnLiveViewTerminalObserver = {
 };
 
 export const sourceRuntimeInternals = {
+  epochNanos,
   equalRouteValue,
   exactRoute,
   feedKeyFor,
+  fatalSourceApplicationCause,
   freezeDecodedMetrics,
   internalPublicId,
   internalStorageKey,
+  maintenanceSupervisorCause,
   makeMetricFailureObservation,
   overlaySourceHealth,
   resolveEntries,

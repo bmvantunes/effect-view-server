@@ -12,7 +12,9 @@ import {
 import {
   SourceAdapterServer,
   SourceBuffer,
+  currentEpochNanos,
   type SourceAdapterServerLifecycle,
+  type SourceApplicationStateModule,
 } from "@effect-view-server/source-adapter/server";
 import {
   makeSourceAdapterConformanceDriver,
@@ -24,7 +26,6 @@ import {
 } from "./conformance";
 import {
   Chunk,
-  Clock,
   Context,
   Deferred,
   Effect,
@@ -138,18 +139,28 @@ const FixtureAdapter = SourceAdapter.make({
   },
   failure: SourceFixtureFailure,
   materialized: {
+    applicationState: "required",
     metrics: SourceFixtureMetrics,
     rejectionLocation: SourceFixtureRejectionLocation,
     definitionOptions:
       SourceAdapter.definitionOptionsFamily<SourceFixtureDefinitionOptionsFamily>(),
   },
   leased: {
+    applicationState: "required",
     metrics: SourceFixtureMetrics,
     rejectionLocation: SourceFixtureRejectionLocation,
     definitionOptions:
       SourceAdapter.definitionOptionsFamily<SourceFixtureDefinitionOptionsFamily>(),
   },
 });
+
+type FixtureApplicationState = {
+  readonly applied: bigint;
+};
+
+type FixtureApplicationCommand = {
+  readonly _tag: "Defect";
+};
 
 export type SourceFixtureTarget =
   | {
@@ -207,6 +218,13 @@ type FixtureCommand =
       ) => Effect.Effect<void, SourceFixtureFailure>;
     }
   | {
+      readonly _tag: "TransitionDefect";
+      readonly row: object;
+      readonly settle: (
+        exit: import("@effect-view-server/source-adapter").SourceApplicationExit,
+      ) => Effect.Effect<void, SourceFixtureFailure>;
+    }
+  | {
       readonly _tag: "Reject";
       readonly failure: SourceFixtureFailure;
       readonly location: SourceFixtureRejectionLocation;
@@ -237,9 +255,9 @@ const decodeFixtureRow = <Row extends object>(
     ),
   );
 
-const makeFixtureMutation = <Row extends object>(
+const makeFixtureMutation = <Row extends object, Topic extends string>(
   row: Schema.Codec<Row, unknown, never, never>,
-  toolkit: SourceToolkit<Row, SourceFixtureFailure, SourceFixtureRejectionLocation>,
+  toolkit: SourceToolkit<Row, SourceFixtureFailure, SourceFixtureRejectionLocation, never, Topic>,
   mutation: SourceFixtureMutationInput,
 ): Effect.Effect<SourceMutation<Row>, SourceExecutionFailure<SourceFixtureFailure>> => {
   if (mutation._tag === "Delete") {
@@ -250,13 +268,22 @@ const makeFixtureMutation = <Row extends object>(
 
 const fixtureCommandEvent = Effect.fn("SourceAdapterTesting.fixture.command")(function* <
   Row extends object,
+  Topic extends string,
 >(
   definition: SourceFixtureDefinitionOptions<Row>,
-  toolkit: SourceToolkit<Row, SourceFixtureFailure, SourceFixtureRejectionLocation>,
+  toolkit: SourceToolkit<Row, SourceFixtureFailure, SourceFixtureRejectionLocation, never, Topic>,
   command: FixtureDataCommand,
+  applicationState: SourceApplicationStateModule<
+    Topic,
+    FixtureApplicationState,
+    FixtureApplicationCommand,
+    FixtureApplicationState,
+    void
+  >,
 ): Effect.fn.Return<
   SourceLaneEvent<Row, SourceFixtureFailure, SourceFixtureRejectionLocation>,
-  SourceExecutionFailure<SourceFixtureFailure>
+  SourceExecutionFailure<SourceFixtureFailure>,
+  Scope.Scope
 > {
   if (command._tag === "Fail") {
     return yield* Effect.fail<SourceExecutionFailure<SourceFixtureFailure>>({
@@ -265,7 +292,7 @@ const fixtureCommandEvent = Effect.fn("SourceAdapterTesting.fixture.command")(fu
     });
   }
   if (command._tag === "Reject") {
-    const rejectedAtNanos = yield* Clock.currentTimeNanos;
+    const rejectedAtNanos = yield* currentEpochNanos;
     return yield* toolkit.reject({
       failure: {
         _tag: "AdapterFailure",
@@ -289,6 +316,12 @@ const fixtureCommandEvent = Effect.fn("SourceAdapterTesting.fixture.command")(fu
     const later = yield* toolkit.upsert(laterDecoded);
     Reflect.set(later.row, command.field, command.value);
     return yield* toolkit.delivery(Chunk.make(first, later), command.settle);
+  }
+  if (command._tag === "TransitionDefect") {
+    const decoded = yield* decodeFixtureRow(definition.row, command.row);
+    const mutation = yield* toolkit.upsert(decoded);
+    const prepared = yield* applicationState.prepare({ _tag: "Defect" });
+    return yield* toolkit.delivery(mutation, command.settle, prepared.transition);
   }
   if (command._tag === "Delivery") {
     const [firstInput, ...restInputs] = command.mutations;
@@ -411,6 +444,13 @@ export type ControllableSourceFixture<Row extends object = object> = {
       laterRow: object,
       field: string,
       value: unknown,
+      settle: (
+        exit: import("@effect-view-server/source-adapter").SourceApplicationExit,
+      ) => Effect.Effect<void, SourceFixtureFailure>,
+    ) => Effect.Effect<void, SourceFixtureFailure>;
+    readonly transitionDefect: (
+      target: SourceFixtureTarget,
+      row: object,
       settle: (
         exit: import("@effect-view-server/source-adapter").SourceApplicationExit,
       ) => Effect.Effect<void, SourceFixtureFailure>,
@@ -540,6 +580,20 @@ const makeControllableSourceFixtureEffect = Effect.fn("SourceAdapterTesting.fixt
       | ((row: unknown) => Effect.Effect<void, SourceFixtureFailure>)
       | undefined;
     let emitNonPausable: ((row: unknown) => Effect.Effect<void, SourceFixtureFailure>) | undefined;
+    const applicationState = SourceAdapterServer.applicationState<
+      FixtureApplicationState,
+      FixtureApplicationCommand,
+      FixtureApplicationState,
+      void
+    >({
+      sweepIntervalNanos: 86_400_000_000_000n,
+      initialState: () => Object.freeze({ applied: 0n }),
+      reduce: () => {
+        throw new Error("conformance transition defect");
+      },
+      metrics: (state) => state,
+      runDueSweep: () => Effect.void,
+    });
 
     const callbackAcquire: SourceAdapterServerLifecycle<
       SourceFixtureFailure,
@@ -663,9 +717,14 @@ const makeControllableSourceFixtureEffect = Effect.fn("SourceAdapterTesting.fixt
       Lifecycle,
       never
     > => ({
+      applicationState,
       acquire: (input) =>
         Effect.gen(function* () {
           const key = targetKey(input.target);
+          const lifetimeApplicationState = applicationState.forLifetime(
+            input.lifetimeScope,
+            input.toolkit.topic,
+          );
           const acquisitionFailure = failedAcquisitions.get(key);
           if (acquisitionFailure !== undefined) {
             failedAcquisitions.delete(key);
@@ -753,7 +812,12 @@ const makeControllableSourceFixtureEffect = Effect.fn("SourceAdapterTesting.fixt
                   (command): command is FixtureDataCommand => command._tag !== "Complete",
                 ),
                 Stream.mapEffect((command) =>
-                  fixtureCommandEvent(input.definition, input.toolkit, command),
+                  fixtureCommandEvent(
+                    input.definition,
+                    input.toolkit,
+                    command,
+                    lifetimeApplicationState,
+                  ),
                 ),
               ),
             });
@@ -948,6 +1012,12 @@ const makeControllableSourceFixtureEffect = Effect.fn("SourceAdapterTesting.fixt
             value,
             settle,
           }),
+        transitionDefect: (target, row, settle) =>
+          offer(target, {
+            _tag: "TransitionDefect",
+            row,
+            settle,
+          }),
         reject: (target, failure, location, settle) =>
           offer(target, {
             _tag: "Reject",
@@ -1090,6 +1160,15 @@ export const SourceFixture = {
                   fixtureFailure("conformance settlement failure", "settlement"),
                 ),
               ),
+        );
+      }
+      if (input._tag === "TransitionDefect") {
+        return fixture.controls.transitionDefect(fixtureTarget(input.target), input.row, (exit) =>
+          input
+            .settle(exit)
+            .pipe(
+              Effect.mapError(() => fixtureFailure("conformance settlement failure", "settlement")),
+            ),
         );
       }
       if (input._tag === "Reject") {

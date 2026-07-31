@@ -176,6 +176,8 @@ beforeAll(async () => {
           rows: {
             schema: Row,
             source: kafka.source({
+              cleanupPolicy: "delete",
+              retentionPolicy: "Infinity",
               topic: sourceTopic,
               regions: ["local"],
               key: kafka.string(),
@@ -294,7 +296,7 @@ beforeAll(async () => {
           }
           const rowsById = new Map(snapshot.rows.map((row) => [row.id, row.value]));
           for (let index = 0; index < rowCount; index += 1) {
-            if (rowsById.get(`local:row-${index}`) !== completedBatch) {
+            if (rowsById.get(`local:0:row-${index}`) !== completedBatch) {
               return yield* new KafkaSourceBrokerBenchmarkError({
                 message: "Kafka Source benchmark retained state did not converge.",
               });

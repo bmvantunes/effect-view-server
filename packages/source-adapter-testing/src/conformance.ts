@@ -64,6 +64,12 @@ export type SourceAdapterConformanceCommand =
       readonly settle: (exit: SourceApplicationExit) => Effect.Effect<void, unknown>;
     }
   | {
+      readonly _tag: "TransitionDefect";
+      readonly target: SourceAdapterConformanceTarget;
+      readonly row: SourceAdapterConformanceRow;
+      readonly settle: (exit: SourceApplicationExit) => Effect.Effect<void, unknown>;
+    }
+  | {
       readonly _tag: "Reject";
       readonly target: SourceAdapterConformanceTarget;
       readonly phase: "acquire" | "stream" | "settlement";

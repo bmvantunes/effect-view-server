@@ -20,8 +20,9 @@ import {
   ignoreLoggedTypedFailuresPreserveNonTypedFailures,
   runAllFinalizers,
 } from "@effect-view-server/effect-utils";
-import { Cause, Clock, Effect, Queue, Semaphore, Stream, type Duration } from "effect";
+import { Cause, Effect, Queue, Semaphore, Stream, type Duration } from "effect";
 import { AtomRef } from "effect/unstable/reactivity";
+import { currentEpochNanos } from "@effect-view-server/source-adapter/internal";
 import { makeCoalescedHealthReader, makeHealthRefreshScheduler } from "./health";
 import {
   acquireRuntimeCoreResourceHandoff,
@@ -150,7 +151,7 @@ export const makeRuntimeCorePushedHealthHub = Effect.fn("ViewServerRuntimeCore.p
       offer: (snapshots: RuntimeCoreHealthSnapshots<Topics>) => HealthSnapshotOfferResult;
     };
 
-    const initialUpdatedAtNanos = yield* Clock.currentTimeNanos;
+    const initialUpdatedAtNanos = yield* currentEpochNanos;
     const health = AtomRef.make(initialHealth);
     let installedHealth = initialHealth;
     let installedSnapshots = healthSnapshotsFromHealth(initialHealth, initialUpdatedAtNanos);
@@ -164,7 +165,7 @@ export const makeRuntimeCorePushedHealthHub = Effect.fn("ViewServerRuntimeCore.p
       nextHealth: ViewServerHealth<Topics>,
       refreshEpoch: number,
     ) {
-      const updatedAtNanos = yield* Clock.currentTimeNanos;
+      const updatedAtNanos = yield* currentEpochNanos;
       const claim = yield* healthSubscriptionLock.withPermit(
         Effect.sync(() => {
           if (hubClosed || refreshEpoch < installedRefreshEpoch) {

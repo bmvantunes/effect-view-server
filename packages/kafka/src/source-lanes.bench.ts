@@ -6,7 +6,8 @@ import { ViewServerId, defineViewServerConfig } from "@effect-view-server/config
 import { makeViewServerRuntimeCore } from "@effect-view-server/runtime-core";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { Deferred, Effect, Exit, Queue, Schema, Scope, Stream } from "effect";
+import { Clock, Deferred, Duration, Effect, Exit, Queue, Schema, Scope, Stream } from "effect";
+import type { KafkaResolvedBrokerContract } from "./broker-contract";
 import { kafka, type KafkaMessageMetadata } from "./contract";
 import { kafkaNodeInternals } from "./node-internal";
 import { makeKafkaServerLayer, type KafkaServerRecord, type KafkaServerRegion } from "./server";
@@ -32,10 +33,17 @@ const benchmarkOptions = {
 };
 const laneBatchSize = benchmarkInteger("VIEW_SERVER_KAFKA_SOURCE_BENCH_ROWS", 64);
 const metricsPartitionCount = benchmarkInteger("VIEW_SERVER_KAFKA_SOURCE_BENCH_PARTITIONS", 64);
+const retentionCohortSize = benchmarkInteger("VIEW_SERVER_KAFKA_RETENTION_BENCH_ROWS", 10_000);
+const retentionSweepIntervalNanos = 86_400_000_000_000n;
 const multiRegionCount = 4;
-if (laneBatchSize === 0 || metricsPartitionCount === 0 || laneBatchSize % multiRegionCount !== 0) {
+if (
+  laneBatchSize === 0 ||
+  metricsPartitionCount === 0 ||
+  retentionCohortSize === 0 ||
+  laneBatchSize % multiRegionCount !== 0
+) {
   throw new Error(
-    "Kafka Source Adapter benchmark rows and partitions must be positive, and rows must divide evenly across four Regions.",
+    "Kafka Source Adapter benchmark rows, retention rows, and partitions must be positive, and rows must divide evenly across four Regions.",
   );
 }
 const multiRegionBatchSize = laneBatchSize / multiRegionCount;
@@ -48,6 +56,8 @@ const benchmarkCaseNames = [
   `poison Rejection plus valid continuation (${laneBatchSize} records across ${metricsPartitionCount} partitions)`,
   `four concurrent Region Lanes (${laneBatchSize} accepted records across ${metricsPartitionCount} partitions)`,
   `${metricsPartitionCount}-partition assignment, commit, lag, and snapshot metrics`,
+  `finite-retention ingestion (${retentionCohortSize} indexed records)`,
+  `retention due sweep and Runtime Core convergence (${retentionCohortSize} rows)`,
 ] as const;
 const outputJsonPath =
   process.env["VIEW_SERVER_KAFKA_SOURCE_BENCH_OUTPUT_JSON"]?.trim() ||
@@ -117,7 +127,14 @@ type BenchmarkRegion = {
   ) => Effect.Effect<void>;
 };
 
+type BenchmarkClock = {
+  readonly clock: Clock.Clock;
+  readonly advanceEpochMillis: (milliseconds: number) => Effect.Effect<void>;
+  readonly awaitSleepers: (count: number) => Effect.Effect<void>;
+};
+
 type BenchmarkState = {
+  readonly clock: BenchmarkClock;
   readonly regions: ReadonlyMap<string, BenchmarkRegion>;
   readonly retainedRowIds: Effect.Effect<
     {
@@ -125,6 +142,7 @@ type BenchmarkState = {
       readonly protobuf: ReadonlyArray<string>;
       readonly poisoned: ReadonlyArray<string>;
       readonly multiRegion: ReadonlyArray<string>;
+      readonly retained: ReadonlyArray<string>;
     },
     unknown
   >;
@@ -138,7 +156,9 @@ let mixedRevision = 0;
 let sustainedRevision = 0;
 let poisonedRevision = 0;
 let multiRegionRevision = 0;
+let retentionRevision = 0;
 let successfulMutationCount = 0;
+let benchmarkClock: Clock.Clock | undefined;
 
 const requireState = (): BenchmarkState => {
   if (state === undefined) {
@@ -155,6 +175,79 @@ const requireRegion = (current: BenchmarkState, region: string): BenchmarkRegion
   return found;
 };
 
+const currentBenchmarkEpochNanos = (): bigint => {
+  if (benchmarkClock === undefined) {
+    throw new Error("Kafka Source Lane benchmark clock is unavailable.");
+  }
+  return BigInt(benchmarkClock.currentTimeMillisUnsafe()) * 1_000_000n;
+};
+
+const makeBenchmarkClock = (): BenchmarkClock => {
+  let epochMillis = 0;
+  let monotonicNanos = 0n;
+  const sleepers = new Map<Deferred.Deferred<void>, bigint>();
+  let sleepersChanged = Deferred.makeUnsafe<void>();
+  const notifySleepersChanged = (): void => {
+    const changed = sleepersChanged;
+    sleepersChanged = Deferred.makeUnsafe<void>();
+    Deferred.doneUnsafe(changed, Effect.void);
+  };
+  const maintenanceSleeperCount = (): number =>
+    [...sleepers.values()].filter((duration) => duration === retentionSweepIntervalNanos).length;
+  const sleeperDiagnostic = (expected: number): Error => {
+    const sleeperDurations = [...new Set(sleepers.values())].map(String).sort().join(", ");
+    return new Error(
+      `Kafka benchmark maintenance supervisors did not become idle: expected ${expected}, observed ${maintenanceSleeperCount()}; sleeper durations: ${sleeperDurations || "<none>"}.`,
+    );
+  };
+  const clock: Clock.Clock = {
+    currentTimeMillisUnsafe: () => epochMillis,
+    currentTimeMillis: Effect.sync(() => epochMillis),
+    currentTimeNanosUnsafe: () => monotonicNanos,
+    currentTimeNanos: Effect.sync(() => monotonicNanos),
+    sleep: (duration) =>
+      Effect.gen(function* () {
+        const sleeper = yield* Deferred.make<void>();
+        sleepers.set(sleeper, Duration.toNanosUnsafe(duration));
+        notifySleepersChanged();
+        yield* Deferred.await(sleeper).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              sleepers.delete(sleeper);
+            }),
+          ),
+        );
+      }),
+  };
+  return {
+    clock,
+    advanceEpochMillis: (milliseconds) =>
+      Effect.gen(function* () {
+        epochMillis += milliseconds;
+        monotonicNanos += BigInt(milliseconds) * 1_000_000n;
+        const pending = [...sleepers.keys()];
+        sleepers.clear();
+        for (const sleeper of pending) {
+          Deferred.doneUnsafe(sleeper, Effect.void);
+        }
+        yield* Effect.yieldNow;
+      }),
+    awaitSleepers: (count) =>
+      Effect.gen(function* () {
+        while (true) {
+          if (maintenanceSleeperCount() >= count) {
+            return;
+          }
+          const changed = sleepersChanged;
+          yield* Deferred.await(changed);
+        }
+      }).pipe(
+        Effect.timeout("1 minute"),
+        Effect.catchTag("TimeoutError", () => Effect.die(sleeperDiagnostic(count))),
+      ),
+  };
+};
+
 const metadata = (
   sourceTopic: string,
   sourceRegion: string,
@@ -165,7 +258,7 @@ const metadata = (
   sourceRegion,
   partition,
   offset,
-  timestampNanos: offset * 1_000_000n,
+  timestampNanos: currentBenchmarkEpochNanos() + offset * 1_000_000n,
   headers: {},
 });
 
@@ -264,6 +357,8 @@ const makeBenchmarkRegion = (region: string): BenchmarkRegion => {
 
 const makeSource = (sourceTopic: string, regions: readonly [string, ...ReadonlyArray<string>]) =>
   kafka.source({
+    cleanupPolicy: "delete",
+    retentionPolicy: "Infinity",
     topic: sourceTopic,
     regions,
     key: kafka.string(),
@@ -276,11 +371,64 @@ const makeSource = (sourceTopic: string, regions: readonly [string, ...ReadonlyA
     startFrom: "earliest",
   });
 
+const makeFiniteRetentionSource = (
+  sourceTopic: string,
+  regions: readonly [string, ...ReadonlyArray<string>],
+) =>
+  kafka.source({
+    cleanupPolicy: "delete",
+    retentionPolicy: "1 day",
+    topic: sourceTopic,
+    regions,
+    key: kafka.string(),
+    value: kafka.json(() => Schema.toCodecJson(WireRow)),
+    localRowKey: ({ key }) => key,
+    map: ({ value, region }) => ({
+      value: value.value,
+      region,
+    }),
+    startFrom: "earliest",
+  });
+
+const foreverBrokerContract = (
+  viewServerTopic: string,
+  sourceTopic: string,
+  region: string,
+): KafkaResolvedBrokerContract => ({
+  viewServerTopic,
+  sourceTopic,
+  region,
+  cleanupPolicy: "delete",
+  retentionPolicy: { _tag: "Forever" },
+  observedCleanupPolicy: "delete",
+  observedRetentionMs: -1n,
+  resolvedRetention: { _tag: "Forever" },
+});
+
+const retainedBrokerContract: KafkaResolvedBrokerContract = {
+  viewServerTopic: "retained",
+  sourceTopic: "retained-source",
+  region: "single",
+  cleanupPolicy: "delete",
+  retentionPolicy: {
+    _tag: "Finite",
+    durationNanos: 86_400_000_000_000n,
+  },
+  observedCleanupPolicy: "delete",
+  observedRetentionMs: 86_400_000n,
+  resolvedRetention: {
+    _tag: "Finite",
+    durationNanos: 86_400_000_000_000n,
+  },
+};
+
 const makeProtobufSource = (
   sourceTopic: string,
   regions: readonly [string, ...ReadonlyArray<string>],
 ) =>
   kafka.source({
+    cleanupPolicy: "delete",
+    retentionPolicy: "Infinity",
     topic: sourceTopic,
     regions,
     key: kafka.string(),
@@ -298,6 +446,8 @@ beforeAll(async () => {
   benchmarkScope = scope;
   await Effect.runPromise(
     Effect.gen(function* () {
+      const benchmarkTime = makeBenchmarkClock();
+      benchmarkClock = benchmarkTime.clock;
       const single = makeBenchmarkRegion("single");
       const region1 = makeBenchmarkRegion("region-1");
       const region2 = makeBenchmarkRegion("region-2");
@@ -324,6 +474,10 @@ beforeAll(async () => {
             schema: Row,
             source: makeSource("poisoned-source", ["single"]),
           },
+          retained: {
+            schema: Row,
+            source: makeFiniteRetentionSource("retained-source", ["single"]),
+          },
           multiRegion: {
             schema: Row,
             source: makeSource("multi-region-source", [
@@ -336,16 +490,30 @@ beforeAll(async () => {
         },
       });
       const layer = makeKafkaServerLayer({
+        brokerContracts: [
+          foreverBrokerContract("accepted", "accepted-source", "single"),
+          foreverBrokerContract("protobuf", "protobuf-source", "single"),
+          foreverBrokerContract("poisoned", "poisoned-source", "single"),
+          retainedBrokerContract,
+          foreverBrokerContract("multiRegion", "multi-region-source", "region-1"),
+          foreverBrokerContract("multiRegion", "multi-region-source", "region-2"),
+          foreverBrokerContract("multiRegion", "multi-region-source", "region-3"),
+          foreverBrokerContract("multiRegion", "multi-region-source", "region-4"),
+        ],
+        retentionSweepIntervalNanos,
         consumerGroupPrefix: "kafka-source-benchmark",
         regions: new Map(Array.from(regions, ([name, value]) => [name, value.runtime])),
       });
       const runtime = yield* Effect.acquireRelease(
-        makeViewServerRuntimeCore(config, {}).pipe(Effect.provide(layer)),
+        makeViewServerRuntimeCore(config, {}).pipe(
+          Effect.provide(layer),
+          Effect.provideService(Clock.Clock, benchmarkTime.clock),
+        ),
         (runtime) => runtime.close,
       );
       yield* Effect.all(
         [
-          single.awaitBindings(["accepted", "protobuf", "poisoned"]),
+          single.awaitBindings(["accepted", "protobuf", "poisoned", "retained"]),
           region1.awaitBindings(["multiRegion"]),
           region2.awaitBindings(["multiRegion"]),
           region3.awaitBindings(["multiRegion"]),
@@ -354,6 +522,7 @@ beforeAll(async () => {
         { concurrency: "unbounded", discard: true },
       );
       state = {
+        clock: benchmarkTime,
         regions,
         retainedRowIds: Effect.gen(function* () {
           const accepted = yield* runtime.client.snapshot("accepted", {
@@ -372,11 +541,16 @@ beforeAll(async () => {
             select: ["id"],
             orderBy: [{ field: "id", direction: "asc" }],
           });
+          const retained = yield* runtime.client.snapshot("retained", {
+            select: ["id"],
+            orderBy: [{ field: "id", direction: "asc" }],
+          });
           return {
             accepted: accepted.rows.map((row) => row.id),
             protobuf: protobuf.rows.map((row) => row.id),
             poisoned: poisoned.rows.map((row) => row.id),
             multiRegion: multiRegion.rows.map((row) => row.id),
+            retained: retained.rows.map((row) => row.id),
           };
         }),
       };
@@ -397,25 +571,30 @@ afterAll(async () => {
     ),
   );
   benchmarkScope = undefined;
+  benchmarkClock = undefined;
   const expectedRetainedRowIds = {
-    accepted: Array.from({ length: laneBatchSize }, (_, index) => `single:accepted-${index}`).sort(
-      (left, right) => left.localeCompare(right),
-    ),
-    protobuf: Array.from({ length: laneBatchSize }, (_, index) => `single:protobuf-${index}`).sort(
-      (left, right) => left.localeCompare(right),
-    ),
+    accepted: Array.from(
+      { length: laneBatchSize },
+      (_, index) => `single:${index % metricsPartitionCount}:accepted-${index}`,
+    ).sort(),
+    protobuf: Array.from(
+      { length: laneBatchSize },
+      (_, index) => `single:${index % metricsPartitionCount}:protobuf-${index}`,
+    ).sort(),
     poisoned: Array.from(
       { length: laneBatchSize - 1 },
-      (_, index) => `single:poisoned-${index}`,
-    ).sort((left, right) => left.localeCompare(right)),
+      (_, index) => `single:${(index + 1) % metricsPartitionCount}:poisoned-${index}`,
+    ).sort(),
     multiRegion: Array.from({ length: multiRegionCount }, (_, regionIndex) =>
       Array.from(
         { length: multiRegionBatchSize },
-        (_, rowIndex) => `region-${regionIndex + 1}:region-${regionIndex + 1}-${rowIndex}`,
+        (_, rowIndex) =>
+          `region-${regionIndex + 1}:${rowIndex % metricsPartitionCount}:region-${regionIndex + 1}-${rowIndex}`,
       ),
     )
       .flat()
-      .sort((left, right) => left.localeCompare(right)),
+      .sort(),
+    retained: [],
   };
   if (JSON.stringify(retainedRowIds) !== JSON.stringify(expectedRetainedRowIds)) {
     throw new Error("Kafka Source Lane benchmark retained rows diverged from its fixed state.");
@@ -443,10 +622,12 @@ afterAll(async () => {
     mutationCount: successfulMutationCount,
     notes: [
       "Source Lane cases exercise the production materialized Kafka Source Adapter processor.",
-      "The canonical profile configures 2,000-row JSON/protobuf batches and a mixed 2,000-record burst.",
+      `This run configures ${laneBatchSize.toLocaleString("en-US")}-row JSON/protobuf batches, a mixed ${laneBatchSize.toLocaleString("en-US")}-record burst, and a ${retentionCohortSize.toLocaleString("en-US")}-row retention cohort.`,
       "Sustained ingestion applies eight consecutive mixed-codec waves per measured sample.",
       "Every Lane batch spans the configured synthetic partitions so partition-sensitive hot paths stay visible.",
       "The metrics case exercises assignment, commit, lag, and sampling bookkeeping across the configured partitions.",
+      "Finite-retention ingestion measures deadline generation and index replacement on the production delivery path.",
+      `The due-sweep case advances a controlled Effect Clock and expires a ${retentionCohortSize.toLocaleString("en-US")}-row cohort through Runtime Core maintenance, engine Deletes, and snapshot convergence.`,
     ],
     queuedEventCount: 0,
     retainedRowsByTopic: {
@@ -454,10 +635,11 @@ afterAll(async () => {
       protobuf: retainedRowIds.protobuf.length,
       poisoned: retainedRowIds.poisoned.length,
       multiRegion: retainedRowIds.multiRegion.length,
+      retained: retainedRowIds.retained.length,
     },
     rowCount: retainedRowIds.accepted.length,
     subscriberCount: 0,
-    topics: ["accepted", "protobuf", "poisoned", "multiRegion"],
+    topics: ["accepted", "protobuf", "poisoned", "multiRegion", "retained"],
   });
 });
 
@@ -655,6 +837,51 @@ describe("Kafka Source Adapter lanes", () => {
       kafkaNodeInternals.updateLag(metrics, "source-orders", lag);
       kafkaNodeInternals.updateAssignmentOffsets(metrics, offsets, latestOffsets, partitions);
       kafkaNodeInternals.snapshotMetrics("benchmark", metrics);
+    },
+    benchmarkOptions,
+  );
+
+  bench(
+    benchmarkCaseNames[7],
+    async () => {
+      const current = requireState();
+      retentionRevision += 1;
+      await Effect.runPromise(
+        requireRegion(current, "single").offerBatch(
+          "retained",
+          "retained-source",
+          validBatch("retained", retentionRevision, retentionCohortSize),
+        ),
+      );
+      successfulMutationCount += retentionCohortSize;
+    },
+    benchmarkOptions,
+  );
+
+  bench(
+    benchmarkCaseNames[8],
+    async () => {
+      const current = requireState();
+      retentionRevision += 1;
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          yield* current.clock.awaitSleepers(5);
+          yield* requireRegion(current, "single").offerBatch(
+            "retained",
+            "retained-source",
+            validBatch("retained", retentionRevision, retentionCohortSize),
+          );
+          yield* current.clock.advanceEpochMillis(172_800_000);
+          yield* current.clock.awaitSleepers(5);
+          const snapshot = yield* current.retainedRowIds;
+          if (snapshot.retained.length !== 0) {
+            return yield* Effect.die(
+              new Error("Kafka retention benchmark did not converge through Runtime Core."),
+            );
+          }
+        }),
+      );
+      successfulMutationCount += retentionCohortSize * 2;
     },
     benchmarkOptions,
   );

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import {
+  Cause,
   Chunk,
   Context,
   Effect,
@@ -15,13 +16,29 @@ import {
 import { SourceAdapter } from "./index";
 import {
   decodeSourceToolkitUpsert,
+  isSourceApplicationTransition,
+  isSourceApplicationStateRegistration,
+  isSourceMaintenanceOperation,
+  makeSourceApplicationTransition,
   makeSourceDelete,
   makeSourceDelivery,
   makeSourceItemRejection,
+  makeSourceTransitionDelivery,
   makeSourceUpsert,
   markSourceToolkit,
+  resolveSourceApplicationTransition,
+  resolveSourceApplicationStateRegistration,
+  resolveSourceMaintenanceOperation,
 } from "./internal";
-import type { SourceToolkit } from "./index";
+import type {
+  SourceApplicationExit,
+  SourceApplicationTransition,
+  SourceDelivery,
+  SourceMaintenanceResult,
+  SourceMutation,
+  SourceSettlement,
+  SourceToolkit,
+} from "./index";
 import { SourceAdapterServer, type SourceAdapterServerLifecycle } from "./server";
 
 const Failure = Schema.TaggedStruct("ServerFixtureFailure", {
@@ -47,16 +64,55 @@ const Adapter = SourceAdapter.make({
   leased: undefined,
 });
 
+const StatefulAdapter = SourceAdapter.make({
+  identity: { name: "stateful-server-fixture" },
+  failure: Failure,
+  materialized: {
+    applicationState: "required",
+    metrics: Metrics,
+    rejectionLocation: Location,
+    definitionOptions: SourceAdapter.definitionOptions<{
+      readonly label: string;
+    }>(),
+  },
+  leased: undefined,
+});
+
+function toolkitDelivery(
+  mutations: Chunk.NonEmptyChunk<SourceMutation<{ readonly id: string }>>,
+  settlement?: SourceSettlement<typeof Failure.Type>,
+): Effect.Effect<SourceDelivery<{ readonly id: string }, typeof Failure.Type>>;
+function toolkitDelivery(
+  mutation: SourceMutation<{ readonly id: string }>,
+  settlement: SourceSettlement<typeof Failure.Type> | undefined,
+  transition: SourceApplicationTransition<"orders">,
+): Effect.Effect<SourceDelivery<{ readonly id: string }, typeof Failure.Type>>;
+function toolkitDelivery(
+  mutationsOrMutation:
+    | Chunk.NonEmptyChunk<SourceMutation<{ readonly id: string }>>
+    | SourceMutation<{ readonly id: string }>,
+  settlement?: SourceSettlement<typeof Failure.Type>,
+  transition?: SourceApplicationTransition<"orders">,
+): Effect.Effect<SourceDelivery<{ readonly id: string }, typeof Failure.Type>> {
+  return transition === undefined && Chunk.isChunk(mutationsOrMutation)
+    ? Effect.succeed(makeSourceDelivery(mutationsOrMutation, settlement))
+    : transition !== undefined && !Chunk.isChunk(mutationsOrMutation)
+      ? Effect.succeed(makeSourceTransitionDelivery(mutationsOrMutation, settlement, transition))
+      : Effect.die(new TypeError("Invalid fixture delivery shape."));
+}
+
 const toolkit: SourceToolkit<
   { readonly id: string },
   typeof Failure.Type,
-  { readonly offset: bigint }
+  { readonly offset: bigint },
+  never,
+  "orders"
 > = markSourceToolkit({
   topic: "orders",
   upsert: (row) => Effect.succeed(makeSourceUpsert<{ readonly id: string }>(row)),
   decodeUpsert: (row: unknown) => Effect.succeed(makeSourceUpsert({ id: String(row) })),
   delete: (id: string) => Effect.succeed(makeSourceDelete(id)),
-  delivery: (mutations, settlement) => Effect.succeed(makeSourceDelivery(mutations, settlement)),
+  delivery: toolkitDelivery,
   reject: (input) => Effect.succeed(makeSourceItemRejection(input)),
 });
 
@@ -123,7 +179,514 @@ const hostileNominalClone = <Value extends object>(
   return Object.freeze(clone);
 };
 
+const invokeUnknownMethod = (
+  receiver: unknown,
+  property: PropertyKey,
+  args: ReadonlyArray<unknown>,
+): unknown => {
+  if (typeof receiver !== "object" || receiver === null) {
+    throw new TypeError("Expected method receiver to be an object.");
+  }
+  const method = Reflect.get(receiver, property);
+  if (typeof method !== "function") {
+    throw new TypeError("Expected property to be a function.");
+  }
+  return Reflect.apply(method, receiver, args);
+};
+
 describe("Source Adapter server SDK", () => {
+  it.effect("owns synchronous application state, transitions, and maintenance operations", () =>
+    Effect.gen(function* () {
+      const mutableCancellationIds = ["obsolete:1"];
+      let activeTransitionLeases = 0;
+      let releaseCount = 0;
+      const registration = SourceAdapterServer.applicationState<
+        number,
+        { readonly delta: number },
+        { readonly value: number },
+        { readonly operations: number }
+      >({
+        sweepIntervalNanos: 1_000n,
+        initialState: () => 0,
+        reduce: (state, command) => state + command.delta,
+        cancelledMaintenanceWorkIds: (_state, command) =>
+          command.delta === 1 ? mutableCancellationIds : [],
+        acquireTransition: () =>
+          Effect.sync(() => {
+            activeTransitionLeases += 1;
+            let released = false;
+            return () => {
+              if (released) {
+                return;
+              }
+              released = true;
+              activeTransitionLeases -= 1;
+              releaseCount += 1;
+            };
+          }),
+        metrics: (state) => ({ value: state }),
+        runDueSweep: (input) =>
+          Effect.gen(function* () {
+            const operations = [
+              input.operation({
+                id: "success",
+                workId: "success:1",
+                isCurrent: (state) => state === 3,
+                onSuccess: { delta: 4 },
+                onFailure: () => ({ delta: 0 }),
+                onStale: { delta: 0 },
+              }),
+              input.operation({
+                id: "failure",
+                workId: "failure:1",
+                isCurrent: () => true,
+                onSuccess: { delta: 0 },
+                onFailure: () => ({ delta: 8 }),
+                onStale: { delta: 0 },
+              }),
+              input.operation({
+                id: "stale",
+                workId: "stale:1",
+                isCurrent: () => false,
+                onSuccess: { delta: 0 },
+                onFailure: () => ({ delta: 0 }),
+                onStale: { delta: 16 },
+              }),
+            ] as const;
+            yield* Effect.forEach(operations, input.execute, {
+              discard: true,
+            });
+            return {
+              operations: operations.length,
+            };
+          }),
+      });
+      expect(() =>
+        Reflect.apply(SourceAdapterServer.applicationState, undefined, [
+          {
+            sweepIntervalNanos: 0n,
+            initialState: () => undefined,
+            reduce: () => undefined,
+            metrics: () => undefined,
+            runDueSweep: () => Effect.void,
+          },
+        ]),
+      ).toThrow(
+        "Source Application State registration requires exact synchronous state capabilities and a positive finite sweep interval.",
+      );
+      expect(() =>
+        Reflect.apply(SourceAdapterServer.applicationState, undefined, [
+          {
+            sweepIntervalNanos: 1,
+            initialState: () => undefined,
+            reduce: () => undefined,
+            metrics: () => undefined,
+            runDueSweep: () => Effect.void,
+          },
+        ]),
+      ).toThrow(
+        "Source Application State registration requires exact synchronous state capabilities and a positive finite sweep interval.",
+      );
+      const lifetimeScope = yield* Scope.make();
+      const registrationInternal = Option.getOrThrow(
+        Option.fromUndefinedOr(resolveSourceApplicationStateRegistration(registration)),
+      );
+      const binding = {
+        topic: "orders",
+        definition: undefined,
+        lifetimeScope,
+        target: { _tag: "Materialized" },
+      } as const;
+      registrationInternal.bind(binding);
+      expect(() => registrationInternal.bind(binding)).toThrow(
+        "Source Application State registration cannot bind one logical lifetime twice.",
+      );
+      const module = registration.forLifetime(lifetimeScope, "orders");
+      expect(isSourceApplicationStateRegistration(registration)).toBe(true);
+      expect(() => registration.forLifetime(lifetimeScope, "payments")).toThrow(
+        'Source Application State is bound to topic "orders", not "payments".',
+      );
+      const stateContract = Option.getOrThrow(
+        Option.fromUndefinedOr(Reflect.ownKeys(module).find((key) => typeof key === "symbol")),
+      );
+      expect(invokeUnknownMethod(module, stateContract, [42])).toBe(42);
+      const prepared = yield* module
+        .prepare({ delta: 1 })
+        .pipe(Effect.provideService(Scope.Scope, lifetimeScope));
+      const transition = prepared.transition;
+      const transitionInternal = Option.getOrThrow(
+        Option.fromUndefinedOr(resolveSourceApplicationTransition(transition)),
+      );
+      mutableCancellationIds[0] = "hostile-replacement";
+      mutableCancellationIds.push("hostile-addition");
+      expect(isSourceApplicationTransition(transition)).toBe(true);
+      expect(transitionInternal.topic).toBe("orders");
+      expect(transitionInternal.cancelledMaintenanceWorkIds).toStrictEqual(["obsolete:1"]);
+      expect(transitionInternal.lifetimeIdentity).toBe(
+        registrationInternal.lifetimeIdentity(lifetimeScope),
+      );
+      expect(activeTransitionLeases).toBe(1);
+      transitionInternal.apply();
+      let settlementObservedActiveLeases = -1;
+      const settlement = () => {
+        settlementObservedActiveLeases = activeTransitionLeases;
+        return Effect.void;
+      };
+      yield* settlement();
+      const noChange = yield* module
+        .prepare({ delta: 0 })
+        .pipe(Effect.provideService(Scope.Scope, lifetimeScope));
+      expect(noChange.transition.topic).toBe("orders");
+      const second = yield* module
+        .prepare({ delta: 2 })
+        .pipe(Effect.provideService(Scope.Scope, lifetimeScope));
+      Option.getOrThrow(
+        Option.fromUndefinedOr(resolveSourceApplicationTransition(second.transition)),
+      ).apply();
+      yield* prepared.release;
+      yield* noChange.release;
+      yield* second.release;
+      expect({
+        activeTransitionLeases,
+        releaseCount,
+        settlementObservedActiveLeases,
+      }).toStrictEqual({
+        activeTransitionLeases: 0,
+        releaseCount: 3,
+        settlementObservedActiveLeases: 0,
+      });
+
+      let execution = 0;
+      const actions: ReadonlyArray<
+        (
+          internal: NonNullable<ReturnType<typeof resolveSourceMaintenanceOperation>>,
+        ) => SourceMaintenanceResult
+      > = [
+        (internal: NonNullable<ReturnType<typeof resolveSourceMaintenanceOperation>>) => {
+          expect(internal.isCurrent()).toBe(true);
+          internal.onSuccess();
+          return { _tag: "Applied", exit: Exit.void };
+        },
+        (internal: NonNullable<ReturnType<typeof resolveSourceMaintenanceOperation>>) => {
+          const exit: SourceApplicationExit = Exit.fail({
+            _tag: "InvalidTopicRow",
+            topic: "orders",
+            message: "fixture",
+          });
+          internal.onFailure(exit);
+          return { _tag: "Applied", exit };
+        },
+        (internal: NonNullable<ReturnType<typeof resolveSourceMaintenanceOperation>>) => {
+          expect(internal.isCurrent()).toBe(false);
+          internal.onStale();
+          return { _tag: "Stale" };
+        },
+      ];
+      const outcome = yield* module.runDueSweep(1_000n, (operation) =>
+        Effect.sync(() => {
+          expect(isSourceMaintenanceOperation(operation)).toBe(true);
+          const internal = Option.getOrThrow(
+            Option.fromUndefinedOr(resolveSourceMaintenanceOperation(operation)),
+          );
+          expect(internal.lifetimeIdentity).toBe(
+            registrationInternal.lifetimeIdentity(lifetimeScope),
+          );
+          const action = Option.getOrThrow(Option.fromUndefinedOr(actions[execution]));
+          const result = action(internal);
+          execution += 1;
+          return result;
+        }),
+      );
+      const internalOutcome = yield* registrationInternal.runDueSweep(lifetimeScope, 2_000n, () =>
+        Effect.succeed({ _tag: "Inactive" }),
+      );
+
+      expect({
+        frozen: Object.isFrozen(module),
+        metrics: module.metrics(),
+        outcome,
+        internalOutcome,
+      }).toStrictEqual({
+        frozen: true,
+        metrics: { value: 31 },
+        outcome: { operations: 3 },
+        internalOutcome: { operations: 3 },
+      });
+      registrationInternal.unbind(lifetimeScope);
+      expect(() => registration.forLifetime(lifetimeScope, "orders")).toThrow(
+        "Source Application State registration is not bound to this logical lifetime.",
+      );
+      expect(() => registrationInternal.lifetimeIdentity(lifetimeScope)).toThrow(
+        "Source Application State registration is not bound to this logical lifetime.",
+      );
+      expect(() =>
+        registrationInternal.runDueSweep(lifetimeScope, 2_000n, () =>
+          Effect.succeed({ _tag: "Inactive" }),
+        ),
+      ).toThrow("Source Application State registration is not bound to this logical lifetime.");
+
+      const defaultLeaseRegistration = SourceAdapterServer.applicationState({
+        sweepIntervalNanos: 1_000n,
+        initialState: () => 0,
+        reduce: (state: number, command: { readonly delta: number }) => state + command.delta,
+        metrics: (state) => state,
+        runDueSweep: () => Effect.void,
+      });
+      const defaultLeaseScope = yield* Scope.make();
+      Option.getOrThrow(
+        Option.fromUndefinedOr(resolveSourceApplicationStateRegistration(defaultLeaseRegistration)),
+      ).bind({
+        topic: "orders",
+        definition: undefined,
+        lifetimeScope: defaultLeaseScope,
+        target: { _tag: "Materialized" },
+      });
+      const defaultLeaseModule = defaultLeaseRegistration.forLifetime(defaultLeaseScope, "orders");
+      const defaultLeaseTransition = yield* defaultLeaseModule
+        .prepare({ delta: 1 })
+        .pipe(Effect.provideService(Scope.Scope, defaultLeaseScope));
+      Option.getOrThrow(
+        Option.fromUndefinedOr(
+          resolveSourceApplicationTransition(defaultLeaseTransition.transition),
+        ),
+      ).apply();
+      yield* defaultLeaseTransition.release;
+      expect(defaultLeaseModule.metrics()).toBe(1);
+    }),
+  );
+
+  it("rejects malformed or asynchronous application state capabilities at construction", () => {
+    const validInput = () => ({
+      sweepIntervalNanos: 1_000n,
+      initialState: () => 0,
+      reduce: (state: number) => state,
+      metrics: (state: number) => state,
+      runDueSweep: () => Effect.void,
+    });
+    const missingCapability = validInput();
+    Reflect.deleteProperty(missingCapability, "runDueSweep");
+    const surplusCapability = {
+      ...validInput(),
+      select: () => 0,
+    };
+    const accessorCapability = validInput();
+    Object.defineProperty(accessorCapability, "reduce", {
+      enumerable: true,
+      get: () => (state: number) => state,
+    });
+    const symbolicCapability = validInput();
+    Object.defineProperty(symbolicCapability, Symbol("surplus"), {
+      enumerable: true,
+      value: undefined,
+    });
+    const hiddenCapability = validInput();
+    Object.defineProperty(hiddenCapability, "metrics", {
+      enumerable: false,
+      value: (state: number) => state,
+    });
+    const throwingOwnKeys = new Proxy(validInput(), {
+      ownKeys: () => {
+        throw new Error("hostile ownKeys");
+      },
+    });
+    const throwingDescriptor = new Proxy(validInput(), {
+      getOwnPropertyDescriptor: () => {
+        throw new Error("hostile descriptor");
+      },
+    });
+    const hostileReducer = new Proxy((state: number) => state, {
+      get: (_target, property, receiver) => {
+        if (property === "constructor") {
+          throw new Error("hostile constructor");
+        }
+        return Reflect.get(_target, property, receiver);
+      },
+    });
+    const asyncReducer = async (state: number) => Promise.resolve(state);
+    const invalidInputs = [
+      missingCapability,
+      surplusCapability,
+      accessorCapability,
+      symbolicCapability,
+      hiddenCapability,
+      throwingOwnKeys,
+      throwingDescriptor,
+      {
+        ...validInput(),
+        sweepIntervalNanos: 1,
+      },
+      {
+        ...validInput(),
+        initialState: undefined,
+      },
+      {
+        ...validInput(),
+        reduce: hostileReducer,
+      },
+      {
+        ...validInput(),
+        reduce: asyncReducer,
+      },
+      {
+        ...validInput(),
+        cancelledMaintenanceWorkIds: 1,
+      },
+      {
+        ...validInput(),
+        acquireTransition: 1,
+      },
+      {
+        ...validInput(),
+        metrics: undefined,
+      },
+      {
+        ...validInput(),
+        runDueSweep: undefined,
+      },
+    ];
+
+    for (const input of invalidInputs) {
+      expect(() => Reflect.apply(SourceAdapterServer.applicationState, undefined, [input])).toThrow(
+        "Source Application State registration requires exact synchronous state capabilities and a positive finite sweep interval.",
+      );
+    }
+  });
+
+  it("rejects mutable initial state and asynchronous metrics at lifetime binding", () => {
+    const registrations = [
+      SourceAdapterServer.applicationState({
+        sweepIntervalNanos: 1_000n,
+        initialState: () => ({ value: 0 }),
+        reduce: (state: { readonly value: number }) => state,
+        metrics: () => undefined,
+        runDueSweep: () => Effect.void,
+      }),
+      Reflect.apply(SourceAdapterServer.applicationState, undefined, [
+        {
+          sweepIntervalNanos: 1_000n,
+          initialState: () => 0,
+          reduce: (state: number) => state,
+          metrics: () => Effect.void,
+          runDueSweep: () => Effect.void,
+        },
+      ]),
+      Reflect.apply(SourceAdapterServer.applicationState, undefined, [
+        {
+          sweepIntervalNanos: 1_000n,
+          initialState: () => 0,
+          reduce: (state: number) => state,
+          metrics: () => Promise.resolve(0),
+          runDueSweep: () => Effect.void,
+        },
+      ]),
+    ];
+    const expectedMessages = [
+      "Source Application State initial state must be immutable.",
+      "Source Application State metrics must return a synchronous snapshot.",
+      "Source Application State metrics must return a synchronous snapshot.",
+    ];
+
+    for (const [index, registration] of registrations.entries()) {
+      const lifetimeScope = Effect.runSync(Scope.make());
+      const internal = resolveSourceApplicationStateRegistration(registration);
+      expect(internal).not.toBeUndefined();
+      expect(() =>
+        internal?.bind({
+          topic: "orders",
+          definition: undefined,
+          lifetimeScope,
+          target: { _tag: "Materialized" },
+        }),
+      ).toThrow(expectedMessages[index]);
+    }
+  });
+
+  it("rejects Effect, Promise, same-state, and mutable-state application reducers", () => {
+    const effectRegistration = Reflect.apply(SourceAdapterServer.applicationState, undefined, [
+      {
+        sweepIntervalNanos: 1_000n,
+        initialState: () => 0,
+        reduce: () => Effect.succeed(1),
+        metrics: () => undefined,
+        runDueSweep: () => Effect.void,
+      },
+    ]);
+    const reducerInputs = [
+      {
+        sweepIntervalNanos: 1_000n,
+        initialState: () => 0,
+        reduce: () => Promise.resolve(1),
+        metrics: () => undefined,
+        runDueSweep: () => Effect.void,
+      },
+      {
+        sweepIntervalNanos: 1_000n,
+        initialState: () => Object.freeze({ value: 0 }),
+        reduce: (state: { readonly value: number }) => state,
+        metrics: () => undefined,
+        runDueSweep: () => Effect.void,
+      },
+      {
+        sweepIntervalNanos: 1_000n,
+        initialState: () => Object.freeze({ value: 0 }),
+        reduce: () => ({ value: 1 }),
+        metrics: () => undefined,
+        runDueSweep: () => Effect.void,
+      },
+    ];
+    const registrations = [
+      effectRegistration,
+      ...reducerInputs.map((input) =>
+        Reflect.apply(SourceAdapterServer.applicationState, undefined, [input]),
+      ),
+    ];
+    const bind = (registration: object, lifetimeScope: Scope.Scope) =>
+      Reflect.apply(
+        Reflect.get(
+          Reflect.apply(resolveSourceApplicationStateRegistration, undefined, [registration]),
+          "bind",
+        ),
+        undefined,
+        [
+          {
+            topic: "orders",
+            definition: undefined,
+            lifetimeScope,
+            target: { _tag: "Materialized" },
+          },
+        ],
+      );
+    const applyPreparedTransition = (module: unknown, scope: Scope.Scope): void => {
+      const preparedEffect = invokeUnknownMethod(module, "prepare", [{}]);
+      if (!Effect.isEffect(preparedEffect)) {
+        throw new TypeError("Expected prepare to return an Effect.");
+      }
+      const runInScope = <Value, Error>(effect: Effect.Effect<Value, Error, Scope.Scope>): Value =>
+        Effect.runSync(effect.pipe(Effect.provide(Context.make(Scope.Scope, scope)), Effect.orDie));
+      const prepared = runInScope(preparedEffect);
+      if (typeof prepared !== "object" || prepared === null) {
+        throw new TypeError("Expected prepare to return a transition.");
+      }
+      const internal = resolveSourceApplicationTransition(Reflect.get(prepared, "transition"));
+      if (internal === undefined) {
+        throw new TypeError("Expected a nominal transition.");
+      }
+      internal.apply();
+    };
+
+    for (const registration of registrations) {
+      const scope = Effect.runSync(Scope.make());
+      bind(registration, scope);
+      const module = Reflect.apply(Reflect.get(registration, "forLifetime"), registration, [
+        scope,
+        "orders",
+      ]);
+      expect(() => applyPreparedTransition(module, scope)).toThrow(
+        "Source Application State reducer must return a new immutable state synchronously.",
+      );
+    }
+  });
+
   it("collects only nominal definitions belonging to the requested Adapter", () => {
     const definition = Adapter.materializedSource({ label: "orders" });
     const otherAdapter = SourceAdapter.make({
@@ -188,8 +751,16 @@ describe("Source Adapter server SDK", () => {
   it.effect("keeps attempt resources in the caller attempt Scope", () =>
     Effect.gen(function* () {
       let finalized = 0;
-      const adapterLayer = SourceAdapterServer.make(Adapter, {
+      const applicationState = SourceAdapterServer.applicationState({
+        sweepIntervalNanos: 1_000n,
+        initialState: () => 0,
+        reduce: (state: number) => state,
+        metrics: (state) => state,
+        runDueSweep: () => Effect.void,
+      });
+      const adapterLayer = SourceAdapterServer.make(StatefulAdapter, {
         materialized: {
+          applicationState,
           initialLaneIds: () => ["materialized", "sibling"],
           acquire: (input) =>
             Effect.gen(function* () {
@@ -202,7 +773,7 @@ describe("Source Adapter server SDK", () => {
               const mutation = yield* input.toolkit.delete("a");
               yield* decodeSourceToolkitUpsert(input.toolkit, { id: "decoded" });
               const event = yield* input.toolkit.delivery(Chunk.of(mutation));
-              const failure = yield* Adapter.failure({
+              const failure = yield* StatefulAdapter.failure({
                 _tag: "ServerFixtureFailure",
                 message: "rejected",
               }).pipe(Effect.orDie);
@@ -228,10 +799,11 @@ describe("Source Adapter server SDK", () => {
         },
       });
       const runtimeContext = yield* Effect.scoped(Layer.build(adapterLayer));
-      const runtimeService = Context.getUnsafe(runtimeContext, Adapter.runtimeService);
-      expect(runtimeService.adapter).toBe(Adapter);
+      const runtimeService = Context.getUnsafe(runtimeContext, StatefulAdapter.runtimeService);
+      expect(runtimeService.adapter).toBe(StatefulAdapter);
       expect(Reflect.has(runtimeService.adapter, "materializedSource")).toBe(true);
       const materialized = Option.getOrThrow(Option.fromNullishOr(runtimeService.materialized));
+      expect(materialized.applicationState).toBe(applicationState);
       const lifetimeScope = yield* Scope.make();
       const attemptScope = yield* Scope.make();
       expect(
@@ -282,14 +854,36 @@ describe("Source Adapter server SDK", () => {
         { readonly value: string }
       >()("@effect-view-server/source-adapter/test/AdapterDependency") {}
 
+      let applicationTransition: SourceApplicationTransition | undefined;
+      let invalidShapeDefect: unknown;
       const adapterLayer = SourceAdapterServer.make(Adapter, {
         materialized: {
           acquire: (input) =>
             Effect.gen(function* () {
               const dependency = yield* AdapterDependency;
               const mutation = yield* input.toolkit.delete(dependency.value);
-              const delivery = yield* input.toolkit.delivery(Chunk.of(mutation), () =>
-                AdapterDependency.pipe(Effect.asVoid),
+              const lifetimeIdentity = Object.freeze({});
+              const transition = makeSourceApplicationTransition(
+                input.toolkit.topic,
+                () => undefined,
+                [],
+                lifetimeIdentity,
+              );
+              applicationTransition = transition;
+              const invalidShapeExit = Effect.runSyncExit(
+                Reflect.apply(input.toolkit.delivery, undefined, [
+                  Chunk.of(mutation),
+                  undefined,
+                  transition,
+                ]),
+              );
+              invalidShapeDefect = Exit.isFailure(invalidShapeExit)
+                ? invalidShapeExit.cause.reasons.find(Cause.isDieReason)?.defect
+                : undefined;
+              const delivery = yield* input.toolkit.delivery(
+                mutation,
+                () => AdapterDependency.pipe(Effect.asVoid),
+                transition,
               );
               const failure = yield* Adapter.failure({
                 _tag: "ServerFixtureFailure",
@@ -342,6 +936,12 @@ describe("Source Adapter server SDK", () => {
         "SourceDelivery",
         "SourceItemRejection",
       ]);
+      expect(Reflect.get(Option.getOrThrow(Option.fromNullishOr(events[0])), "transition")).toBe(
+        applicationTransition,
+      );
+      expect(invalidShapeDefect).toStrictEqual(
+        new TypeError("Closed Source Toolkit received an invalid transition delivery shape."),
+      );
       yield* Option.getOrThrow(Option.fromNullishOr(events[0])).settle(Exit.void);
       yield* Option.getOrThrow(Option.fromNullishOr(events[1])).settle(Exit.void);
       expect(
@@ -367,6 +967,7 @@ describe("Source Adapter server SDK", () => {
         | "forged-event"
         | "forged-rejection"
         | "invalid-inner-mutation"
+        | "invalid-transition-batch"
         | "invalid-rejection-diagnostic"
         | "hostile-event" = "forged-attempt";
       const lifecycle: SourceAdapterServerLifecycle<
@@ -402,6 +1003,19 @@ describe("Source Adapter server SDK", () => {
             const invalidInnerMutation = nominalClone(delivery, {
               mutations: Chunk.of(nominalClone(mutation, { id: 1 })),
             });
+            const transitionDelivery = yield* input.toolkit.delivery(
+              mutation,
+              undefined,
+              makeSourceApplicationTransition(
+                input.toolkit.topic,
+                () => undefined,
+                [],
+                Object.freeze({}),
+              ),
+            );
+            const invalidTransitionBatch = nominalClone(transitionDelivery, {
+              mutations: Chunk.make(mutation, mutation),
+            });
             const invalidRejectionDiagnostic = nominalClone(rejection, {
               diagnostic: {
                 ...rejection.diagnostic,
@@ -413,9 +1027,11 @@ describe("Source Adapter server SDK", () => {
                 ? new Proxy(rejection, {})
                 : output === "invalid-inner-mutation"
                   ? invalidInnerMutation
-                  : output === "invalid-rejection-diagnostic"
-                    ? invalidRejectionDiagnostic
-                    : forgedDelivery;
+                  : output === "invalid-transition-batch"
+                    ? invalidTransitionBatch
+                    : output === "invalid-rejection-diagnostic"
+                      ? invalidRejectionDiagnostic
+                      : forgedDelivery;
             const lane = SourceAdapterServer.lane({
               id: "hostile",
               events: Stream.make(firstEvent, rejection),
@@ -540,6 +1156,21 @@ describe("Source Adapter server SDK", () => {
         ),
       ).toStrictEqual(forgedEventFailure);
 
+      output = "invalid-transition-batch";
+      const invalidTransitionBatchAttempt = yield* Effect.scoped(
+        materialized.acquire({
+          definition: { label: "orders" },
+          lifetimeScope,
+          target: { _tag: "Materialized" },
+          toolkit,
+        }),
+      );
+      expect(
+        yield* Effect.flip(
+          invalidTransitionBatchAttempt.lanes[0].events.pipe(Stream.take(1), Stream.runDrain),
+        ),
+      ).toStrictEqual(forgedEventFailure);
+
       output = "invalid-rejection-diagnostic";
       const invalidRejectionDiagnosticAttempt = yield* Effect.scoped(
         materialized.acquire({
@@ -617,6 +1248,17 @@ describe("Source Adapter server SDK", () => {
         { materialized: lifecycle, leased: lifecycle },
       ]),
     ).toThrow("implement exactly");
+    expect(() =>
+      Reflect.apply(SourceAdapterServer.make, undefined, [
+        Adapter,
+        {
+          materialized: {
+            ...lifecycle,
+            applicationState: {},
+          },
+        },
+      ]),
+    ).toThrow("application state registration must exactly match");
     expect(() =>
       Reflect.apply(SourceAdapterServer.make, undefined, [
         copiedAdapter,

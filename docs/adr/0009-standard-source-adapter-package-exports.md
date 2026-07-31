@@ -16,13 +16,13 @@ Effect separates portable contracts and services from concrete platform implemen
 
 ## Decision
 
-When implemented, every Source Adapter package will expose these standard public seams:
+Every Source Adapter package exposes these standard public seams:
 
 - `/contract` contains browser-safe Source Definition constructors, Source Adapter Identity metadata, Source Adapter Failure Schemas, and mandatory Source Adapter Metrics Schemas.
 - `/server` contains the matching Source Adapter runtime service implementation, lifecycle factories, and transport-neutral runtime Layers.
 - Platform exports such as `/node` contain concrete transport-driver Services and Layers. Every published platform export provides paired aggregate `layer(...)` and `layerConfig(...)` constructors that derive the exact required logical-client map from the View Server Config and provide the adapter runtime.
 
-The publishable View Server package will expose the SDK through exactly three matching public modules:
+The publishable View Server package exposes the SDK through exactly three matching public modules:
 
 - `effect-view-server/source-adapter` contains the portable declaration and Source Definition API.
 - `effect-view-server/source-adapter/server` contains server-only Source Adapter runtime-service APIs and executable helpers.
@@ -31,7 +31,7 @@ The publishable View Server package will expose the SDK through exactly three ma
 Adapter packages do not import internal workspace packages, `src` paths, `dist` paths, or unapproved nested SDK modules. View Server package-export checks cover all three approved modules and reject those deep alternatives.
 
 gRPC proves the extension seam as an ordinary first-party SDK consumer; Kafka
-will complete the pair in issue #385. Because this repository publishes only
+completes the pair. Because this repository publishes only
 the `effect-view-server` package, the standard adapter surfaces are these
 package subpaths:
 

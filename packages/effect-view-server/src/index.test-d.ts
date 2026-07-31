@@ -10,6 +10,7 @@ import {
   decodeKafkaCodec,
   kafka as kafkaSourceAdapter,
   type KafkaCodecValue as KafkaSourceCodecValue,
+  type KafkaCompactionMappingInput,
 } from "effect-view-server/kafka/contract";
 import { Schema } from "effect";
 import type * as EffectOption from "effect/Option";
@@ -53,6 +54,8 @@ const kafkaSourceViewServer = defineViewServerConfig({
     orders: {
       schema: Order,
       source: kafkaSourceAdapter.source({
+        cleanupPolicy: "delete",
+        retentionPolicy: "match-kafka-retention",
         topic: "orders-source",
         regions: ["eu"],
         key: kafkaSourceAdapter.string(),
@@ -69,6 +72,57 @@ const kafkaSourceViewServer = defineViewServerConfig({
     },
   },
 });
+const compactedKafkaSourceViewServer = defineViewServerConfig({
+  topics: {
+    orders: {
+      schema: Order,
+      source: kafkaSourceAdapter.source({
+        cleanupPolicy: "compact-and-delete",
+        retentionPolicy: "5 minutes",
+        topic: "compacted-orders-source",
+        regions: ["eu"],
+        key: kafkaSourceAdapter.compactionKey.string(),
+        value: kafkaSourceValue,
+        map: ({ key, value, region, metadata }) => {
+          expectTypeOf(key).toEqualTypeOf<string>();
+          expectTypeOf(region).toEqualTypeOf<"eu">();
+          expectTypeOf(metadata.partition).toEqualTypeOf<number>();
+          return {
+            customerId: value.customerId,
+            status: value.status,
+            price: value.price,
+            region: value.region,
+          };
+        },
+        startFrom: "earliest",
+      }),
+    },
+  },
+});
+const invalidFacadeCompactionIdentity = {
+  cleanupPolicy: "compact" as const,
+  retentionPolicy: "match-kafka-retention" as const,
+  topic: "invalid-facade-compaction-identity",
+  regions: ["eu"] satisfies readonly ["eu"],
+  key: kafkaSourceAdapter.compactionKey.string(),
+  value: kafkaSourceValue,
+  map: (
+    input: KafkaCompactionMappingInput<
+      "eu",
+      ReturnType<typeof kafkaSourceAdapter.compactionKey.string>,
+      typeof kafkaSourceValue
+    >,
+  ) => ({
+    id: `application:${input.key}`,
+    customerId: input.value.customerId,
+    status: input.value.status,
+    price: input.value.price,
+    region: input.value.region,
+  }),
+  startFrom: "earliest" as const,
+};
+// @ts-expect-error the public facade preserves SDK-owned compaction identity.
+kafkaSourceAdapter.source(invalidFacadeCompactionIdentity);
 
 class PublicProfile extends Schema.Class<PublicProfile>("PublicProfile")({
   id: ViewServerId,
@@ -131,6 +185,12 @@ describe("public effect-view-server subpath type contracts", () => {
     >();
     expectTypeOf(kafkaSourceValue).not.toHaveProperty("schema");
     expectTypeOf(kafkaSourceViewServer.topics.orders.source).not.toBeAny();
+    expectTypeOf(
+      compactedKafkaSourceViewServer.topics.orders.source.options.cleanupPolicy,
+    ).toEqualTypeOf<"compact-and-delete">();
+    expectTypeOf(compactedKafkaSourceViewServer.topics.orders.source.options).not.toHaveProperty(
+      "localRowKey",
+    );
     expectTypeOf(kafkaOrderCodec).not.toHaveProperty("schema");
     expectTypeOf<ViewServerLiveClient<typeof viewServer.topics>>().not.toBeAny();
     expectTypeOf(SourceFixture).not.toBeAny();
@@ -259,12 +319,50 @@ describe("public effect-view-server subpath type contracts", () => {
     // @ts-expect-error Kafka JSON codecs require a zero-argument Schema JSON codec factory.
     kafkaSourceAdapter.json(Order);
 
+    const missingCleanupPolicySource = {
+      retentionPolicy: "match-kafka-retention",
+      topic: "orders-source",
+      regions: ["eu"] as const,
+      key: kafkaSourceAdapter.string(),
+      value: kafkaSourceValue,
+      localRowKey: ({ key }: { readonly key: string }) => key,
+      map: ({ value }: { readonly value: typeof Order.Type }) => ({
+        customerId: value.customerId,
+        status: value.status,
+        price: value.price,
+        region: value.region,
+      }),
+      startFrom: "earliest" as const,
+    };
+    // @ts-expect-error cleanupPolicy is mandatory through the publishable Kafka subpath.
+    kafkaSourceAdapter.source(missingCleanupPolicySource);
+
+    const missingRetentionPolicySource = {
+      cleanupPolicy: "delete",
+      topic: "orders-source",
+      regions: ["eu"] as const,
+      key: kafkaSourceAdapter.string(),
+      value: kafkaSourceValue,
+      localRowKey: ({ key }: { readonly key: string }) => key,
+      map: ({ value }: { readonly value: typeof Order.Type }) => ({
+        customerId: value.customerId,
+        status: value.status,
+        price: value.price,
+        region: value.region,
+      }),
+      startFrom: "earliest" as const,
+    };
+    // @ts-expect-error retentionPolicy is mandatory through the publishable Kafka subpath.
+    kafkaSourceAdapter.source(missingRetentionPolicySource);
+
     // @ts-expect-error migrated Kafka Mapping must return every Topic Row field except id.
     defineViewServerConfig({
       topics: {
         missingKafkaMappingField: {
           schema: Order,
           source: kafkaSourceAdapter.source({
+            cleanupPolicy: "delete",
+            retentionPolicy: "match-kafka-retention",
             topic: "orders-source",
             regions: ["eu"],
             key: kafkaSourceAdapter.string(),
@@ -287,6 +385,8 @@ describe("public effect-view-server subpath type contracts", () => {
         extraKafkaMappingField: {
           schema: Order,
           source: kafkaSourceAdapter.source({
+            cleanupPolicy: "delete",
+            retentionPolicy: "match-kafka-retention",
             topic: "orders-source",
             regions: ["eu"],
             key: kafkaSourceAdapter.string(),
@@ -311,6 +411,8 @@ describe("public effect-view-server subpath type contracts", () => {
         invalidKafkaMappingField: {
           schema: Order,
           source: kafkaSourceAdapter.source({
+            cleanupPolicy: "delete",
+            retentionPolicy: "match-kafka-retention",
             topic: "orders-source",
             regions: ["eu"],
             key: kafkaSourceAdapter.string(),

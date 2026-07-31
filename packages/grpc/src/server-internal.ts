@@ -2,6 +2,7 @@ import type { DescMessage, DescMethodServerStreaming, DescService } from "@bufbu
 import { Code, ConnectError } from "@connectrpc/connect";
 import {
   SourceAdapterServer,
+  currentEpochNanos,
   type SourceAdapterServerLifecycle,
   type SourceAdapterServerView,
 } from "effect-view-server/source-adapter/server";
@@ -14,7 +15,6 @@ import type {
 import {
   Cause,
   Chunk,
-  Clock,
   Context,
   Effect,
   Exit,
@@ -381,7 +381,7 @@ const rejectMappedItem = <Row extends object, Services, Topic extends string>(
   Effect.sync(() => {
     state.metrics.rejectedMessageCount += 1n;
   }).pipe(
-    Effect.andThen(Clock.currentTimeNanos),
+    Effect.andThen(currentEpochNanos),
     Effect.flatMap((rejectedAtNanos) =>
       toolkit.reject({
         failure,

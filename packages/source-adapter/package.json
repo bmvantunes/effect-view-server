@@ -18,6 +18,10 @@
     "./internal": {
       "types": "./dist/internal.d.ts",
       "import": "./dist/internal.js"
+    },
+    "./definition": {
+      "types": "./dist/definition.d.ts",
+      "import": "./dist/definition.js"
     }
   },
   "scripts": {

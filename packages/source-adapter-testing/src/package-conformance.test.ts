@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import { SourceAdapter } from "@effect-view-server/source-adapter";
 import { SourceAdapterServer } from "@effect-view-server/source-adapter/server";
-import { Config, Effect, Exit } from "effect";
+import { Config, Effect, Exit, Layer } from "effect";
 import { fileURLToPath } from "node:url";
 import {
   classifySourceAdapterContractBrowserModules,
@@ -202,6 +202,27 @@ it.effect(options.name, () =>
   Effect.gen(function* () {
     const snapshot = yield* inspectSourceAdapterPackageConformance(options);
     expect(validateSourceAdapterPackageConformance(snapshot, options)).toStrictEqual([]);
+  }),
+);
+
+it.effect("supports platform layers whose exact acquisition requires external validation", () =>
+  Effect.gen(function* () {
+    const externalOptions: SourceAdapterPackageInspectionOptions = {
+      ...options,
+      name: "External validation package conformance contract",
+      platforms: [
+        {
+          ...options.platforms[0],
+          export: "./failing-node",
+          exactLayerAcquisition: "external-validation-failure",
+        },
+      ],
+    };
+    const snapshot = yield* inspectSourceAdapterPackageConformance(externalOptions);
+
+    expect(snapshot.platforms["./failing-node"]?.exactRuntimeService._tag).toBe("Failure");
+    expect(snapshot.platforms["./failing-node"]?.exactConfigRuntimeService._tag).toBe("Failure");
+    expect(validateSourceAdapterPackageConformance(snapshot, externalOptions)).toStrictEqual([]);
   }),
 );
 
@@ -835,5 +856,36 @@ describe("Source Adapter package conformance validation", () => {
     });
 
     expect(issues.some((issue) => issue.detail === "@effect/platform-node")).toBe(false);
+  });
+
+  it("accepts startup acquisition failure for platforms that require external validation", () => {
+    const platform = {
+      ...options.platforms[0],
+      exactLayerAcquisition: "external-validation-failure" as const,
+    };
+    const issues = validateSourceAdapterPackageConformance(
+      {
+        ...invalidSnapshot,
+        platforms: {
+          "./node": {
+            module: {
+              layer: () => Layer.empty,
+              layerConfig: () => Layer.empty,
+            },
+            emptyResources: failed,
+            missingResources: failed,
+            extraResources: failed,
+            duplicateResources: failed,
+            exactRuntimeService: failed,
+            exactConfigRuntimeService: failed,
+          },
+        },
+      },
+      {
+        platforms: [platform],
+      },
+    );
+
+    expect(issues.filter((issue) => issue.code === "PlatformCheckFailed")).toStrictEqual([]);
   });
 });

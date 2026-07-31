@@ -250,6 +250,7 @@ export const packageSurfacePolicy = {
       architecture: {
         allowedWorkspaceSpecifiers: [
           "@effect-view-server/source-adapter",
+          "@effect-view-server/source-adapter/definition",
           "@effect-view-server/source-adapter/internal",
         ],
         message: "Config contracts may depend only on the portable Source Adapter SDK.",
@@ -493,6 +494,7 @@ export const packageSurfacePolicy = {
             sourceEntrypoint: "src/source-adapter-server.ts",
           },
         },
+        { exportKey: "./definition", sourceEntrypoint: "src/definition.ts" },
         { exportKey: "./internal", sourceEntrypoint: "src/internal.ts" },
       ],
     },
@@ -702,6 +704,11 @@ export const packageSurfacePolicy = {
       forbidden: [],
       required: ["SourceAdapter"],
       workspaceSpecifier: "@effect-view-server/source-adapter",
+    },
+    {
+      forbidden: [],
+      required: ["isSourceDefinition"],
+      workspaceSpecifier: "@effect-view-server/source-adapter/definition",
     },
     {
       forbidden: [],

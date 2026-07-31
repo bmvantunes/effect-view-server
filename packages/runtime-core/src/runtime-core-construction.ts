@@ -189,6 +189,7 @@ export const makeViewServerRuntimeCoreInternalWithConstructionOptions: <
             close,
             requestHealthRefresh: runtimeClient.requestHealthRefresh,
             refreshHealth: pushedHealth.refresh,
+            fatal: sourceManager.fatal,
           };
         }),
       ),

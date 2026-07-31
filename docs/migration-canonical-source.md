@@ -44,6 +44,8 @@ After, every source-owned Topic has one nominal `source`:
 orders: {
   schema: Order,
   source: kafka.source({
+    cleanupPolicy: "delete",
+    retentionPolicy: "match-kafka-retention",
     topic: "orders.v1",
     regions: ["eu"],
     key: kafka.string(),
@@ -59,8 +61,16 @@ orders: {
 ```
 
 Use `grpc.topicSources(descriptors).materialized(...)` or `.leased(...)` for
-gRPC. gRPC Mapping returns the complete Topic Row including `id`. Kafka derives
-`id` as `region:localRowKey`.
+gRPC. gRPC Mapping returns the complete Topic Row including `id`. Delete-only
+Kafka derives `id` as `region:partition:localRowKey`; compaction-capable Kafka
+derives it from Region, partition, and exact serialized key bytes.
+
+Kafka migration is a hard cut: every source must add `cleanupPolicy` and
+`retentionPolicy`. Delete-only `localRowKey` now receives decoded key, decoded
+non-null value, and Region. Compaction-capable sources replace their key codec
+with the corresponding `kafka.compactionKey.*` codec and remove `localRowKey`.
+Delete-only null records are rejected; only compaction-capable null records are
+tombstone Deletes. No compatibility defaults or aliases are retained.
 
 ## Runtime composition
 

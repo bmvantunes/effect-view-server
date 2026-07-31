@@ -100,6 +100,23 @@ export type SourceRetryExhaustion<AdapterFailure> = {
   readonly lastTermination: SourceTermination<AdapterFailure>;
 };
 
+export type SourceItemRejectionReason<AdapterFailure, RejectionLocation> = {
+  readonly _tag: "SourceItemRejection";
+  readonly latestRejection: SourceItemRejectionDiagnostic<AdapterFailure, RejectionLocation>;
+};
+
+export type AdapterMaintenanceFailureReason = {
+  readonly _tag: "AdapterMaintenanceFailure";
+};
+
+export type SourceDegradationReasons<AdapterFailure, RejectionLocation> =
+  | readonly [SourceItemRejectionReason<AdapterFailure, RejectionLocation>]
+  | readonly [AdapterMaintenanceFailureReason]
+  | readonly [
+      SourceItemRejectionReason<AdapterFailure, RejectionLocation>,
+      AdapterMaintenanceFailureReason,
+    ];
+
 export type SourceStatus<AdapterFailure, RejectionLocation> =
   | {
       readonly _tag: "Starting";
@@ -115,7 +132,7 @@ export type SourceStatus<AdapterFailure, RejectionLocation> =
       readonly _tag: "Degraded";
       readonly attempt: bigint;
       readonly degradedAtNanos: bigint;
-      readonly latestRejection: SourceItemRejectionDiagnostic<AdapterFailure, RejectionLocation>;
+      readonly reasons: SourceDegradationReasons<AdapterFailure, RejectionLocation>;
     }
   | {
       readonly _tag: "WaitingToRetry";
@@ -176,6 +193,17 @@ const NonNegativeFiniteInteger = Schema.Int.check(Schema.isGreaterThanOrEqualTo(
 const NonNegativeBigInt = Schema.BigInt.check(Schema.isGreaterThanOrEqualToBigInt(0n));
 const PositiveBigInt = Schema.BigInt.check(Schema.isGreaterThanBigInt(0n));
 
+const exactWireSchema = <Type, Encoded>(
+  schema: Schema.Codec<Type, Encoded, never, never>,
+): Schema.Codec<Type, Encoded, never, never> =>
+  schema.pipe(
+    Schema.annotate({
+      parseOptions: {
+        onExcessProperty: "error",
+      },
+    }),
+  );
+
 const BoundedSourceBufferMetricsSchema = Schema.TaggedStruct("Bounded", {
   capacity: PositiveFiniteInteger,
   depth: NonNegativeFiniteInteger,
@@ -191,15 +219,16 @@ const BoundedSourceBufferMetricsSchema = Schema.TaggedStruct("Bounded", {
   ),
 );
 
-export const SourceBufferMetricsSchema = Schema.Union([
-  Schema.TaggedStruct("Unbuffered", {}),
-  BoundedSourceBufferMetricsSchema,
-]);
+export const SourceBufferMetricsSchema = exactWireSchema(
+  Schema.Union([Schema.TaggedStruct("Unbuffered", {}), BoundedSourceBufferMetricsSchema]),
+);
 
-export const SourceLaneRuntimeMetricsSchema = Schema.Struct({
-  id: Schema.NonEmptyString,
-  buffer: SourceBufferMetricsSchema,
-});
+export const SourceLaneRuntimeMetricsSchema = exactWireSchema(
+  Schema.Struct({
+    id: Schema.NonEmptyString,
+    buffer: SourceBufferMetricsSchema,
+  }),
+);
 
 const SourceLaneRuntimeMetricsArraySchema = Schema.NonEmptyArray(
   SourceLaneRuntimeMetricsSchema,
@@ -209,54 +238,60 @@ const SourceLaneRuntimeMetricsArraySchema = Schema.NonEmptyArray(
   }),
 );
 
-export const SourceRuntimeMetricsSchema = Schema.Struct({
-  startedAtNanos: NonNegativeBigInt,
-  lastAttemptStartedAtNanos: NonNegativeBigInt,
-  lastDeliveryAtNanos: Schema.NullOr(NonNegativeBigInt),
-  lastRejectionAtNanos: Schema.NullOr(NonNegativeBigInt),
-  lastAppliedMutationAtNanos: Schema.NullOr(NonNegativeBigInt),
-  lastTerminationAtNanos: Schema.NullOr(NonNegativeBigInt),
-  currentAttempt: PositiveBigInt,
-  retryCount: NonNegativeBigInt,
-  receivedDeliveryCount: NonNegativeBigInt,
-  rejectedItemCount: NonNegativeBigInt,
-  attemptedMutationCount: NonNegativeBigInt,
-  appliedUpsertCount: NonNegativeBigInt,
-  appliedDeleteCount: NonNegativeBigInt,
-  failedMutationCount: NonNegativeBigInt,
-  completedSettlementCount: NonNegativeBigInt,
-  failedSettlementCount: NonNegativeBigInt,
-  retainedRowCount: NonNegativeFiniteInteger,
-  lanes: SourceLaneRuntimeMetricsArraySchema,
-});
+export const SourceRuntimeMetricsSchema = exactWireSchema(
+  Schema.Struct({
+    startedAtNanos: NonNegativeBigInt,
+    lastAttemptStartedAtNanos: NonNegativeBigInt,
+    lastDeliveryAtNanos: Schema.NullOr(NonNegativeBigInt),
+    lastRejectionAtNanos: Schema.NullOr(NonNegativeBigInt),
+    lastAppliedMutationAtNanos: Schema.NullOr(NonNegativeBigInt),
+    lastTerminationAtNanos: Schema.NullOr(NonNegativeBigInt),
+    currentAttempt: PositiveBigInt,
+    retryCount: NonNegativeBigInt,
+    receivedDeliveryCount: NonNegativeBigInt,
+    rejectedItemCount: NonNegativeBigInt,
+    attemptedMutationCount: NonNegativeBigInt,
+    appliedUpsertCount: NonNegativeBigInt,
+    appliedDeleteCount: NonNegativeBigInt,
+    failedMutationCount: NonNegativeBigInt,
+    completedSettlementCount: NonNegativeBigInt,
+    failedSettlementCount: NonNegativeBigInt,
+    retainedRowCount: NonNegativeFiniteInteger,
+    lanes: SourceLaneRuntimeMetricsArraySchema,
+  }),
+);
 
 export const sourceTargetSchema = <Route>(
   lifecycle: SourceLifecycle,
   route: Schema.Codec<Route, unknown, never, never>,
 ) =>
   lifecycle === "materialized"
-    ? Schema.TaggedStruct("Materialized", {})
-    : Schema.TaggedStruct("Leased", { route });
+    ? exactWireSchema(Schema.TaggedStruct("Materialized", {}))
+    : exactWireSchema(Schema.TaggedStruct("Leased", { route }));
 
 export const sourceTerminationSchema = <AdapterFailure>(
   adapterFailure: Schema.Codec<AdapterFailure, unknown, never, never>,
 ) => {
   const failure = sourceExecutionFailureSchema(adapterFailure);
-  return Schema.Union([
-    Schema.TaggedStruct("Failed", { failure }),
-    Schema.TaggedStruct("UnexpectedCompletion", {}),
-  ]);
+  return exactWireSchema(
+    Schema.Union([
+      Schema.TaggedStruct("Failed", { failure }),
+      Schema.TaggedStruct("UnexpectedCompletion", {}),
+    ]),
+  );
 };
 
 export const sourceRejectionDiagnosticSchema = <AdapterFailure, RejectionLocation>(
   adapterFailure: Schema.Codec<AdapterFailure, unknown, never, never>,
   rejectionLocation: Schema.Codec<RejectionLocation, unknown, never, never>,
 ) =>
-  Schema.Struct({
-    failure: sourceExecutionFailureSchema(adapterFailure),
-    location: rejectionLocation,
-    rejectedAtNanos: NonNegativeBigInt,
-  });
+  exactWireSchema(
+    Schema.Struct({
+      failure: sourceExecutionFailureSchema(adapterFailure),
+      location: rejectionLocation,
+      rejectedAtNanos: NonNegativeBigInt,
+    }),
+  );
 
 export const sourceStatusSchema = <AdapterFailure, RejectionLocation>(
   adapterFailure: Schema.Codec<AdapterFailure, unknown, never, never>,
@@ -266,39 +301,50 @@ export const sourceStatusSchema = <AdapterFailure, RejectionLocation>(
   const exhaustion = Schema.TaggedStruct("RetryExhausted", {
     lastTermination: termination,
   });
-  return Schema.Union([
-    Schema.TaggedStruct("Starting", {
-      attempt: Schema.Literal(1n),
-      startedAtNanos: NonNegativeBigInt,
-    }),
-    Schema.TaggedStruct("Ready", {
-      attempt: PositiveBigInt,
-      readyAtNanos: NonNegativeBigInt,
-    }),
-    Schema.TaggedStruct("Degraded", {
-      attempt: PositiveBigInt,
-      degradedAtNanos: NonNegativeBigInt,
-      latestRejection: sourceRejectionDiagnosticSchema(adapterFailure, rejectionLocation),
-    }),
-    Schema.TaggedStruct("WaitingToRetry", {
-      nextAttempt: PositiveBigInt,
-      termination,
-      retryAtNanos: NonNegativeBigInt,
-    }),
-    Schema.TaggedStruct("Reacquiring", {
-      previousTermination: termination,
-      attempt: PositiveBigInt,
-      startedAtNanos: NonNegativeBigInt,
-    }),
-    Schema.TaggedStruct("Exhausted", {
-      exhaustion,
-      exhaustedAtNanos: NonNegativeBigInt,
-    }),
-    Schema.TaggedStruct("Stopping", {
-      reason: Schema.Literals(["runtime-shutdown", "lease-release"]),
-      stoppingAtNanos: NonNegativeBigInt,
-    }),
+  const rejectionReason = Schema.TaggedStruct("SourceItemRejection", {
+    latestRejection: sourceRejectionDiagnosticSchema(adapterFailure, rejectionLocation),
+  });
+  const maintenanceReason = Schema.TaggedStruct("AdapterMaintenanceFailure", {});
+  const degradationReasons = Schema.Union([
+    Schema.Tuple([rejectionReason]),
+    Schema.Tuple([maintenanceReason]),
+    Schema.Tuple([rejectionReason, maintenanceReason]),
   ]);
+  return exactWireSchema(
+    Schema.Union([
+      Schema.TaggedStruct("Starting", {
+        attempt: Schema.Literal(1n),
+        startedAtNanos: NonNegativeBigInt,
+      }),
+      Schema.TaggedStruct("Ready", {
+        attempt: PositiveBigInt,
+        readyAtNanos: NonNegativeBigInt,
+      }),
+      Schema.TaggedStruct("Degraded", {
+        attempt: PositiveBigInt,
+        degradedAtNanos: NonNegativeBigInt,
+        reasons: degradationReasons,
+      }),
+      Schema.TaggedStruct("WaitingToRetry", {
+        nextAttempt: PositiveBigInt,
+        termination,
+        retryAtNanos: NonNegativeBigInt,
+      }),
+      Schema.TaggedStruct("Reacquiring", {
+        previousTermination: termination,
+        attempt: PositiveBigInt,
+        startedAtNanos: NonNegativeBigInt,
+      }),
+      Schema.TaggedStruct("Exhausted", {
+        exhaustion,
+        exhaustedAtNanos: NonNegativeBigInt,
+      }),
+      Schema.TaggedStruct("Stopping", {
+        reason: Schema.Literals(["runtime-shutdown", "lease-release"]),
+        stoppingAtNanos: NonNegativeBigInt,
+      }),
+    ]),
+  );
 };
 
 export const sourceHealthSchema = <
@@ -313,19 +359,21 @@ export const sourceHealthSchema = <
   readonly rejectionLocation: Schema.Codec<RejectionLocation, unknown, never, never>;
   readonly lifecycle: SourceLifecycle;
 }) =>
-  Schema.Struct({
-    adapter: Schema.Struct({
-      name: Schema.NonEmptyString,
-      version: Schema.optionalKey(Schema.NonEmptyString),
+  exactWireSchema(
+    Schema.Struct({
+      adapter: Schema.Struct({
+        name: Schema.NonEmptyString,
+        version: Schema.optionalKey(Schema.NonEmptyString),
+      }),
+      target: sourceTargetSchema(input.lifecycle, input.route),
+      status: sourceStatusSchema(input.adapterFailure, input.rejectionLocation),
+      metrics: Schema.Struct({
+        runtime: SourceRuntimeMetricsSchema,
+        adapter: input.adapterMetrics,
+      }),
+      sampledAtNanos: NonNegativeBigInt,
     }),
-    target: sourceTargetSchema(input.lifecycle, input.route),
-    status: sourceStatusSchema(input.adapterFailure, input.rejectionLocation),
-    metrics: Schema.Struct({
-      runtime: SourceRuntimeMetricsSchema,
-      adapter: input.adapterMetrics,
-    }),
-    sampledAtNanos: NonNegativeBigInt,
-  });
+  );
 
 export type SourceHealthContractResult<
   AdapterFailure,
@@ -386,9 +434,11 @@ export function sourceHealthContractSchemas<
     result:
       input.lifecycle === "materialized"
         ? health
-        : Schema.Union([
-            Schema.TaggedStruct("Inactive", { route: input.route }),
-            Schema.TaggedStruct("Active", { route: input.route, health }),
-          ]),
+        : exactWireSchema(
+            Schema.Union([
+              Schema.TaggedStruct("Inactive", { route: input.route }),
+              Schema.TaggedStruct("Active", { route: input.route, health }),
+            ]),
+          ),
   };
 }

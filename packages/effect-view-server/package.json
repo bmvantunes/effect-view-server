@@ -139,6 +139,7 @@
     "@effect-view-server/client": "workspace:*",
     "@effect-view-server/column-live-view-engine": "workspace:*",
     "@effect-view-server/config": "workspace:*",
+    "@effect-view-server/effect-utils": "workspace:*",
     "@effect-view-server/grpc": "workspace:*",
     "@effect-view-server/in-memory": "workspace:*",
     "@effect-view-server/kafka": "workspace:*",

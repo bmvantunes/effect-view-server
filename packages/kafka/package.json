@@ -30,6 +30,7 @@
   },
   "devDependencies": {
     "@effect-view-server/config": "workspace:*",
+    "@effect-view-server/runtime": "workspace:*",
     "@effect-view-server/runtime-core": "workspace:*",
     "@effect-view-server/source-adapter-conformance-host": "workspace:*",
     "@effect/vitest": "catalog:",

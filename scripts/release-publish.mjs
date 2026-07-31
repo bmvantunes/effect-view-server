@@ -11,7 +11,7 @@ let exitCode = 0;
 
 if (process.argv.length > 2) {
   process.stderr.write(
-    "release-publish.mjs does not accept arguments; approve staged versions with npm stage approve.\n",
+    "release-publish.mjs does not accept arguments; releases are created from the current main commit.\n",
   );
   exitCode = 1;
 } else {

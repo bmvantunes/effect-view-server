@@ -9,14 +9,19 @@ import {
 } from "node:fs";
 import { join, relative } from "node:path";
 import {
-  classifyStagePublishDuplicateOutput,
+  compareReleaseTags,
+  incrementReleaseVersion,
+  isTrustedPublishEnvironment,
   oidcPublishEnvironmentViolations,
+  packageTagName,
+  parseReleaseTag,
+  pendingPackageTagName,
   publishedFileViolations,
   publicPackageName,
+  publishCommandArguments,
   publishDecision,
+  releaseTypeFromChangesets,
   sanitizePublicPackageJson,
-  stagedPackageTagName,
-  stagePublishCommandArguments,
   stripSourceMapReference,
 } from "./release-publish-policy.mjs";
 
@@ -125,26 +130,17 @@ const stripPublishedSourceMapReferences = (directory) => {
   }
 };
 
-const assertCleanPublishedFiles = (stageDirectory) => {
-  const violations = publishedFileViolations(collectPublishedFiles(stageDirectory));
+const assertCleanPublishedFiles = (publishDirectory) => {
+  const violations = publishedFileViolations(collectPublishedFiles(publishDirectory));
 
   if (violations.length > 0) {
     throw new Error(
       [
-        "Refusing npm stage publish because the staged package contains private workspace artifacts.",
+        "Refusing npm publish because the publish artifact contains private workspace artifacts.",
         ...violations.map((violation) => `- ${violation}`),
       ].join("\n"),
     );
   }
-};
-
-const isPackageAlreadyCreated = (execution) => {
-  const result = commandResult(execution, "npm", ["view", publicPackageName, "name", "--json"], {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "ignore"],
-  });
-
-  return result.status === 0 && JSON.parse(result.stdout) === publicPackageName;
 };
 
 const isVersionAlreadyPublished = (execution, version) => {
@@ -161,35 +157,43 @@ const isVersionAlreadyPublished = (execution, version) => {
   return result.status === 0 && JSON.parse(result.stdout) === version;
 };
 
-const runStagePublish = ({ execution, stageDirectory, stderr, stdout, version }) => {
-  const args = stagePublishCommandArguments(stageDirectory);
-  const result = commandResult(execution, "npm", args, {
+const readPublishedVersion = (execution) => {
+  const result = commandResult(execution, "npm", ["view", publicPackageName, "version", "--json"], {
     encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
+    stdio: ["ignore", "pipe", "ignore"],
   });
 
-  stdout(result.stdout);
-  stderr(result.stderr);
-
-  if (result.status === 0) {
-    return {
-      _tag: "Staged",
-    };
+  if (result.status !== 0) {
+    throw new Error(`${publicPackageName} must already exist on npm before continuous publishing.`);
   }
 
-  const duplicate = classifyStagePublishDuplicateOutput({
-    stderr: result.stderr,
-    stdout: result.stdout,
-    version,
+  const version = JSON.parse(result.stdout);
+  if (typeof version !== "string") {
+    throw new Error(`npm view returned an invalid version for ${publicPackageName}.`);
+  }
+  return version;
+};
+
+const releaseTags = (execution) => {
+  runCommand(execution, "git", ["fetch", "--tags", "origin"]);
+  const result = commandResult(execution, "git", ["tag", "--list", `${publicPackageName}@*`], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
   });
+  return result.stdout
+    .split("\n")
+    .map((tag) => tag.trim())
+    .filter((tag) => tag.length > 0)
+    .map(parseReleaseTag)
+    .filter((tag) => tag !== undefined);
+};
 
-  if (duplicate._tag !== "Unknown") {
-    return duplicate;
-  }
+const latestReleaseTag = (tags, publishedVersion) => {
+  const matchingTags = tags.filter((tag) => tag.version === publishedVersion);
 
-  throw new ReleasePublishCommandError(
-    `npm ${args.join(" ")} failed.`,
-    result.status ?? 1,
+  return matchingTags.reduce(
+    (latest, tag) => (latest === undefined || compareReleaseTags(tag, latest) > 0 ? tag : latest),
+    undefined,
   );
 };
 
@@ -208,69 +212,210 @@ const gitRefTarget = (execution, ref) => {
 };
 
 const gitRefObject = (execution, ref) => {
-  const result = commandResult(execution, "git", ["rev-parse", "--quiet", "--verify", ref], {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "ignore"],
-  });
+  const result = commandResult(
+    execution,
+    "git",
+    ["rev-parse", "--quiet", "--verify", ref],
+    {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    },
+  );
 
   return result.status === 0 ? result.stdout.trim() : undefined;
 };
 
-const gitTagExists = (execution, tagName) =>
-  gitRefTarget(execution, `refs/tags/${tagName}`) !== undefined;
+const rootCommit = (execution) => {
+  const result = commandResult(execution, "git", ["rev-list", "--max-parents=0", "HEAD"], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+  const commit = result.stdout.trim().split("\n")[0];
+  if (commit.length === 0) {
+    throw new Error("Cannot determine the repository root commit for release versioning.");
+  }
+  return commit;
+};
 
-const pushGitTag = (execution, tagName, expectedRemoteObject) => {
-  runCommand(
+const changedChangesetContents = (execution, rootDirectory, baseline) => {
+  const result = commandResult(
     execution,
     "git",
-    expectedRemoteObject === undefined
-      ? ["push", "origin", `refs/tags/${tagName}`]
-      : [
-          "push",
-          `--force-with-lease=refs/tags/${tagName}:${expectedRemoteObject}`,
-          "origin",
-          `refs/tags/${tagName}`,
-        ],
+    ["diff", "--name-only", `${baseline}..HEAD`, "--", ".changeset"],
+    {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    },
+  );
+
+  return result.stdout
+    .split("\n")
+    .map((path) => path.trim())
+    .filter(
+      (path) =>
+        path.startsWith(".changeset/") &&
+        path.endsWith(".md") &&
+        path !== ".changeset/README.md",
+    )
+    .filter((path) => existsSync(join(rootDirectory, path)))
+    .map((path) => readFileSync(join(rootDirectory, path), "utf8"));
+};
+
+const resolveReleaseVersion = ({ execution, rootDirectory, packageVersion }) => {
+  const publishedVersion = readPublishedVersion(execution);
+  const tags = releaseTags(execution);
+  const tag = latestReleaseTag(tags, publishedVersion);
+
+  if (tag?.pending === true && tag.version === publishedVersion) {
+    const pendingTarget = gitRefTarget(execution, `refs/tags/${tag.tag}`);
+    const headTarget = gitRefTarget(execution, "HEAD");
+    if (pendingTarget !== undefined && pendingTarget === headTarget) {
+      return {
+        alreadyPublished: true,
+        releaseType: "patch",
+        version: publishedVersion,
+      };
+    }
+  }
+
+  if (tag === undefined && publishedVersion !== packageVersion) {
+    throw new Error(
+      `Cannot determine the release baseline for ${publicPackageName}@${publishedVersion}; its public tag is missing.`,
+    );
+  }
+
+  const baseline = tag?.tag ?? rootCommit(execution);
+  const releaseType = releaseTypeFromChangesets(
+    changedChangesetContents(execution, rootDirectory, baseline),
+  );
+
+  return {
+    releaseType,
+    version: incrementReleaseVersion(publishedVersion, releaseType),
+  };
+};
+
+const runPublish = ({ execution, publishDirectory, stderr, stdout, version }) => {
+  const args = publishCommandArguments(publishDirectory);
+  const result = commandResult(execution, "npm", args, {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  stdout(result.stdout);
+  stderr(result.stderr);
+
+  if (result.status === 0) {
+    return {
+      _tag: "Published",
+    };
+  }
+
+  if (isVersionAlreadyPublished(execution, version)) {
+    if (!pendingTagMatchesHead(execution, version)) {
+      throw new Error(
+        `Refusing to adopt ${publicPackageName}@${version} without a pending tag at the tested commit.`,
+      );
+    }
+    return {
+      _tag: "AlreadyPublished",
+    };
+  }
+
+  throw new ReleasePublishCommandError(
+    `npm ${args.join(" ")} failed.`,
+    result.status ?? 1,
   );
 };
 
-const ensureStagedGitTag = (execution, tagName) => {
+const ensurePublishedGitTag = (execution, tagName) => {
   const expectedTarget = gitRefTarget(execution, "HEAD");
-
   if (expectedTarget === undefined) {
     throw new Error(`Cannot create ${tagName} because HEAD does not resolve to a git object.`);
   }
 
   const ref = `refs/tags/${tagName}`;
   const existingTarget = gitRefTarget(execution, ref);
-  const existingObject = gitRefObject(execution, ref);
 
   if (existingTarget !== undefined) {
     if (existingTarget !== expectedTarget) {
-      runCommand(execution, "git", ["tag", "-f", "-a", tagName, expectedTarget, "-m", tagName]);
-      pushGitTag(execution, tagName, existingObject);
+      throw new Error(`Refusing to move published tag ${tagName} away from its existing commit.`);
     }
     return;
   }
 
   runCommand(execution, "git", ["tag", "-a", tagName, expectedTarget, "-m", tagName]);
-  pushGitTag(execution, tagName, undefined);
+  runCommand(execution, "git", ["push", "origin", `refs/tags/${tagName}`]);
 };
 
-const stagePublicPackage = ({ publicPackageDirectory, packageJson, stageDirectory }) => {
-  const distDirectory = join(stageDirectory, "dist");
+const ensurePendingGitTag = (execution, tagName) => {
+  const expectedTarget = gitRefTarget(execution, "HEAD");
+  if (expectedTarget === undefined) {
+    throw new Error(`Cannot reserve ${tagName} because HEAD does not resolve to a git object.`);
+  }
+
+  const ref = `refs/tags/${tagName}`;
+  const existingTarget = gitRefTarget(execution, ref);
+  if (existingTarget === expectedTarget) {
+    return;
+  }
+
+  if (existingTarget === undefined) {
+    runCommand(execution, "git", ["tag", "-a", tagName, expectedTarget, "-m", tagName]);
+    runCommand(execution, "git", ["push", "origin", `refs/tags/${tagName}`]);
+    return;
+  }
+
+  const existingObject = gitRefObject(execution, ref);
+  if (existingObject === undefined) {
+    throw new Error(`Cannot update pending tag ${tagName} because its git object is unavailable.`);
+  }
+
+  runCommand(execution, "git", ["tag", "-f", "-a", tagName, expectedTarget, "-m", tagName]);
+  runCommand(
+    execution,
+    "git",
+    [
+      "push",
+      `--force-with-lease=${ref}:${existingObject}`,
+      "origin",
+      `refs/tags/${tagName}`,
+    ],
+  );
+};
+
+const pendingTagMatchesHead = (execution, version) => {
+  const headTarget = gitRefTarget(execution, "HEAD");
+  const pendingTarget = gitRefTarget(
+    execution,
+    `refs/tags/${pendingPackageTagName(version)}`,
+  );
+  return headTarget !== undefined && pendingTarget === headTarget;
+};
+
+const preparePublicPackage = ({
+  publicPackageDirectory,
+  packageJson,
+  publishDirectory,
+  releaseVersion,
+}) => {
+  const distDirectory = join(publishDirectory, "dist");
 
   cpSync(join(publicPackageDirectory, "dist"), distDirectory, {
     recursive: true,
     filter: (source) => !source.endsWith(".map"),
   });
   stripPublishedSourceMapReferences(distDirectory);
-  cpSync(join(publicPackageDirectory, "README.md"), join(stageDirectory, "README.md"));
+  cpSync(join(publicPackageDirectory, "README.md"), join(publishDirectory, "README.md"));
   writeFileSync(
-    join(stageDirectory, "package.json"),
-    `${JSON.stringify(sanitizePublicPackageJson(packageJson), null, 2)}\n`,
+    join(publishDirectory, "package.json"),
+    `${JSON.stringify(
+      sanitizePublicPackageJson({ ...packageJson, version: releaseVersion }),
+      null,
+      2,
+    )}\n`,
   );
-  assertCleanPublishedFiles(stageDirectory);
+  assertCleanPublishedFiles(publishDirectory);
 };
 
 export const runReleasePublish = ({
@@ -283,111 +428,92 @@ export const runReleasePublish = ({
 }) => {
   const publicPackageDirectory = join(rootDirectory, publicPackageRelativeDirectory);
   const packageJson = readJson(join(publicPackageDirectory, "package.json"));
-  const version = packageJson.version;
   const execution = {
     command,
     cwd: rootDirectory,
     env,
   };
+  if (!isTrustedPublishEnvironment(env)) {
+    throw new Error("Refusing npm publish outside the trusted main-branch GitHub Actions context.");
+  }
+  const oidcViolations = oidcPublishEnvironmentViolations(env);
+  if (oidcViolations.length > 0) {
+    throw new Error(
+      [
+        "Refusing npm publish because GitHub Actions OIDC is unavailable.",
+        ...oidcViolations.map((violation) => `- ${violation}`),
+      ].join("\n"),
+    );
+  }
+  const release = resolveReleaseVersion({
+    execution,
+    packageVersion: packageJson.version,
+    rootDirectory,
+  });
   const decision = publishDecision({
     env,
-    version,
+    version: release.version,
     workspacePackages: collectWorkspacePackages(rootDirectory),
   });
-
-  if (decision._tag === "Skip") {
-    stdout(`${decision.message}\n`);
-    return {
-      _tag: "Skipped",
-      version,
-    };
-  }
 
   if (decision._tag === "Refuse") {
     throw new Error(decision.message);
   }
 
-  const stageDirectory = mkdtempSync(join(temporaryDirectory, "effect-view-server-publish-"));
+  const publishDirectory = mkdtempSync(join(temporaryDirectory, "effect-view-server-publish-"));
 
   try {
-    stagePublicPackage({
+    preparePublicPackage({
       packageJson,
       publicPackageDirectory,
-      stageDirectory,
+      publishDirectory,
+      releaseVersion: release.version,
     });
 
-    if (isVersionAlreadyPublished(execution, version)) {
-      stdout(`${publicPackageName}@${version} is already published.\n`);
+    const tagName = packageTagName(release.version);
+    if (release.alreadyPublished) {
+      ensurePublishedGitTag(execution, tagName);
+      stdout(`${publicPackageName}@${release.version} is already published; repaired its tag.\n`);
       return {
         _tag: "AlreadyPublished",
-        version,
+        releaseType: release.releaseType,
+        version: release.version,
       };
     }
 
-    if (!isPackageAlreadyCreated(execution)) {
-      throw new Error(
-        `${publicPackageName} must exist on npm before staged publishing can be used. Publish the first version manually, then rerun this workflow.`,
-      );
-    }
-
-    const oidcViolations = oidcPublishEnvironmentViolations(env);
-    if (oidcViolations.length > 0) {
-      throw new Error(
-        [
-          "Refusing npm stage publish because GitHub Actions OIDC is unavailable.",
-          ...oidcViolations.map((violation) => `- ${violation}`),
-        ].join("\n"),
-      );
-    }
-
-    const tagName = stagedPackageTagName(version);
-    const stageResult = runStagePublish({
-      execution,
-      stageDirectory,
-      stderr,
-      stdout,
-      version,
-    });
-
-    if (stageResult._tag === "Staged") {
-      ensureStagedGitTag(execution, tagName);
-      return {
-        _tag: "Staged",
-        version,
-      };
-    }
-
-    if (stageResult._tag === "AlreadyPublished") {
-      if (isVersionAlreadyPublished(execution, version)) {
-        stdout(`${publicPackageName}@${version} is already published.\n`);
-        return {
-          _tag: "AlreadyPublished",
-          version,
-        };
-      }
-      throw new Error(
-        `npm reported ${publicPackageName}@${version} as already published, but npm view does not confirm it. Refusing to treat the release as complete.`,
-      );
-    }
-
-    if (stageResult._tag === "AlreadyStaged") {
-      if (!gitTagExists(execution, tagName)) {
+    if (isVersionAlreadyPublished(execution, release.version)) {
+      if (!pendingTagMatchesHead(execution, release.version)) {
         throw new Error(
-          `npm reported ${publicPackageName}@${version} as already staged, but ${tagName} is missing. Refusing to recreate it from an unverified workflow HEAD; rerun the original failed staging workflow attempt or reject the npm stage and restage.`,
+          `Refusing to adopt ${publicPackageName}@${release.version} without a pending tag at the tested commit.`,
         );
       }
-      stdout(`${publicPackageName}@${version} is already staged; keeping ${tagName}.\n`);
+      ensurePublishedGitTag(execution, tagName);
+      stdout(`${publicPackageName}@${release.version} is already published.\n`);
       return {
-        _tag: "AlreadyStaged",
-        version,
+        _tag: "AlreadyPublished",
+        releaseType: release.releaseType,
+        version: release.version,
       };
     }
 
-    throw new Error(
-      `npm reported a duplicate ${publicPackageName}@${version}, but npm view does not report it as published. Refusing to guess whether a stage exists.`,
-    );
+    ensurePendingGitTag(execution, pendingPackageTagName(release.version));
+    const publishResult = runPublish({
+      execution,
+      publishDirectory,
+      stderr,
+      stdout,
+      version: release.version,
+    });
+
+    ensurePublishedGitTag(execution, tagName);
+    stdout(`${publicPackageName}@${release.version} published as ${release.releaseType}.\n`);
+    return {
+      _tag: publishResult._tag,
+      releaseType: release.releaseType,
+      version: release.version,
+    };
   } finally {
-    rmSync(stageDirectory, {
+    rmSync(publishDirectory, {
       force: true,
       recursive: true,
     });

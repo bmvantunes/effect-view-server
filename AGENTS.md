@@ -161,14 +161,14 @@ This is a single-context repository using root `CONTEXT.md` and `docs/adr/`. See
 - Publish only the `effect-view-server` package. Internal `@effect-view-server/*` workspace packages stay private and must not be published separately.
 - The npm publish artifact must be staged and sanitized before publishing. Do not publish the workspace package directory directly. The staged artifact must exclude source maps, source-map references, scripts, dev dependencies, internal `@effect-view-server/*` package metadata, and internal workspace import specifiers.
 - Use Changesets for release intent. If a PR should publish a new npm version, add a changeset with `vp run -w changeset`. Do not add a changeset for private-only CI, docs, examples, benchmark, or internal-only changes that should not publish.
-- Merging an ordinary PR to `main` must not publish npm and must not make GitHub Actions create a PR. Version PRs are explicit human/agent branches: run `vp run -w release:version` on a branch, open the `Version packages` PR yourself, and merge it after review.
-- After a version PR is merged, manually run the `Release` workflow on `main` with `action=stage` to stage the npm package. Ordinary `main` pushes run readiness only.
-- npm publishing uses GitHub Actions trusted publishing/OIDC from `.github/workflows/release.yml`. Do not add `NPM_TOKEN`; keep `id-token: write` and `publishConfig.provenance: true`.
-- The npm trusted publisher must allow `npm stage publish` only. Do not enable direct `npm publish` unless explicitly changing the release process.
-- The release workflow may build with `vp`, but must invoke `node scripts/release-publish.mjs` directly for the final stage publish so GitHub's OIDC environment reaches `npm stage publish`.
-- CI stages npm releases with `npm stage publish`; a maintainer approves the staged package later with `npm stage approve <stage-id>` to publish it publicly, or rejects it with `npm stage reject <stage-id>`.
-- The stage job may push an `effect-view-server@<version>-staged` marker tag as a best-effort pending-approval signal, but the release script must still ask npm on reruns so rejected stages can be restaged safely.
-- Do not add a second GitHub "finalize" release action. `npm stage approve <stage-id>` is the publication step; GitHub should not require a follow-up workflow to make the npm version public.
+- Every successful, non-superseded push to `main` publishes one new `effect-view-server` version. The release script reads changesets added since the latest public release tag: `major`, `minor`, or `patch` chooses the strongest bump, and a commit without a changeset gets a patch bump so ordinary commits still publish.
+- CI owns readiness, benchmarks, and the direct publish job. The publish job downloads the exact validated public `dist` artifact and only then invokes npm. Do not duplicate the readiness gate in a second release workflow.
+- Rapid main pushes may cancel stale validation/preparation jobs and replace a pending publish job. Never cancel an in-flight publish; npm versions are immutable, and the release script treats a raced already-published version as success. Keeping publication in the same push workflow also keeps npm provenance tied to the exact `GITHUB_SHA` that was tested.
+- npm publishing uses GitHub Actions trusted publishing/OIDC from `.github/workflows/ci.yml`. Do not add `NPM_TOKEN`; keep `id-token: write` and `publishConfig.provenance: true`.
+- The npm trusted publisher must allow `npm publish` for `ci.yml`. `npm stage publish` is not part of the continuous release path.
+- The publish job must invoke `node scripts/release-publish.mjs` directly so GitHub's OIDC environment reaches npm. It must publish only the sanitized artifact, never the workspace package directory.
+- The release script may push an `effect-view-server@<version>` tag after a successful publish. It uses the npm version plus that tag as the next changeset baseline; old staged marker tags are migration hints only.
+- Before publishing, it reserves an `effect-view-server@<version>-pending` tag at the tested commit. This preserves the release identity across an npm-success/tag-push race; retries repair the public tag, and later commits reserve later versions. Pending tags are bookkeeping markers, not npm releases.
 
 ## Common Blockers
 

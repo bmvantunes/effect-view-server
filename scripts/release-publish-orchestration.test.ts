@@ -10,10 +10,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  ReleasePublishCommandError,
-  runReleasePublish,
-} from "./release-publish-orchestration.mjs";
+import { ReleasePublishCommandError, runReleasePublish } from "./release-publish-orchestration.mjs";
 
 type CommandOptions = {
   cwd?: string;
@@ -39,46 +36,37 @@ const trustedEnvironment = {
   ACTIONS_ID_TOKEN_REQUEST_TOKEN: "token",
   ACTIONS_ID_TOKEN_REQUEST_URL: "https://token.actions.githubusercontent.com",
   GITHUB_ACTIONS: "true",
-  GITHUB_EVENT_NAME: "workflow_dispatch",
+  GITHUB_EVENT_NAME: "push",
   GITHUB_REF: "refs/heads/main",
   GITHUB_REPOSITORY: "bmvantunes/effect-view-server",
 };
 
-const commandResult = ({
-  error,
+const result = ({
   status = 0,
   stderr = "",
   stdout = "",
-}: {
-  error?: Error;
-  status?: number | null;
-  stderr?: string;
-  stdout?: string;
-} = {}) => ({
-  error,
-  status,
-  stderr,
-  stdout,
-});
+}: Partial<CommandResult> = {}): CommandResult => ({ status, stderr, stdout });
 
 const writeJson = (path: string, value: unknown) => {
   writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
 };
 
-const makeReleaseTree = (version = "1.2.3") => {
+const makeReleaseTree = (version = "0.0.6") => {
   const rootDirectory = mkdtempSync(join(tmpdir(), "view-server-release-root-"));
   const temporaryDirectory = join(rootDirectory, "temporary");
   const publicPackageDirectory = join(rootDirectory, "packages", "effect-view-server");
   const internalPackageDirectory = join(rootDirectory, "packages", "client");
 
-  mkdirSync(join(rootDirectory, "apps", "missing-package"), { recursive: true });
   mkdirSync(join(publicPackageDirectory, "dist", "nested"), { recursive: true });
   mkdirSync(internalPackageDirectory, { recursive: true });
+  mkdirSync(join(rootDirectory, ".changeset"));
+  mkdirSync(join(rootDirectory, "apps", "missing-package"), { recursive: true });
+  writeFileSync(join(rootDirectory, "apps", "README.md"), "workspace directory marker\n");
   mkdirSync(temporaryDirectory);
-  writeFileSync(join(rootDirectory, "apps", "README.md"), "not a package\n");
   writeJson(join(publicPackageDirectory, "package.json"), {
     name: "effect-view-server",
     version,
+    description: "Typed Effect View Server.",
     type: "module",
     exports: {
       ".": {
@@ -86,16 +74,12 @@ const makeReleaseTree = (version = "1.2.3") => {
         types: "./dist/index.d.ts",
       },
     },
-    publishConfig: {
-      provenance: true,
-    },
+    publishConfig: { provenance: true },
     dependencies: {
       "@effect-view-server/client": "workspace:*",
       effect: "4.0.0-beta.100",
     },
-    scripts: {
-      build: "vp pack",
-    },
+    scripts: { build: "vp pack" },
   });
   writeJson(join(internalPackageDirectory, "package.json"), {
     name: "@effect-view-server/client",
@@ -113,668 +97,639 @@ const makeReleaseTree = (version = "1.2.3") => {
   writeFileSync(join(publicPackageDirectory, "dist", "nested", "data.txt"), "ready\n");
   writeFileSync(join(publicPackageDirectory, "dist", "index.js.map"), "{}\n");
 
-  return {
-    publicPackageDirectory,
-    rootDirectory,
-    temporaryDirectory,
-  };
+  return { publicPackageDirectory, rootDirectory, temporaryDirectory };
 };
 
-const makeScenario = (
-  responses: ReadonlyArray<CommandResult>,
-  {
-    env = trustedEnvironment,
-    releaseTree = makeReleaseTree(),
-  }: {
-    env?: NodeJS.ProcessEnv;
-    releaseTree?: ReturnType<typeof makeReleaseTree>;
-  } = {},
-) => {
+type ReleaseTree = ReturnType<typeof makeReleaseTree>;
+
+const makeScenario = ({
+  env = trustedEnvironment,
+  releaseTree = makeReleaseTree(),
+  changeset = '---\n"effect-view-server": patch\n---\n\nFix.\n',
+  publishedVersion = "0.0.6",
+  matchingTag = "effect-view-server@0.0.6-staged",
+  releaseVersionExists = false,
+  publishVersionExists = false,
+  publishedVersionResult,
+  publishResult = result({ stdout: "published\n" }),
+  existingTagTarget,
+  existingPendingTagTarget,
+  existingPendingTagObject,
+  gitTagResult,
+  headTarget = "head-object",
+  headTargetSequence,
+  rootCommitOutput = "root-object\n",
+  commandError,
+  unsafePublishedFile = false,
+}: {
+  env?: NodeJS.ProcessEnv;
+  releaseTree?: ReleaseTree;
+  changeset?: string;
+  publishedVersion?: string | number;
+  matchingTag?: string;
+  releaseVersionExists?: boolean;
+  publishVersionExists?: boolean;
+  publishedVersionResult?: CommandResult;
+  publishResult?: CommandResult;
+  existingTagTarget?: string;
+  existingPendingTagTarget?: string;
+  existingPendingTagObject?: string | null;
+  gitTagResult?: CommandResult;
+  headTarget?: string | null;
+  headTargetSequence?: ReadonlyArray<string | null>;
+  rootCommitOutput?: string;
+  commandError?: Error;
+  unsafePublishedFile?: boolean;
+} = {}) => {
   const calls: Array<CommandCall> = [];
   const stdout: Array<string> = [];
   const stderr: Array<string> = [];
+  let releaseVersionViewCount = 0;
+  let headTargetCallCount = 0;
+  let publishedArtifact: {
+    declaration: string;
+    files: Array<string>;
+    manifest: Record<string, unknown>;
+    nestedFile: string;
+    readme: string;
+    runtime: string;
+    sourceMapExists: boolean;
+  } | undefined;
+
+  writeFileSync(join(releaseTree.rootDirectory, ".changeset", "release.md"), changeset);
+  if (unsafePublishedFile) {
+    writeFileSync(
+      join(releaseTree.publicPackageDirectory, "dist", "unsafe.js"),
+      'import { client } from "@effect-view-server/client";\nexport { client };\n',
+    );
+  }
+
   const command = (nextCommand: string, args: ReadonlyArray<string>, options: CommandOptions) => {
-    const response = responses[calls.length];
     calls.push({ args, command: nextCommand, options });
-    if (response === undefined) {
-      throw new Error(`Unexpected command: ${nextCommand} ${args.join(" ")}`);
+
+    if (commandError !== undefined) {
+      return { error: commandError, status: null, stderr: "", stdout: "" };
     }
-    return response;
+
+    if (nextCommand === "npm" && args[0] === "view" && args[1] === "effect-view-server") {
+      return publishedVersionResult ?? result({ stdout: JSON.stringify(publishedVersion) });
+    }
+    if (nextCommand === "git" && args[0] === "tag" && args[1] === "--list") {
+      return result({ stdout: `${matchingTag}\n` });
+    }
+    if (nextCommand === "git" && args[0] === "fetch") {
+      return result();
+    }
+    if (nextCommand === "git" && args[0] === "rev-list") {
+      return result({ stdout: rootCommitOutput });
+    }
+    if (nextCommand === "git" && args[0] === "diff") {
+      return result({ stdout: ".changeset/release.md\n" });
+    }
+    if (nextCommand === "npm" && args[0] === "view" && args[1]?.startsWith("effect-view-server@")) {
+      releaseVersionViewCount += 1;
+      const exists = releaseVersionExists || (publishVersionExists && releaseVersionViewCount > 1);
+      return exists
+        ? result({ stdout: JSON.stringify(args[1].slice("effect-view-server@".length)) })
+        : result({ status: 1 });
+    }
+    if (nextCommand === "npm" && args[0] === "publish") {
+      const publishDirectory = args[1];
+      if (publishDirectory === undefined) {
+        throw new Error("The direct npm publish command is missing its package directory.");
+      }
+      publishedArtifact = {
+        declaration: readFileSync(join(publishDirectory, "dist", "index.d.ts"), "utf8"),
+        files: readdirSync(publishDirectory).sort(),
+        manifest: JSON.parse(readFileSync(join(publishDirectory, "package.json"), "utf8")),
+        nestedFile: readFileSync(join(publishDirectory, "dist", "nested", "data.txt"), "utf8"),
+        readme: readFileSync(join(publishDirectory, "README.md"), "utf8"),
+        runtime: readFileSync(join(publishDirectory, "dist", "index.js"), "utf8"),
+        sourceMapExists: existsSync(join(publishDirectory, "dist", "index.js.map")),
+      };
+      return publishResult;
+    }
+    if (nextCommand === "git" && args[0] === "rev-parse" && args.at(-1) === "HEAD^{}") {
+      const sequenceTarget = headTargetSequence?.[headTargetCallCount];
+      const target = sequenceTarget === undefined ? headTarget : sequenceTarget;
+      headTargetCallCount += 1;
+      return target === null ? result({ status: 1 }) : result({ stdout: `${target}\n` });
+    }
+    if (nextCommand === "git" && args[0] === "rev-parse") {
+      const ref = args.at(-1);
+      const isPending = ref?.includes("-pending") === true;
+      const isRawPending = ref?.endsWith("-pending") === true;
+      const existingTarget = isPending
+        ? isRawPending
+          ? (existingPendingTagObject === undefined
+              ? existingPendingTagTarget
+              : existingPendingTagObject)
+          : existingPendingTagTarget
+        : existingTagTarget;
+      return existingTarget === undefined || existingTarget === null
+        ? result({ status: 1 })
+        : result({ stdout: `${existingTarget}\n` });
+    }
+    if (nextCommand === "git" && args[0] === "tag") {
+      return gitTagResult ?? result();
+    }
+    if (nextCommand === "git" && args[0] === "push") {
+      return result();
+    }
+
+    throw new Error(`Unexpected command: ${nextCommand} ${args.join(" ")}`);
   };
 
   return {
     ...releaseTree,
     calls,
-    cleanup: () => {
-      rmSync(releaseTree.rootDirectory, { force: true, recursive: true });
-    },
+    cleanup: () => rmSync(releaseTree.rootDirectory, { force: true, recursive: true }),
+    publishedArtifact: () => publishedArtifact,
     run: () =>
       runReleasePublish({
         command,
         env,
         rootDirectory: releaseTree.rootDirectory,
-        stderr: (message: string) => {
-          stderr.push(message);
-        },
-        stdout: (message: string) => {
-          stdout.push(message);
-        },
+        stderr: (message: string) => stderr.push(message),
+        stdout: (message: string) => stdout.push(message),
         temporaryDirectory: releaseTree.temporaryDirectory,
       }),
-    expectedCommandCount: responses.length,
     stderr,
     stdout,
   };
 };
 
-const expectCleanTemporaryDirectory = (scenario: ReturnType<typeof makeScenario>) => {
-  expect(scenario.calls).toHaveLength(scenario.expectedCommandCount);
-  expect(readdirSync(scenario.temporaryDirectory)).toStrictEqual([]);
-};
-
 describe("release publish orchestration", () => {
-  it("stages a sanitized temporary package and creates its pending marker tag", () => {
-    const { rootDirectory, temporaryDirectory } = makeReleaseTree();
-    const calls: Array<CommandCall> = [];
-    const stdout: Array<string> = [];
-    const stderr: Array<string> = [];
-    let stagedPackage: unknown = undefined;
-    const responses = [
-      commandResult({ status: 1 }),
-      commandResult({ stdout: '"effect-view-server"\n' }),
-      commandResult({ stdout: "staged 1.2.3\n" }),
-      commandResult({ stdout: "head-object\n" }),
-      commandResult({ status: 1 }),
-      commandResult({ status: 1 }),
-      commandResult(),
-      commandResult(),
-    ];
-    const command = (nextCommand: string, args: ReadonlyArray<string>, options: CommandOptions) => {
-      calls.push({ args, command: nextCommand, options });
-      if (nextCommand === "npm" && args[0] === "stage") {
-        const stageDirectory = args[2];
-        if (stageDirectory !== undefined) {
-          stagedPackage = {
-            declaration: readFileSync(join(stageDirectory, "dist", "index.d.ts"), "utf8"),
-            files: readdirSync(stageDirectory).sort(),
-            manifest: JSON.parse(readFileSync(join(stageDirectory, "package.json"), "utf8")),
-            nestedFile: readFileSync(join(stageDirectory, "dist", "nested", "data.txt"), "utf8"),
-            readme: readFileSync(join(stageDirectory, "README.md"), "utf8"),
-            runtime: readFileSync(join(stageDirectory, "dist", "index.js"), "utf8"),
-            sourceMapExists: existsSync(join(stageDirectory, "dist", "index.js.map")),
-          };
-        }
-      }
-      const response = responses[calls.length - 1];
-      if (response === undefined) {
-        throw new Error(`Unexpected command: ${nextCommand} ${args.join(" ")}`);
-      }
-      return response;
-    };
+  it("publishes one sanitized package directly and creates a public tag", () => {
+    const scenario = makeScenario();
 
-    const outcome = runReleasePublish({
-      command,
-      env: trustedEnvironment,
-      rootDirectory,
-      stderr: (message: string) => {
-        stderr.push(message);
-      },
-      stdout: (message: string) => {
-        stdout.push(message);
-      },
-      temporaryDirectory,
+    expect(scenario.run()).toStrictEqual({
+      _tag: "Published",
+      releaseType: "patch",
+      version: "0.0.7",
     });
-
-    expect(outcome).toStrictEqual({
-      _tag: "Staged",
-      version: "1.2.3",
-    });
-    expect(stagedPackage).toStrictEqual({
+    expect(scenario.publishedArtifact()).toStrictEqual({
       declaration: "export declare const ready: true;\n",
       files: ["README.md", "dist", "package.json"],
       manifest: {
         name: "effect-view-server",
-        version: "1.2.3",
+        version: "0.0.7",
+        description: "Typed Effect View Server.",
         type: "module",
         exports: {
-          ".": {
-            import: "./dist/index.js",
-            types: "./dist/index.d.ts",
-          },
+          ".": { import: "./dist/index.js", types: "./dist/index.d.ts" },
         },
         files: ["dist", "README.md"],
-        publishConfig: {
-          access: "public",
-          provenance: true,
-        },
-        dependencies: {
-          effect: "4.0.0-beta.100",
-        },
+        publishConfig: { access: "public", provenance: true },
+        dependencies: { effect: "4.0.0-beta.100" },
       },
       nestedFile: "ready\n",
       readme: "# Public package\n",
       runtime: "export const ready = true;\n",
       sourceMapExists: false,
     });
-    expect(calls.map(({ command: calledCommand, args }) => [calledCommand, ...args])).toStrictEqual([
-      ["npm", "view", "effect-view-server@1.2.3", "version", "--json"],
-      ["npm", "view", "effect-view-server", "name", "--json"],
-      ["npm", "stage", "publish", calls[2]?.args[2], "--provenance", "--access", "public"],
+    expect(scenario.calls.map(({ command, args }) => [command, ...args])).toStrictEqual([
+      ["npm", "view", "effect-view-server", "version", "--json"],
+      ["git", "fetch", "--tags", "origin"],
+      ["git", "tag", "--list", "effect-view-server@*"],
+      [
+        "git",
+        "diff",
+        "--name-only",
+        "effect-view-server@0.0.6-staged..HEAD",
+        "--",
+        ".changeset",
+      ],
+      ["npm", "view", "effect-view-server@0.0.7", "version", "--json"],
       ["git", "rev-parse", "--quiet", "--verify", "HEAD^{}"],
       [
         "git",
         "rev-parse",
         "--quiet",
         "--verify",
-        "refs/tags/effect-view-server@1.2.3-staged^{}",
-      ],
-      [
-        "git",
-        "rev-parse",
-        "--quiet",
-        "--verify",
-        "refs/tags/effect-view-server@1.2.3-staged",
+        "refs/tags/effect-view-server@0.0.7-pending^{}",
       ],
       [
         "git",
         "tag",
         "-a",
-        "effect-view-server@1.2.3-staged",
+        "effect-view-server@0.0.7-pending",
         "head-object",
         "-m",
-        "effect-view-server@1.2.3-staged",
+        "effect-view-server@0.0.7-pending",
       ],
-      ["git", "push", "origin", "refs/tags/effect-view-server@1.2.3-staged"],
+      ["git", "push", "origin", "refs/tags/effect-view-server@0.0.7-pending"],
+      ["npm", "publish", scenario.calls[9]?.args[1], "--provenance", "--access", "public"],
+      ["git", "rev-parse", "--quiet", "--verify", "HEAD^{}"],
+      [
+        "git",
+        "rev-parse",
+        "--quiet",
+        "--verify",
+        "refs/tags/effect-view-server@0.0.7^{}",
+      ],
+      [
+        "git",
+        "tag",
+        "-a",
+        "effect-view-server@0.0.7",
+        "head-object",
+        "-m",
+        "effect-view-server@0.0.7",
+      ],
+      ["git", "push", "origin", "refs/tags/effect-view-server@0.0.7"],
     ]);
-    expect(stdout).toStrictEqual(["staged 1.2.3\n"]);
-    expect(stderr).toStrictEqual([""]);
-    expect(calls.map(({ options }) => options)).toStrictEqual([
-      {
-        cwd: rootDirectory,
-        encoding: "utf8",
-        env: trustedEnvironment,
-        stdio: ["ignore", "pipe", "ignore"],
-      },
-      {
-        cwd: rootDirectory,
-        encoding: "utf8",
-        env: trustedEnvironment,
-        stdio: ["ignore", "pipe", "ignore"],
-      },
-      {
-        cwd: rootDirectory,
-        encoding: "utf8",
-        env: trustedEnvironment,
-        stdio: ["ignore", "pipe", "pipe"],
-      },
-      {
-        cwd: rootDirectory,
-        encoding: "utf8",
-        env: trustedEnvironment,
-        stdio: ["ignore", "pipe", "ignore"],
-      },
-      {
-        cwd: rootDirectory,
-        encoding: "utf8",
-        env: trustedEnvironment,
-        stdio: ["ignore", "pipe", "ignore"],
-      },
-      {
-        cwd: rootDirectory,
-        encoding: "utf8",
-        env: trustedEnvironment,
-        stdio: ["ignore", "pipe", "ignore"],
-      },
-      {
-        cwd: rootDirectory,
-        env: trustedEnvironment,
-        stdio: "inherit",
-      },
-      {
-        cwd: rootDirectory,
-        env: trustedEnvironment,
-        stdio: "inherit",
-      },
-    ]);
-    expect(readdirSync(temporaryDirectory)).toStrictEqual([]);
-    rmSync(rootDirectory, { force: true, recursive: true });
-  });
-
-  it("returns before staging for placeholder versions and untrusted release contexts", () => {
-    const skipped = makeScenario([], {
-      releaseTree: makeReleaseTree("0.0.0"),
-    });
-    const refused = makeScenario([], {
-      env: {
-        ...trustedEnvironment,
-        GITHUB_REF: "refs/heads/not-main",
-      },
-    });
-
-    expect(skipped.run()).toStrictEqual({
-      _tag: "Skipped",
-      version: "0.0.0",
-    });
-    expect(skipped.stdout).toStrictEqual([
-      "Skipping npm publish for effect-view-server@0.0.0.\n",
-    ]);
-    expect(skipped.stderr).toStrictEqual([]);
-    expect(skipped.calls).toStrictEqual([]);
-    expectCleanTemporaryDirectory(skipped);
-    expect(refused.run).toThrowError(
-      "Refusing npm publish outside the trusted main-branch GitHub Actions context.",
-    );
-    expect(refused.stdout).toStrictEqual([]);
-    expect(refused.stderr).toStrictEqual([]);
-    expect(refused.calls).toStrictEqual([]);
-    expectCleanTemporaryDirectory(refused);
-
-    skipped.cleanup();
-    refused.cleanup();
-  });
-
-  it("returns without npm staging when the requested version is already public", () => {
-    const scenario = makeScenario([
-      commandResult({ stdout: '"1.2.3"\n' }),
-    ]);
-
-    expect(scenario.run()).toStrictEqual({
-      _tag: "AlreadyPublished",
-      version: "1.2.3",
-    });
-    expect(scenario.calls.map(({ command, args }) => [command, ...args])).toStrictEqual([
-      ["npm", "view", "effect-view-server@1.2.3", "version", "--json"],
-    ]);
-    expect(scenario.stdout).toStrictEqual([
-      "effect-view-server@1.2.3 is already published.\n",
-    ]);
-    expect(scenario.stderr).toStrictEqual([]);
-    expectCleanTemporaryDirectory(scenario);
+    expect(scenario.stdout).toStrictEqual(["published\n", "effect-view-server@0.0.7 published as patch.\n"]);
+    expect(scenario.stderr).toStrictEqual([""]);
+    expect(readdirSync(scenario.temporaryDirectory)).toStrictEqual([]);
 
     scenario.cleanup();
   });
 
-  it("refuses staging when npm has no package to stage or GitHub OIDC is unavailable", () => {
-    const missingPackage = makeScenario([
-      commandResult({ status: 1 }),
-      commandResult({ status: 1 }),
-    ]);
-    const missingOidc = makeScenario(
-      [
-        commandResult({ status: 1 }),
-        commandResult({ stdout: '"effect-view-server"\n' }),
-      ],
-      {
-        env: {
-          ...trustedEnvironment,
-          ACTIONS_ID_TOKEN_REQUEST_TOKEN: "",
-          ACTIONS_ID_TOKEN_REQUEST_URL: "",
-        },
-      },
+  it("uses the strongest changeset since the last published tag during migration", () => {
+    const scenario = makeScenario({
+      changeset: '---\n"effect-view-server": major\n---\n\nBreaking.\n',
+    });
+
+    expect(scenario.run()).toStrictEqual({
+      _tag: "Published",
+      releaseType: "major",
+      version: "1.0.0",
+    });
+    expect(scenario.calls.some(({ command, args }) => command === "npm" && args[0] === "publish")).toBe(
+      true,
     );
 
-    expect(missingPackage.run).toThrowError(
-      "effect-view-server must exist on npm before staged publishing can be used.",
+    scenario.cleanup();
+  });
+
+  it("selects the newest matching release marker when multiple tags exist", () => {
+    const scenario = makeScenario({
+      matchingTag: "effect-view-server@0.0.6\neffect-view-server@0.0.6-staged",
+    });
+
+    expect(scenario.run()).toStrictEqual({
+      _tag: "Published",
+      releaseType: "patch",
+      version: "0.0.7",
+    });
+
+    scenario.cleanup();
+  });
+
+  it("continues when a pending marker has no resolvable git target", () => {
+    const scenario = makeScenario({
+      existingPendingTagTarget: undefined,
+      matchingTag: "effect-view-server@0.0.6-pending",
+    });
+
+    expect(scenario.run()).toStrictEqual({
+      _tag: "Published",
+      releaseType: "patch",
+      version: "0.0.7",
+    });
+
+    scenario.cleanup();
+  });
+
+  it("uses the repository root when the bootstrap release has no matching tag", () => {
+    const scenario = makeScenario({ matchingTag: "" });
+
+    expect(scenario.run()).toStrictEqual({
+      _tag: "Published",
+      releaseType: "patch",
+      version: "0.0.7",
+    });
+    expect(scenario.calls.some(({ command, args }) => command === "git" && args[0] === "rev-list")).toBe(
+      true,
     );
+
+    scenario.cleanup();
+  });
+
+  it("refuses a missing public baseline once the source package version has moved", () => {
+    const scenario = makeScenario({ matchingTag: "", releaseTree: makeReleaseTree("0.0.5") });
+
+    expect(scenario.run).toThrowError(
+      "Cannot determine the release baseline for effect-view-server@0.0.6; its public tag is missing.",
+    );
+
+    scenario.cleanup();
+  });
+
+  it("refuses to continue when npm has no existing package or returns an invalid version", () => {
+    const missing = makeScenario({ publishedVersionResult: result({ status: 1 }) });
+    const invalid = makeScenario({ publishedVersion: 123 });
+
+    expect(missing.run).toThrowError(
+      "effect-view-server must already exist on npm before continuous publishing.",
+    );
+    expect(invalid.run).toThrowError(
+      "npm view returned an invalid version for effect-view-server.",
+    );
+
+    missing.cleanup();
+    invalid.cleanup();
+  });
+
+  it("refuses to continue when the repository root cannot be determined", () => {
+    const scenario = makeScenario({ matchingTag: "", rootCommitOutput: "\n" });
+
+    expect(scenario.run).toThrowError(
+      "Cannot determine the repository root commit for release versioning.",
+    );
+
+    scenario.cleanup();
+  });
+
+  it("propagates command adapter errors and rejects private references in the artifact", () => {
+    const commandError = makeScenario({ commandError: new Error("spawn failure") });
+    const unsafeArtifact = makeScenario({ unsafePublishedFile: true });
+
+    expect(commandError.run).toThrowError("spawn failure");
+    expect(unsafeArtifact.run).toThrowError(
+      [
+        "Refusing npm publish because the publish artifact contains private workspace artifacts.",
+        "- dist/unsafe.js references @effect-view-server/",
+      ].join("\n"),
+    );
+
+    commandError.cleanup();
+    unsafeArtifact.cleanup();
+  });
+
+  it("repairs the tag when a retry finds the computed version already public", () => {
+    const scenario = makeScenario({
+      existingPendingTagTarget: "head-object",
+      releaseVersionExists: true,
+    });
+
+    expect(scenario.run()).toStrictEqual({
+      _tag: "AlreadyPublished",
+      releaseType: "patch",
+      version: "0.0.7",
+    });
+    expect(scenario.calls.some(({ command, args }) => command === "npm" && args[0] === "publish")).toBe(
+      false,
+    );
+
+    scenario.cleanup();
+  });
+
+  it("fails closed when npm already has a version without this commit's pending marker", () => {
+    const scenario = makeScenario({ releaseVersionExists: true });
+
+    expect(scenario.run).toThrowError(
+      "Refusing to adopt effect-view-server@0.0.7 without a pending tag at the tested commit.",
+    );
+
+    scenario.cleanup();
+  });
+
+  it("requires the pending marker when npm reports a raced publish after an error", () => {
+    const safe = makeScenario({
+      existingPendingTagTarget: "head-object",
+      publishResult: result({ status: 1, stderr: "already published\n" }),
+      publishVersionExists: true,
+    });
+    const unsafe = makeScenario({
+      publishResult: result({ status: 1, stderr: "already published\n" }),
+      publishVersionExists: true,
+    });
+
+    expect(safe.run()).toStrictEqual({
+      _tag: "AlreadyPublished",
+      releaseType: "patch",
+      version: "0.0.7",
+    });
+    expect(unsafe.run).toThrowError(
+      "Refusing to adopt effect-view-server@0.0.7 without a pending tag at the tested commit.",
+    );
+
+    safe.cleanup();
+    unsafe.cleanup();
+  });
+
+  it("repairs a missing tag after npm succeeded before the previous run could tag it", () => {
+    const scenario = makeScenario({
+      matchingTag: "effect-view-server@0.0.7-pending",
+      publishedVersion: "0.0.7",
+      existingPendingTagTarget: "head-object",
+    });
+
+    expect(scenario.run()).toStrictEqual({
+      _tag: "AlreadyPublished",
+      releaseType: "patch",
+      version: "0.0.7",
+    });
+    expect(scenario.calls.map(({ command, args }) => [command, ...args])).toStrictEqual([
+      ["npm", "view", "effect-view-server", "version", "--json"],
+      ["git", "fetch", "--tags", "origin"],
+      ["git", "tag", "--list", "effect-view-server@*"],
+      [
+        "git",
+        "rev-parse",
+        "--quiet",
+        "--verify",
+        "refs/tags/effect-view-server@0.0.7-pending^{}",
+      ],
+      ["git", "rev-parse", "--quiet", "--verify", "HEAD^{}"],
+      ["git", "rev-parse", "--quiet", "--verify", "HEAD^{}"],
+      ["git", "rev-parse", "--quiet", "--verify", "refs/tags/effect-view-server@0.0.7^{}"],
+      [
+        "git",
+        "tag",
+        "-a",
+        "effect-view-server@0.0.7",
+        "head-object",
+        "-m",
+        "effect-view-server@0.0.7",
+      ],
+      ["git", "push", "origin", "refs/tags/effect-view-server@0.0.7"],
+    ]);
+
+    scenario.cleanup();
+  });
+
+  it("keeps a matching public tag and rejects a tag pointing at another commit", () => {
+    const matching = makeScenario({
+      existingPendingTagTarget: "head-object",
+      existingTagTarget: "head-object",
+    });
+    const mismatched = makeScenario({ existingTagTarget: "different-head" });
+
+    expect(matching.run()).toStrictEqual({
+      _tag: "Published",
+      releaseType: "patch",
+      version: "0.0.7",
+    });
+    expect(matching.calls.some(({ command, args }) => command === "git" && args[0] === "push")).toBe(
+      false,
+    );
+    expect(mismatched.run).toThrowError(
+      "Refusing to move published tag effect-view-server@0.0.7 away from its existing commit.",
+    );
+
+    matching.cleanup();
+    mismatched.cleanup();
+  });
+
+  it("moves a stale pending marker with a force-with-lease", () => {
+    const scenario = makeScenario({ existingPendingTagTarget: "old-head" });
+
+    expect(scenario.run()).toStrictEqual({
+      _tag: "Published",
+      releaseType: "patch",
+      version: "0.0.7",
+    });
+    expect(
+      scenario.calls.some(
+        ({ command, args }) =>
+          command === "git" &&
+          args[0] === "push" &&
+          args[1] ===
+            "--force-with-lease=refs/tags/effect-view-server@0.0.7-pending:old-head",
+      ),
+    ).toBe(true);
+
+    scenario.cleanup();
+  });
+
+  it("fails if HEAD disappears before the public tag can be created", () => {
+    const scenario = makeScenario({ headTargetSequence: ["head-object", null] });
+
+    expect(scenario.run).toThrowError(
+      "Cannot create effect-view-server@0.0.7 because HEAD does not resolve to a git object.",
+    );
+
+    scenario.cleanup();
+  });
+
+  it("fails if a stale pending tag has no lease object", () => {
+    const scenario = makeScenario({
+      existingPendingTagObject: null,
+      existingPendingTagTarget: "old-head",
+    });
+
+    expect(scenario.run).toThrowError(
+      "Cannot update pending tag effect-view-server@0.0.7-pending because its git object is unavailable.",
+    );
+
+    scenario.cleanup();
+  });
+
+  it("preserves a git tag command failure status when it is null", () => {
+    const scenario = makeScenario({ gitTagResult: result({ status: null }) });
+
+    expect(scenario.run).toThrowError(
+      expect.objectContaining({
+        exitCode: 1,
+        message: expect.stringContaining("git tag"),
+        name: "ReleasePublishCommandError",
+      }),
+    );
+
+    scenario.cleanup();
+  });
+
+  it("normalizes a null npm publish status to exit code one", () => {
+    const scenario = makeScenario({ publishResult: result({ status: null }) });
+
+    expect(scenario.run).toThrowError(
+      expect.objectContaining({
+        exitCode: 1,
+        message: expect.stringContaining("npm publish"),
+        name: "ReleasePublishCommandError",
+      }),
+    );
+
+    scenario.cleanup();
+  });
+
+  it("refuses to create a release tag when HEAD is unavailable", () => {
+    const scenario = makeScenario({ headTarget: null });
+
+    expect(scenario.run).toThrowError(
+      "Cannot reserve effect-view-server@0.0.7-pending because HEAD does not resolve to a git object.",
+    );
+
+    scenario.cleanup();
+  });
+
+  it("refuses to publish when an internal workspace package is public", () => {
+    const scenario = makeScenario();
+    writeJson(
+      join(scenario.rootDirectory, "packages", "client", "package.json"),
+      { name: "@effect-view-server/client", private: false },
+    );
+
+    expect(scenario.run).toThrowError(
+      "Refusing to publish because @effect-view-server/client is not private.",
+    );
+    expect(scenario.calls.some(({ command, args }) => command === "npm" && args[0] === "publish")).toBe(
+      false,
+    );
+
+    scenario.cleanup();
+  });
+
+  it("does not run npm for an untrusted branch or missing OIDC", () => {
+    const untrusted = makeScenario({
+      env: { ...trustedEnvironment, GITHUB_REF: "refs/heads/feature" },
+    });
+    const missingOidc = makeScenario({
+      env: {
+        ...trustedEnvironment,
+        ACTIONS_ID_TOKEN_REQUEST_TOKEN: "",
+        ACTIONS_ID_TOKEN_REQUEST_URL: "",
+      },
+    });
+
+    expect(untrusted.run).toThrowError(
+      "Refusing npm publish outside the trusted main-branch GitHub Actions context.",
+    );
+    expect(untrusted.calls).toStrictEqual([]);
     expect(missingOidc.run).toThrowError(
       [
-        "Refusing npm stage publish because GitHub Actions OIDC is unavailable.",
+        "Refusing npm publish because GitHub Actions OIDC is unavailable.",
         "- ACTIONS_ID_TOKEN_REQUEST_URL is required for npm trusted publishing.",
         "- ACTIONS_ID_TOKEN_REQUEST_TOKEN is required for npm trusted publishing.",
       ].join("\n"),
     );
-    expectCleanTemporaryDirectory(missingPackage);
-    expectCleanTemporaryDirectory(missingOidc);
+    expect(missingOidc.calls).toStrictEqual([]);
 
-    missingPackage.cleanup();
+    untrusted.cleanup();
     missingOidc.cleanup();
   });
 
-  it("confirms npm's stage-time already-published response before completing", () => {
-    const scenario = makeScenario([
-      commandResult({ status: 1 }),
-      commandResult({ stdout: '"effect-view-server"\n' }),
-      commandResult({
+  it("confirms a raced successful publish and preserves unknown npm failures", () => {
+    const raced = makeScenario({
+      existingPendingTagTarget: "head-object",
+      publishResult: result({
         status: 1,
-        stderr: "npm error cannot publish over previously published version 1.2.3\n",
+        stderr: "npm error cannot publish over previously published version 0.0.7\n",
       }),
-      commandResult({ stdout: '"1.2.3"\n' }),
-    ]);
+      publishVersionExists: true,
+    });
+    const failed = makeScenario({
+      publishResult: result({ status: 23, stderr: "npm error authentication failed\n" }),
+    });
 
-    expect(scenario.run()).toStrictEqual({
+    expect(raced.run()).toStrictEqual({
       _tag: "AlreadyPublished",
-      version: "1.2.3",
+      releaseType: "patch",
+      version: "0.0.7",
     });
-    expect(scenario.stdout).toStrictEqual([
-      "",
-      "effect-view-server@1.2.3 is already published.\n",
-    ]);
-    expect(scenario.stderr).toStrictEqual([
-      "npm error cannot publish over previously published version 1.2.3\n",
-    ]);
-    expectCleanTemporaryDirectory(scenario);
-
-    scenario.cleanup();
-  });
-
-  it("refuses an unconfirmed stage-time already-published response", () => {
-    const scenario = makeScenario([
-      commandResult({ status: 1 }),
-      commandResult({ stdout: '"effect-view-server"\n' }),
-      commandResult({
-        status: 1,
-        stderr: "npm error cannot publish over previously published version 1.2.3\n",
-      }),
-      commandResult({ status: 1 }),
-    ]);
-
-    expect(scenario.run).toThrowError(
-      "npm reported effect-view-server@1.2.3 as already published, but npm view does not confirm it.",
-    );
-    expectCleanTemporaryDirectory(scenario);
-
-    scenario.cleanup();
-  });
-
-  it("keeps an existing marker when npm reports that the version is already staged", () => {
-    const scenario = makeScenario([
-      commandResult({ status: 1 }),
-      commandResult({ stdout: '"effect-view-server"\n' }),
-      commandResult({ stdout: "version 1.2.3 is already staged\n", status: 1 }),
-      commandResult({ stdout: "staged-head\n" }),
-    ]);
-
-    expect(scenario.run()).toStrictEqual({
-      _tag: "AlreadyStaged",
-      version: "1.2.3",
-    });
-    expect(scenario.calls.map(({ command, args }) => [command, ...args])).toStrictEqual([
-      ["npm", "view", "effect-view-server@1.2.3", "version", "--json"],
-      ["npm", "view", "effect-view-server", "name", "--json"],
-      [
-        "npm",
-        "stage",
-        "publish",
-        scenario.calls[2]?.args[2],
-        "--provenance",
-        "--access",
-        "public",
-      ],
-      [
-        "git",
-        "rev-parse",
-        "--quiet",
-        "--verify",
-        "refs/tags/effect-view-server@1.2.3-staged^{}",
-      ],
-    ]);
-    expect(scenario.stdout).toStrictEqual([
-      "version 1.2.3 is already staged\n",
-      "effect-view-server@1.2.3 is already staged; keeping effect-view-server@1.2.3-staged.\n",
-    ]);
-    expect(scenario.stderr).toStrictEqual([""]);
-    expectCleanTemporaryDirectory(scenario);
-
-    scenario.cleanup();
-  });
-
-  it("refuses to invent a missing marker for an already-staged npm version", () => {
-    const scenario = makeScenario([
-      commandResult({ status: 1 }),
-      commandResult({ stdout: '"effect-view-server"\n' }),
-      commandResult({ stdout: "version 1.2.3 is already staged\n", status: 1 }),
-      commandResult({ status: 1 }),
-    ]);
-
-    expect(scenario.run).toThrowError(
-      "npm reported effect-view-server@1.2.3 as already staged, but effect-view-server@1.2.3-staged is missing.",
-    );
-    expect(scenario.calls).toHaveLength(4);
-    expectCleanTemporaryDirectory(scenario);
-
-    scenario.cleanup();
-  });
-
-  it("refuses ambiguous duplicate versions and preserves the npm failure code for unknown failures", () => {
-    const duplicate = makeScenario([
-      commandResult({ status: 1 }),
-      commandResult({ stdout: '"effect-view-server"\n' }),
-      commandResult({ stderr: "npm error version 1.2.3 already exists\n", status: 1 }),
-    ]);
-    const unknown = makeScenario([
-      commandResult({ status: 1 }),
-      commandResult({ stdout: '"effect-view-server"\n' }),
-      commandResult({ stderr: "npm error authentication failed\n", status: 23 }),
-    ]);
-
-    expect(duplicate.run).toThrowError(
-      "npm reported a duplicate effect-view-server@1.2.3, but npm view does not report it as published.",
-    );
-    expect(unknown.run).toThrowError(
+    expect(failed.run).toThrowError(
       expect.objectContaining({
         exitCode: 23,
-        message: expect.stringContaining("npm stage publish"),
+        message: expect.stringContaining("npm publish"),
         name: "ReleasePublishCommandError",
       }),
     );
-    expectCleanTemporaryDirectory(duplicate);
-    expectCleanTemporaryDirectory(unknown);
+    expect(failed.stderr).toStrictEqual(["npm error authentication failed\n"]);
 
-    duplicate.cleanup();
-    unknown.cleanup();
-  });
-
-  it("restages a rejected version and moves its stale marker with a force-with-lease push", () => {
-    const scenario = makeScenario([
-      commandResult({ status: 1 }),
-      commandResult({ stdout: '"effect-view-server"\n' }),
-      commandResult({ stdout: "restaged 1.2.3\n" }),
-      commandResult({ stdout: "new-head\n" }),
-      commandResult({ stdout: "old-head\n" }),
-      commandResult({ stdout: "old-tag-object\n" }),
-      commandResult(),
-      commandResult(),
-    ]);
-
-    expect(scenario.run()).toStrictEqual({
-      _tag: "Staged",
-      version: "1.2.3",
-    });
-    expect(scenario.calls.slice(-2).map(({ command, args }) => [command, ...args])).toStrictEqual([
-      [
-        "git",
-        "tag",
-        "-f",
-        "-a",
-        "effect-view-server@1.2.3-staged",
-        "new-head",
-        "-m",
-        "effect-view-server@1.2.3-staged",
-      ],
-      [
-        "git",
-        "push",
-        "--force-with-lease=refs/tags/effect-view-server@1.2.3-staged:old-tag-object",
-        "origin",
-        "refs/tags/effect-view-server@1.2.3-staged",
-      ],
-    ]);
-    expectCleanTemporaryDirectory(scenario);
-
-    scenario.cleanup();
-  });
-
-  it("keeps a matching marker after a successful restage", () => {
-    const scenario = makeScenario([
-      commandResult({ status: 1 }),
-      commandResult({ stdout: '"effect-view-server"\n' }),
-      commandResult(),
-      commandResult({ stdout: "head-object\n" }),
-      commandResult({ stdout: "head-object\n" }),
-      commandResult({ stdout: "tag-object\n" }),
-    ]);
-
-    expect(scenario.run()).toStrictEqual({
-      _tag: "Staged",
-      version: "1.2.3",
-    });
-    expect(
-      scenario.calls.map(({ command, args }) => [command, ...args]).slice(3),
-    ).toStrictEqual([
-      ["git", "rev-parse", "--quiet", "--verify", "HEAD^{}"],
-      [
-        "git",
-        "rev-parse",
-        "--quiet",
-        "--verify",
-        "refs/tags/effect-view-server@1.2.3-staged^{}",
-      ],
-      [
-        "git",
-        "rev-parse",
-        "--quiet",
-        "--verify",
-        "refs/tags/effect-view-server@1.2.3-staged",
-      ],
-    ]);
-    expectCleanTemporaryDirectory(scenario);
-
-    scenario.cleanup();
-  });
-
-  it("refuses marker creation when workflow HEAD cannot be resolved", () => {
-    const scenario = makeScenario([
-      commandResult({ status: 1 }),
-      commandResult({ stdout: '"effect-view-server"\n' }),
-      commandResult(),
-      commandResult({ status: 1 }),
-    ]);
-
-    expect(scenario.run).toThrowError(
-      "Cannot create effect-view-server@1.2.3-staged because HEAD does not resolve to a git object.",
-    );
-    expectCleanTemporaryDirectory(scenario);
-
-    scenario.cleanup();
-  });
-
-  it("preserves marker creation and push command failures after cleaning the staged package", () => {
-    const beforeTag = [
-      commandResult({ status: 1 }),
-      commandResult({ stdout: '"effect-view-server"\n' }),
-      commandResult(),
-      commandResult({ stdout: "head-object\n" }),
-      commandResult({ status: 1 }),
-      commandResult({ status: 1 }),
-    ];
-    const createFailure = makeScenario([
-      ...beforeTag,
-      commandResult({ status: 12 }),
-    ]);
-    const pushFailure = makeScenario([
-      ...beforeTag,
-      commandResult(),
-      commandResult({ status: 13 }),
-    ]);
-    const missingStatus = makeScenario([
-      ...beforeTag,
-      commandResult({ status: null }),
-    ]);
-
-    expect(createFailure.run).toThrowError(
-      expect.objectContaining({
-        exitCode: 12,
-        message: expect.stringContaining("git tag -a"),
-      }),
-    );
-    expect(pushFailure.run).toThrowError(
-      expect.objectContaining({
-        exitCode: 13,
-        message: expect.stringContaining("git push origin"),
-      }),
-    );
-    expect(missingStatus.run).toThrowError(
-      expect.objectContaining({
-        exitCode: 1,
-        message: expect.stringContaining("git tag -a"),
-      }),
-    );
-    expectCleanTemporaryDirectory(createFailure);
-    expectCleanTemporaryDirectory(pushFailure);
-    expectCleanTemporaryDirectory(missingStatus);
-
-    createFailure.cleanup();
-    pushFailure.cleanup();
-    missingStatus.cleanup();
-  });
-
-  it("propagates command adapter failures after cleaning the staged package", () => {
-    const scenario = makeScenario([
-      commandResult({
-        error: new Error("spawn failed"),
-        status: null,
-      }),
-    ]);
-
-    expect(scenario.run).toThrowError("spawn failed");
-    expectCleanTemporaryDirectory(scenario);
-
-    scenario.cleanup();
-  });
-
-  it("refuses staged private workspace imports and cleans without invoking commands", () => {
-    const releaseTree = makeReleaseTree();
-    writeFileSync(
-      join(releaseTree.publicPackageDirectory, "dist", "leak.js"),
-      'import "@effect-view-server/client";\n',
-    );
-    const scenario = makeScenario([], { releaseTree });
-
-    expect(scenario.run).toThrowError(
-      [
-        "Refusing npm stage publish because the staged package contains private workspace artifacts.",
-        "- dist/leak.js references @effect-view-server/",
-      ].join("\n"),
-    );
-    expect(scenario.calls).toStrictEqual([]);
-    expectCleanTemporaryDirectory(scenario);
-
-    scenario.cleanup();
-  });
-
-  it("treats mismatched npm view values as absent and rejects null stage statuses with exit code one", () => {
-    const mismatchedVersion = makeScenario([
-      commandResult({ stdout: '"9.9.9"\n' }),
-      commandResult({ status: 1 }),
-    ]);
-    const mismatchedPackage = makeScenario([
-      commandResult({ status: 1 }),
-      commandResult({ stdout: '"another-package"\n' }),
-    ]);
-    const nullStageStatus = makeScenario([
-      commandResult({ status: 1 }),
-      commandResult({ stdout: '"effect-view-server"\n' }),
-      commandResult({ status: null, stderr: "npm failed without a status\n" }),
-    ]);
-
-    expect(mismatchedVersion.run).toThrowError(
-      "effect-view-server must exist on npm before staged publishing can be used.",
-    );
-    expect(mismatchedPackage.run).toThrowError(
-      "effect-view-server must exist on npm before staged publishing can be used.",
-    );
-    expect(nullStageStatus.run).toThrowError(
-      expect.objectContaining({
-        exitCode: 1,
-        message: expect.stringContaining("npm stage publish"),
-      }),
-    );
-    expectCleanTemporaryDirectory(mismatchedVersion);
-    expectCleanTemporaryDirectory(mismatchedPackage);
-    expectCleanTemporaryDirectory(nullStageStatus);
-
-    mismatchedVersion.cleanup();
-    mismatchedPackage.cleanup();
-    nullStageStatus.cleanup();
+    raced.cleanup();
+    failed.cleanup();
   });
 });

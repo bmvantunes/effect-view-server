@@ -15,52 +15,98 @@ const definedEntries = (entries) =>
   Object.fromEntries(entries.filter(([, value]) => value !== undefined));
 
 export const packageTagName = (version) => `${publicPackageName}@${version}`;
+export const pendingPackageTagName = (version) => `${packageTagName(version)}-pending`;
 
-export const stagedPackageTagName = (version) => `${packageTagName(version)}-staged`;
-
-export const stagePublishCommandArguments = (stageDirectory) => [
-  "stage",
+export const publishCommandArguments = (publishDirectory) => [
   "publish",
-  stageDirectory,
+  publishDirectory,
   "--provenance",
   "--access",
   "public",
 ];
 
-const escapedRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const releaseTypeRank = {
+  patch: 0,
+  minor: 1,
+  major: 2,
+};
 
-export const classifyStagePublishDuplicateOutput = ({ stderr, stdout, version }) => {
-  const output = `${stdout}\n${stderr}`;
-  const versionPattern = escapedRegExp(version);
+const semverPattern = /^(\d+)\.(\d+)\.(\d+)$/;
 
-  const hasVersion = new RegExp(versionPattern, "i").test(output);
-  if (!hasVersion) {
-    return {
-      _tag: "Unknown",
-    };
-  }
+export const releaseTypeFromChangesets = (contents) => {
+  let releaseType = "patch";
 
-  if (/previously published|cannot publish over|cannot modify pre-existing version/i.test(output)) {
-    return {
-      _tag: "AlreadyPublished",
-    };
-  }
-
-  if (/already exists|already staged|already pending|staged version/i.test(output)) {
-    if (/already exists/i.test(output) && !/already staged|already pending|staged version/i.test(output)) {
-      return {
-        _tag: "DuplicateVersion",
-      };
+  for (const content of contents) {
+    for (const match of content.matchAll(/["']effect-view-server["']\s*:\s*(major|minor|patch)/g)) {
+      const candidate = match[1];
+      if (releaseTypeRank[candidate] > releaseTypeRank[releaseType]) {
+        releaseType = candidate;
+      }
     }
+  }
 
-    return {
-      _tag: "AlreadyStaged",
-    };
+  return releaseType;
+};
+
+export const incrementReleaseVersion = (version, releaseType) => {
+  const match = semverPattern.exec(version);
+  if (match === null) {
+    throw new Error(`Cannot increment invalid stable release version ${version}.`);
+  }
+
+  const major = Number(match[1]);
+  const minor = Number(match[2]);
+  const patch = Number(match[3]);
+
+  if (releaseType === "major") {
+    return `${major + 1}.0.0`;
+  }
+  if (releaseType === "minor") {
+    return `${major}.${minor + 1}.0`;
+  }
+  return `${major}.${minor}.${patch + 1}`;
+};
+
+export const parseReleaseTag = (tag) => {
+  const prefix = `${publicPackageName}@`;
+  if (!tag.startsWith(prefix)) {
+    return undefined;
+  }
+
+  const pending = tag.endsWith("-pending");
+  const staged = tag.endsWith("-staged");
+  const version = tag.slice(prefix.length).replace(/-(?:staged|pending)$/, "");
+  const match = semverPattern.exec(version);
+  if (match === null) {
+    return undefined;
   }
 
   return {
-    _tag: "Unknown",
+    pending,
+    staged,
+    tag,
+    version,
+    major: Number(match[1]),
+    minor: Number(match[2]),
+    patch: Number(match[3]),
   };
+};
+
+export const compareReleaseTags = (left, right) => {
+  if (left.major !== right.major) {
+    return left.major - right.major;
+  }
+  if (left.minor !== right.minor) {
+    return left.minor - right.minor;
+  }
+  if (left.patch !== right.patch) {
+    return left.patch - right.patch;
+  }
+  const markerRank = (tag) => (tag.pending ? 1 : tag.staged ? 0 : 2);
+  if (markerRank(left) !== markerRank(right)) {
+    return markerRank(left) - markerRank(right);
+  }
+  return left.tag.localeCompare(right.tag);
 };
 
 export const stripSourceMapReference = (contents) =>
@@ -120,7 +166,7 @@ export const internalPublishViolations = (workspacePackages) =>
 
 export const isTrustedPublishEnvironment = (env) =>
   env.GITHUB_ACTIONS === "true" &&
-  (env.GITHUB_EVENT_NAME === "push" || env.GITHUB_EVENT_NAME === "workflow_dispatch") &&
+  env.GITHUB_EVENT_NAME === "push" &&
   env.GITHUB_REF === "refs/heads/main" &&
   env.GITHUB_REPOSITORY === expectedPublishRepository;
 
@@ -132,8 +178,8 @@ export const oidcPublishEnvironmentViolations = (env) =>
 export const publishDecision = ({ env, version, workspacePackages }) => {
   if (version === "0.0.0") {
     return {
-      _tag: "Skip",
-      message: `Skipping npm publish for ${publicPackageName}@0.0.0.`,
+      _tag: "Refuse",
+      message: `Refusing to publish placeholder version ${publicPackageName}@0.0.0.`,
     };
   }
 

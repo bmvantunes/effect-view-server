@@ -760,7 +760,13 @@ const makeSourceApplicationStateModule = <State, Command, Metrics, SweepOutcome>
           }),
         );
       }),
-    metrics: () => input.metrics(state),
+    metrics: () => {
+      const snapshot = input.metrics(state);
+      if (isSourceAsynchronousValue(snapshot)) {
+        throw new TypeError("Source Application State metrics must return a synchronous snapshot.");
+      }
+      return snapshot;
+    },
     runDueSweep: <const Topic extends string>(
       topic: Topic,
       epochNowNanos: bigint,
@@ -999,22 +1005,17 @@ export const makeSourceApplicationStateRegistration = <
       if (isSourceStateReference(initialState) && !Object.isFrozen(initialState)) {
         throw new TypeError("Source Application State initial state must be immutable.");
       }
-      const initialMetrics = snapshot.metrics(initialState);
-      if (isSourceAsynchronousValue(initialMetrics)) {
-        throw new TypeError("Source Application State metrics must return a synchronous snapshot.");
-      }
-      modules.set(
-        binding.lifetimeScope,
-        makeSourceApplicationStateModule<State, Command, Metrics, SweepOutcome>({
-          topic: binding.topic,
-          initialState,
-          reduce: snapshot.reduce,
-          cancelledMaintenanceWorkIds: snapshot.cancelledMaintenanceWorkIds,
-          acquireTransition: snapshot.acquireTransition,
-          metrics: snapshot.metrics,
-          runDueSweep: snapshot.runDueSweep,
-        }),
-      );
+      const module = makeSourceApplicationStateModule<State, Command, Metrics, SweepOutcome>({
+        topic: binding.topic,
+        initialState,
+        reduce: snapshot.reduce,
+        cancelledMaintenanceWorkIds: snapshot.cancelledMaintenanceWorkIds,
+        acquireTransition: snapshot.acquireTransition,
+        metrics: snapshot.metrics,
+        runDueSweep: snapshot.runDueSweep,
+      });
+      module.metrics();
+      modules.set(binding.lifetimeScope, module);
     },
     forLifetime: <const Topic extends string>(lifetimeScope: Scope.Scope, topic: Topic) => {
       const module = modules.get(lifetimeScope);

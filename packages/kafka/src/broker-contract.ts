@@ -1,20 +1,14 @@
 import { Schema } from "effect";
-import type {
-  KafkaCapturedRetentionPolicy,
-  KafkaCleanupPolicy,
-  KafkaResolvedRetention,
+import {
+  KafkaCapturedRetentionPolicySchema,
+  KafkaCleanupPolicySchema,
+  KafkaResolvedRetentionSchema,
+  type KafkaCapturedRetentionPolicy,
+  type KafkaCleanupPolicy,
+  type KafkaResolvedRetention,
 } from "./contract";
 
 const NonNegativeBigInt = Schema.BigInt.check(Schema.isGreaterThanOrEqualToBigInt(0n));
-const PositiveBigInt = NonNegativeBigInt.check(Schema.isGreaterThanBigInt(0n));
-const KafkaCleanupPolicySchema = Schema.Literals(["delete", "compact", "compact-and-delete"]);
-const KafkaCapturedRetentionPolicySchema = Schema.Union([
-  Schema.TaggedStruct("MatchKafkaRetention", {}),
-  Schema.TaggedStruct("Forever", {}),
-  Schema.TaggedStruct("Finite", {
-    durationNanos: PositiveBigInt,
-  }),
-]);
 
 export const KafkaBrokerContractIssue = Schema.Union([
   Schema.TaggedStruct("BrokerConfigurationUnavailable", {
@@ -29,8 +23,8 @@ export const KafkaBrokerContractIssue = Schema.Union([
   Schema.TaggedStruct("CleanupPolicyMismatch", {
     region: Schema.NonEmptyString,
     topic: Schema.NonEmptyString,
-    declared: Schema.Literals(["delete", "compact", "compact-and-delete"]),
-    observed: Schema.Literals(["delete", "compact", "compact-and-delete"]),
+    declared: KafkaCleanupPolicySchema,
+    observed: KafkaCleanupPolicySchema,
   }),
   Schema.TaggedStruct("InvalidRetentionMs", {
     region: Schema.NonEmptyString,
@@ -83,12 +77,7 @@ const KafkaResolvedBrokerContractSchema = Schema.Struct({
   retentionPolicy: KafkaCapturedRetentionPolicySchema,
   observedCleanupPolicy: KafkaCleanupPolicySchema,
   observedRetentionMs: Schema.Union([Schema.Literal(-1n), NonNegativeBigInt]),
-  resolvedRetention: Schema.Union([
-    Schema.TaggedStruct("Forever", {}),
-    Schema.TaggedStruct("Finite", {
-      durationNanos: NonNegativeBigInt,
-    }),
-  ]),
+  resolvedRetention: KafkaResolvedRetentionSchema,
 });
 
 const snapshotCapturedRetentionPolicy = (
@@ -348,10 +337,3 @@ export const resolveKafkaBrokerContracts = (
       }
     : validationFailure([firstIssue, ...issues.slice(1)]);
 };
-
-export const KafkaResolvedRetentionSchema = Schema.Union([
-  Schema.TaggedStruct("Forever", {}),
-  Schema.TaggedStruct("Finite", {
-    durationNanos: NonNegativeBigInt,
-  }),
-]);

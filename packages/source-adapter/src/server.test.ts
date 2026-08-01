@@ -913,8 +913,7 @@ describe("Source Adapter server SDK", () => {
         Option.fromUndefinedOr(resolveSourceApplicationTransition(prepared.transition)),
       ).apply();
 
-      expect(module.metrics().then).toBe("metrics");
-      expect(module.metrics().count).toBe(1);
+      expect(module.metrics()).toStrictEqual(new ThenState("metrics", 1));
       yield* Scope.close(lifetimeScope, Exit.void);
     }),
   );
@@ -1012,6 +1011,55 @@ describe("Source Adapter server SDK", () => {
       ).toThrow(expectedMessages[index]);
     }
   });
+
+  it.effect("rejects asynchronous metrics after application state transitions", () =>
+    Effect.gen(function* () {
+      const registration = Reflect.apply(SourceAdapterServer.applicationState, undefined, [
+        {
+          sweepIntervalNanos: 1_000n,
+          initialState: () => 0,
+          reduce: () => 1,
+          metrics: (state: number) => (state === 0 ? 0 : Effect.void),
+          runDueSweep: () => Effect.void,
+        },
+      ]);
+      const lifetimeScope = yield* Scope.make();
+      const internal = Option.getOrThrow(
+        Option.fromUndefinedOr(resolveSourceApplicationStateRegistration(registration)),
+      );
+      internal.bind({
+        topic: "orders",
+        definition: undefined,
+        lifetimeScope,
+        target: { _tag: "Materialized" },
+      });
+      const module = Reflect.apply(Reflect.get(registration, "forLifetime"), registration, [
+        lifetimeScope,
+        "orders",
+      ]);
+      const preparedEffect = invokeUnknownMethod(module, "prepare", [undefined]);
+      if (!Effect.isEffect(preparedEffect)) {
+        throw new TypeError("Expected prepare to return an Effect.");
+      }
+      const prepared = yield* preparedEffect.pipe(
+        Effect.provideService(Scope.Scope, lifetimeScope),
+        Effect.orDie,
+      );
+      if (typeof prepared !== "object" || prepared === null) {
+        throw new TypeError("Expected prepare to return a transition.");
+      }
+      Option.getOrThrow(
+        Option.fromUndefinedOr(
+          resolveSourceApplicationTransition(Reflect.get(prepared, "transition")),
+        ),
+      ).apply();
+
+      expect(() => invokeUnknownMethod(module, "metrics", [])).toThrow(
+        "Source Application State metrics must return a synchronous snapshot.",
+      );
+      yield* Scope.close(lifetimeScope, Exit.void);
+    }),
+  );
 
   it("rejects Effect, Promise, same-state, and mutable-state application reducers", () => {
     const effectRegistration = Reflect.apply(SourceAdapterServer.applicationState, undefined, [

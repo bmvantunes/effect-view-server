@@ -862,69 +862,107 @@ describe("Kafka Node Adapter", () => {
     }),
   );
 
-  it.effect("turns hostile Admin responses into accumulated typed startup failures", () =>
-    Effect.gen(function* () {
-      const hostileResource = Object.create(null);
-      Object.defineProperty(hostileResource, "resourceType", {
-        enumerable: true,
-        get: () => {
-          throw new Error("hostile resource getter");
+  it.effect.each([
+    {
+      label: "a non-array response",
+      makeResponse: () => ({ malformed: "non-array" }),
+      expectedIssues: [
+        {
+          _tag: "MalformedBrokerConfiguration",
+          region: "eu",
+          topic: "source-inventory",
+          configuration: "response",
         },
-      });
-      const hostileConfig = Object.create(null);
-      Object.defineProperty(hostileConfig, "name", {
-        enumerable: true,
-        get: () => {
-          throw new Error("hostile config getter");
+        {
+          _tag: "MalformedBrokerConfiguration",
+          region: "eu",
+          topic: "source-orders",
+          configuration: "response",
         },
-      });
-      const hostileResponses: ReadonlyArray<unknown> = [
-        { malformed: "non-array" },
-        [hostileResource],
-        [
+      ],
+    },
+    {
+      label: "a throwing resource getter",
+      makeResponse: () => {
+        const hostileResource = Object.create(null);
+        Object.defineProperty(hostileResource, "resourceType", {
+          enumerable: true,
+          get: () => {
+            throw new Error("hostile resource getter");
+          },
+        });
+        return [hostileResource];
+      },
+      expectedIssues: [
+        {
+          _tag: "MalformedBrokerConfiguration",
+          region: "eu",
+          topic: "source-inventory",
+          configuration: "response",
+        },
+        {
+          _tag: "MalformedBrokerConfiguration",
+          region: "eu",
+          topic: "source-orders",
+          configuration: "response",
+        },
+      ],
+    },
+    {
+      label: "a throwing config getter",
+      makeResponse: () => {
+        const hostileConfig = Object.create(null);
+        Object.defineProperty(hostileConfig, "name", {
+          enumerable: true,
+          get: () => {
+            throw new Error("hostile config getter");
+          },
+        });
+        return [
           {
             resourceType: 2,
             resourceName: "source-orders",
             configs: [hostileConfig],
           },
-        ],
-      ];
+        ];
+      },
+      expectedIssues: [
+        {
+          _tag: "MalformedBrokerConfiguration",
+          region: "eu",
+          topic: "source-inventory",
+          configuration: "response",
+        },
+        {
+          _tag: "MalformedBrokerConfiguration",
+          region: "eu",
+          topic: "source-orders",
+          configuration: "cleanup.policy",
+        },
+      ],
+    },
+  ])("turns $label into accumulated typed startup failures", ({ makeResponse, expectedIssues }) =>
+    Effect.gen(function* () {
       const config = makeBatchedBrokerConfig();
-      for (const response of hostileResponses) {
-        platformatic.reset();
-        platformatic.state.describeConfigResponses.push(response);
-        const failure = yield* Effect.scoped(
-          EffectLayer.build(
-            layer(config, {
-              consumerGroupPrefix: "replica",
-              regions: {
-                eu: { bootstrapServers: "eu:9092" },
-                us: { bootstrapServers: "us:9092" },
-              },
-            }),
-          ),
-        ).pipe(Effect.flip);
+      platformatic.state.describeConfigResponses.push(makeResponse());
+      const failure = yield* Effect.scoped(
+        EffectLayer.build(
+          layer(config, {
+            consumerGroupPrefix: "replica",
+            regions: {
+              eu: { bootstrapServers: "eu:9092" },
+              us: { bootstrapServers: "us:9092" },
+            },
+          }),
+        ),
+      ).pipe(Effect.flip);
 
-        expect(failure).toStrictEqual({
-          _tag: "KafkaBrokerContractValidationFailure",
-          message: "Kafka broker cleanup and retention validation failed before runtime startup.",
-          issues: [
-            {
-              _tag: "MalformedBrokerConfiguration",
-              region: "eu",
-              topic: "source-inventory",
-              configuration: "response",
-            },
-            {
-              _tag: "MalformedBrokerConfiguration",
-              region: "eu",
-              topic: "source-orders",
-              configuration: "response",
-            },
-          ],
-        });
-        expect(platformatic.state.consumers).toStrictEqual([]);
-      }
+      expect(failure).toStrictEqual({
+        _tag: "KafkaBrokerContractValidationFailure",
+        message: "Kafka broker cleanup and retention validation failed before runtime startup.",
+        issues: expectedIssues,
+      });
+      expect(platformatic.state.consumers).toStrictEqual([]);
     }),
   );
 
@@ -2983,7 +3021,16 @@ describe("Kafka Node Adapter", () => {
       },
     ]);
     expect(kafkaNodeInternals.snapshotAdminResponse({ malformed: "non-array" })).toBeUndefined();
-    expect(kafkaNodeInternals.snapshotAdminResponse([hostileBrokerResource])).toBeUndefined();
+    const hostileAdminResponse = new Proxy([], {
+      get: (target, property, receiver) => {
+        if (property === Symbol.iterator) {
+          throw new Error("hostile response iterator");
+        }
+        return Reflect.get(target, property, receiver);
+      },
+    });
+    expect(kafkaNodeInternals.snapshotAdminResponse(hostileAdminResponse)).toBeUndefined();
+    expect(kafkaNodeInternals.snapshotAdminResponse([hostileBrokerResource])).toStrictEqual([]);
     expect(
       kafkaNodeInternals.snapshotAdminResponse([
         {
@@ -2992,7 +3039,12 @@ describe("Kafka Node Adapter", () => {
           configs: [hostileConfig],
         },
       ]),
-    ).toBeUndefined();
+    ).toStrictEqual([
+      {
+        resourceName: "source-orders",
+        malformedConfiguration: "cleanup.policy",
+      },
+    ]);
 
     const metrics = kafkaNodeInternals.emptyMutableMetrics();
     metrics.assignments.set(0, {

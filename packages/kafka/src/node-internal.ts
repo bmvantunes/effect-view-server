@@ -1610,8 +1610,8 @@ const unsafeBrokerConfigResource = (value: unknown): KafkaBrokerConfigResource |
   if (typeof resourceName !== "string" || resourceName.length === 0 || !Array.isArray(configs)) {
     return undefined;
   }
-  const cleanupPolicy = unsafeConfigValue(configs, "cleanup.policy");
-  const retentionMs = unsafeConfigValue(configs, "retention.ms");
+  const cleanupPolicy = configValue(configs, "cleanup.policy");
+  const retentionMs = configValue(configs, "retention.ms");
   if (cleanupPolicy === undefined) {
     return {
       resourceName,
@@ -1646,7 +1646,7 @@ const snapshotAdminResponse = (
     const candidates: ReadonlyArray<unknown> = response;
     const resources: Array<KafkaBrokerConfigResource> = [];
     for (const candidate of candidates) {
-      const resource = unsafeBrokerConfigResource(candidate);
+      const resource = brokerConfigResource(candidate);
       if (resource !== undefined) {
         resources.push(resource);
       }

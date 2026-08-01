@@ -50,6 +50,8 @@ export const viewServer = defineViewServerConfig({
     orders: {
       schema: Order,
       source: kafka.source({
+        cleanupPolicy: "delete",
+        retentionPolicy: "match-kafka-retention",
         topic: "orders.v1",
         regions: ["primary"],
         key: kafka.string(),
@@ -73,7 +75,9 @@ export const viewServer = defineViewServerConfig({
 });
 ```
 
-Kafka derives the canonical ID as `region:localRowKey`. gRPC Mappings return
+Delete-only Kafka sources derive the canonical ID as
+`region:partition:localRowKey`. Compaction-capable sources derive it from the
+Region, partition, and exact serialized Kafka key bytes. gRPC Mappings return
 the complete row, including `id`.
 
 ## Runtime composition

@@ -4,17 +4,23 @@ import type { Message } from "@bufbuild/protobuf";
 import { FieldDescriptorProto_Type, FileDescriptorProtoSchema } from "@bufbuild/protobuf/wkt";
 import { describe, expect, it } from "@effect/vitest";
 import { SourceAdapter } from "effect-view-server/source-adapter";
-import { Duration, Effect, Option, Schema } from "effect";
+import { Duration, Effect, Option, Schedule, Schema } from "effect";
 import {
   KafkaMaterializedMetrics,
   KafkaSourceAdapter,
   KafkaSourceRejectionLocation,
   KafkaSourceConfigurationError,
+  decodeKafkaCompactionKeyCodec,
+  decodeKafkaCompactionRowId,
   decodeKafkaCodec,
+  decodeKafkaDeleteRowId,
   decodeKafkaRowId,
+  isKafkaCompactionKeyCodec,
   isKafkaCodec,
   kafka,
+  kafkaCompactionRowId,
   kafkaConsumerGroupId,
+  kafkaDeleteRowId,
   kafkaRowId,
 } from "./contract";
 
@@ -64,6 +70,8 @@ const makeContractMessage = () =>
 const contractMessage = makeContractMessage();
 
 const validSourceInput = () => ({
+  cleanupPolicy: "delete" as const,
+  retentionPolicy: "Infinity" as const,
   topic: "orders-source",
   regions: ["eu", "us"] as const,
   key: kafka.string(),
@@ -95,6 +103,22 @@ const validRegionMetrics = () => ({
   rebalances: 0n,
   closes: 0n,
   closeFailures: 0n,
+  retention: {
+    declaredCleanupPolicy: "delete",
+    observedCleanupPolicy: "delete",
+    configuredRetention: { _tag: "Forever" },
+    resolvedRetention: { _tag: "Forever" },
+    trackedRows: 0,
+    lastSweepRetryableFailures: 0,
+    expiredRows: 0n,
+    authoritativeExpiredDeletes: 0n,
+    failedWorkBacklog: 0,
+    expirationRetryFailures: 0n,
+    latestExpirationFailure: null,
+    lastSweepAtNanos: null,
+    lastSweepDurationNanos: null,
+    sweepIntervalNanos: 900_000_000_000n,
+  },
 });
 
 describe("Kafka Source Adapter contract", () => {
@@ -442,6 +466,8 @@ describe("Kafka Source Adapter contract", () => {
 
   it("accepts nominal protobuf codecs in Source Definitions", () => {
     const source = kafka.source({
+      cleanupPolicy: "delete",
+      retentionPolicy: "Infinity",
       topic: "protobuf-orders",
       regions: ["local"],
       key: kafka.protobuf(contractMessage),
@@ -548,6 +574,190 @@ describe("Kafka Source Adapter contract", () => {
       });
     }),
   );
+
+  it.effect("decodes every metadata-free compaction key codec with exact safe failures", () =>
+    Effect.gen(function* () {
+      const sourceBytes = Uint8Array.from([1, 2, 3]);
+      const bytesCodec = kafka.compactionKey.bytes();
+      const decodedBytes = yield* decodeKafkaCompactionKeyCodec(bytesCodec, {
+        bytes: sourceBytes,
+      });
+      sourceBytes[0] = 9;
+      const decodedString = yield* decodeKafkaCompactionKeyCodec(kafka.compactionKey.string(), {
+        bytes: encoder.encode("desk"),
+      });
+      const jsonCodec = kafka.compactionKey.json(() =>
+        Schema.toCodecJson(
+          Schema.Struct({
+            tenant: Schema.String,
+          }),
+        ),
+      );
+      const decodedJson = yield* decodeKafkaCompactionKeyCodec(jsonCodec, {
+        bytes: encoder.encode('{"tenant":"north"}'),
+      });
+      const invalidJson = yield* decodeKafkaCompactionKeyCodec(jsonCodec, {
+        bytes: encoder.encode("{"),
+      }).pipe(Effect.flip);
+      const invalidJsonShape = yield* decodeKafkaCompactionKeyCodec(jsonCodec, {
+        bytes: encoder.encode('{"tenant":1}'),
+      }).pipe(Effect.flip);
+      const protobufCodec = kafka.compactionKey.protobuf(contractMessage);
+      const decodedProtobuf = yield* decodeKafkaCompactionKeyCodec(protobufCodec, {
+        bytes: toBinary(contractMessage, create(contractMessage, { label: "north" })),
+      });
+      const invalidProtobuf = yield* decodeKafkaCompactionKeyCodec(protobufCodec, {
+        bytes: Uint8Array.from([255]),
+      }).pipe(Effect.flip);
+      const customFailure = {
+        _tag: "CustomFailure",
+        message: "no key",
+      } as const;
+      const custom = kafka.compactionKey.codec({
+        name: "tenant-key",
+        decode: ({ bytes }) =>
+          bytes.length === 0 ? Effect.fail(customFailure) : Effect.succeed(bytes[0]),
+      });
+      const customValue = yield* decodeKafkaCompactionKeyCodec(custom, {
+        bytes: Uint8Array.from([7]),
+      });
+      const customTypedFailure = yield* decodeKafkaCompactionKeyCodec(custom, {
+        bytes: Uint8Array.from([]),
+      }).pipe(Effect.flip);
+      const throwingCustom = kafka.compactionKey.codec({
+        name: "throwing",
+        decode: (_input) => {
+          throw new Error("escaped");
+        },
+      });
+      const synchronousFailure = yield* decodeKafkaCompactionKeyCodec(throwingCustom, {
+        bytes: Uint8Array.from([1]),
+      }).pipe(Effect.flip);
+
+      expect({
+        bytes: [...decodedBytes],
+        customTypedFailure,
+        customValue,
+        decodedJson,
+        decodedProtobuf: decodedProtobuf.label,
+        decodedString,
+        invalidJson,
+        invalidJsonShape,
+        invalidProtobuf,
+        synchronousFailure,
+      }).toStrictEqual({
+        bytes: [1, 2, 3],
+        customTypedFailure,
+        customValue: 7,
+        decodedJson: { tenant: "north" },
+        decodedProtobuf: "north",
+        decodedString: "desk",
+        invalidJson: {
+          _tag: "KafkaCodecError",
+          message: "Kafka compaction key JSON payload is not valid JSON.",
+        },
+        invalidJsonShape: {
+          _tag: "KafkaCodecError",
+          message: "Kafka compaction key JSON payload does not satisfy its Schema.",
+        },
+        invalidProtobuf: {
+          _tag: "KafkaCodecError",
+          message: "Kafka protobuf payload could not be decoded.",
+        },
+        synchronousFailure: {
+          _tag: "KafkaCodecError",
+          message: "Kafka compaction key custom codec threw synchronously.",
+        },
+      });
+    }),
+  );
+
+  it("recognizes and validates only nominal metadata-free compaction key codecs", () => {
+    const codec = kafka.compactionKey.string();
+    const brand = Option.getOrThrow(
+      Option.fromUndefinedOr(
+        Reflect.ownKeys(codec).find(
+          (key) =>
+            typeof key === "symbol" &&
+            key.description === "@effect-view-server/kafka/KafkaCompactionKeyCodec",
+        ),
+      ),
+    );
+    const decode = Option.getOrThrow(
+      Option.fromUndefinedOr(
+        Reflect.ownKeys(codec).find(
+          (key) =>
+            typeof key === "symbol" &&
+            key.description === "@effect-view-server/kafka/KafkaCompactionKeyCodecDecode",
+        ),
+      ),
+    );
+    const throwingBrand = {
+      [brand]: () => {
+        throw new Error("hostile");
+      },
+      [decode]: () => Effect.void,
+    };
+    const throwingLookup = new Proxy(
+      {},
+      {
+        get() {
+          throw new Error("hostile");
+        },
+      },
+    );
+
+    expect(isKafkaCompactionKeyCodec(codec)).toBe(true);
+    expect(isKafkaCompactionKeyCodec(kafka.compactionKey.protobuf(contractMessage))).toBe(true);
+    expect(
+      isKafkaCompactionKeyCodec(
+        kafka.compactionKey.codec({
+          name: "custom",
+          decode: (_input) => Effect.succeed("decoded"),
+        }),
+      ),
+    ).toBe(true);
+    expect(isKafkaCompactionKeyCodec(null)).toBe(false);
+    expect(isKafkaCompactionKeyCodec({})).toBe(false);
+    expect(isKafkaCompactionKeyCodec(throwingBrand)).toBe(false);
+    expect(isKafkaCompactionKeyCodec(throwingLookup)).toBe(false);
+    expect(() => Reflect.apply(kafka.compactionKey.json, undefined, [42])).toThrow(
+      KafkaSourceConfigurationError,
+    );
+    expect(() =>
+      Reflect.apply(kafka.compactionKey.json, undefined, [
+        () => {
+          throw new Error("hostile");
+        },
+      ]),
+    ).toThrow(KafkaSourceConfigurationError);
+    expect(() => Reflect.apply(kafka.compactionKey.json, undefined, [() => Schema.String])).toThrow(
+      KafkaSourceConfigurationError,
+    );
+    expect(() => Reflect.apply(kafka.compactionKey.protobuf, undefined, [{}])).toThrow(
+      KafkaSourceConfigurationError,
+    );
+    expect(() => Reflect.apply(kafka.compactionKey.codec, undefined, [null])).toThrow(
+      KafkaSourceConfigurationError,
+    );
+    expect(() =>
+      Reflect.apply(kafka.compactionKey.codec, undefined, [
+        {
+          name: "",
+          decode: () => Effect.void,
+        },
+      ]),
+    ).toThrow(KafkaSourceConfigurationError);
+    expect(() =>
+      Reflect.apply(kafka.compactionKey.codec, undefined, [
+        {
+          name: "decorated",
+          decode: () => Effect.void,
+          extra: true,
+        },
+      ]),
+    ).toThrow(KafkaSourceConfigurationError);
+  });
 
   it("recognizes only nominal codecs and validates custom definitions", () => {
     const codec = kafka.string();
@@ -731,30 +941,348 @@ describe("Kafka Source Adapter contract", () => {
 
   it("constructs and decodes canonical region-qualified row IDs", () => {
     const id = kafkaRowId({
+      cleanupPolicy: "delete",
       region: "eu",
+      partition: 2,
       localRowKey: "desk:order:1",
     });
 
-    expect(id).toBe("eu:desk:order:1");
-    expect(decodeKafkaRowId(id)).toStrictEqual({
+    expect(id).toBe("eu:2:desk:order:1");
+    expect(decodeKafkaRowId(id, "delete")).toStrictEqual({
+      _tag: "Delete",
       region: "eu",
+      partition: 2,
       localRowKey: "desk:order:1",
     });
-    expect(() => kafkaRowId({ region: "bad:region", localRowKey: "a" })).toThrow(
-      KafkaSourceConfigurationError,
-    );
-    expect(() => kafkaRowId({ region: "eu", localRowKey: "" })).toThrow(
-      KafkaSourceConfigurationError,
-    );
     expect(() =>
-      Reflect.apply(kafkaRowId, undefined, [{ region: "eu", localRowKey: "a", extra: true }]),
+      kafkaRowId({
+        cleanupPolicy: "delete",
+        region: "bad:region",
+        partition: 0,
+        localRowKey: "a",
+      }),
     ).toThrow(KafkaSourceConfigurationError);
-    expect(() => decodeKafkaRowId("missing")).toThrow(KafkaSourceConfigurationError);
-    expect(() => decodeKafkaRowId(":missing")).toThrow(KafkaSourceConfigurationError);
-    expect(() => decodeKafkaRowId("missing:")).toThrow(KafkaSourceConfigurationError);
-    expect(() => Reflect.apply(decodeKafkaRowId, undefined, [1])).toThrow(
+    expect(() =>
+      kafkaRowId({
+        cleanupPolicy: "delete",
+        region: "eu",
+        partition: 0,
+        localRowKey: "",
+      }),
+    ).toThrow(KafkaSourceConfigurationError);
+    expect(() =>
+      Reflect.apply(kafkaRowId, undefined, [
+        {
+          cleanupPolicy: "delete",
+          region: "eu",
+          partition: 0,
+          localRowKey: "a",
+          extra: true,
+        },
+      ]),
+    ).toThrow(KafkaSourceConfigurationError);
+    expect(() => decodeKafkaRowId("missing", "delete")).toThrow(KafkaSourceConfigurationError);
+    expect(() => decodeKafkaRowId(":missing", "delete")).toThrow(KafkaSourceConfigurationError);
+    expect(() => decodeKafkaRowId("missing:", "delete")).toThrow(KafkaSourceConfigurationError);
+    expect(() => Reflect.apply(decodeKafkaRowId, undefined, [1, "delete"])).toThrow(
       KafkaSourceConfigurationError,
     );
+    expect(() => Reflect.apply(decodeKafkaRowId, undefined, [id, "archive"])).toThrow(
+      "Kafka rowId cleanupPolicy must be delete, compact, or compact-and-delete.",
+    );
+  });
+
+  it("constructs and rejects exact delete and compaction row-ID forms", () => {
+    const deleteId = kafkaDeleteRowId({
+      region: "eu",
+      partition: 2,
+      localRowKey: "desk:1",
+    });
+    const compactIds = [
+      Uint8Array.from([]),
+      Uint8Array.from([1]),
+      Uint8Array.from([1, 2]),
+      Uint8Array.from([1, 2, 3]),
+      Uint8Array.from([1, 2, 3, 4]),
+    ].map((serializedKeyBytes) =>
+      kafkaCompactionRowId({
+        region: "eu",
+        partition: 2,
+        serializedKeyBytes,
+      }),
+    );
+
+    expect(deleteId).toBe("eu:2:desk:1");
+    expect(decodeKafkaDeleteRowId(deleteId)).toStrictEqual({
+      _tag: "Delete",
+      region: "eu",
+      partition: 2,
+      localRowKey: "desk:1",
+    });
+    expect(
+      compactIds.map((id) => {
+        const decoded = decodeKafkaCompactionRowId(id);
+        return {
+          id,
+          key: [...decoded.serializedKeyBytes],
+          partition: decoded.partition,
+          region: decoded.region,
+          tag: decoded._tag,
+        };
+      }),
+    ).toStrictEqual([
+      { id: "eu:2:k", key: [], partition: 2, region: "eu", tag: "Compaction" },
+      { id: "eu:2:kAQ", key: [1], partition: 2, region: "eu", tag: "Compaction" },
+      { id: "eu:2:kAQI", key: [1, 2], partition: 2, region: "eu", tag: "Compaction" },
+      { id: "eu:2:kAQID", key: [1, 2, 3], partition: 2, region: "eu", tag: "Compaction" },
+      { id: "eu:2:kAQIDBA", key: [1, 2, 3, 4], partition: 2, region: "eu", tag: "Compaction" },
+    ]);
+    expect(
+      kafkaRowId({
+        cleanupPolicy: "compact-and-delete",
+        region: "us",
+        partition: 3,
+        serializedKeyBytes: Uint8Array.from([255]),
+      }),
+    ).toBe("us:3:k_w");
+    expect(decodeKafkaRowId("us:3:k_w", "compact-and-delete")).toStrictEqual({
+      _tag: "Compaction",
+      region: "us",
+      partition: 3,
+      serializedKeyBytes: Uint8Array.from([255]),
+    });
+    const collidingId = kafkaDeleteRowId({
+      region: "eu",
+      partition: 0,
+      localRowKey: "kYWJj",
+    });
+    expect({
+      compact: decodeKafkaRowId(collidingId, "compact"),
+      delete: decodeKafkaRowId(collidingId, "delete"),
+    }).toStrictEqual({
+      compact: {
+        _tag: "Compaction",
+        region: "eu",
+        partition: 0,
+        serializedKeyBytes: Uint8Array.from([97, 98, 99]),
+      },
+      delete: {
+        _tag: "Delete",
+        region: "eu",
+        partition: 0,
+        localRowKey: "kYWJj",
+      },
+    });
+
+    const invalidDeleteInputs: ReadonlyArray<unknown> = [
+      null,
+      { region: "eu", partition: 0, localRowKey: "a", extra: true },
+      { region: "", partition: 0, localRowKey: "a" },
+      { region: "eu", partition: -1, localRowKey: "a" },
+      { region: "eu", partition: 0, localRowKey: "" },
+    ];
+    for (const input of invalidDeleteInputs) {
+      expect(() => Reflect.apply(kafkaDeleteRowId, undefined, [input])).toThrow(
+        KafkaSourceConfigurationError,
+      );
+    }
+    const invalidCompactInputs: ReadonlyArray<unknown> = [
+      null,
+      { region: "eu", partition: 0, serializedKeyBytes: Uint8Array.from([]), extra: true },
+      { region: "", partition: 0, serializedKeyBytes: Uint8Array.from([]) },
+      { region: "eu", partition: -1, serializedKeyBytes: Uint8Array.from([]) },
+      { region: "eu", partition: 0, serializedKeyBytes: [] },
+    ];
+    for (const input of invalidCompactInputs) {
+      expect(() => Reflect.apply(kafkaCompactionRowId, undefined, [input])).toThrow(
+        KafkaSourceConfigurationError,
+      );
+    }
+    for (const id of [
+      1,
+      "",
+      "eu:2",
+      "eu::kAA",
+      "eu:-1:kAA",
+      "eu:01:kAA",
+      "eu:+1:kAA",
+      "eu:1e0:kAA",
+      "eu: 1:kAA",
+      "eu:-0:kAA",
+      "eu:0:kA",
+      "eu:0:k$",
+      "eu:0:kAB",
+    ]) {
+      expect(() => Reflect.apply(decodeKafkaCompactionRowId, undefined, [id])).toThrow(
+        KafkaSourceConfigurationError,
+      );
+    }
+    for (const id of [
+      1,
+      "",
+      "eu:2",
+      "eu::a",
+      "eu:-1:a",
+      "eu:01:a",
+      "eu:+1:a",
+      "eu:1e0:a",
+      "eu: 1:a",
+      "eu:-0:a",
+    ]) {
+      expect(() => Reflect.apply(decodeKafkaDeleteRowId, undefined, [id])).toThrow(
+        KafkaSourceConfigurationError,
+      );
+    }
+    for (const input of [
+      null,
+      { cleanupPolicy: "delete", region: "eu", partition: -1, localRowKey: "a" },
+      { cleanupPolicy: "delete", region: "eu", partition: 0, localRowKey: "" },
+      {
+        cleanupPolicy: "compact",
+        region: "eu",
+        partition: 0,
+        serializedKeyBytes: [],
+      },
+      {
+        cleanupPolicy: "compact",
+        region: "eu",
+        partition: 0,
+        serializedKeyBytes: Uint8Array.from([]),
+        extra: true,
+      },
+      {
+        cleanupPolicy: "compact",
+        region: "",
+        partition: 0,
+        serializedKeyBytes: Uint8Array.from([]),
+      },
+      { cleanupPolicy: "unknown" },
+    ]) {
+      expect(() => Reflect.apply(kafkaRowId, undefined, [input])).toThrow(
+        KafkaSourceConfigurationError,
+      );
+    }
+  });
+
+  it("captures mandatory cleanup and retention policies for every source shape", () => {
+    const compactionInput = {
+      cleanupPolicy: "compact" as const,
+      retentionPolicy: "match-kafka-retention" as const,
+      topic: "compacted-orders",
+      regions: ["eu"] as const,
+      key: kafka.compactionKey.string(),
+      value: kafka.string(),
+      map: ({ key, value }: { readonly key: string; readonly value: string }) => ({
+        key,
+        value,
+      }),
+      startFrom: "earliest" as const,
+    };
+    const matched = kafka.source(compactionInput);
+    const finiteMillis = kafka.source({
+      ...validSourceInput(),
+      retentionPolicy: Duration.millis(1),
+    });
+    const finiteNanos = kafka.source({
+      ...validSourceInput(),
+      retentionPolicy: Duration.nanos(1n),
+    });
+    const fractionalMillis = kafka.source({
+      ...validSourceInput(),
+      retentionPolicy: Duration.millis(1.000_001),
+    });
+    const halfMillis = kafka.source({
+      ...validSourceInput(),
+      retentionPolicy: Duration.millis(0.5),
+    });
+    const maximumSafeMillis = kafka.source({
+      ...validSourceInput(),
+      retentionPolicy: Duration.millis(Number.MAX_SAFE_INTEGER),
+    });
+    const maximumFiniteMillis = kafka.source({
+      ...validSourceInput(),
+      retentionPolicy: Duration.millis(Number.MAX_VALUE),
+    });
+    const forever = kafka.source(validSourceInput());
+    const retriedDelete = kafka.source(validSourceInput(), Schedule.recurs(1));
+    const retried = kafka.source(
+      {
+        ...compactionInput,
+        cleanupPolicy: "compact-and-delete",
+      },
+      Schedule.recurs(1),
+    );
+
+    expect({
+      finiteMillis: finiteMillis.options.retentionPolicy,
+      finiteNanos: finiteNanos.options.retentionPolicy,
+      fractionalMillis: fractionalMillis.options.retentionPolicy,
+      halfMillis: halfMillis.options.retentionPolicy,
+      maximumSafeMillis: maximumSafeMillis.options.retentionPolicy,
+      maximumFiniteMillis: maximumFiniteMillis.options.retentionPolicy,
+      forever: forever.options.retentionPolicy,
+      matched: matched.options.retentionPolicy,
+      retriedDeleteCleanup: retriedDelete.options.cleanupPolicy,
+      retriedCleanup: retried.options.cleanupPolicy,
+    }).toStrictEqual({
+      finiteMillis: { _tag: "Finite", durationNanos: 1_000_000n },
+      finiteNanos: { _tag: "Finite", durationNanos: 1n },
+      fractionalMillis: { _tag: "Finite", durationNanos: 1_000_001n },
+      halfMillis: { _tag: "Finite", durationNanos: 500_000n },
+      maximumSafeMillis: {
+        _tag: "Finite",
+        durationNanos: BigInt(Number.MAX_SAFE_INTEGER) * 1_000_000n,
+      },
+      maximumFiniteMillis: {
+        _tag: "Finite",
+        durationNanos: BigInt(Number.MAX_VALUE) * 1_000_000n,
+      },
+      forever: { _tag: "Forever" },
+      matched: { _tag: "MatchKafkaRetention" },
+      retriedDeleteCleanup: "delete",
+      retriedCleanup: "compact-and-delete",
+    });
+
+    for (const retentionPolicy of [null, {}, -1, -1n, 0, 0n, "-Infinity"]) {
+      expect(() =>
+        Reflect.apply(kafka.source, undefined, [
+          {
+            ...validSourceInput(),
+            retentionPolicy,
+          },
+        ]),
+      ).toThrow(KafkaSourceConfigurationError);
+    }
+    expect(() =>
+      kafka.source({
+        ...validSourceInput(),
+        retentionPolicy: Duration.millis(0.000_000_1),
+      }),
+    ).toThrow(KafkaSourceConfigurationError);
+    expect(() =>
+      Reflect.apply(kafka.source, undefined, [
+        {
+          ...compactionInput,
+          cleanupPolicy: "invalid",
+        },
+      ]),
+    ).toThrow(KafkaSourceConfigurationError);
+    expect(() =>
+      Reflect.apply(kafka.source, undefined, [
+        {
+          ...compactionInput,
+          key: kafka.string(),
+        },
+      ]),
+    ).toThrow(KafkaSourceConfigurationError);
+    expect(() =>
+      Reflect.apply(kafka.source, undefined, [
+        {
+          ...compactionInput,
+          map: true,
+        },
+      ]),
+    ).toThrow(KafkaSourceConfigurationError);
   });
 
   it("derives unambiguous uppercase UTF-8 consumer group IDs", () => {
@@ -951,7 +1479,9 @@ describe("Kafka Source Adapter contract", () => {
     const rowId = kafkaRowId(
       new Proxy(
         {
+          cleanupPolicy: "delete",
           region: "eu",
+          partition: 0,
           localRowKey: "order:1",
         },
         {
@@ -971,7 +1501,7 @@ describe("Kafka Source Adapter contract", () => {
     }).toStrictEqual({
       lateReads: 0,
       regions: ["eu", "us"],
-      rowId: "eu:order:1",
+      rowId: "eu:0:order:1",
       startFrom: {
         mode: "timestamp",
         atNanos: 1_234_567n,
@@ -1011,9 +1541,11 @@ describe("Kafka Source Adapter contract", () => {
     );
     const hostileRowId = new Proxy(
       {
+        cleanupPolicy: "delete",
         region: "eu",
+        partition: 0,
         localRowKey: "order:1",
-      },
+      } as const,
       {
         getOwnPropertyDescriptor: () => {
           throw new Error("row ID descriptor escaped");
@@ -1022,11 +1554,11 @@ describe("Kafka Source Adapter contract", () => {
     );
 
     expect(() => kafka.source(accessorInput)).toThrowError(
-      "Kafka source requires exactly topic, regions, key, value, localRowKey, map, and startFrom.",
+      "Kafka source requires exactly its cleanup-policy-specific fields, including cleanupPolicy and retentionPolicy.",
     );
     expect(accessorReads).toBe(0);
     expect(() => kafka.source(hostileSource)).toThrowError(
-      "Kafka source requires exactly topic, regions, key, value, localRowKey, map, and startFrom.",
+      "Kafka source requires exactly its cleanup-policy-specific fields, including cleanupPolicy and retentionPolicy.",
     );
     expect(() =>
       kafka.source({
@@ -1036,9 +1568,7 @@ describe("Kafka Source Adapter contract", () => {
     ).toThrowError(
       "Kafka startFrom must be earliest, latest, committed, timestamp, or durationAgo.",
     );
-    expect(() => kafkaRowId(hostileRowId)).toThrowError(
-      "Kafka rowId requires exactly region and localRowKey.",
-    );
+    expect(() => kafkaRowId(hostileRowId)).toThrowError("Kafka rowId input must be an object.");
   });
 
   it("rejects malformed source declarations and start policies", () => {

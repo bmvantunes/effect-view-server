@@ -5,7 +5,7 @@ import type {
   ViewServerRuntimeCoreOptionsFor,
   ViewServerSourceRequirements,
 } from "@effect-view-server/runtime-core";
-import { Effect, Exit, Layer, Scope } from "effect";
+import { Effect, Exit, Fiber, Layer, Option, Scope } from "effect";
 import type { HttpServerError } from "effect/unstable/http";
 import {
   makeDefaultRuntimeDependencies,
@@ -88,6 +88,8 @@ type ViewServerRuntimeFactoryError =
   | ViewServerRuntimeError
   | ViewServerTcpPublishIngressError;
 
+const runtimeFatalSignals = new WeakMap<object, Effect.Effect<never, ViewServerRuntimeError>>();
+
 type MakeViewServerRuntimeWithDependencies = {
   <const Topics extends ViewServerRuntimeTopicDefinitions>(
     dependencies: ViewServerRuntimeDependencies<Topics>,
@@ -157,61 +159,99 @@ const makeViewServerRuntimeFromResolvedOptions = Effect.fn(
       dependencies.makeRuntimeCore(dependencyConfig, runtimeCoreInput),
       (resource) => resource.close,
     );
-    const refreshRuntimeHealth = ignoreRuntimeHealthRefreshFailure(runtimeCore.refreshHealth);
-    const server = yield* acquireRuntimeResource(
-      runtimeScope,
-      dependencies.makeServer(
-        dependencyConfig,
-        {
-          ...(resolvedOptions.auth === undefined ? {} : { auth: resolvedOptions.auth }),
-          liveClient: {
-            subscribeHealth: runtimeCore.liveClient.subscribeHealth,
-            subscribeHealthSummary: runtimeCore.liveClient.subscribeHealthSummary,
-            subscribeProtocolSourceHealth:
-              runtimeCore.serverLiveClient.subscribeProtocolSourceHealth,
-            subscribeProtocolQuery: runtimeCore.protocolQuerySubscriber.subscribeProtocolQuery,
-          },
-          runtime: runtimeCore.client,
-          transport: {
-            clientOpened: transportHealth.clientOpened.pipe(Effect.andThen(refreshRuntimeHealth)),
-            clientClosed: transportHealth.clientClosed.pipe(Effect.andThen(refreshRuntimeHealth)),
-            streamOpened: transportHealth.streamOpened.pipe(Effect.andThen(refreshRuntimeHealth)),
-            streamClosed: transportHealth.streamClosed.pipe(Effect.andThen(refreshRuntimeHealth)),
-          },
-        },
-        resolvedOptions.serverOptions,
+    const closeRuntimeScope = Scope.close(runtimeScope, Exit.void).pipe(Effect.uninterruptible);
+    const cachedScopeCloseFiber = yield* Effect.cached(
+      closeRuntimeScope.pipe(
+        Effect.forkDetach({
+          startImmediately: true,
+        }),
       ),
-      (resource) => resource.close,
     );
-    const tcpPublishIngress =
-      resolvedOptions.tcpPublishOptions === undefined
-        ? undefined
-        : yield* acquireRuntimeResource(
-            runtimeScope,
-            dependencies.makeTcpPublishIngress(
-              dependencyConfig,
-              runtimeCore.decodedMutationClient,
-              {
-                ...resolvedOptions.tcpPublishOptions,
-                ...(resolvedOptions.auth === undefined ? {} : { auth: resolvedOptions.auth }),
+    const awaitRuntimeScopeClose = cachedScopeCloseFiber.pipe(
+      Effect.flatMap(Fiber.join),
+      Effect.asVoid,
+    );
+    const refreshRuntimeHealth = ignoreRuntimeHealthRefreshFailure(runtimeCore.refreshHealth);
+    const transports = yield* Effect.raceFirst(
+      Effect.gen(function* () {
+        const server = yield* acquireRuntimeResource(
+          runtimeScope,
+          dependencies.makeServer(
+            dependencyConfig,
+            {
+              ...(resolvedOptions.auth === undefined ? {} : { auth: resolvedOptions.auth }),
+              liveClient: {
+                subscribeHealth: runtimeCore.liveClient.subscribeHealth,
+                subscribeHealthSummary: runtimeCore.liveClient.subscribeHealthSummary,
+                subscribeProtocolSourceHealth:
+                  runtimeCore.serverLiveClient.subscribeProtocolSourceHealth,
+                subscribeProtocolQuery: runtimeCore.protocolQuerySubscriber.subscribeProtocolQuery,
               },
-            ),
-            (resource) => resource.close,
-          );
-    const close: Effect.Effect<void> = (yield* Effect.cached(
-      Scope.close(runtimeScope, Exit.void),
-    )).pipe(Effect.uninterruptible);
+              runtime: runtimeCore.client,
+              transport: {
+                clientOpened: transportHealth.clientOpened.pipe(
+                  Effect.andThen(refreshRuntimeHealth),
+                ),
+                clientClosed: transportHealth.clientClosed.pipe(
+                  Effect.andThen(refreshRuntimeHealth),
+                ),
+                streamOpened: transportHealth.streamOpened.pipe(
+                  Effect.andThen(refreshRuntimeHealth),
+                ),
+                streamClosed: transportHealth.streamClosed.pipe(
+                  Effect.andThen(refreshRuntimeHealth),
+                ),
+              },
+            },
+            resolvedOptions.serverOptions,
+          ),
+          (resource) => resource.close,
+        );
+        const tcpPublishIngress =
+          resolvedOptions.tcpPublishOptions === undefined
+            ? undefined
+            : yield* acquireRuntimeResource(
+                runtimeScope,
+                dependencies.makeTcpPublishIngress(
+                  dependencyConfig,
+                  runtimeCore.decodedMutationClient,
+                  {
+                    ...resolvedOptions.tcpPublishOptions,
+                    ...(resolvedOptions.auth === undefined ? {} : { auth: resolvedOptions.auth }),
+                  },
+                ),
+                (resource) => resource.close,
+              );
+        return {
+          server,
+          tcpPublishIngress,
+        };
+      }),
+      runtimeCore.fatal,
+    );
+    const fatalWatcher = yield* Effect.forkDetach(
+      runtimeCore.fatal.pipe(Effect.catchCause(() => awaitRuntimeScopeClose)),
+      { startImmediately: true },
+    );
+    const close: Effect.Effect<void> = Fiber.interrupt(fatalWatcher).pipe(
+      Effect.asVoid,
+      Effect.andThen(awaitRuntimeScopeClose),
+    );
     const publicLiveClient = toPublicLiveClient(runtimeCore.liveClient, close);
-    return {
-      url: server.url,
-      healthUrl: server.healthUrl,
-      metricsUrl: server.metricsUrl,
-      ...(tcpPublishIngress === undefined ? {} : { tcpPublishUrl: tcpPublishIngress.url }),
+    const runtime: ViewServerRuntime<Topics> = {
+      url: transports.server.url,
+      healthUrl: transports.server.healthUrl,
+      metricsUrl: transports.server.metricsUrl,
+      ...(transports.tcpPublishIngress === undefined
+        ? {}
+        : { tcpPublishUrl: transports.tcpPublishIngress.url }),
       client: runtimeCore.client,
       liveClient: publicLiveClient,
       health: runtimeCore.client.health,
       close,
     };
+    runtimeFatalSignals.set(runtime, runtimeCore.fatal);
+    return runtime;
   });
   return yield* startup.pipe(
     Effect.onExit((exit) =>
@@ -248,7 +288,12 @@ const makeViewServerRuntimeLaunchLayer = <
         : makeViewServerRuntimeWithDependencies(dependencies, config, options),
       (runtime) => runtime.close,
       { interruptible: true },
-    ).pipe(Effect.tap(logRuntimeStarted)),
+    ).pipe(
+      Effect.tap(logRuntimeStarted),
+      Effect.flatMap((runtime) =>
+        Option.getOrThrow(Option.fromNullishOr(runtimeFatalSignals.get(runtime))),
+      ),
+    ),
   );
 
 export const runViewServerRuntimeWithDependencies: <

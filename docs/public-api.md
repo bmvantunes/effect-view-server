@@ -36,6 +36,8 @@ export const viewServer = defineViewServerConfig({
     kafkaOrders: {
       schema: Order,
       source: kafka.source({
+        cleanupPolicy: "delete",
+        retentionPolicy: "match-kafka-retention",
         topic: "orders.v1",
         regions: ["eu"],
         key: kafka.string(),

@@ -115,9 +115,14 @@ export const snapshotHealth = (value: unknown): HostHealthSnapshot => {
     failure === undefined || failure["_tag"] !== "RuntimeFailure" || !isRecord(failure["failure"])
       ? undefined
       : failure["failure"];
-  const latestRejection = isRecord(status["latestRejection"])
-    ? status["latestRejection"]
-    : undefined;
+  const degradationReasons = Array.isArray(status["reasons"]) ? status["reasons"] : [];
+  const rejectionReason = degradationReasons.find(
+    (reason) => isRecord(reason) && reason["_tag"] === "SourceItemRejection",
+  );
+  const latestRejection =
+    isRecord(rejectionReason) && isRecord(rejectionReason["latestRejection"])
+      ? rejectionReason["latestRejection"]
+      : undefined;
   const latestRejectionFailure =
     latestRejection === undefined || !isRecord(latestRejection["failure"])
       ? undefined

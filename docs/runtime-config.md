@@ -23,6 +23,7 @@ import { viewServer } from "./view-server.config";
 
 const KafkaLive = kafkaNode.layerConfig(viewServer, {
   consumerGroupPrefix: Config.string("KAFKA_CONSUMER_GROUP_PREFIX"),
+  retentionSweepInterval: Config.succeed("15 minutes"),
   regions: {
     eu: {
       bootstrapServers: Config.string("KAFKA_EU_BOOTSTRAP_SERVERS"),
@@ -53,9 +54,18 @@ until the application provides them.
 
 ## Kafka
 
-Each Kafka Source Definition owns its `startFrom` policy. The aggregate Node
-Layer owns one deployment-specific `consumerGroupPrefix` and exact region
-clients. Missing or extra region entries are rejected.
+Each Kafka Source Definition owns mandatory `cleanupPolicy`,
+`retentionPolicy`, and `startFrom` declarations. The aggregate Node Layer owns
+one deployment-specific `consumerGroupPrefix`, exact Region clients, and an
+optional positive finite `retentionSweepInterval` (default: 15 minutes).
+Missing or extra Region entries are rejected.
+
+Layer acquisition batches `cleanup.policy` and `retention.ms` discovery once
+per Region through the Platformatic Kafka Admin client. Missing permissions,
+unavailable or malformed configuration, cleanup mismatch, and invalid
+`retention.ms` fail the Layer before Runtime Core, consumers, sweeps, listeners,
+or server ports start. These are startup contract failures, not health-only
+degradation.
 
 ## gRPC
 

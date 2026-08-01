@@ -100,6 +100,8 @@ export const firstPartyBrowserConfig = defineViewServerConfig({
     kafkaRows: {
       schema: Row,
       source: kafka.source({
+        cleanupPolicy: "delete",
+        retentionPolicy: "Infinity",
         topic: "browser-rows",
         regions: ["primary"],
         key: kafka.string(),

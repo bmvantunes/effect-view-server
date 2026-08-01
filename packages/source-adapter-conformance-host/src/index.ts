@@ -90,11 +90,9 @@ type HostRuntime = {
   readonly close: Effect.Effect<void, unknown>;
 };
 
-const manageRuntime = Effect.fn("SourceAdapterConformanceHost.runtime.manage")(function* (
-  driver: SourceAdapterConformanceDriverValue,
-  source: ConformanceSource,
-  runtime: HostRuntime,
-) {
+const manageRuntime = Effect.fn("SourceAdapterConformanceHost.runtime.manage")(function* <
+  Runtime extends HostRuntime,
+>(driver: SourceAdapterConformanceDriverValue, source: ConformanceSource, runtime: Runtime) {
   const route = source.lifecycle === "leased" ? requireLeased(driver).sameRoute : undefined;
   const leaseSubscription =
     route === undefined
@@ -449,11 +447,18 @@ const registerLifecycleConformance = (
             lifecycleTarget(driver, lifecycle),
             (observation) => observation.acquisitions === baseline.acquisitions + 1n,
           );
-          const settled = yield* Deferred.make<void>();
-          const settle = (exit: Exit.Exit<void, unknown>) =>
-            Effect.sync(() => {
-              exits.push(exit);
-            }).pipe(Effect.andThen(Deferred.succeed(settled, undefined)), Effect.asVoid);
+          const returnedEffectStarted = yield* Deferred.make<void>();
+          const releaseReturnedEffect = yield* Deferred.make<void>();
+          const returnedEffectCompleted = yield* Deferred.make<void>();
+          const settle = (exit: Exit.Exit<void, unknown>) => {
+            exits.push(exit);
+            return Deferred.succeed(returnedEffectStarted, undefined).pipe(
+              Effect.andThen(Deferred.await(releaseReturnedEffect)),
+              Effect.ensuring(
+                Deferred.succeed(returnedEffectCompleted, undefined).pipe(Effect.asVoid),
+              ),
+            );
+          };
           if (testMode === "typed-failure") {
             yield* driver.transport.command({
               _tag: "CorruptLaterMutation",
@@ -507,7 +512,15 @@ const registerLifecycleConformance = (
               settle,
             });
           }
-          yield* Deferred.await(settled);
+          yield* Stream.fromEffectRepeat(Effect.yieldNow).pipe(
+            Stream.filter(() => exits.length > index),
+            Stream.take(1),
+            Stream.runDrain,
+          );
+          yield* Deferred.await(returnedEffectStarted);
+          expect(yield* Deferred.isDone(returnedEffectCompleted)).toBe(testMode === "interruption");
+          yield* Deferred.succeed(releaseReturnedEffect, undefined);
+          yield* Deferred.await(returnedEffectCompleted);
           yield* opened.close;
         }
         expect(exits.map((exit) => exit._tag)).toStrictEqual([
@@ -534,7 +547,252 @@ const registerLifecycleConformance = (
         expect(defect.reasons.find(Cause.isDieReason)?.defect).toStrictEqual(
           new Error("conformance application defect"),
         );
-        expect(Cause.hasInterrupts(interruption)).toBe(true);
+        expect(Cause.hasInterruptsOnly(interruption)).toBe(true);
+      }),
+    ),
+  );
+
+  it.effect(
+    "publishes a transition-defect Runtime Fatal Signal before a returned settlement gate opens",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const driver = yield* SourceAdapterConformanceDriver;
+          const definitions = requireLifecycle(driver, lifecycle);
+          const target = lifecycleTarget(driver, lifecycle);
+          const opened = yield* openApplicationRuntime(driver, definitions.source);
+          yield* opened.awaitStatus("Ready");
+          const callbackApplied = yield* Deferred.make<void>();
+          const releaseReturnedEffect = yield* Deferred.make<void>();
+          const returnedEffectCompleted = yield* Deferred.make<void>();
+          let callbackApplications = 0;
+          yield* driver.transport.command({
+            _tag: "TransitionDefect",
+            target,
+            row: {
+              id: "transition-defect",
+              region: "eu",
+              value: "transition-defect",
+            },
+            settle: () => {
+              callbackApplications += 1;
+              return Deferred.succeed(callbackApplied, undefined).pipe(
+                Effect.andThen(Deferred.await(releaseReturnedEffect)),
+                Effect.ensuring(
+                  Deferred.succeed(returnedEffectCompleted, undefined).pipe(Effect.asVoid),
+                ),
+              );
+            },
+          });
+          yield* Deferred.await(callbackApplied);
+          const fatalExit = yield* Effect.exit(opened.runtime.fatal);
+          const fatalCause = Option.getOrThrow(Exit.getCause(fatalExit));
+          expect({
+            callbackApplications,
+            returnedEffectCompleted: yield* Deferred.isDone(returnedEffectCompleted),
+            fatalFailure: Cause.findErrorOption(fatalCause),
+          }).toStrictEqual({
+            callbackApplications: 1,
+            returnedEffectCompleted: false,
+            fatalFailure: Option.some({
+              _tag: "ViewServerRuntimeError",
+              code: "RuntimeUnavailable",
+              topic: "rows",
+              message: "Source application transition failed and stopped the complete runtime.",
+            }),
+          });
+          expect(Cause.pretty(fatalCause)).toContain("conformance transition defect");
+          yield* Deferred.succeed(releaseReturnedEffect, undefined);
+          yield* Deferred.await(returnedEffectCompleted);
+          yield* opened.close;
+        }),
+      ),
+  );
+
+  it.effect("restores and owns returned settlement Effects in the Source Attempt Scope", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const driver = yield* SourceAdapterConformanceDriver;
+        const definitions = requireLifecycle(driver, lifecycle);
+        const target = lifecycleTarget(driver, lifecycle);
+        const baseline = yield* driver.transport.observe(target);
+        const opened = yield* openRuntime(driver, definitions.source);
+        yield* opened.awaitStatus("Ready");
+        const callbackApplications: Array<SourceAdapterConformanceLifecycle> = [];
+        const returnedEffectStarted = yield* Deferred.make<void>();
+        const returnedEffectFinalized = yield* Deferred.make<void>();
+        yield* driver.transport.command({
+          _tag: "Delivery",
+          target,
+          mutations: [
+            {
+              _tag: "Upsert",
+              row: {
+                id: "outer-restore",
+                region: "eu",
+                value: "interruptible",
+              },
+            },
+          ],
+          settle: () => {
+            callbackApplications.push(lifecycle);
+            return Deferred.succeed(returnedEffectStarted, undefined).pipe(
+              Effect.andThen(Effect.never),
+              Effect.ensuring(
+                Deferred.succeed(returnedEffectFinalized, undefined).pipe(Effect.asVoid),
+              ),
+            );
+          },
+        });
+        yield* Deferred.await(returnedEffectStarted);
+        expect(callbackApplications).toStrictEqual([lifecycle]);
+
+        yield* opened.close;
+        yield* Deferred.await(returnedEffectFinalized);
+        const closed = yield* awaitObservation(
+          driver,
+          target,
+          (observation) => observation.finalizations === baseline.finalizations + 1n,
+        );
+        expect({
+          callbackApplications,
+          acquisitions: closed.acquisitions,
+          finalizations: closed.finalizations,
+        }).toStrictEqual({
+          callbackApplications: [lifecycle],
+          acquisitions: baseline.acquisitions + 1n,
+          finalizations: baseline.finalizations + 1n,
+        });
+      }),
+    ),
+  );
+
+  it.effect("restores and owns rejection settlement Effects in the Source Attempt Scope", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const driver = yield* SourceAdapterConformanceDriver;
+        const definitions = requireLifecycle(driver, lifecycle);
+        const target = lifecycleTarget(driver, lifecycle);
+        const baseline = yield* driver.transport.observe(target);
+        const opened = yield* openRuntime(driver, definitions.source);
+        yield* opened.awaitStatus("Ready");
+        const callbackApplications: Array<SourceAdapterConformanceLifecycle> = [];
+        const returnedEffectStarted = yield* Deferred.make<void>();
+        const returnedEffectFinalized = yield* Deferred.make<void>();
+        yield* driver.transport.command({
+          _tag: "Reject",
+          target,
+          phase: "stream",
+          offset: 91n,
+          settle: () => {
+            callbackApplications.push(lifecycle);
+            return Deferred.succeed(returnedEffectStarted, undefined).pipe(
+              Effect.andThen(Effect.never),
+              Effect.ensuring(
+                Deferred.succeed(returnedEffectFinalized, undefined).pipe(Effect.asVoid),
+              ),
+            );
+          },
+        });
+        yield* Deferred.await(returnedEffectStarted);
+        expect(callbackApplications).toStrictEqual([lifecycle]);
+
+        yield* opened.close;
+        yield* Deferred.await(returnedEffectFinalized);
+        const closed = yield* awaitObservation(
+          driver,
+          target,
+          (observation) => observation.finalizations === baseline.finalizations + 1n,
+        );
+        expect({
+          callbackApplications,
+          acquisitions: closed.acquisitions,
+          finalizations: closed.finalizations,
+        }).toStrictEqual({
+          callbackApplications: [lifecycle],
+          acquisitions: baseline.acquisitions + 1n,
+          finalizations: baseline.finalizations + 1n,
+        });
+      }),
+    ),
+  );
+
+  it.effect("classifies an interruption-masking returned settlement Effect as non-conformant", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const driver = yield* SourceAdapterConformanceDriver;
+        const definitions = requireLifecycle(driver, lifecycle);
+        const target = lifecycleTarget(driver, lifecycle);
+        const opened = yield* openRuntime(driver, definitions.source);
+        yield* opened.awaitStatus("Ready");
+        const returnedEffectStarted = yield* Deferred.make<void>();
+        const releaseHostileEffect = yield* Deferred.make<void>();
+        yield* driver.transport.command({
+          _tag: "Delivery",
+          target,
+          mutations: [
+            {
+              _tag: "Upsert",
+              row: {
+                id: "masked-returned-effect",
+                region: "eu",
+                value: "non-conformant",
+              },
+            },
+          ],
+          settle: () =>
+            Effect.uninterruptible(
+              Deferred.succeed(returnedEffectStarted, undefined).pipe(
+                Effect.andThen(Deferred.await(releaseHostileEffect)),
+              ),
+            ),
+        });
+        yield* Deferred.await(returnedEffectStarted);
+        const closeFiber = yield* opened.close.pipe(Effect.forkDetach({ startImmediately: true }));
+        yield* Effect.yieldNow;
+        expect(closeFiber.pollUnsafe()).toBeUndefined();
+
+        yield* Deferred.succeed(releaseHostileEffect, undefined);
+        yield* Fiber.join(closeFiber);
+      }),
+    ),
+  );
+
+  it.effect("classifies synchronous blocking settlement callbacks as non-conformant", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const driver = yield* SourceAdapterConformanceDriver;
+        const definitions = requireLifecycle(driver, lifecycle);
+        const target = lifecycleTarget(driver, lifecycle);
+        const opened = yield* openRuntime(driver, definitions.source);
+        yield* opened.awaitStatus("Ready");
+        const callbackApplied = yield* Deferred.make<void>();
+        const blockingCell = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
+        let waitResult: "not-equal" | "ok" | "timed-out" | undefined;
+        yield* driver.transport.command({
+          _tag: "Delivery",
+          target,
+          mutations: [
+            {
+              _tag: "Upsert",
+              row: {
+                id: "blocking-callback",
+                region: "eu",
+                value: "non-conformant",
+              },
+            },
+          ],
+          settle: () => {
+            waitResult = Atomics.wait(blockingCell, 0, 0, 1);
+            return Deferred.succeed(callbackApplied, undefined).pipe(Effect.asVoid);
+          },
+        });
+        yield* Deferred.await(callbackApplied);
+        expect(waitResult).toBe("timed-out");
+        expect(yield* rows(opened.runtime, opened.route)).toStrictEqual([
+          expectedRowId(driver, lifecycle, "primary", "blocking-callback"),
+        ]);
+        yield* opened.close;
       }),
     ),
   );

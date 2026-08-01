@@ -1,4 +1,4 @@
-import { Chunk, Clock, Effect, Layer, Option, Result, Schedule, Scope, Stream } from "effect";
+import { Duration, Effect, Layer, Option, Result, Schedule, Scope, Stream } from "effect";
 import type {
   SourceApplicationExit,
   SourceExecutionFailure,
@@ -6,8 +6,15 @@ import type {
 } from "effect-view-server/source-adapter";
 import { SourceAdapterServer } from "effect-view-server/source-adapter/server";
 import {
+  isKafkaResolvedBrokerContract,
+  kafkaBrokerContractKey,
+  type KafkaResolvedBrokerContract,
+  snapshotKafkaResolvedBrokerContract,
+} from "./broker-contract";
+import {
   KafkaSourceAdapter,
   KafkaSourceConfigurationError,
+  decodeKafkaCompactionKeyCodec,
   decodeKafkaCodec,
   kafkaConsumerGroupId,
   kafkaRowId,
@@ -22,6 +29,17 @@ import {
   type KafkaStartResolution,
   type KafkaSourceRejectionLocation,
 } from "./contract";
+import {
+  completeKafkaDelivery,
+  configurationFailure,
+  currentEpochNanos,
+  makeKafkaApplicationStateRegistration,
+  resolveKafkaContracts,
+  resolveStart,
+  type KafkaApplicationState,
+  type KafkaRetentionCommand,
+  type KafkaRuntimeDefinition,
+} from "./server-internal";
 
 export const KafkaSourceAdapterServer: typeof KafkaSourceAdapter = KafkaSourceAdapter;
 
@@ -72,24 +90,9 @@ export type KafkaServerRegion<Region extends string = string> = {
 export type KafkaServerLayerOptions = {
   readonly consumerGroupPrefix: string;
   readonly regions: ReadonlyMap<string, KafkaServerRegion>;
+  readonly brokerContracts: ReadonlyArray<KafkaResolvedBrokerContract>;
+  readonly retentionSweepIntervalNanos: bigint;
 };
-
-type KafkaRuntimeDefinition = {
-  readonly topic: string;
-  readonly regions: readonly [string, ...ReadonlyArray<string>];
-  readonly key: KafkaCodec<unknown, unknown>;
-  readonly value: KafkaCodec<unknown, unknown>;
-  readonly localRowKey: (input: never) => unknown;
-  readonly map: (input: never) => unknown;
-  readonly startFrom: KafkaCapturedStartPosition;
-};
-
-const configurationFailure = <Region extends string = string>(
-  message: string,
-): KafkaAdapterFailure<Region> => ({
-  _tag: "KafkaConfigurationFailure",
-  message,
-});
 
 const bindRegionFailure = <const Region extends string>(
   region: Region,
@@ -186,50 +189,6 @@ const adapterExecutionFailure = (
   _tag: "AdapterFailure",
   failure,
 });
-
-const resolveStart = Effect.fn("KafkaSourceAdapter.start.resolve")(function* (
-  start: KafkaCapturedStartPosition,
-): Effect.fn.Return<KafkaResolvedStartPosition> {
-  if (start === "earliest") {
-    return {
-      mode: "earliest",
-    };
-  }
-  if (start === "latest") {
-    return {
-      mode: "latest",
-    };
-  }
-  if (start.mode === "committed") {
-    return {
-      mode: start.mode,
-      consumerGroupId: start.consumerGroupId,
-      fallback: start.fallback,
-    };
-  }
-  if (start.mode === "timestamp") {
-    return {
-      mode: start.mode,
-      atNanos: start.atNanos,
-      atMillis: nanosToKafkaMillis(start.atNanos),
-      fallback: start.fallback,
-    };
-  }
-  const resolvedAtNanos = yield* Clock.currentTimeNanos;
-  const atNanos =
-    resolvedAtNanos > start.durationNanos ? resolvedAtNanos - start.durationNanos : 0n;
-  return {
-    mode: start.mode,
-    durationNanos: start.durationNanos,
-    resolvedAtNanos,
-    atNanos,
-    atMillis: nanosToKafkaMillis(atNanos),
-    fallback: start.fallback,
-  };
-});
-
-const nanosToKafkaMillis = (nanos: bigint): bigint =>
-  nanos === 0n ? 0n : (nanos + 999_999n) / 1_000_000n;
 
 const recordLocation = (
   metadata: KafkaMessageMetadata,
@@ -380,21 +339,14 @@ const bindRegionRecord = <const Region extends string>(
         key,
         value,
         metadata,
-        settlement: (applicationExit) =>
-          Effect.try({
-            try: () => {
-              const candidate = settlement(applicationExit);
-              return Effect.isEffect(candidate) ? Option.some(candidate) : Option.none();
-            },
-            catch: () => configurationFailure<Region>(invalidRecordMessage(region)),
-          }).pipe(
-            Effect.flatMap((candidate) =>
-              Option.isSome(candidate)
-                ? candidate.value
-                : Effect.fail(configurationFailure<Region>(invalidRecordMessage(region))),
-            ),
-            Effect.mapError((failure) => bindRegionFailure(region, sourceTopic, failure)),
-          ),
+        settlement: (applicationExit) => {
+          const candidate = settlement(applicationExit);
+          return Effect.isEffect(candidate)
+            ? candidate.pipe(
+                Effect.mapError((failure) => bindRegionFailure(region, sourceTopic, failure)),
+              )
+            : Effect.fail(configurationFailure<Region>(invalidRecordMessage(region)));
+        },
       };
     },
     catch: (cause) => bindRegionRecordFailure(region, cause),
@@ -402,7 +354,9 @@ const bindRegionRecord = <const Region extends string>(
 
 const codecRejectionMessage = (
   role: "key" | "value",
-  codec: KafkaCodec<unknown, unknown>,
+  codec:
+    | KafkaCodec<unknown, unknown>
+    | import("./contract").KafkaCompactionKeyCodec<unknown, unknown>,
 ): string => {
   const identity = Result.try(() => ({
     format: Reflect.get(codec, "format"),
@@ -459,8 +413,11 @@ const fromCallback = (
     catch: () => failure,
   });
 
-const rejection = Effect.fn("KafkaSourceAdapter.record.reject")(function* <Row extends object>(
-  toolkit: SourceToolkit<Row, KafkaAdapterFailure, KafkaSourceRejectionLocation>,
+const rejection = Effect.fn("KafkaSourceAdapter.record.reject")(function* <
+  Row extends object,
+  Topic extends string,
+>(
+  toolkit: SourceToolkit<Row, KafkaAdapterFailure, KafkaSourceRejectionLocation, never, Topic>,
   metadata: KafkaMessageMetadata,
   settlement: KafkaServerRecord["settlement"],
   phase: KafkaRejectionPhase,
@@ -470,7 +427,7 @@ const rejection = Effect.fn("KafkaSourceAdapter.record.reject")(function* <Row e
   return yield* toolkit.reject({
     failure,
     location: recordLocation(metadata, phase, message),
-    rejectedAtNanos: yield* Clock.currentTimeNanos,
+    rejectedAtNanos: yield* currentEpochNanos().pipe(Effect.mapError(adapterExecutionFailure)),
     settlement,
   });
 });
@@ -518,18 +475,28 @@ const effectFailure = <Value>(
     onSuccess: (value) => Effect.succeed(processedValue(value)),
   });
 
-const recordEvent = Effect.fn("KafkaSourceAdapter.record.event")(function* <Row extends object>(
+const recordEvent = Effect.fn("KafkaSourceAdapter.record.event")(function* <
+  Row extends object,
+  Topic extends string,
+>(
   definition: KafkaRuntimeDefinition,
-  toolkit: SourceToolkit<Row, KafkaAdapterFailure, KafkaSourceRejectionLocation>,
+  toolkit: SourceToolkit<Row, KafkaAdapterFailure, KafkaSourceRejectionLocation, never, Topic>,
   regionConsumer: KafkaServerRegionConsumer,
   metricInput: KafkaServerRegionMetricsInput,
   record: KafkaServerRecord,
+  lifetime: {
+    readonly applicationState: KafkaApplicationState<Topic>;
+    readonly contracts: ReadonlyMap<string, KafkaResolvedBrokerContract>;
+  },
 ) {
   const region = metricInput.region;
   const sourceTopic = metricInput.sourceTopic;
   const metadata = record.metadata;
+  const retention = Option.getOrThrow(
+    Option.fromUndefinedOr(lifetime.contracts.get(region)?.resolvedRetention),
+  );
   const rejectDecode = (
-    phase: Extract<KafkaRejectionPhase, "keyDecode" | "valueDecode">,
+    phase: Extract<KafkaRejectionPhase, "keyDecode" | "valueDecode" | "nullValue">,
     message: string,
   ) =>
     regionConsumer.recordDecodeFailure.pipe(
@@ -556,76 +523,64 @@ const recordEvent = Effect.fn("KafkaSourceAdapter.record.event")(function* <Row 
       Effect.andThen(regionConsumer.recordRejection),
       Effect.andThen(rejection(toolkit, metadata, record.settlement, phase, failure, message)),
     );
+  const keyedDelivery = (
+    id: string,
+    mutation: import("effect-view-server/source-adapter").SourceMutation<Row>,
+    command: KafkaRetentionCommand,
+  ) =>
+    Effect.uninterruptibleMask((restore) =>
+      Effect.gen(function* () {
+        const prepared = yield* restore(lifetime.applicationState.prepare(command));
+        const delivery = yield* Effect.exit(
+          toolkit.delivery(mutation, record.settlement, prepared.transition),
+        );
+        return yield* completeKafkaDelivery(delivery, prepared);
+      }),
+    );
 
   if (record.key === null) {
     return yield* rejectDecode("keyDecode", "Kafka record key is required.");
   }
+  // Compaction identity owns an immutable snapshot that application codecs can never mutate.
+  const serializedKeyBytes =
+    definition.cleanupPolicy === "delete" ? undefined : Uint8Array.from(record.key);
+  if (record.value === null) {
+    if (definition.cleanupPolicy === "delete") {
+      return yield* rejectDecode(
+        "nullValue",
+        "Delete-only Kafka source records require a non-null value.",
+      );
+    }
+    yield* regionConsumer.recordDecoded;
+    const id = kafkaRowId({
+      cleanupPolicy: definition.cleanupPolicy,
+      region,
+      partition: metadata.partition,
+      serializedKeyBytes: Option.getOrThrow(Option.fromUndefinedOr(serializedKeyBytes)),
+    });
+    const mutation = yield* toolkit.delete(id);
+    return yield* keyedDelivery(id, mutation, {
+      _tag: "AppliedDelete",
+      id,
+      region,
+      authoritativeExpired: false,
+    });
+  }
   const processedKey = yield* effectFailure(
-    decodeKafkaCodec(definition.key, {
-      bytes: record.key,
-      metadata,
-    }),
+    definition.cleanupPolicy === "delete"
+      ? decodeKafkaCodec(definition.key, {
+          bytes: record.key,
+          metadata,
+        })
+      : decodeKafkaCompactionKeyCodec(definition.key, {
+          bytes: record.key,
+        }),
     () => rejectDecode("keyDecode", codecRejectionMessage("key", definition.key)),
   );
   if (processedKey._tag === "Rejected") {
     return processedKey.event;
   }
   const key = processedKey.value;
-  if (record.value === null) {
-    yield* regionConsumer.recordDecoded;
-  }
-  const processedLocalRowKey = yield* fromCallback(
-    definition.localRowKey,
-    {
-      key,
-      region,
-      metadata,
-    },
-    mappingFailure(region, sourceTopic, "Kafka Local Row Key threw."),
-  ).pipe(
-    Effect.flatMap((value) =>
-      typeof value === "string" && value.length > 0
-        ? Effect.succeed(value)
-        : Effect.fail(
-            mappingFailure(
-              region,
-              sourceTopic,
-              "Kafka Local Row Key must return a non-empty string.",
-            ),
-          ),
-    ),
-    Effect.matchEffect({
-      onFailure: () =>
-        rejectMapping("localRowKey", "Kafka Local Row Key could not be constructed.").pipe(
-          Effect.map(processedRejection),
-        ),
-      onSuccess: (value) => Effect.succeed(processedValue(value)),
-    }),
-  );
-  if (processedLocalRowKey._tag === "Rejected") {
-    return processedLocalRowKey.event;
-  }
-  const localRowKey = processedLocalRowKey.value;
-  const processedId = yield* Effect.try({
-    try: () => kafkaRowId({ region, localRowKey }),
-    catch: () => mappingFailure(region, sourceTopic, "Kafka canonical row ID failed."),
-  }).pipe(
-    Effect.matchEffect({
-      onFailure: () =>
-        rejectMapping("canonicalId", "Kafka canonical row ID could not be constructed.").pipe(
-          Effect.map(processedRejection),
-        ),
-      onSuccess: (value) => Effect.succeed(processedValue(value)),
-    }),
-  );
-  if (processedId._tag === "Rejected") {
-    return processedId.event;
-  }
-  const id = processedId.value;
-  if (record.value === null) {
-    const mutation = yield* toolkit.delete(id);
-    return yield* toolkit.delivery(Chunk.of(mutation), record.settlement);
-  }
   const processedValueResult = yield* effectFailure(
     decodeKafkaCodec(definition.value, {
       bytes: record.value,
@@ -638,15 +593,86 @@ const recordEvent = Effect.fn("KafkaSourceAdapter.record.event")(function* <Row 
   }
   const value = processedValueResult.value;
   yield* regionConsumer.recordDecoded;
+  const processedLocalRowKey =
+    definition.cleanupPolicy === "delete"
+      ? yield* fromCallback(
+          definition.localRowKey,
+          {
+            key,
+            value,
+            region,
+          },
+          mappingFailure(region, sourceTopic, "Kafka Local Row Key threw."),
+        ).pipe(
+          Effect.flatMap((candidate) =>
+            typeof candidate === "string" && candidate.length > 0
+              ? Effect.succeed(candidate)
+              : Effect.fail(
+                  mappingFailure(
+                    region,
+                    sourceTopic,
+                    "Kafka Local Row Key must return a non-empty string.",
+                  ),
+                ),
+          ),
+          Effect.matchEffect({
+            onFailure: () =>
+              rejectMapping("localRowKey", "Kafka Local Row Key could not be constructed.").pipe(
+                Effect.map(processedRejection),
+              ),
+            onSuccess: (candidate) => Effect.succeed(processedValue(candidate)),
+          }),
+        )
+      : processedValue(undefined);
+  if (processedLocalRowKey._tag === "Rejected") {
+    return processedLocalRowKey.event;
+  }
+  const localRowKey = processedLocalRowKey.value;
+  const processedId = yield* Effect.try({
+    try: () =>
+      definition.cleanupPolicy === "delete"
+        ? kafkaRowId({
+            cleanupPolicy: "delete",
+            region,
+            partition: metadata.partition,
+            localRowKey: Option.getOrThrow(Option.fromNullishOr(localRowKey)),
+          })
+        : kafkaRowId({
+            cleanupPolicy: definition.cleanupPolicy,
+            region,
+            partition: metadata.partition,
+            serializedKeyBytes: Option.getOrThrow(Option.fromUndefinedOr(serializedKeyBytes)),
+          }),
+    catch: () => mappingFailure(region, sourceTopic, "Kafka canonical row ID failed."),
+  }).pipe(
+    Effect.matchEffect({
+      onFailure: () =>
+        rejectMapping("canonicalId", "Kafka canonical row ID could not be constructed.").pipe(
+          Effect.map(processedRejection),
+        ),
+      onSuccess: (candidate) => Effect.succeed(processedValue(candidate)),
+    }),
+  );
+  if (processedId._tag === "Rejected") {
+    return processedId.event;
+  }
+  const id = processedId.value;
   const processedMapped = yield* fromCallback(
     definition.map,
-    {
-      key,
-      value,
-      region,
-      localRowKey,
-      metadata,
-    },
+    definition.cleanupPolicy === "delete"
+      ? {
+          key,
+          value,
+          region,
+          localRowKey,
+          metadata,
+        }
+      : {
+          key,
+          value,
+          region,
+          metadata,
+        },
     mappingFailure(region, sourceTopic, "Kafka Mapping threw."),
   ).pipe(
     Effect.flatMap((candidate) =>
@@ -690,7 +716,26 @@ const recordEvent = Effect.fn("KafkaSourceAdapter.record.event")(function* <Row 
     return processedMutation.event;
   }
   yield* regionConsumer.recordMapped;
-  return yield* toolkit.delivery(Chunk.of(processedMutation.value), record.settlement);
+  const deadlineNanos =
+    retention._tag === "Forever" ? null : metadata.timestampNanos + retention.durationNanos;
+  if (deadlineNanos !== null) {
+    const nowNanos = yield* currentEpochNanos().pipe(Effect.mapError(adapterExecutionFailure));
+    if (deadlineNanos <= nowNanos) {
+      const mutation = yield* toolkit.delete(id);
+      return yield* keyedDelivery(id, mutation, {
+        _tag: "AppliedDelete",
+        id,
+        region,
+        authoritativeExpired: true,
+      });
+    }
+  }
+  return yield* keyedDelivery(id, processedMutation.value, {
+    _tag: "AppliedUpsert",
+    id,
+    region,
+    deadlineNanos,
+  });
 });
 
 const emptyMetrics = <const Region extends string>(region: Region): KafkaRegionMetrics<Region> => ({
@@ -713,15 +758,58 @@ export const makeKafkaServerLayer = (
   options: KafkaServerLayerOptions,
 ): Layer.Layer<
   import("effect").Context.Service.Identifier<typeof KafkaSourceAdapter.runtimeService>
-> =>
-  Layer.unwrap(
+> => {
+  if (
+    typeof options.retentionSweepIntervalNanos !== "bigint" ||
+    options.retentionSweepIntervalNanos <= 0n
+  ) {
+    throw new KafkaSourceConfigurationError(
+      "Kafka retention sweep interval must be a positive bigint.",
+    );
+  }
+  // A one-byte Topic validates the prefix itself against the strictest possible
+  // lower bound; every configured Topic is validated exactly below.
+  kafkaConsumerGroupId(options.consumerGroupPrefix, "x");
+  const brokerContracts = new Map<string, KafkaResolvedBrokerContract>();
+  for (const suppliedContract of options.brokerContracts) {
+    if (!isKafkaResolvedBrokerContract(suppliedContract)) {
+      throw new KafkaSourceConfigurationError(
+        "Kafka broker contract must be a complete validated broker-resolution result.",
+      );
+    }
+    const contract = snapshotKafkaResolvedBrokerContract(suppliedContract);
+    kafkaConsumerGroupId(options.consumerGroupPrefix, contract.viewServerTopic);
+    const key = kafkaBrokerContractKey(contract.viewServerTopic, contract.region);
+    if (brokerContracts.has(key)) {
+      throw new KafkaSourceConfigurationError(
+        `Kafka broker contract for Topic ${contract.viewServerTopic} Region ${contract.region} is duplicated.`,
+      );
+    }
+    brokerContracts.set(key, contract);
+  }
+  const consumerGroupPrefix = options.consumerGroupPrefix;
+  const regions = new Map(options.regions);
+  const retentionSweepIntervalNanos = options.retentionSweepIntervalNanos;
+  return Layer.unwrap(
     Effect.sync(() => {
       type KafkaLifetimeState = {
         start: KafkaResolvedStartPosition | undefined;
+        readonly contracts: ReadonlyMap<string, KafkaResolvedBrokerContract>;
       };
       const lifetimes = new Map<Scope.Scope, KafkaLifetimeState>();
+      const resolvedContracts = (
+        viewServerTopic: string,
+        definition: KafkaRuntimeDefinition,
+      ): ReadonlyArray<KafkaResolvedBrokerContract> =>
+        resolveKafkaContracts(viewServerTopic, definition, brokerContracts);
+      const applicationStateRegistration = makeKafkaApplicationStateRegistration(
+        resolvedContracts,
+        retentionSweepIntervalNanos,
+      );
       const lifetimeState = Effect.fn("KafkaSourceAdapter.lifetime.state")(function* (
         lifetimeScope: Scope.Scope,
+        viewServerTopic: string,
+        definition: KafkaRuntimeDefinition,
       ) {
         return yield* Effect.uninterruptible(
           Effect.gen(function* () {
@@ -729,8 +817,15 @@ export const makeKafkaServerLayer = (
             if (existing !== undefined) {
               return existing;
             }
+            const contracts = new Map(
+              resolvedContracts(viewServerTopic, definition).map((contract) => [
+                contract.region,
+                contract,
+              ]),
+            );
             const state: KafkaLifetimeState = {
               start: undefined,
+              contracts,
             };
             lifetimes.set(lifetimeScope, state);
             yield* Scope.addFinalizer(
@@ -743,30 +838,35 @@ export const makeKafkaServerLayer = (
           }),
         );
       });
-      const resolveBindingStart = (
-        state: KafkaLifetimeState,
-        start: KafkaCapturedStartPosition,
-      ) => {
-        if (state.start !== undefined) {
-          return Effect.succeed(state.start);
-        }
-        return resolveStart(start).pipe(
-          Effect.tap((resolved) =>
-            Effect.sync(() => {
-              state.start = resolved;
-            }),
-          ),
+      const resolveBindingStart = (state: KafkaLifetimeState, start: KafkaCapturedStartPosition) =>
+        Effect.uninterruptible(
+          Effect.gen(function* () {
+            if (state.start !== undefined) {
+              return state.start;
+            }
+            const resolved = yield* resolveStart(start);
+            state.start = resolved;
+            return resolved;
+          }),
         );
-      };
       return SourceAdapterServer.make(KafkaSourceAdapter, {
         materialized: {
+          applicationState: applicationStateRegistration,
           initialLaneIds: (input) => input.definition.regions,
           acquire: (input) =>
             Effect.gen(function* () {
               const definition = input.definition;
-              const state = yield* lifetimeState(input.lifetimeScope);
+              const state = yield* lifetimeState(
+                input.lifetimeScope,
+                input.toolkit.topic,
+                definition,
+              );
+              const applicationState = applicationStateRegistration.forLifetime(
+                input.lifetimeScope,
+                input.toolkit.topic,
+              );
               const activeGroupId = yield* Effect.try({
-                try: () => kafkaConsumerGroupId(options.consumerGroupPrefix, input.toolkit.topic),
+                try: () => kafkaConsumerGroupId(consumerGroupPrefix, input.toolkit.topic),
                 catch: (cause) =>
                   adapterExecutionFailure(
                     configurationFailure(
@@ -776,9 +876,11 @@ export const makeKafkaServerLayer = (
                     ),
                   ),
               });
-              const start = yield* resolveBindingStart(state, definition.startFrom);
+              const start = yield* resolveBindingStart(state, definition.startFrom).pipe(
+                Effect.mapError(adapterExecutionFailure),
+              );
               const acquired = yield* Effect.forEach(definition.regions, (region) => {
-                const regionRuntime = options.regions.get(region);
+                const regionRuntime = regions.get(region);
                 if (regionRuntime === undefined) {
                   return Effect.fail(
                     adapterExecutionFailure(
@@ -808,6 +910,7 @@ export const makeKafkaServerLayer = (
                       SourceAdapterServer.lane({
                         id: region,
                         events: consumer.records.pipe(
+                          Stream.rechunk(1),
                           Stream.mapError((failure) =>
                             adapterExecutionFailure(
                               bindRegionFailure(region, definition.topic, failure),
@@ -823,6 +926,10 @@ export const makeKafkaServerLayer = (
                                   consumer,
                                   metricInput,
                                   boundRecord,
+                                  {
+                                    applicationState,
+                                    contracts: state.contracts,
+                                  },
                                 ),
                               ),
                             ),
@@ -837,30 +944,46 @@ export const makeKafkaServerLayer = (
             }),
           metrics: (input): Effect.Effect<KafkaMaterializedMetrics> =>
             Effect.gen(function* () {
-              const state = yield* lifetimeState(input.lifetimeScope);
+              const state = yield* lifetimeState(
+                input.lifetimeScope,
+                input.topic,
+                input.definition,
+              );
+              const applicationState = applicationStateRegistration.forLifetime(
+                input.lifetimeScope,
+                input.topic,
+              );
               const activeGroupId = Result.match(
-                Result.try(() => kafkaConsumerGroupId(options.consumerGroupPrefix, input.topic)),
+                Result.try(() => kafkaConsumerGroupId(consumerGroupPrefix, input.topic)),
                 {
                   onFailure: () => "invalid-kafka-consumer-group",
                   onSuccess: (value) => value,
                 },
               );
+              const retentionMetricsByRegion = applicationState.metrics();
               const regionMetrics = Effect.fn("KafkaSourceAdapter.region.metrics")(function* (
                 region: string,
               ) {
-                const regionRuntime = options.regions.get(region);
-                if (regionRuntime === undefined) {
-                  return emptyMetrics(region);
-                }
-                return yield* regionRuntime
-                  .metrics({
-                    activeGroupId,
-                    lifetimeScope: input.lifetimeScope,
-                    region,
-                    sourceTopic: input.definition.topic,
-                    viewServerTopic: input.topic,
-                  })
-                  .pipe(Effect.map((metrics) => bindRegionMetrics(region, metrics)));
+                const regionRuntime = regions.get(region);
+                const transport =
+                  regionRuntime === undefined
+                    ? emptyMetrics(region)
+                    : yield* regionRuntime
+                        .metrics({
+                          activeGroupId,
+                          lifetimeScope: input.lifetimeScope,
+                          region,
+                          sourceTopic: input.definition.topic,
+                          viewServerTopic: input.topic,
+                        })
+                        .pipe(Effect.map((metrics) => bindRegionMetrics(region, metrics)));
+                const retention = Option.getOrThrow(
+                  Option.fromUndefinedOr(retentionMetricsByRegion.get(region)),
+                );
+                return {
+                  ...transport,
+                  retention,
+                };
               });
               const [firstRegion, ...remainingRegions] = input.definition.regions;
               const firstMetrics = yield* regionMetrics(firstRegion);
@@ -881,13 +1004,19 @@ export const makeKafkaServerLayer = (
               };
             }),
           retry: Schedule.min([
-            Schedule.exponential("500 millis").pipe(Schedule.jittered),
+            Schedule.exponential("500 millis").pipe(
+              Schedule.jittered,
+              Schedule.modifyDelay(({ duration }) =>
+                Effect.succeed(Duration.millis(Math.ceil(Duration.toMillis(duration)))),
+              ),
+            ),
             Schedule.spaced("30 seconds"),
           ]),
         },
       });
     }),
   );
+};
 
 export const kafkaServer: {
   readonly adapter: typeof KafkaSourceAdapterServer;

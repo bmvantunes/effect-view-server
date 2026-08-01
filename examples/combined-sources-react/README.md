@@ -15,6 +15,8 @@ This example demonstrates:
 
 - One `defineViewServerConfig` with multiple topic/source shapes.
 - Kafka-owned `trades`.
+- Mandatory Kafka cleanup/retention declarations with pre-start broker
+  validation and Region/partition/local-key identity.
 - Leased gRPC-owned `orders`.
 - Materialized gRPC-owned `strategies`.
 - Topic-owned gRPC bindings derived from browser-safe generated service

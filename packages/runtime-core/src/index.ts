@@ -46,6 +46,7 @@ export const makeViewServerRuntimeCore: <const Topics extends TopicDefinitions>(
     client: runtimeCore.publicClient,
     liveClient: runtimeCore.publicLiveClient,
     serverLiveClient: runtimeCore.serverLiveClient,
+    fatal: runtimeCore.fatal,
     close: runtimeCore.close,
     requestHealthRefresh: runtimeCore.requestHealthRefresh,
     refreshHealth: runtimeCore.refreshHealth,

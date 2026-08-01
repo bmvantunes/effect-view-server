@@ -1,9 +1,10 @@
-import { Consumer } from "@platformatic/kafka";
+import { Admin, ConfigResourceTypes, Consumer } from "@platformatic/kafka";
 import type { ConsumerGroupJoinPayload, Message, Offsets } from "@platformatic/kafka";
 import { Buffer } from "node:buffer";
 import type { ConnectionOptions as NodeTlsConnectionOptions } from "node:tls";
 import {
   Config,
+  Duration,
   Effect,
   Exit,
   Layer,
@@ -22,10 +23,19 @@ import type {
 import {
   KafkaSourceAdapter,
   KafkaSourceConfigurationError,
+  decodeKafkaDurationInput,
   kafkaConsumerGroupId,
   type KafkaAdapterFailure,
   type KafkaRegionMetrics,
 } from "./contract";
+import {
+  type KafkaBrokerConfigResource,
+  type KafkaBrokerContractDeclaration,
+  type KafkaBrokerContractValidationFailure as KafkaBrokerContractValidationFailureType,
+  type KafkaBrokerRegionDiscovery,
+  type KafkaResolvedBrokerContract,
+  resolveKafkaBrokerContracts,
+} from "./broker-contract";
 import {
   makeKafkaServerLayer,
   type KafkaServerRecord,
@@ -99,6 +109,10 @@ export type KafkaNodeRegionOptions = {
   readonly tls?: KafkaNodeTlsOptions;
 };
 
+type KafkaNodeRegionSnapshot = Omit<KafkaNodeRegionOptions, "bootstrapServers"> & {
+  readonly bootstrapServers: readonly [string, ...ReadonlyArray<string>];
+};
+
 export type KafkaNodeLayerOptions<ViewServer extends KafkaNodeViewServer> = [
   KafkaRequiredRegion<ViewServer>,
 ] extends [never]
@@ -108,7 +122,38 @@ export type KafkaNodeLayerOptions<ViewServer extends KafkaNodeViewServer> = [
       readonly regions: {
         readonly [Region in KafkaRequiredRegion<ViewServer>]: KafkaNodeRegionOptions;
       };
+      readonly retentionSweepInterval?: Duration.Input;
     };
+
+type IsConfigPlainObject<Value> = [Value] extends [object]
+  ? [keyof Value] extends [never]
+    ? false
+    : [keyof Value] extends [string]
+      ? true
+      : false
+  : false;
+
+type KafkaNodeConfigValue<Value> = Value extends object
+  ? {
+      readonly [Key in keyof Value]: Key extends "retentionSweepInterval"
+        ? NonNullable<Value[Key]> | string
+        : Value[Key];
+    }
+  : Value;
+
+type KafkaNodeConfigWrap<Value> = [NonNullable<Value>] extends [infer NonNullValue]
+  ? IsConfigPlainObject<NonNullValue> extends true
+    ?
+        | {
+            readonly [Key in keyof NonNullValue]: KafkaNodeConfigWrap<
+              Key extends "retentionSweepInterval"
+                ? NonNullable<NonNullValue[Key]> | string
+                : NonNullValue[Key]
+            >;
+          }
+        | Config.Config<KafkaNodeConfigValue<NonNullValue>>
+    : Config.Config<NonNullValue>
+  : Config.Config<Value>;
 
 type RejectExtraKeys<Candidate, Shape> = {
   readonly [Key in Exclude<keyof Candidate, keyof Shape>]: never;
@@ -126,6 +171,15 @@ type IsUnknown<Value> =
       : false;
 
 type IsNever<Value> = [Value] extends [never] ? true : false;
+
+type NodeCandidateField<Candidate, Key extends PropertyKey> = Candidate extends unknown
+  ? Key extends keyof Candidate
+    ? Candidate[Key]
+    : never
+  : never;
+
+type RejectAnyNodeField<Candidate, Key extends PropertyKey> =
+  IsAny<NodeCandidateField<Candidate, Key>> extends true ? never : unknown;
 
 type ExactSaslOptions<Candidate> =
   IsAny<Candidate> extends true
@@ -188,7 +242,7 @@ type ExactNodeOptions<ViewServer extends KafkaNodeViewServer, Candidate> =
                 Candidate["regions"][Region]
               >;
             };
-        }
+        } & RejectAnyNodeField<Candidate, "retentionSweepInterval">
     : never;
 
 type KafkaNodeOptionsGuard<ViewServer, Options> =
@@ -206,13 +260,28 @@ type KafkaNodeOptionsGuard<ViewServer, Options> =
               : never
             : never;
 
+type UnwrapRetentionSweepIntervalCandidate<Candidate> =
+  IsAny<Candidate> extends true
+    ? Candidate
+    : Candidate extends Config.Config<infer Value>
+      ? IsAny<Value> extends true
+        ? Value
+        : NonNullable<Value> extends string
+          ? Duration.Input
+          : NonNullable<Value>
+      : Candidate;
+
 type UnwrapConfigCandidate<Candidate> =
   IsAny<Candidate> extends true
     ? Candidate
     : Candidate extends Config.Config<infer Value>
-      ? Value
+      ? NonNullable<Value>
       : Candidate extends object
-        ? { readonly [Key in keyof Candidate]: UnwrapConfigCandidate<Candidate[Key]> }
+        ? {
+            readonly [Key in keyof Candidate]: Key extends "retentionSweepInterval"
+              ? UnwrapRetentionSweepIntervalCandidate<Candidate[Key]>
+              : UnwrapConfigCandidate<Candidate[Key]>;
+          }
         : Candidate;
 
 type KafkaBufferMessage = Omit<
@@ -494,7 +563,7 @@ const nodeTlsOptions = (tls: KafkaNodeTlsOptions): NodeTlsConnectionOptions => (
 const finiteNonNegative = (value: number | undefined): boolean =>
   value === undefined || (Number.isFinite(value) && value >= 0);
 
-const snapshotRegionOptions = (options: unknown): KafkaNodeRegionOptions => {
+const snapshotRegionOptions = (options: unknown): KafkaNodeRegionSnapshot => {
   if (typeof options !== "object" || options === null || Array.isArray(options)) {
     throw new KafkaSourceConfigurationError("Kafka Region options are invalid.");
   }
@@ -592,6 +661,107 @@ const kafkaSourceRegions = (viewServer: KafkaNodeViewServer): ReadonlySet<string
   return regions;
 };
 
+const capturedRetentionPolicy = (
+  value: unknown,
+): KafkaBrokerContractDeclaration["retentionPolicy"] => {
+  if (typeof value !== "object" || value === null) {
+    throw new KafkaSourceConfigurationError("Kafka source contains an invalid retention policy.");
+  }
+  const tag = Reflect.get(value, "_tag");
+  if (tag === "MatchKafkaRetention") {
+    return {
+      _tag: "MatchKafkaRetention",
+    };
+  }
+  if (tag === "Forever") {
+    return {
+      _tag: "Forever",
+    };
+  }
+  const durationNanos = Reflect.get(value, "durationNanos");
+  if (tag === "Finite" && typeof durationNanos === "bigint" && durationNanos > 0n) {
+    return {
+      _tag: "Finite",
+      durationNanos,
+    };
+  }
+  throw new KafkaSourceConfigurationError("Kafka source contains an invalid retention policy.");
+};
+
+const kafkaBrokerDeclarations = (
+  viewServer: KafkaNodeViewServer,
+): ReadonlyArray<KafkaBrokerContractDeclaration> => {
+  const declarations: Array<KafkaBrokerContractDeclaration> = [];
+  for (const topic of Object.keys(viewServer.topics)) {
+    const configured = viewServer.topics[topic];
+    const source =
+      typeof configured === "object" && configured !== null && Object.hasOwn(configured, "source")
+        ? Reflect.get(configured, "source")
+        : undefined;
+    if (
+      typeof source !== "object" ||
+      source === null ||
+      Reflect.get(source, "adapter") !== KafkaSourceAdapter
+    ) {
+      continue;
+    }
+    const options = Reflect.get(source, "options");
+    if (typeof options !== "object" || options === null) {
+      throw new KafkaSourceConfigurationError(
+        `Kafka source for Topic ${topic} contains invalid options.`,
+      );
+    }
+    const sourceTopic = Reflect.get(options, "topic");
+    const cleanupPolicy = Reflect.get(options, "cleanupPolicy");
+    const regions = Reflect.get(options, "regions");
+    if (
+      typeof sourceTopic !== "string" ||
+      sourceTopic.length === 0 ||
+      (cleanupPolicy !== "delete" &&
+        cleanupPolicy !== "compact" &&
+        cleanupPolicy !== "compact-and-delete") ||
+      !Array.isArray(regions) ||
+      regions.length === 0
+    ) {
+      throw new KafkaSourceConfigurationError(
+        `Kafka source for Topic ${topic} contains invalid broker contract options.`,
+      );
+    }
+    const retentionPolicy = capturedRetentionPolicy(Reflect.get(options, "retentionPolicy"));
+    for (const region of regions) {
+      if (typeof region !== "string" || region.length === 0) {
+        throw new KafkaSourceConfigurationError(
+          `Kafka source for Topic ${topic} contains invalid Regions.`,
+        );
+      }
+      declarations.push({
+        viewServerTopic: topic,
+        sourceTopic,
+        region,
+        cleanupPolicy,
+        retentionPolicy,
+      });
+    }
+  }
+  return Object.freeze(declarations);
+};
+
+const defaultRetentionSweepIntervalNanos = 15n * 60n * 1_000_000_000n;
+
+const retentionSweepIntervalNanos = (input: unknown): bigint => {
+  if (input === undefined) {
+    return defaultRetentionSweepIntervalNanos;
+  }
+  const duration = decodeKafkaDurationInput(input);
+  const nanos = Option.flatMap(duration, Duration.toNanos);
+  if (Option.isNone(nanos) || nanos.value <= 0n) {
+    throw new KafkaSourceConfigurationError(
+      "Kafka Node Layer retentionSweepInterval must be a positive finite Effect Duration.",
+    );
+  }
+  return nanos.value;
+};
+
 const validateConsumerGroupIds = (
   viewServer: KafkaNodeViewServer,
   consumerGroupPrefix: string,
@@ -614,10 +784,11 @@ const validateConsumerGroupIds = (
 
 const snapshotLayerOptions = <ViewServer extends KafkaNodeViewServer>(
   viewServer: ViewServer,
-  options: KafkaNodeLayerOptions<ViewServer>,
+  options: unknown,
 ): {
   readonly consumerGroupPrefix: string;
-  readonly regions: ReadonlyMap<string, KafkaNodeRegionOptions>;
+  readonly regions: ReadonlyMap<string, KafkaNodeRegionSnapshot>;
+  readonly retentionSweepIntervalNanos: bigint;
 } => {
   if (typeof options !== "object" || options === null || Array.isArray(options)) {
     throw new KafkaSourceConfigurationError(
@@ -630,10 +801,15 @@ const snapshotLayerOptions = <ViewServer extends KafkaNodeViewServer>(
   );
   const consumerGroupPrefix = fields.get("consumerGroupPrefix");
   const regionOptions = fields.get("regions");
+  const sweepInterval = fields.get("retentionSweepInterval");
   if (
-    fields.size !== 2 ||
+    (fields.size !== 2 && fields.size !== 3) ||
     !fields.has("consumerGroupPrefix") ||
     !fields.has("regions") ||
+    Array.from(fields.keys()).some(
+      (key) =>
+        key !== "consumerGroupPrefix" && key !== "regions" && key !== "retentionSweepInterval",
+    ) ||
     typeof consumerGroupPrefix !== "string" ||
     consumerGroupPrefix.length === 0 ||
     typeof regionOptions !== "object" ||
@@ -658,7 +834,7 @@ const snapshotLayerOptions = <ViewServer extends KafkaNodeViewServer>(
       "Kafka Node Layer regions must contain all and only referenced Regions.",
     );
   }
-  const regions = new Map<string, KafkaNodeRegionOptions>();
+  const regions = new Map<string, KafkaNodeRegionSnapshot>();
   for (const [region, value] of provided) {
     if (typeof value !== "object" || value === null) {
       throw new KafkaSourceConfigurationError(`Kafka Node Region ${region} options are invalid.`);
@@ -668,6 +844,7 @@ const snapshotLayerOptions = <ViewServer extends KafkaNodeViewServer>(
   return Object.freeze({
     consumerGroupPrefix,
     regions,
+    retentionSweepIntervalNanos: retentionSweepIntervalNanos(sweepInterval),
   });
 };
 
@@ -932,7 +1109,7 @@ const resolveFallback = Effect.fn("KafkaNode.offsets.fallback")(function* (
 });
 
 const makeResolverConsumer = Effect.fn("KafkaNode.consumer.make")(function* (
-  regionOptions: KafkaNodeRegionOptions,
+  regionOptions: KafkaNodeRegionSnapshot,
   groupId: string,
   input: KafkaServerRegionAcquireInput,
 ) {
@@ -940,7 +1117,7 @@ const makeResolverConsumer = Effect.fn("KafkaNode.consumer.make")(function* (
     try: () =>
       new Consumer<Buffer | null, Buffer | null, Buffer, Buffer>({
         autocreateTopics: false,
-        bootstrapBrokers: [...bootstrapServers(regionOptions.bootstrapServers)],
+        bootstrapBrokers: [...regionOptions.bootstrapServers],
         clientId: regionOptions.clientId ?? `effect-view-server-${input.region}`,
         groupId,
         retries: regionOptions.retries ?? true,
@@ -962,7 +1139,7 @@ const makeResolverConsumer = Effect.fn("KafkaNode.consumer.make")(function* (
 });
 
 const resolveInitial = Effect.fn("KafkaNode.offsets.initial")(function* (
-  regionOptions: KafkaNodeRegionOptions,
+  regionOptions: KafkaNodeRegionSnapshot,
   input: KafkaServerRegionAcquireInput,
   activeConsumer: KafkaConsumer,
   metrics: KafkaMutableRegionMetrics,
@@ -1195,7 +1372,7 @@ const updateCommit = (
   }
 };
 
-const makeNodeRegion = (regionOptions: KafkaNodeRegionOptions): KafkaServerRegion => {
+const makeNodeRegion = (regionOptions: KafkaNodeRegionSnapshot): KafkaServerRegion => {
   const lifetimes = new Map<Scope.Scope, Map<string, KafkaBindingState>>();
   const lifetimeStates = Effect.fn("KafkaNode.region.lifetime.state")(function* (
     lifetimeScope: Scope.Scope,
@@ -1377,21 +1554,205 @@ const makeNodeRegion = (regionOptions: KafkaNodeRegionOptions): KafkaServerRegio
   };
 };
 
-const makeLayerFromSnapshot = (snapshot: {
-  readonly consumerGroupPrefix: string;
-  readonly regions: ReadonlyMap<string, KafkaNodeRegionOptions>;
-}) =>
-  Layer.unwrap(
-    Effect.sync(() => {
-      const regions = new Map<string, KafkaServerRegion>();
-      for (const [region, options] of snapshot.regions) {
-        regions.set(region, makeNodeRegion(options));
+const adminOptions = (
+  region: string,
+  options: KafkaNodeRegionSnapshot,
+): ConstructorParameters<typeof Admin>[0] => ({
+  bootstrapBrokers: [...options.bootstrapServers],
+  clientId: options.clientId ?? `effect-view-server-${region}-broker-validation`,
+  retries: options.retries ?? true,
+  ...(options.connectTimeout === undefined ? {} : { connectTimeout: options.connectTimeout }),
+  ...(options.requestTimeout === undefined ? {} : { requestTimeout: options.requestTimeout }),
+  ...(options.timeout === undefined ? {} : { timeout: options.timeout }),
+  ...(options.metadataMaxAge === undefined ? {} : { metadataMaxAge: options.metadataMaxAge }),
+  ...(options.sasl === undefined ? {} : { sasl: options.sasl }),
+  ...(options.tls === undefined ? {} : { tls: nodeTlsOptions(options.tls) }),
+});
+
+const unsafeConfigValue = (
+  configs: ReadonlyArray<unknown>,
+  name: "cleanup.policy" | "retention.ms",
+): string | undefined => {
+  let matching: object | undefined;
+  for (const config of configs) {
+    if (typeof config === "object" && config !== null && Reflect.get(config, "name") === name) {
+      if (matching !== undefined) {
+        return undefined;
       }
-      return makeKafkaServerLayer({
-        consumerGroupPrefix: snapshot.consumerGroupPrefix,
-        regions,
-      });
+      matching = config;
+    }
+  }
+  if (matching === undefined) {
+    return undefined;
+  }
+  const value = Reflect.get(matching, "value");
+  return typeof value === "string" ? value : undefined;
+};
+
+const configValue = (
+  configs: ReadonlyArray<unknown>,
+  name: "cleanup.policy" | "retention.ms",
+): string | undefined => {
+  const parsed = Result.try(() => unsafeConfigValue(configs, name));
+  return Result.isFailure(parsed) ? undefined : parsed.success;
+};
+
+const unsafeBrokerConfigResource = (value: unknown): KafkaBrokerConfigResource | undefined => {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    Reflect.get(value, "resourceType") !== ConfigResourceTypes.TOPIC
+  ) {
+    return undefined;
+  }
+  const resourceName = Reflect.get(value, "resourceName");
+  const configs = Reflect.get(value, "configs");
+  if (typeof resourceName !== "string" || resourceName.length === 0 || !Array.isArray(configs)) {
+    return undefined;
+  }
+  const cleanupPolicy = configValue(configs, "cleanup.policy");
+  const retentionMs = configValue(configs, "retention.ms");
+  if (cleanupPolicy === undefined) {
+    return {
+      resourceName,
+      malformedConfiguration: "cleanup.policy",
+    };
+  }
+  if (retentionMs === undefined) {
+    return {
+      resourceName,
+      malformedConfiguration: "retention.ms",
+    };
+  }
+  return {
+    resourceName,
+    cleanupPolicy,
+    retentionMs,
+  };
+};
+
+const brokerConfigResource = (value: unknown): KafkaBrokerConfigResource | undefined => {
+  const parsed = Result.try(() => unsafeBrokerConfigResource(value));
+  return Result.isFailure(parsed) ? undefined : parsed.success;
+};
+
+const snapshotAdminResponse = (
+  response: unknown,
+): ReadonlyArray<KafkaBrokerConfigResource> | undefined => {
+  const parsed = Result.try(() => {
+    if (!Array.isArray(response)) {
+      return undefined;
+    }
+    const candidates: ReadonlyArray<unknown> = response;
+    const resources: Array<KafkaBrokerConfigResource> = [];
+    for (const candidate of candidates) {
+      const resource = brokerConfigResource(candidate);
+      if (resource !== undefined) {
+        resources.push(resource);
+      }
+    }
+    return Object.freeze(resources);
+  });
+  return Result.isFailure(parsed) ? undefined : parsed.success;
+};
+
+const discoverKafkaBrokerRegion = Effect.fn("KafkaNode.brokerContract.discoverRegion")(function* (
+  region: string,
+  options: KafkaNodeRegionSnapshot,
+  topics: ReadonlyArray<string>,
+): Effect.fn.Return<KafkaBrokerRegionDiscovery> {
+  const available = yield* Effect.acquireUseRelease(
+    Effect.try({
+      try: () => new Admin(adminOptions(region, options)),
+      catch: () => undefined,
     }),
+    (admin) =>
+      Effect.tryPromise({
+        try: () =>
+          admin.describeConfigs({
+            resources: topics.map((topic) => ({
+              resourceType: ConfigResourceTypes.TOPIC,
+              resourceName: topic,
+              configurationKeys: ["cleanup.policy", "retention.ms"],
+            })),
+          }),
+        catch: () => undefined,
+      }),
+    (admin) =>
+      Effect.tryPromise({
+        try: () => admin.close(),
+        catch: () => undefined,
+      }),
+  ).pipe(Effect.option);
+  if (Option.isNone(available) || available.value === undefined) {
+    return {
+      _tag: "Unavailable",
+      region,
+    };
+  }
+  const resources = snapshotAdminResponse(available.value);
+  return resources === undefined
+    ? {
+        _tag: "Malformed",
+        region,
+      }
+    : {
+        _tag: "Available",
+        region,
+        resources,
+      };
+});
+
+type KafkaLayerSnapshot = {
+  readonly consumerGroupPrefix: string;
+  readonly regions: ReadonlyMap<string, KafkaNodeRegionSnapshot>;
+  readonly retentionSweepIntervalNanos: bigint;
+};
+
+const validateKafkaBrokerContracts = Effect.fn("KafkaNode.brokerContract.validate")(function* (
+  viewServer: KafkaNodeViewServer,
+  snapshot: KafkaLayerSnapshot,
+): Effect.fn.Return<
+  ReadonlyArray<KafkaResolvedBrokerContract>,
+  KafkaBrokerContractValidationFailureType
+> {
+  const declarations = kafkaBrokerDeclarations(viewServer);
+  const topicsByRegion = new Map<string, Set<string>>();
+  for (const declaration of declarations) {
+    const topics = topicsByRegion.get(declaration.region) ?? new Set<string>();
+    topics.add(declaration.sourceTopic);
+    topicsByRegion.set(declaration.region, topics);
+  }
+  const discoveries = yield* Effect.forEach(
+    topicsByRegion,
+    ([region, topics]) =>
+      discoverKafkaBrokerRegion(
+        region,
+        Option.getOrThrow(Option.fromUndefinedOr(snapshot.regions.get(region))),
+        [...topics].sort(),
+      ),
+    { concurrency: "unbounded" },
+  );
+  const resolution = resolveKafkaBrokerContracts(declarations, discoveries);
+  return resolution._tag === "Resolved" ? resolution.contracts : yield* Effect.fail(resolution);
+});
+
+const makeLayerFromSnapshot = (viewServer: KafkaNodeViewServer, snapshot: KafkaLayerSnapshot) =>
+  Layer.unwrap(
+    validateKafkaBrokerContracts(viewServer, snapshot).pipe(
+      Effect.map((contracts) => {
+        const regions = new Map<string, KafkaServerRegion>();
+        for (const [region, options] of snapshot.regions) {
+          regions.set(region, makeNodeRegion(options));
+        }
+        return makeKafkaServerLayer({
+          consumerGroupPrefix: snapshot.consumerGroupPrefix,
+          regions,
+          brokerContracts: contracts,
+          retentionSweepIntervalNanos: snapshot.retentionSweepIntervalNanos,
+        });
+      }),
+    ),
   );
 
 export const layer = <
@@ -1403,12 +1764,13 @@ export const layer = <
     ([KafkaRequiredRegion<ViewServer>] extends [never] ? never : unknown) &
     KafkaNodeOptionsGuard<NoInfer<ViewServer>, Options>,
 ): Layer.Layer<
-  import("effect").Context.Service.Identifier<typeof KafkaSourceAdapter.runtimeService>
-> => makeLayerFromSnapshot(snapshotLayerOptions(viewServer, options));
+  import("effect").Context.Service.Identifier<typeof KafkaSourceAdapter.runtimeService>,
+  KafkaBrokerContractValidationFailureType
+> => makeLayerFromSnapshot(viewServer, snapshotLayerOptions(viewServer, options));
 
 export const layerConfig = <
   const ViewServer extends KafkaNodeViewServer,
-  const Options extends Config.Wrap<KafkaNodeLayerOptions<NoInfer<ViewServer>>>,
+  const Options extends KafkaNodeConfigWrap<KafkaNodeLayerOptions<NoInfer<ViewServer>>>,
 >(
   viewServer: ViewServer,
   options: Options &
@@ -1416,7 +1778,7 @@ export const layerConfig = <
     KafkaNodeOptionsGuard<NoInfer<ViewServer>, UnwrapConfigCandidate<Options>>,
 ): Layer.Layer<
   import("effect").Context.Service.Identifier<typeof KafkaSourceAdapter.runtimeService>,
-  Config.ConfigError
+  Config.ConfigError | KafkaBrokerContractValidationFailureType
 > =>
   Layer.unwrap(
     Config.unwrap(options).pipe(
@@ -1426,7 +1788,7 @@ export const layerConfig = <
           catch: configValidationFailure,
         }),
       ),
-      Effect.map(makeLayerFromSnapshot),
+      Effect.map((snapshot) => makeLayerFromSnapshot(viewServer, snapshot)),
     ),
   );
 
@@ -1441,13 +1803,17 @@ export const kafkaNode: {
 export const kafkaNodeInternals = Object.freeze({
   acquisitionFailure,
   bindingKey,
+  brokerConfigResource,
   bootstrapServers,
+  capturedRetentionPolicy,
   commitFailure,
+  configValue,
   consumeFailure,
   copyTlsValue,
   emptyMutableMetrics,
   finiteNonNegative,
   headersFromMessage,
+  kafkaBrokerDeclarations,
   kafkaSourceRegions,
   nodeTlsOptions,
   nodeTlsValue,
@@ -1455,6 +1821,8 @@ export const kafkaNodeInternals = Object.freeze({
   offsetsForTopic,
   ownDataKeys,
   releaseFailure,
+  retentionSweepIntervalNanos,
+  snapshotAdminResponse,
   snapshotLayerOptions,
   snapshotMetrics,
   settleCommittedRecord,

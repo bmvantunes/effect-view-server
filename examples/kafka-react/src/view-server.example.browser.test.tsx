@@ -1,5 +1,8 @@
 import { describe, expect, it } from "@effect/vitest";
-import { KafkaSourceAdapter, type KafkaRegionMetrics } from "effect-view-server/kafka/contract";
+import {
+  KafkaSourceAdapter,
+  type KafkaMaterializedRegionMetrics,
+} from "effect-view-server/kafka/contract";
 import { makeInMemoryViewServerReact } from "effect-view-server/react/testing";
 import { SourceAdapterServer } from "effect-view-server/source-adapter/server";
 import { Chunk, Effect, Schedule, Stream } from "effect";
@@ -8,7 +11,7 @@ import { render } from "vitest-browser-react";
 import { viewServerReact } from "./view-server.config";
 import { KafkaExampleApp, sourceHealthStatusLabel } from "./view-server.example";
 
-const emptyRegionMetrics = (region: string): KafkaRegionMetrics => ({
+const emptyRegionMetrics = (region: string): KafkaMaterializedRegionMetrics => ({
   region,
   assignments: [],
   commits: 0n,
@@ -22,10 +25,35 @@ const emptyRegionMetrics = (region: string): KafkaRegionMetrics => ({
   rebalances: 0n,
   closes: 0n,
   closeFailures: 0n,
+  retention: {
+    declaredCleanupPolicy: "delete",
+    observedCleanupPolicy: "delete",
+    configuredRetention: { _tag: "Forever" },
+    resolvedRetention: { _tag: "Forever" },
+    trackedRows: 0,
+    lastSweepRetryableFailures: 0,
+    expiredRows: 0n,
+    authoritativeExpiredDeletes: 0n,
+    failedWorkBacklog: 0,
+    expirationRetryFailures: 0n,
+    latestExpirationFailure: null,
+    lastSweepAtNanos: null,
+    lastSweepDurationNanos: null,
+    sweepIntervalNanos: 900_000_000_000n,
+  },
+});
+
+const KafkaBrowserApplicationState = SourceAdapterServer.applicationState({
+  sweepIntervalNanos: 900_000_000_000n,
+  initialState: () => undefined,
+  reduce: () => undefined,
+  metrics: () => undefined,
+  runDueSweep: () => Effect.void,
 });
 
 const KafkaBrowserTest = SourceAdapterServer.make(KafkaSourceAdapter, {
   materialized: {
+    applicationState: KafkaBrowserApplicationState,
     initialLaneIds: (input) => [input.definition.regions[0]],
     acquire: (input) =>
       Effect.gen(function* () {

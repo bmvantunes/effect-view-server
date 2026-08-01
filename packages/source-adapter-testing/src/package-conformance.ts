@@ -7,7 +7,7 @@ import { builtinModules } from "node:module";
 import { isAbsolute, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { gzipSync } from "node:zlib";
-import { Context, Data, Effect, Exit, Layer, Option, Schema } from "effect";
+import { Cause, Context, Data, Effect, Exit, Layer, Option, Schema } from "effect";
 import ts from "typescript";
 import { build, type Plugin } from "vite";
 import { browserBuildChunks } from "./browser-build-output";
@@ -108,6 +108,9 @@ export type SourceAdapterPackagePlatformProbe = {
   readonly extraResources: unknown;
   readonly duplicateResources: unknown;
   readonly exactConfigResources: unknown;
+  readonly exactLayerAcquisition?: "runtime-service" | "external-validation-failure";
+  readonly resourceValidationFailure: (failure: SourceAdapterPackageInspectionError) => boolean;
+  readonly externalValidationFailure?: (failure: SourceAdapterPackageInspectionError) => boolean;
 };
 
 export type SourceAdapterPackageInspectionOptions = {
@@ -624,8 +627,10 @@ const invokeLayerConstructor = (
     Effect.flatMap((layer) =>
       Effect.scoped(Layer.build(layer)).pipe(
         Effect.provideContext(Context.makeUnsafe<unknown>(Context.empty().mapUnsafe)),
-        Effect.mapError((cause) =>
-          inspectionError(`Platform ${constructor}(...) could not be acquired.`, cause),
+        Effect.catchCause((cause) =>
+          Effect.fail(
+            inspectionError(`Platform ${constructor}(...) could not be acquired.`, cause),
+          ),
         ),
       ),
     ),
@@ -1003,17 +1008,49 @@ const allContractChecks = (
   return checks;
 };
 
+const failedWith = (
+  exit: Exit.Exit<unknown, unknown>,
+  predicate: (failure: SourceAdapterPackageInspectionError) => boolean,
+): boolean => {
+  if (Exit.isSuccess(exit)) {
+    return false;
+  }
+  const failure = Cause.findErrorOption(exit.cause);
+  return Option.isSome(failure) && failure.value instanceof SourceAdapterPackageInspectionError
+    ? predicate(failure.value)
+    : false;
+};
+
 const allPlatformChecks = (
   evidence: SourceAdapterPackagePlatformEvidence,
+  probe: SourceAdapterPackagePlatformProbe,
 ): ReadonlyArray<readonly [string, boolean]> => [
   ["hasLayer", typeof Reflect.get(evidence.module, "layer") === "function"],
   ["hasLayerConfig", typeof Reflect.get(evidence.module, "layerConfig") === "function"],
-  ["rejectsEmptyResources", Exit.isFailure(evidence.emptyResources)],
-  ["rejectsMissingResources", Exit.isFailure(evidence.missingResources)],
-  ["rejectsExtraResources", Exit.isFailure(evidence.extraResources)],
-  ["rejectsDuplicateResources", Exit.isFailure(evidence.duplicateResources)],
-  ["providesExactRuntimeService", Exit.isSuccess(evidence.exactRuntimeService)],
-  ["providesExactConfigRuntimeService", Exit.isSuccess(evidence.exactConfigRuntimeService)],
+  ["rejectsEmptyResources", failedWith(evidence.emptyResources, probe.resourceValidationFailure)],
+  [
+    "rejectsMissingResources",
+    failedWith(evidence.missingResources, probe.resourceValidationFailure),
+  ],
+  ["rejectsExtraResources", failedWith(evidence.extraResources, probe.resourceValidationFailure)],
+  [
+    "rejectsDuplicateResources",
+    failedWith(evidence.duplicateResources, probe.resourceValidationFailure),
+  ],
+  [
+    "honorsExactRuntimeAcquisition",
+    probe.exactLayerAcquisition === "external-validation-failure"
+      ? probe.externalValidationFailure !== undefined &&
+        failedWith(evidence.exactRuntimeService, probe.externalValidationFailure)
+      : Exit.isSuccess(evidence.exactRuntimeService),
+  ],
+  [
+    "honorsExactConfigRuntimeAcquisition",
+    probe.exactLayerAcquisition === "external-validation-failure"
+      ? probe.externalValidationFailure !== undefined &&
+        failedWith(evidence.exactConfigRuntimeService, probe.externalValidationFailure)
+      : Exit.isSuccess(evidence.exactConfigRuntimeService),
+  ],
 ];
 
 export const validateSourceAdapterPackageConformance = (
@@ -1113,7 +1150,8 @@ export const validateSourceAdapterPackageConformance = (
       });
     }
   }
-  for (const platformExport of platformExports) {
+  for (const probe of options.platforms) {
+    const platformExport = probe.export;
     const checks = snapshot.platforms[platformExport];
     if (checks === undefined) {
       issues.push({
@@ -1122,7 +1160,7 @@ export const validateSourceAdapterPackageConformance = (
       });
       continue;
     }
-    for (const [check, passed] of allPlatformChecks(checks)) {
+    for (const [check, passed] of allPlatformChecks(checks, probe)) {
       if (!passed) {
         issues.push({
           code: "PlatformCheckFailed",

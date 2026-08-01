@@ -165,6 +165,59 @@ describe("Source Adapter conformance host probes", () => {
     ).toStrictEqual(failure);
   });
 
+  it("extracts the latest rejection from structured degradation reasons", () => {
+    const rejection = {
+      failure: {
+        _tag: "AdapterFailure",
+        failure: {
+          _tag: "PackageFailure",
+          message: "rejected",
+        },
+      },
+      location: {
+        offset: 12n,
+      },
+      rejectedAtNanos: 34n,
+    };
+    const snapshot = snapshotHealth({
+      _tag: "Degraded",
+      status: {
+        _tag: "Degraded",
+        attempt: 2n,
+        degradedAtNanos: 34n,
+        reasons: [
+          {
+            _tag: "SourceItemRejection",
+            latestRejection: rejection,
+          },
+          {
+            _tag: "AdapterMaintenanceFailure",
+          },
+        ],
+      },
+      metrics: {
+        adapter: {},
+        runtime: {
+          lanes: [],
+          rejectedItemCount: 1n,
+          failedSettlementCount: 0n,
+        },
+      },
+    });
+
+    expect({
+      latestRejectionFailureTag: snapshot.latestRejectionFailureTag,
+      latestRejectionFailure: snapshot.latestRejectionFailure,
+      latestRejectionLocation: snapshot.latestRejectionLocation,
+      latestRejectedAtNanos: snapshot.latestRejectedAtNanos,
+    }).toStrictEqual({
+      latestRejectionFailureTag: "AdapterFailure",
+      latestRejectionFailure: rejection.failure,
+      latestRejectionLocation: rejection.location,
+      latestRejectedAtNanos: 34n,
+    });
+  });
+
   it("rejects missing and non-Effect dynamic methods", () => {
     expect(Exit.isFailure(Effect.runSyncExit(invokeEffect({}, "missing", [])))).toBe(true);
     expect(

@@ -1,13 +1,22 @@
 import { describe, expect, it } from "@effect/vitest";
-import type { SourceToolkit } from "@effect-view-server/source-adapter";
+import type {
+  SourceApplicationTransition,
+  SourceDelivery,
+  SourceMutation,
+  SourceSettlement,
+  SourceToolkit,
+} from "@effect-view-server/source-adapter";
 import {
   makeSourceDelete,
   makeSourceDelivery,
   makeSourceItemRejection,
+  makeSourceTransitionDelivery,
   makeSourceUpsert,
   markSourceToolkit,
+  resolveSourceApplicationTransition,
+  resolveSourceApplicationStateRegistration,
 } from "@effect-view-server/source-adapter/internal";
-import { Context, Effect, Exit, Fiber, Layer, Option, Scope, Stream } from "effect";
+import { Chunk, Context, Effect, Exit, Fiber, Layer, Option, Scope, Stream } from "effect";
 import {
   SourceAdapterConformanceRow,
   SourceFixture,
@@ -18,10 +27,40 @@ import {
   type SourceFixtureRejectionLocation,
 } from "./index";
 
+function toolkitDelivery(
+  mutations: Chunk.NonEmptyChunk<SourceMutation<SourceAdapterConformanceRow>>,
+  settlement?: SourceSettlement<SourceFixtureFailure>,
+): Effect.Effect<SourceDelivery<SourceAdapterConformanceRow, SourceFixtureFailure, never, "rows">>;
+function toolkitDelivery(
+  mutation: SourceMutation<SourceAdapterConformanceRow>,
+  settlement: SourceSettlement<SourceFixtureFailure> | undefined,
+  transition: SourceApplicationTransition<"rows">,
+): Effect.Effect<SourceDelivery<SourceAdapterConformanceRow, SourceFixtureFailure, never, "rows">>;
+function toolkitDelivery(
+  mutationsOrMutation:
+    | Chunk.NonEmptyChunk<SourceMutation<SourceAdapterConformanceRow>>
+    | SourceMutation<SourceAdapterConformanceRow>,
+  settlement?: SourceSettlement<SourceFixtureFailure>,
+  transition?: SourceApplicationTransition<"rows">,
+): Effect.Effect<SourceDelivery<SourceAdapterConformanceRow, SourceFixtureFailure, never, "rows">> {
+  return transition === undefined && Chunk.isChunk(mutationsOrMutation)
+    ? Effect.succeed(
+        makeSourceDelivery<SourceAdapterConformanceRow, SourceFixtureFailure, never, "rows">(
+          mutationsOrMutation,
+          settlement,
+        ),
+      )
+    : transition !== undefined && !Chunk.isChunk(mutationsOrMutation)
+      ? Effect.succeed(makeSourceTransitionDelivery(mutationsOrMutation, settlement, transition))
+      : Effect.die(new TypeError("Invalid fixture delivery shape."));
+}
+
 const toolkit: SourceToolkit<
   SourceAdapterConformanceRow,
   SourceFixtureFailure,
-  SourceFixtureRejectionLocation
+  SourceFixtureRejectionLocation,
+  never,
+  "rows"
 > = markSourceToolkit({
   topic: "rows",
   upsert: (row) => Effect.succeed(makeSourceUpsert<SourceAdapterConformanceRow>(row)),
@@ -34,7 +73,7 @@ const toolkit: SourceToolkit<
       }),
     ),
   delete: (id) => Effect.succeed(makeSourceDelete(id)),
-  delivery: (mutations, settlement) => Effect.succeed(makeSourceDelivery(mutations, settlement)),
+  delivery: toolkitDelivery,
   reject: (input) => Effect.succeed(makeSourceItemRejection(input)),
 });
 
@@ -492,6 +531,30 @@ describe("Source Adapter low-level conformance driver", () => {
         lanes: ["primary", "sibling"],
       });
       const lifetimeScope = yield* Scope.make();
+      const applicationState = Option.getOrThrow(
+        Option.fromUndefinedOr(
+          resolveSourceApplicationStateRegistration(
+            Option.getOrThrow(Option.fromUndefinedOr(lifecycle.applicationState)),
+          ),
+        ),
+      );
+      applicationState.bind({
+        topic: "rows",
+        definition: definition.options,
+        lifetimeScope,
+        target: { _tag: "Materialized" },
+      });
+      expect(
+        yield* applicationState.runDueSweep(lifetimeScope, 1n, () =>
+          Effect.succeed({ _tag: "Inactive" }),
+        ),
+      ).toBeUndefined();
+      yield* Scope.addFinalizer(
+        lifetimeScope,
+        Effect.sync(() => {
+          applicationState.unbind(lifetimeScope);
+        }),
+      );
       const attemptScope = yield* Scope.make();
       const attempt = yield* lifecycle
         .acquire({
@@ -503,7 +566,7 @@ describe("Source Adapter low-level conformance driver", () => {
         .pipe(Effect.provideService(Scope.Scope, attemptScope));
       yield* fixture.controls.awaitActive(target);
       const eventsFiber = yield* attempt.lanes[0].events.pipe(
-        Stream.take(7),
+        Stream.take(8),
         Stream.runCollect,
         Effect.forkChild,
       );
@@ -548,6 +611,12 @@ describe("Source Adapter low-level conformance driver", () => {
         settle: () => Effect.fail("expected settlement failure"),
       });
       yield* driver.transport.command({
+        _tag: "TransitionDefect",
+        target,
+        row: { id: "defect", region: "eu", value: "defect" },
+        settle: () => Effect.fail("expected transition settlement failure"),
+      });
+      yield* driver.transport.command({
         _tag: "Reject",
         target,
         phase: "stream",
@@ -565,9 +634,24 @@ describe("Source Adapter low-level conformance driver", () => {
         "SourceDelivery",
         "SourceDelivery",
         "SourceDelivery",
+        "SourceDelivery",
         "SourceItemRejection",
         "SourceItemRejection",
       ]);
+      const defectDelivery = Option.getOrThrow(
+        Option.fromUndefinedOr(events[5]).pipe(
+          Option.filter(
+            (event): event is SourceDelivery<SourceAdapterConformanceRow, SourceFixtureFailure> =>
+              event._tag === "SourceDelivery",
+          ),
+        ),
+      );
+      const defectTransition = Option.getOrThrow(Option.fromUndefinedOr(defectDelivery.transition));
+      expect(() =>
+        Option.getOrThrow(
+          Option.fromUndefinedOr(resolveSourceApplicationTransition(defectTransition)),
+        ).apply(),
+      ).toThrow("conformance transition defect");
       const settlements = yield* Effect.forEach(events, (event) =>
         event.settle(Exit.void).pipe(Effect.exit),
       );
@@ -576,6 +660,7 @@ describe("Source Adapter low-level conformance driver", () => {
         false,
         false,
         false,
+        true,
         true,
         true,
         false,
@@ -858,6 +943,25 @@ describe("Source Adapter low-level conformance driver", () => {
       const service = Context.get(context, fixture.callbackBridge.source.adapter.runtimeService);
       const lifecycle = Option.getOrThrow(Option.fromUndefinedOr(service.materialized));
       const lifetimeScope = yield* Scope.make();
+      const applicationState = Option.getOrThrow(
+        Option.fromUndefinedOr(
+          resolveSourceApplicationStateRegistration(
+            Option.getOrThrow(Option.fromUndefinedOr(lifecycle.applicationState)),
+          ),
+        ),
+      );
+      applicationState.bind({
+        topic: "rows",
+        definition: fixture.callbackBridge.source.options,
+        lifetimeScope,
+        target: { _tag: "Materialized" },
+      });
+      yield* Scope.addFinalizer(
+        lifetimeScope,
+        Effect.sync(() => {
+          applicationState.unbind(lifetimeScope);
+        }),
+      );
       const scope = yield* Scope.make();
       const attempt = yield* lifecycle
         .acquire({

@@ -53,7 +53,12 @@ describe("Source Health schemas", () => {
           _tag: "Degraded",
           attempt: 1n,
           degradedAtNanos: 2n,
-          latestRejection: rejection,
+          reasons: [
+            {
+              _tag: "SourceItemRejection",
+              latestRejection: rejection,
+            },
+          ],
         },
         {
           _tag: "WaitingToRetry",
@@ -151,7 +156,12 @@ describe("Source Health schemas", () => {
           _tag: "Degraded",
           attempt: 2n,
           degradedAtNanos: 4n,
-          latestRejection: rejection,
+          reasons: [
+            {
+              _tag: "SourceItemRejection",
+              latestRejection: rejection,
+            },
+          ],
         },
         metrics: {
           runtime: runtimeMetrics,
@@ -295,6 +305,169 @@ describe("Source Health schemas", () => {
     }),
   );
 
+  it("rejects surplus fields throughout every public Source Health wire shape", () => {
+    const rejects = <Type>(
+      schema: Schema.Codec<Type, unknown, never, never>,
+      candidate: unknown,
+    ): boolean => Exit.isFailure(Schema.decodeUnknownExit(schema)(candidate));
+    const runtime = {
+      startedAtNanos: 1n,
+      lastAttemptStartedAtNanos: 1n,
+      lastDeliveryAtNanos: null,
+      lastRejectionAtNanos: null,
+      lastAppliedMutationAtNanos: null,
+      lastTerminationAtNanos: null,
+      currentAttempt: 1n,
+      retryCount: 0n,
+      receivedDeliveryCount: 0n,
+      rejectedItemCount: 0n,
+      attemptedMutationCount: 0n,
+      appliedUpsertCount: 0n,
+      appliedDeleteCount: 0n,
+      failedMutationCount: 0n,
+      completedSettlementCount: 0n,
+      failedSettlementCount: 0n,
+      retainedRowCount: 0,
+      lanes: [{ id: "events", buffer: { _tag: "Unbuffered" } }],
+    } as const;
+    const health = {
+      adapter: { name: "health-fixture", version: "1" },
+      target: { _tag: "Materialized" },
+      status: {
+        _tag: "Degraded",
+        attempt: 1n,
+        degradedAtNanos: 2n,
+        reasons: [{ _tag: "SourceItemRejection", latestRejection: rejection }],
+      },
+      metrics: {
+        runtime,
+        adapter: { connected: true },
+      },
+      sampledAtNanos: 3n,
+    } as const;
+    const materialized = sourceHealthSchema({
+      adapterFailure: Failure,
+      route: Route,
+      adapterMetrics: Metrics,
+      rejectionLocation: Location,
+      lifecycle: "materialized",
+    });
+    const leased = sourceHealthContractSchemas({
+      adapterFailure: Failure,
+      route: Route,
+      adapterMetrics: Metrics,
+      rejectionLocation: Location,
+      lifecycle: "leased",
+    });
+    const runtimeSurplus = { ...runtime, surplus: true };
+    const laneSurplus = {
+      ...runtime,
+      lanes: [{ id: "events", buffer: { _tag: "Unbuffered", surplus: true } }],
+    };
+    const healthSurplusCandidates = [
+      { ...health, surplus: true },
+      { ...health, adapter: { ...health.adapter, surplus: true } },
+      { ...health, target: { ...health.target, surplus: true } },
+      { ...health, status: { ...health.status, surplus: true } },
+      {
+        ...health,
+        status: {
+          ...health.status,
+          reasons: [
+            {
+              ...health.status.reasons[0],
+              surplus: true,
+            },
+          ],
+        },
+      },
+      {
+        ...health,
+        status: {
+          ...health.status,
+          reasons: [
+            {
+              ...health.status.reasons[0],
+              latestRejection: { ...rejection, surplus: true },
+            },
+          ],
+        },
+      },
+      { ...health, metrics: { ...health.metrics, surplus: true } },
+      { ...health, metrics: { ...health.metrics, runtime: runtimeSurplus } },
+      { ...health, metrics: { ...health.metrics, runtime: laneSurplus } },
+      {
+        ...health,
+        metrics: {
+          ...health.metrics,
+          adapter: { ...health.metrics.adapter, surplus: true },
+        },
+      },
+    ];
+
+    expect(
+      healthSurplusCandidates.map((candidate) => rejects(materialized, candidate)),
+    ).toStrictEqual(healthSurplusCandidates.map(() => true));
+    expect(
+      rejects(SourceBufferMetricsSchema, {
+        _tag: "Bounded",
+        capacity: 1,
+        depth: 0,
+        highWaterMark: 0,
+        overflowCount: 0n,
+        surplus: true,
+      }),
+    ).toBe(true);
+    expect(rejects(SourceLaneRuntimeMetricsSchema, { ...runtime.lanes[0], surplus: true })).toBe(
+      true,
+    );
+    expect(rejects(SourceRuntimeMetricsSchema, runtimeSurplus)).toBe(true);
+    expect(
+      Exit.isFailure(
+        Schema.decodeUnknownExit(sourceTargetSchema("leased", Route))({
+          _tag: "Leased",
+          route: { region: "eu", surplus: true },
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      rejects(sourceTerminationSchema(Failure), {
+        ...termination,
+        failure: {
+          ...termination.failure,
+          failure: {
+            ...termination.failure.failure,
+            surplus: true,
+          },
+        },
+      }),
+    ).toBe(true);
+    expect(
+      rejects(sourceRejectionDiagnosticSchema(Failure, Location), {
+        ...rejection,
+        location: { ...rejection.location, surplus: true },
+      }),
+    ).toBe(true);
+    expect(
+      rejects(leased.result, {
+        _tag: "Inactive",
+        route: { region: "eu" },
+        surplus: true,
+      }),
+    ).toBe(true);
+    expect(
+      rejects(leased.result, {
+        _tag: "Active",
+        route: { region: "eu" },
+        health: {
+          ...health,
+          target: { _tag: "Leased", route: { region: "eu" } },
+        },
+        surplus: true,
+      }),
+    ).toBe(true);
+  });
+
   it.effect("rejects semantically impossible bounded Source Buffer metrics", () =>
     Effect.gen(function* () {
       const invalidMetrics = [
@@ -436,6 +609,42 @@ describe("Source Health schemas", () => {
         attempt: 1n,
         degradedAtNanos: 0n,
         latestRejection: { ...rejection, rejectedAtNanos: -1n },
+      },
+      {
+        _tag: "Degraded",
+        attempt: 1n,
+        degradedAtNanos: 0n,
+        reasons: [],
+      },
+      {
+        _tag: "Degraded",
+        attempt: 1n,
+        degradedAtNanos: 0n,
+        reasons: [{ _tag: "AdapterMaintenanceFailure" }, { _tag: "AdapterMaintenanceFailure" }],
+      },
+      {
+        _tag: "Degraded",
+        attempt: 1n,
+        degradedAtNanos: 0n,
+        reasons: [
+          { _tag: "AdapterMaintenanceFailure" },
+          {
+            _tag: "SourceItemRejection",
+            latestRejection: rejection,
+          },
+        ],
+      },
+      {
+        _tag: "Degraded",
+        attempt: 1n,
+        degradedAtNanos: 0n,
+        reasons: [{ _tag: "SourceItemRejection" }],
+      },
+      {
+        _tag: "Degraded",
+        attempt: 1n,
+        degradedAtNanos: 0n,
+        reasons: [{ _tag: "UnknownDegradationReason" }],
       },
     ];
     expect(invalidStatuses.map((candidate) => Schema.is(status)(candidate))).toStrictEqual(

@@ -138,21 +138,29 @@ const materializedHealth = {
     _tag: "Degraded",
     attempt: 2n,
     degradedAtNanos: 6n,
-    latestRejection: {
-      failure: {
-        _tag: "AdapterFailure",
-        failure: {
-          _tag: "AggregateHealthFailure",
-          message: "invalid item",
-          offset: 7n,
+    reasons: [
+      {
+        _tag: "SourceItemRejection",
+        latestRejection: {
+          failure: {
+            _tag: "AdapterFailure",
+            failure: {
+              _tag: "AggregateHealthFailure",
+              message: "invalid item",
+              offset: 7n,
+            },
+          },
+          location: {
+            partition: 0,
+            offset: 7n,
+          },
+          rejectedAtNanos: 8n,
         },
       },
-      location: {
-        partition: 0,
-        offset: 7n,
+      {
+        _tag: "AdapterMaintenanceFailure",
       },
-      rejectedAtNanos: 8n,
-    },
+    ],
   },
   metrics: {
     runtime: runtimeMetrics,

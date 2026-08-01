@@ -28,6 +28,10 @@ import {
   Stream,
 } from "effect";
 import { TestClock } from "effect/testing";
+import type {
+  SourceDegradationReasons,
+  SourceItemRejectionDiagnostic,
+} from "effect-view-server/source-adapter";
 import { grpc, GrpcSourceAdapter, type GrpcMaterializedDefinitionOptions } from "./model";
 import { grpcServerLayer, grpcServiceBindings, type GrpcRuntimeClient } from "./server";
 import {
@@ -47,6 +51,13 @@ type EventMessage = Message<"grpc.server.Event"> & {
   readonly id: string;
   readonly price: number;
   readonly region: string;
+};
+
+const latestSourceItemRejection = <AdapterFailure, RejectionLocation>(
+  reasons: SourceDegradationReasons<AdapterFailure, RejectionLocation>,
+): SourceItemRejectionDiagnostic<AdapterFailure, RejectionLocation> | undefined => {
+  const first = reasons[0];
+  return first._tag === "SourceItemRejection" ? first.latestRejection : undefined;
 };
 
 const descriptorFile = fileDesc(
@@ -761,8 +772,11 @@ describe("gRPC Source Adapter Runtime Core vertical slice", () => {
             (health) =>
               health._tag === "Active" &&
               health.health.status._tag === "Degraded" &&
-              health.health.status.latestRejection.location.streamItemIndex ===
-                entry.streamItemIndex,
+              health.health.status.reasons.some(
+                (reason) =>
+                  reason._tag === "SourceItemRejection" &&
+                  reason.latestRejection.location.streamItemIndex === entry.streamItemIndex,
+              ),
           ),
           Stream.take(1),
           Stream.runHead,
@@ -831,17 +845,17 @@ describe("gRPC Source Adapter Runtime Core vertical slice", () => {
         eventTypes: events.map((event) => event.type),
         status: degraded.health.status._tag,
         rejectedItemCount: degraded.health.metrics.runtime.rejectedItemCount,
-        latestLocation: degraded.health.status.latestRejection?.location,
+        latestLocation: latestSourceItemRejection(degraded.health.status.reasons)?.location,
         rejectionLocations: [firstDegraded, secondDegraded, thirdDegraded, fourthDegraded].map(
           (health) =>
             health._tag === "Active" && health.health.status._tag === "Degraded"
-              ? health.health.status.latestRejection.location
+              ? latestSourceItemRejection(health.health.status.reasons)?.location
               : undefined,
         ),
         rejectionFailures: [firstDegraded, secondDegraded, thirdDegraded, fourthDegraded].map(
           (health) =>
             health._tag === "Active" && health.health.status._tag === "Degraded"
-              ? health.health.status.latestRejection.failure
+              ? latestSourceItemRejection(health.health.status.reasons)?.failure
               : undefined,
         ),
         adapterMetrics: sampledActive.health.metrics.adapter,
@@ -1765,84 +1779,6 @@ describe("gRPC Source Adapter Runtime Core vertical slice", () => {
             },
           ),
         };
-        const sourceBrand = Option.getOrThrow(
-          Option.fromUndefinedOr(
-            Reflect.ownKeys(baseSource).find(
-              (key) =>
-                typeof key === "symbol" &&
-                key.description === "@effect-view-server/source-adapter/SourceDefinition",
-            ),
-          ),
-        );
-        const sourceTypes = Option.getOrThrow(
-          Option.fromUndefinedOr(
-            Reflect.ownKeys(baseSource).find(
-              (key) =>
-                typeof key === "symbol" &&
-                key.description === "@effect-view-server/source-adapter/SourceDefinitionTypes",
-            ),
-          ),
-        );
-        let optionGets = 0;
-        const optionDescriptorReads = new Map<PropertyKey, number>();
-        const statefulOptions = new Proxy(
-          {
-            ...baseSource.options,
-          },
-          {
-            get: () => {
-              optionGets += 1;
-              return null;
-            },
-            getOwnPropertyDescriptor: (target, key) => {
-              const reads = (optionDescriptorReads.get(key) ?? 0) + 1;
-              optionDescriptorReads.set(key, reads);
-              const descriptor = Reflect.getOwnPropertyDescriptor(target, key);
-              if (
-                descriptor !== undefined &&
-                reads > 1 &&
-                (key === "mapValue" || key === "request")
-              ) {
-                return {
-                  ...descriptor,
-                  value: null,
-                };
-              }
-              return descriptor;
-            },
-          },
-        );
-        const statefulTypes = Object.freeze({
-          adapter: baseSource.adapter,
-          lifecycle: baseSource.lifecycle,
-          options: statefulOptions,
-          routeFields: baseSource.routeBy,
-        });
-        const statefulSource: Record<PropertyKey, unknown> = {};
-        for (const key of Reflect.ownKeys(baseSource)) {
-          const descriptor = Option.getOrThrow(
-            Option.fromUndefinedOr(Object.getOwnPropertyDescriptor(baseSource, key)),
-          );
-          Object.defineProperty(statefulSource, key, {
-            enumerable: descriptor.enumerable === true,
-            value:
-              key === sourceBrand
-                ? () => statefulSource
-                : key === sourceTypes
-                  ? statefulTypes
-                  : key === "options"
-                    ? statefulOptions
-                    : descriptor.value,
-          });
-        }
-        Object.freeze(statefulSource);
-        const statefulBindings = yield* grpcServiceBindings({
-          topics: {
-            stateful: {
-              source: statefulSource,
-            },
-          },
-        });
         const failures = yield* Effect.all([
           Effect.flip(grpcServiceBindings(hostileViewServer)),
           Effect.flip(grpcServiceBindings({ topics: { plain: {} } })),
@@ -1906,18 +1842,6 @@ describe("gRPC Source Adapter Runtime Core vertical slice", () => {
           message: "The View Server gRPC Source Definitions could not be inspected safely.",
           phase: "configuration",
         });
-        expect({
-          mapValueDescriptorReads: optionDescriptorReads.get("mapValue"),
-          optionGets,
-          requestDescriptorReads: optionDescriptorReads.get("request"),
-          service: statefulBindings.get("orders") === OrdersService,
-        }).toStrictEqual({
-          mapValueDescriptorReads: 1,
-          optionGets: 0,
-          requestDescriptorReads: 1,
-          service: true,
-        });
-
         const config = defineViewServerConfig({
           topics: {
             orders: {

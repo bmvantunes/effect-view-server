@@ -181,10 +181,47 @@ Client, publish callback, subscriber, session, mutable config, Topic Store, or
 raw Schema bypass.
 
 Runtime Core applies a Delivery in order and calls settlement exactly once with
-the complete application `Exit`. Applied mutations are not rolled back if a
-later mutation or settlement fails. An item-local Rejection publishes sticky
+the complete application `Exit`. Mutation plus an optional nominal Source
+Application Transition is one serialized uninterruptible outcome; the lifecycle
+gate is released before the external settlement Effect runs. Settlement
+callback application is a bounded synchronous handoff performed exactly once,
+and only its returned Effect is interruptible and owned by the Source Attempt
+Scope. A callback throw that wins ordinary termination becomes the exact
+redacted `InvalidSourceSettlement` failure. Applied mutations are not rolled
+back if later settlement fails. An item-local Rejection publishes sticky
 Degraded health before ordered rejection settlement, then continues the lane
 when settlement succeeds.
+
+Stateful materialized adapters may declare one nominal
+`SourceAdapterServer.applicationState(...)` descriptor. Runtime Core validates
+and binds it during composition, creates one module per logical source lifetime,
+and keeps it across attempt retries. The module owns a prompt synchronous
+reducer, local metrics snapshot, closed singleton-delivery transitions, and a
+deep `runDueSweep` operation. Its Source Maintenance Operations are SDK-issued
+and nominal: Runtime Core atomically rechecks current state, admits work only
+while operationally Ready or Degraded, applies an ordinary Delete, and commits
+the closed success/failure/stale outcome under the same Source Lifecycle Gate.
+Adapters never receive the Runtime Client or expose their private due index.
+
+`applicationState.acquireTransition` runs inside the SDK's uninterruptible
+ownership-transfer region. An Adapter with a blocking keyed-permit wait must use
+its own `Effect.uninterruptibleMask`, make only that wait explicitly
+`Effect.interruptible`, then return its idempotent release callback without
+another suspension. A nested mask's `restore` is insufficient because it
+restores the SDK's already-masked state. The SDK keeps acquisition return,
+closed-attempt arbitration, and insertion into its single Source Attempt
+live-release registry masked. Returning an ordinary blocking acquisition Effect
+is non-conformant because the SDK mask would prevent prompt attempt shutdown;
+making the whole acquisition interruptible is also non-conformant because
+interruption could land after the permit is acquired but before the SDK owns its
+release.
+
+Maintenance failure is not Source Supervision. Exact failed work remains
+retryable and is reflected immediately as a transport-neutral maintenance
+degradation reason at Source, Topic, and aggregate health. Reducer defects,
+invalid late/duplicate registration, and maintenance executor defects complete
+the runtime fatal signal and close the whole runtime because those are invariant
+violations rather than expected item failures.
 
 `liveClient.subscribeSourceHealth(...)` is the framework-neutral scoped
 diagnostics API:
@@ -197,8 +234,11 @@ diagnostics API:
 Source Health includes the exact adapter identity, target, status, runtime
 metrics, adapter metrics, and epoch-nanosecond `bigint` sample time. Metrics are
 sampled through Effect Clock once per second; lifecycle transitions and
-rejections publish immediately from the cached metrics snapshot. The production
-wire path remains Effect RPC WebSocket with NDJSON and configured Schemas.
+rejection or maintenance-ledger transitions publish immediately from the cached
+metrics snapshot. Public `*AtNanos` timestamps are Unix-epoch nanoseconds
+derived from validated `Clock.currentTimeMillis`; monotonic nanoseconds are
+reserved for elapsed durations and scheduling. The production wire path
+remains Effect RPC WebSocket with NDJSON and configured Schemas.
 
 ## Conformance and performance
 

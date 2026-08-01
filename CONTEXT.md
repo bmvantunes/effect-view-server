@@ -4,7 +4,7 @@ This context defines the language for the View Server project: a type-safe live 
 
 ## Document Status
 
-Runtime code and published package exports are authoritative for currently available behavior. The transport-neutral Source Adapter SDK, Runtime Core supervision, Source Health protocol, framework-neutral diagnostics, React Source Diagnostics hook, conformance foundation, first-party Kafka and gRPC Source Adapters, and canonical-only `source` configuration described here are implemented. Transport-specific source shapes have been removed. The Runtime Fatal Signal, Source Lifecycle Gate, Source Application Transition, Source Maintenance Operation, Source Maintenance Interface, degradation-reason-set Source Status, Kafka Cleanup Policy, Kafka Retention Policy, Kafka Broker Contract Validation, and Kafka Retention Projection described below are accepted target behavior but are not yet implemented.
+Runtime code and published package exports are authoritative for currently available behavior. The transport-neutral Source Adapter SDK, Runtime Core supervision, Source Health protocol, framework-neutral diagnostics, React Source Diagnostics hook, conformance foundation, first-party Kafka and gRPC Source Adapters, canonical-only `source` configuration, Runtime Fatal Signal, Source Lifecycle Gate, Source Application Transition, Source Maintenance Operation, Source Maintenance Interface, degradation-reason-set Source Status, Kafka Cleanup Policy, Kafka Retention Policy, Kafka Broker Contract Validation, and Kafka Retention Projection described here are implemented. Transport-specific source shapes have been removed.
 
 ## Language
 
@@ -23,15 +23,15 @@ A View Server runtime created inside the current process for tests, demos, Story
 _Avoid_: Mock server, fake client, test hook
 
 **View Server Topic**:
-A configured logical table with one Topic Schema and one authoritative store. In the accepted target architecture, it has one canonical Topic Row ID.
+A configured logical table with one Topic Schema, one authoritative store, and one canonical Topic Row ID.
 _Avoid_: Kafka topic, channel, collection
 
 **View Server Config**:
-The one frozen browser-safe declaration created by `defineViewServerConfig(...)` and shared by React, Remote Browser Clients, In-Memory View Server, and the real runtime. It is the sole type authority for View Server Topics, Topic Schemas, queries, Feed Routes, and health. In the accepted target architecture, it also owns source failures and adapter metrics; every Topic owns zero or one canonical Source Definition without a mirrored browser contract and server runtime topic tree. That target declaration contains browser-safe Source Adapter options, including Mapping functions, generated descriptors, platform-neutral codecs, and diagnostic Schemas that may contribute to the browser bundle, but no concrete transport client, credential, platform Layer, Node dependency, or ManagedRuntime. V1 accepts that bundle tradeoff rather than introducing code generation, a build transform, automatic projection, or duplicate authoring.
+The one frozen browser-safe declaration created by `defineViewServerConfig(...)` and shared by React, Remote Browser Clients, In-Memory View Server, and the real runtime. It is the sole type authority for View Server Topics, Topic Schemas, queries, Feed Routes, health, source failures, and adapter metrics; every Topic owns zero or one canonical Source Definition without a mirrored browser contract and server runtime topic tree. The declaration contains browser-safe Source Adapter options, including Mapping functions, generated descriptors, platform-neutral codecs, and diagnostic Schemas that may contribute to the browser bundle, but no concrete transport client, credential, platform Layer, Node dependency, or ManagedRuntime. V1 accepts that bundle tradeoff rather than introducing code generation, a build transform, automatic projection, or duplicate authoring.
 _Avoid_: Separate contract/runtime configs, duplicated topic tree, generated untyped client metadata, server resource in shared config
 
 **View Server Runtime Effect**:
-The scoped server-edge Effect returned by `runViewServerRuntime(viewServer, options)`. In the accepted target architecture, its environment is the exact union inferred from the one View Server Config's Source Adapter runtime services, retry Schedules, and application dependencies. Application code will satisfy that union with aggregate adapter/platform Layers through `Effect.provide(...)` before `NodeRuntime.runMain(...)`. Runtime Core races normal server service against one Runtime Fatal Signal shared by every logical source lifetime; completing that signal fails this root Effect and interrupts the listener plus every source Scope.
+The scoped server-edge Effect returned by `runViewServerRuntime(viewServer, options)`. Its environment is the exact union inferred from the one View Server Config's Source Adapter runtime services, retry Schedules, and application dependencies. Application code satisfies that union with aggregate adapter/platform Layers through `Effect.provide(...)` before `NodeRuntime.runMain(...)`. Runtime Core races normal server service against one Runtime Fatal Signal shared by every logical source lifetime; completing that signal fails this root Effect and interrupts the listener plus every source Scope.
 _Avoid_: Transport-specific runtime option bag, hidden adapter runtime, reusable module calling Effect.run
 
 **Runtime Composition Failure**:
@@ -43,7 +43,7 @@ The Runtime Core-owned one-shot typed failure channel shared with every logical 
 _Avoid_: Unjoined background failure, adapter fatal callback, health-only invariant defect, source retry of corrupted state, supervision of registration invariant breach
 
 **Topic Row**:
-A Topic-Schema-decoded object stored in a View Server Topic. In the accepted target architecture, every Topic Row contains exactly one required canonical `id: string` field.
+A Topic-Schema-decoded object stored in a View Server Topic. Every Topic Row contains exactly one required canonical `id: string` field.
 _Avoid_: Record, document, message
 
 **Topic Row Value Semantics**:
@@ -51,7 +51,7 @@ The schema-derived ownership, equivalence, canonical JSON representation, and or
 _Avoid_: Deep clone helper, generic object equality, JSON stringify semantics
 
 **Topic Row ID**:
-In the accepted target architecture, the required `id: ViewServerId` field declared by every Topic Schema. Its decoded string uniquely identifies a Topic Row and acts as the final deterministic sort tiebreaker; the field name and Schema are not configurable.
+The required `id: ViewServerId` field declared by every Topic Schema. Its decoded string uniquely identifies a Topic Row and acts as the final deterministic sort tiebreaker; the field name and Schema are not configurable.
 _Avoid_: Configurable Row Key, primary key when discussing external databases, optional ID, numeric ID
 
 **Timestamp**:
@@ -319,11 +319,11 @@ The mandatory lifecycle-specific Schema-backed adapter value identifying one rej
 _Avoid_: Raw key or value, unknown location object, optional location, message payload in health
 
 **Source Runtime Metrics**:
-The mandatory SDK-owned metrics value paired with Source Adapter Metrics in every source health payload. It contains epoch-nanosecond `bigint` timestamps named with an `AtNanos` suffix, cumulative source-wide `bigint` counters for attempts, retries, deliveries, rejected source items, mutation outcomes, and settlement outcomes, a numeric retained-row count, and a non-empty list of Source Delivery Lane metrics. Every lane has a stable, non-empty, retry-stable unique identifier and an exact unbuffered-or-bounded Source Buffer value; a simple source therefore still reports one lane. Status and failures remain outside metrics. The epoch-clock derivation in this definition and the Kafka Start Position and Retention definitions is accepted target behavior tracked by PRD #400 and implementation issues #401 and #402; it becomes normative only after every public timestamp producer and Kafka broker-boundary calculation is migrated. View Server then derives every public or persisted epoch timestamp from Effect `Clock.currentTimeMillis`, validates that wall time as a non-negative safe integer, and converts it as `BigInt(wallMillis) * 1_000_000n`; it reserves `Clock.currentTimeNanos` for monotonic elapsed-time measurement and never labels it as epoch time. Contracts and the Wire Protocol carry raw `bigint`, never Date or Temporal objects, so consumers may explicitly construct `Temporal.Instant` without losing precision.
+The mandatory SDK-owned metrics value paired with Source Adapter Metrics in every source health payload. It contains epoch-nanosecond `bigint` timestamps named with an `AtNanos` suffix, cumulative source-wide `bigint` counters for attempts, retries, deliveries, rejected source items, mutation outcomes, and settlement outcomes, a numeric retained-row count, and a non-empty list of Source Delivery Lane metrics. Every lane has a stable, non-empty, retry-stable unique identifier and an exact unbuffered-or-bounded Source Buffer value; a simple source therefore still reports one lane. Status and failures remain outside metrics. View Server derives every public or persisted epoch timestamp from Effect `Clock.currentTimeMillis`, validates that wall time as a non-negative safe integer, and converts it as `BigInt(wallMillis) * 1_000_000n`; it reserves `Clock.currentTimeNanos` for monotonic elapsed-time measurement and never labels it as epoch time. Contracts and the Wire Protocol carry raw `bigint`, never Date or Temporal objects, so consumers may explicitly construct `Temporal.Instant` without losing precision.
 _Avoid_: Aggregate-only buffer metrics, empty lanes, unstable lane ID, millisecond timestamp, number timestamp, ambiguous time unit, Date, Temporal object on wire, optional buffer metrics
 
 **Source Status**:
-The mandatory Schema-backed tagged union describing exactly one Source lifecycle state: `Starting`, `Ready`, `Degraded`, `WaitingToRetry`, `Reacquiring`, `Exhausted`, or `Stopping`. Each branch contains only its valid fields and nanosecond timestamps. The `Degraded` reason-set shape below is accepted target behavior tracked by PRD #400 and implementation issues #401 and #402; the existing rejection-only health Schema and consumers remain the pre-implementation state rather than the accepted contract. Runtime Core owns a logical-lifetime degradation ledger with these invariants:
+The mandatory Schema-backed tagged union describing exactly one Source lifecycle state: `Starting`, `Ready`, `Degraded`, `WaitingToRetry`, `Reacquiring`, `Exhausted`, or `Stopping`. Each branch contains only its valid fields and nanosecond timestamps. Runtime Core implements the canonical non-empty `Degraded` reason set below and owns a logical-lifetime degradation ledger with these invariants:
 
 - Each settled Source Item Rejection stores its latest exact safe diagnostic, replacing the prior rejection reason. That reason is never cleared before logical source shutdown because skipped input may leave the view incomplete.
 - An Adapter Maintenance Failure means asynchronous adapter-owned correctness work failed without terminating ingestion. It remains active while any corresponding failed work is outstanding and clears only after that backlog reaches zero through successful retry or cancellation.
@@ -662,17 +662,17 @@ _Avoid_: Browser write, send, emit
 - A **Runtime Client** can publish mutations but is not exposed to browsers by the Real View Server.
 - A **Remote Browser Client** is a **Live Client** adapter for the **Wire Protocol**.
 - React, the **Remote Browser Client**, In-Memory View Server, and the real runtime consume the same browser-safe **View Server Config**; applications never author a mirrored server topic tree.
-- React hooks derive topic names, selected result rows, valid filter paths and operators, sort fields, group fields, aggregate fields, and aliases directly from the **View Server Config** without requiring `as const`. In the accepted target architecture, they will also derive Feed Routes and Source Adapter Failure unions from that config.
-- `runViewServerRuntime(viewServer, options)` returns a **View Server Runtime Effect**. In the accepted target architecture, its requirements will preserve the union inferred from every Source Definition's nominal Source Adapter Runtime Service, retry Schedule, and application dependencies.
-- Application code will satisfy the **View Server Runtime Effect** with aggregate adapter and platform Layers through `Effect.provide(...)` before `NodeRuntime.runMain(...)`.
-- A Source Adapter will never create a hidden ManagedRuntime or call `Effect.run*` inside reusable integration code.
-- Pure View Server Config, Source Definition, and aggregate adapter Layer constructors will throw named configuration errors immediately for deterministic programmer mistakes and return frozen snapshots rather than Effects or hidden running resources.
-- Environment, file, and secret configuration will be decoded through Effect Config or Schema, while Layer construction, resource acquisition, and source execution failures will remain in typed Effect error channels.
-- Runtime startup will defensively revalidate every common Source Definition envelope before invoking its nominal Source Adapter Runtime Service, even though pure builders already validated it.
-- Every **View Server Topic** will appear once in the **View Server Config** and declare zero or one nominal **Source Definition** through the matching adapter's materialized or leased constructor.
-- A materialized Source Definition will reject `routeBy`; a leased Source Definition will require a non-empty unique `routeBy` containing statically named top-level supported scalar fields from its Topic Row Schema, inferred without `as const`.
-- External source names, browser-safe codecs, Mapping functions, Local Row Key functions, Start Position, Schedules, Effects, and other browser-safe Effect requirements may belong to Source Definition options; credentials, concrete client tokens, concrete clients, sockets, transport-driver packages, Node APIs, and platform Layers will not.
-- A **Source Adapter Runtime Service** will execute only Source Definitions created by its exact nominal Source Adapter declaration, and View Server will reject structural substitutes.
+- React hooks derive topic names, selected result rows, valid filter paths and operators, sort fields, group fields, aggregate fields, aliases, Feed Routes, and Source Adapter Failure unions directly from the **View Server Config** without requiring `as const`.
+- `runViewServerRuntime(viewServer, options)` returns a **View Server Runtime Effect** whose requirements preserve the union inferred from every Source Definition's nominal Source Adapter Runtime Service, retry Schedule, and application dependencies.
+- Application code satisfies the **View Server Runtime Effect** with aggregate adapter and platform Layers through `Effect.provide(...)` before `NodeRuntime.runMain(...)`.
+- A Source Adapter never creates a hidden ManagedRuntime or calls `Effect.run*` inside reusable integration code.
+- Pure View Server Config, Source Definition, and aggregate adapter Layer constructors throw named configuration errors immediately for deterministic programmer mistakes and return frozen snapshots rather than Effects or hidden running resources.
+- Environment, file, and secret configuration is decoded through Effect Config or Schema, while Layer construction, resource acquisition, and source execution failures remain in typed Effect error channels.
+- Runtime startup defensively revalidates every common Source Definition envelope before invoking its nominal Source Adapter Runtime Service, even though pure builders already validated it.
+- Every **View Server Topic** appears once in the **View Server Config** and declares zero or one nominal **Source Definition** through the matching adapter's materialized or leased constructor.
+- A materialized Source Definition rejects `routeBy`; a leased Source Definition requires a non-empty unique `routeBy` containing statically named top-level supported scalar fields from its Topic Row Schema, inferred without `as const`.
+- External source names, browser-safe codecs, Mapping functions, Local Row Key functions, Start Position, Schedules, Effects, and other browser-safe Effect requirements may belong to Source Definition options; credentials, concrete client tokens, concrete clients, sockets, transport-driver packages, Node APIs, and platform Layers do not.
+- A **Source Adapter Runtime Service** executes only Source Definitions created by its exact nominal Source Adapter declaration, and View Server rejects structural substitutes.
 - The **Strict JSON Materializer** makes local semantic materialization and NDJSON acceptance agree; explicit schema codecs restore semantic runtime values after the strict JSON boundary.
 - A **Field Filter Codec** protects the **Wire Protocol** from unsafe or incorrectly typed filter values.
 - A **Raw Query Codec** protects Raw Query wire payloads from unknown fields, unsafe filters, and invalid windows.

@@ -7,7 +7,19 @@ import { Buffer } from "node:buffer";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { Clock, Data, Deferred, Effect, Layer, Option, Schedule, Schema, Stream } from "effect";
+import {
+  Clock,
+  Data,
+  Deferred,
+  Duration,
+  Effect,
+  Fiber,
+  Layer,
+  Option,
+  Schedule,
+  Schema,
+  Stream,
+} from "effect";
 import { kafka, type KafkaSourceRetryPolicy, type KafkaStartPosition } from "./contract";
 import { kafkaNode } from "./node";
 import { OrderKeySchema, OrderValueSchema } from "./test-fixtures/orders_pb";
@@ -45,6 +57,10 @@ const createTopics = Effect.fn("KafkaSourceAdapter.integration.topics.create")(f
   bootstrapServers: string,
   topics: ReadonlyArray<string>,
   partitions = 1,
+  configs: ReadonlyArray<{
+    readonly name: string;
+    readonly value: string;
+  }> = [],
 ) {
   const admin = new Admin({
     bootstrapBrokers: [bootstrapServers],
@@ -58,6 +74,7 @@ const createTopics = Effect.fn("KafkaSourceAdapter.integration.topics.create")(f
           partitions,
           replicas: 1,
           topics: [...topics],
+          configs: [...configs],
         }),
       ),
     (current) => Effect.promise(() => current.close()).pipe(Effect.ignore),
@@ -236,6 +253,8 @@ const jsonSource = (
   retry?: KafkaSourceRetryPolicy<"local">,
 ) => {
   const options = {
+    cleanupPolicy: "delete" as const,
+    retentionPolicy: "Infinity" as const,
     topic,
     regions: ["local"] satisfies readonly ["local"],
     key: kafka.string(),
@@ -266,7 +285,7 @@ const decodeJsonInput = (payload: Uint8Array) =>
 
 describe("Kafka Source Adapter with real Apache Kafka", () => {
   integrationIt(
-    "ingests JSON, protobuf, and custom codecs, commits poison records, and applies tombstones",
+    "ingests JSON, protobuf, and custom codecs and settles poison and delete-only null records",
     () =>
       Effect.scoped(
         Effect.gen(function* () {
@@ -280,6 +299,8 @@ describe("Kafka Source Adapter with real Apache Kafka", () => {
               jsonOrders: {
                 schema: JsonOrder,
                 source: kafka.source({
+                  cleanupPolicy: "delete",
+                  retentionPolicy: "Infinity",
                   topic: jsonTopic,
                   regions: ["local"],
                   key: kafka.string(),
@@ -295,6 +316,8 @@ describe("Kafka Source Adapter with real Apache Kafka", () => {
               protobufOrders: {
                 schema: ProtobufOrder,
                 source: kafka.source({
+                  cleanupPolicy: "delete",
+                  retentionPolicy: "Infinity",
                   topic: protobufTopic,
                   regions: ["local"],
                   key: kafka.protobuf(OrderKeySchema),
@@ -310,6 +333,8 @@ describe("Kafka Source Adapter with real Apache Kafka", () => {
               customOrders: {
                 schema: CustomOrder,
                 source: kafka.source({
+                  cleanupPolicy: "delete",
+                  retentionPolicy: "Infinity",
                   topic: customTopic,
                   regions: ["local"],
                   key: kafka.string(),
@@ -408,7 +433,7 @@ describe("Kafka Source Adapter with real Apache Kafka", () => {
               Effect.repeat({
                 schedule: poll,
                 until: (snapshot) =>
-                  snapshot.totalRows === 1 && snapshot.rows[0]?.id === "local:second",
+                  snapshot.totalRows === 2 && snapshot.rows[1]?.id === "local:0:second",
               }),
             );
           const protobufSnapshot = yield* diagnostics.client
@@ -438,7 +463,7 @@ describe("Kafka Source Adapter with real Apache Kafka", () => {
               Stream.filter(
                 (health) =>
                   health.status._tag === "Degraded" &&
-                  health.metrics.runtime.rejectedItemCount === 1n &&
+                  health.metrics.runtime.rejectedItemCount === 2n &&
                   health.metrics.adapter.regions[0]?.commits === 4n,
               ),
               Stream.take(1),
@@ -454,7 +479,12 @@ describe("Kafka Source Adapter with real Apache Kafka", () => {
             jsonSnapshot,
             protobufSnapshot,
             customSnapshot,
-            rejection: degradedStatus.latestRejection,
+            rejection: Option.getOrThrow(
+              Option.liftPredicate(
+                degradedStatus.reasons[0],
+                (reason) => reason._tag === "SourceItemRejection",
+              ),
+            ).latestRejection,
             runtimeMetrics: {
               rejected: degraded.metrics.runtime.rejectedItemCount,
               deletes: degraded.metrics.runtime.appliedDeleteCount,
@@ -466,12 +496,17 @@ describe("Kafka Source Adapter with real Apache Kafka", () => {
               statusCode: "Ready",
               rows: [
                 {
-                  id: "local:second",
+                  id: "local:0:first",
+                  customerId: "first",
+                  price: 1,
+                },
+                {
+                  id: "local:0:second",
                   customerId: "second",
                   price: 2,
                 },
               ],
-              totalRows: 1,
+              totalRows: 2,
               version: expect.any(Number),
             },
             protobufSnapshot: {
@@ -479,7 +514,7 @@ describe("Kafka Source Adapter with real Apache Kafka", () => {
               statusCode: "Ready",
               rows: [
                 {
-                  id: "local:protobuf",
+                  id: "local:0:protobuf",
                   customerId: "protobuf",
                   price: 3,
                 },
@@ -492,7 +527,7 @@ describe("Kafka Source Adapter with real Apache Kafka", () => {
               statusCode: "Ready",
               rows: [
                 {
-                  id: "local:custom",
+                  id: "local:0:custom",
                   value: 4,
                 },
               ],
@@ -506,22 +541,22 @@ describe("Kafka Source Adapter with real Apache Kafka", () => {
                   _tag: "KafkaDecodeFailure",
                   region: "local",
                   topic: jsonTopic,
-                  message: "Kafka value codec rejected the record.",
+                  message: "Delete-only Kafka source records require a non-null value.",
                 },
               },
               location: {
                 region: "local",
                 topic: jsonTopic,
                 partition: 0,
-                offset: 1n,
-                phase: "valueDecode",
-                message: "Kafka value codec rejected the record.",
+                offset: 3n,
+                phase: "nullValue",
+                message: "Delete-only Kafka source records require a non-null value.",
               },
               rejectedAtNanos: expect.any(BigInt),
             },
             runtimeMetrics: {
-              rejected: 1n,
-              deletes: 1n,
+              rejected: 2n,
+              deletes: 0n,
             },
             assignments: [{ partition: 0, offset: 4n, lag: 0n }],
           });
@@ -531,17 +566,398 @@ describe("Kafka Source Adapter with real Apache Kafka", () => {
       ),
   );
 
+  integrationIt(
+    "applies compact and compact-delete tombstones, grouped live state, and retention expiry",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const compactTopic = uniqueName("compact");
+          const compactDeleteTopic = uniqueName("compact-delete");
+          const retainedTopic = uniqueName("retained");
+          yield* createTopics(kafkaBootstrapServers, [compactTopic], 1, [
+            { name: "cleanup.policy", value: "compact" },
+            { name: "retention.ms", value: "-1" },
+          ]);
+          yield* createTopics(kafkaBootstrapServers, [compactDeleteTopic], 1, [
+            { name: "cleanup.policy", value: "compact,delete" },
+            { name: "retention.ms", value: "-1" },
+          ]);
+          yield* createTopics(kafkaBootstrapServers, [retainedTopic], 1, [
+            { name: "cleanup.policy", value: "delete" },
+            { name: "retention.ms", value: "-1" },
+          ]);
+
+          const viewServer = defineViewServerConfig({
+            topics: {
+              compactOrders: {
+                schema: JsonOrder,
+                source: kafka.source({
+                  cleanupPolicy: "compact",
+                  retentionPolicy: "match-kafka-retention",
+                  topic: compactTopic,
+                  regions: ["local"],
+                  key: kafka.compactionKey.string(),
+                  value: kafka.json(() => Schema.toCodecJson(JsonInput)),
+                  map: ({ value }) => ({
+                    customerId: value.customerId,
+                    price: value.price,
+                  }),
+                  startFrom: "earliest",
+                }),
+              },
+              compactDeleteOrders: {
+                schema: JsonOrder,
+                source: kafka.source({
+                  cleanupPolicy: "compact-and-delete",
+                  retentionPolicy: "Infinity",
+                  topic: compactDeleteTopic,
+                  regions: ["local"],
+                  key: kafka.compactionKey.string(),
+                  value: kafka.json(() => Schema.toCodecJson(JsonInput)),
+                  map: ({ value }) => ({
+                    customerId: value.customerId,
+                    price: value.price,
+                  }),
+                  startFrom: "earliest",
+                }),
+              },
+              retainedOrders: {
+                schema: JsonOrder,
+                source: kafka.source({
+                  cleanupPolicy: "delete",
+                  retentionPolicy: Duration.seconds(1),
+                  topic: retainedTopic,
+                  regions: ["local"],
+                  key: kafka.string(),
+                  value: kafka.json(() => Schema.toCodecJson(JsonInput)),
+                  localRowKey: ({ key }) => key,
+                  map: ({ value }) => ({
+                    customerId: value.customerId,
+                    price: value.price,
+                  }),
+                  startFrom: "earliest",
+                }),
+              },
+            },
+          });
+          const kafkaContext = yield* Layer.build(
+            kafkaNode.layer(viewServer, {
+              consumerGroupPrefix: uniqueName("retention-replica"),
+              retentionSweepInterval: "25 millis",
+              regions: {
+                local: {
+                  bootstrapServers: kafkaBootstrapServers,
+                },
+              },
+            }),
+          );
+          const runtime = yield* Effect.acquireRelease(
+            makeViewServerRuntimeCore(viewServer, {}).pipe(Effect.provideContext(kafkaContext)),
+            (current) => current.close,
+          );
+          const compactLive = yield* runtime.liveClient.subscribe("compactOrders", {
+            select: ["id", "customerId", "price"],
+            orderBy: [{ field: "id", direction: "asc" }],
+            limit: 10,
+          });
+          const retainedLive = yield* runtime.liveClient.subscribe("retainedOrders", {
+            select: ["id", "customerId", "price"],
+            limit: 10,
+          });
+          const retainedGroupedLive = yield* runtime.liveClient.subscribe("retainedOrders", {
+            groupBy: ["customerId"],
+            aggregates: {
+              rowCount: { aggFunc: "count" },
+            },
+            orderBy: [{ field: "customerId", direction: "asc" }],
+            limit: 10,
+          });
+          const compactEvents = yield* compactLive.events.pipe(
+            Stream.filter((event) => event.type !== "status"),
+            Stream.take(4),
+            Stream.runCollect,
+            Effect.forkChild({ startImmediately: true }),
+          );
+          const retainedGroupedEvents = yield* retainedGroupedLive.events.pipe(
+            Stream.filter((event) => event.type !== "status"),
+            Stream.take(3),
+            Stream.runCollect,
+            Effect.forkChild({ startImmediately: true }),
+          );
+          const retainedEvents = yield* retainedLive.events.pipe(
+            Stream.filter((event) => event.type !== "status"),
+            Stream.take(3),
+            Stream.runCollect,
+            Effect.forkChild({ startImmediately: true }),
+          );
+
+          yield* send(kafkaBootstrapServers, [
+            {
+              topic: compactTopic,
+              key: bytes("same"),
+              value: bytes(JSON.stringify({ customerId: "first", price: 1 })),
+            },
+            {
+              topic: compactTopic,
+              key: bytes("same"),
+              value: bytes(JSON.stringify({ customerId: "updated", price: 2 })),
+            },
+            {
+              topic: compactDeleteTopic,
+              key: bytes("first"),
+              value: bytes(JSON.stringify({ customerId: "first", price: 10 })),
+            },
+            {
+              topic: compactDeleteTopic,
+              key: bytes("second"),
+              value: bytes(JSON.stringify({ customerId: "second", price: 20 })),
+            },
+            {
+              topic: retainedTopic,
+              key: bytes("expires"),
+              value: bytes(JSON.stringify({ customerId: "expires", price: 30 })),
+            },
+          ]);
+          const compactBeforeTombstone = yield* runtime.client
+            .snapshot("compactOrders", {
+              select: ["id", "customerId", "price"],
+              limit: 10,
+            })
+            .pipe(
+              Effect.repeat({
+                schedule: poll,
+                until: (snapshot) => snapshot.rows[0]?.price === 2,
+              }),
+            );
+          const retainedBeforeExpiry = yield* runtime.client
+            .snapshot("retainedOrders", {
+              select: ["id", "customerId", "price"],
+              limit: 10,
+            })
+            .pipe(
+              Effect.repeat({
+                schedule: poll,
+                until: (snapshot) => snapshot.totalRows === 1,
+              }),
+            );
+
+          yield* send(kafkaBootstrapServers, [
+            {
+              topic: compactTopic,
+              key: bytes("same"),
+              value: null,
+            },
+            {
+              topic: compactDeleteTopic,
+              key: bytes("first"),
+              value: null,
+            },
+          ]);
+          const compactAfterTombstone = yield* runtime.client
+            .snapshot("compactOrders", {
+              select: ["id"],
+              limit: 10,
+            })
+            .pipe(
+              Effect.repeat({
+                schedule: poll,
+                until: (snapshot) => snapshot.totalRows === 0,
+              }),
+            );
+          const groupedAfterTombstone = yield* runtime.client
+            .snapshot("compactDeleteOrders", {
+              groupBy: ["customerId"],
+              aggregates: {
+                rowCount: { aggFunc: "count" },
+              },
+              orderBy: [{ field: "customerId", direction: "asc" }],
+              limit: 10,
+            })
+            .pipe(
+              Effect.repeat({
+                schedule: poll,
+                until: (snapshot) =>
+                  snapshot.totalRows === 1 && snapshot.rows[0]?.customerId === "second",
+              }),
+            );
+          const retentionHealth = yield* runtime.liveClient.subscribeSourceHealth({
+            topic: "retainedOrders",
+          });
+          const expiredHealth = Option.getOrThrow(
+            yield* retentionHealth.events.pipe(
+              Stream.filter(
+                (health) =>
+                  health.metrics.adapter.regions[0]?.retention.expiredRows === 1n &&
+                  health.metrics.adapter.regions[0].retention.trackedRows === 0,
+              ),
+              Stream.take(1),
+              Stream.runHead,
+              Effect.timeout("30 seconds"),
+            ),
+          );
+          const compactEventTypes = (yield* Fiber.join(compactEvents)).map((event) => event.type);
+          const retainedEventTypes = (yield* Fiber.join(retainedEvents)).map((event) => event.type);
+          const retainedGroupedConvergence = yield* Fiber.join(retainedGroupedEvents);
+
+          expect({
+            compactBeforeTombstone,
+            compactAfterTombstone,
+            groupedAfterTombstone,
+            retainedBeforeExpiry,
+            retainedAfterExpiry: yield* runtime.client.snapshot("retainedOrders", {
+              select: ["id"],
+              limit: 10,
+            }),
+            compactEventTypes,
+            retainedEventTypes,
+            retainedGroupedConvergence,
+            retention: expiredHealth.metrics.adapter.regions[0]?.retention,
+          }).toStrictEqual({
+            compactBeforeTombstone: {
+              rows: [{ id: "local:0:kc2FtZQ", customerId: "updated", price: 2 }],
+              totalRows: 1,
+              version: expect.any(Number),
+              status: "ready",
+              statusCode: "Ready",
+            },
+            compactAfterTombstone: {
+              rows: [],
+              totalRows: 0,
+              version: expect.any(Number),
+              status: "ready",
+              statusCode: "Ready",
+            },
+            groupedAfterTombstone: {
+              rows: [{ customerId: "second", rowCount: 1n }],
+              totalRows: 1,
+              version: expect.any(Number),
+              status: "ready",
+              statusCode: "Ready",
+            },
+            retainedBeforeExpiry: {
+              rows: [
+                {
+                  id: "local:0:expires",
+                  customerId: "expires",
+                  price: 30,
+                },
+              ],
+              totalRows: 1,
+              version: expect.any(Number),
+              status: "ready",
+              statusCode: "Ready",
+            },
+            retainedAfterExpiry: {
+              rows: [],
+              totalRows: 0,
+              version: expect.any(Number),
+              status: "ready",
+              statusCode: "Ready",
+            },
+            compactEventTypes: ["snapshot", "delta", "delta", "delta"],
+            retainedEventTypes: ["snapshot", "delta", "delta"],
+            retainedGroupedConvergence: [
+              {
+                type: "snapshot",
+                topic: "retainedOrders",
+                queryId: expect.any(String),
+                version: 0,
+                keys: [],
+                rows: [],
+                totalRows: 0,
+              },
+              {
+                type: "delta",
+                topic: "retainedOrders",
+                queryId: expect.any(String),
+                fromVersion: 0,
+                toVersion: 1,
+                operations: [
+                  {
+                    type: "insert",
+                    key: expect.any(String),
+                    row: {
+                      customerId: "expires",
+                      rowCount: 1n,
+                    },
+                    index: 0,
+                  },
+                ],
+                totalRows: 1,
+              },
+              {
+                type: "delta",
+                topic: "retainedOrders",
+                queryId: expect.any(String),
+                fromVersion: 1,
+                toVersion: 2,
+                operations: [
+                  {
+                    type: "remove",
+                    key: expect.any(String),
+                  },
+                ],
+                totalRows: 0,
+              },
+            ],
+            retention: {
+              declaredCleanupPolicy: "delete",
+              observedCleanupPolicy: "delete",
+              configuredRetention: {
+                _tag: "Finite",
+                durationNanos: 1_000_000_000n,
+              },
+              resolvedRetention: {
+                _tag: "Finite",
+                durationNanos: 1_000_000_000n,
+              },
+              trackedRows: 0,
+              lastSweepRetryableFailures: 0,
+              expiredRows: 1n,
+              authoritativeExpiredDeletes: 0n,
+              failedWorkBacklog: 0,
+              expirationRetryFailures: 0n,
+              latestExpirationFailure: null,
+              lastSweepAtNanos: expect.any(BigInt),
+              lastSweepDurationNanos: expect.any(BigInt),
+              sweepIntervalNanos: 25_000_000n,
+            },
+          });
+
+          yield* Effect.all(
+            [
+              compactLive.close(),
+              retainedLive.close(),
+              retainedGroupedLive.close(),
+              retentionHealth.close(),
+            ],
+            {
+              discard: true,
+            },
+          );
+        }),
+      ),
+  );
+
   integrationIt("keeps identical local keys collision-safe across concurrent regions", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const topic = uniqueName("regional");
-        yield* createTopics(kafkaBootstrapServers, [topic]);
-        yield* createTopics(londonKafkaBootstrapServers, [topic]);
+        yield* createTopics(kafkaBootstrapServers, [topic], 1, [
+          { name: "cleanup.policy", value: "delete" },
+          { name: "retention.ms", value: "2000" },
+        ]);
+        yield* createTopics(londonKafkaBootstrapServers, [topic], 1, [
+          { name: "cleanup.policy", value: "delete" },
+          { name: "retention.ms", value: "5000" },
+        ]);
         const viewServer = defineViewServerConfig({
           topics: {
             orders: {
               schema: JsonOrder,
               source: kafka.source({
+                cleanupPolicy: "delete",
+                retentionPolicy: "match-kafka-retention",
                 topic,
                 regions: ["usa", "london"],
                 key: kafka.string(),
@@ -559,6 +975,7 @@ describe("Kafka Source Adapter with real Apache Kafka", () => {
         const kafkaContext = yield* Layer.build(
           kafkaNode.layer(viewServer, {
             consumerGroupPrefix: uniqueName("regional-replica"),
+            retentionSweepInterval: "25 millis",
             regions: {
               usa: {
                 bootstrapServers: kafkaBootstrapServers,
@@ -573,20 +990,27 @@ describe("Kafka Source Adapter with real Apache Kafka", () => {
           makeViewServerRuntimeCore(viewServer, {}).pipe(Effect.provideContext(kafkaContext)),
           (current) => current.close,
         );
+        const live = yield* runtime.liveClient.subscribe("orders", {
+          select: ["id", "customerId", "price"],
+          orderBy: [{ field: "id", direction: "asc" }],
+          limit: 10,
+        });
+        const initialSnapshotSeen = yield* Deferred.make<void>();
+        const liveEventsFiber = yield* live.events.pipe(
+          Stream.filter((event) => event.type !== "status"),
+          Stream.tap((event) =>
+            event.type === "snapshot"
+              ? Deferred.succeed(initialSnapshotSeen, undefined).pipe(Effect.asVoid)
+              : Effect.void,
+          ),
+          Stream.take(5),
+          Stream.runCollect,
+          Effect.forkChild({ startImmediately: true }),
+        );
+        yield* Deferred.await(initialSnapshotSeen);
+        const recordTimestamp = BigInt(yield* Clock.currentTimeMillis);
         yield* Effect.all(
           [
-            send(kafkaBootstrapServers, [
-              {
-                topic,
-                key: bytes("same"),
-                value: bytes(
-                  JSON.stringify({
-                    customerId: "customer",
-                    price: 1,
-                  }),
-                ),
-              },
-            ]),
             send(londonKafkaBootstrapServers, [
               {
                 topic,
@@ -597,20 +1021,29 @@ describe("Kafka Source Adapter with real Apache Kafka", () => {
                     price: 2,
                   }),
                 ),
+                timestamp: recordTimestamp,
+              },
+            ]),
+            send(kafkaBootstrapServers, [
+              {
+                topic,
+                key: bytes("same"),
+                value: bytes(
+                  JSON.stringify({
+                    customerId: "customer",
+                    price: 1,
+                  }),
+                ),
+                timestamp: recordTimestamp,
               },
             ]),
           ],
-          { concurrency: "unbounded" },
+          { concurrency: "unbounded", discard: true },
         );
-        const snapshot = yield* runtime.client
+        const bothRegions = yield* runtime.client
           .snapshot("orders", {
             select: ["id", "customerId", "price"],
-            orderBy: [
-              {
-                field: "id",
-                direction: "asc",
-              },
-            ],
+            orderBy: [{ field: "id", direction: "asc" }],
             limit: 10,
           })
           .pipe(
@@ -619,24 +1052,168 @@ describe("Kafka Source Adapter with real Apache Kafka", () => {
               until: (current) => current.totalRows === 2,
             }),
           );
-        expect(snapshot).toStrictEqual({
-          status: "ready",
-          statusCode: "Ready",
-          rows: [
+        const afterUsaExpiry = yield* runtime.client
+          .snapshot("orders", {
+            select: ["id", "customerId", "price"],
+            orderBy: [{ field: "id", direction: "asc" }],
+            limit: 10,
+          })
+          .pipe(
+            Effect.repeat({
+              schedule: poll,
+              until: (current) =>
+                current.totalRows === 1 && current.rows[0]?.id === "london:0:same",
+            }),
+          );
+        const afterLondonExpiry = yield* runtime.client
+          .snapshot("orders", {
+            select: ["id", "customerId", "price"],
+            orderBy: [{ field: "id", direction: "asc" }],
+            limit: 10,
+          })
+          .pipe(
+            Effect.repeat({
+              schedule: poll,
+              until: (current) => current.totalRows === 0,
+            }),
+          );
+        const diagnostics = yield* runtime.liveClient.subscribeSourceHealth({ topic: "orders" });
+        const expiredHealth = Option.getOrThrow(
+          yield* diagnostics.events.pipe(
+            Stream.filter((health) =>
+              health.metrics.adapter.regions.every(
+                (region) =>
+                  region.retention.expiredRows === 1n && region.retention.trackedRows === 0,
+              ),
+            ),
+            Stream.take(1),
+            Stream.runHead,
+            Effect.timeout("30 seconds"),
+          ),
+        );
+        const liveEvents = yield* Fiber.join(liveEventsFiber);
+        const liveEventTypes = liveEvents.map((event) => event.type);
+        const liveMutationKeys = liveEvents
+          .slice(1)
+          .flatMap((event) =>
+            event.type === "delta"
+              ? event.operations.map((operation) => `${operation.type}:${operation.key}`)
+              : [],
+          )
+          .sort();
+        const retentionByRegion = expiredHealth.metrics.adapter.regions.map((region) => {
+          const { lastSweepAtNanos, lastSweepDurationNanos, ...retention } = region.retention;
+          return {
+            region: region.region,
+            retention,
+            sweepRecorded: lastSweepAtNanos !== null && lastSweepDurationNanos !== null,
+          };
+        });
+
+        expect({
+          afterLondonExpiry,
+          afterUsaExpiry,
+          bothRegions,
+          liveEventTypes,
+          liveMutationKeys,
+          retentionByRegion,
+        }).toStrictEqual({
+          afterLondonExpiry: {
+            status: "ready",
+            statusCode: "Ready",
+            rows: [],
+            totalRows: 0,
+            version: expect.any(Number),
+          },
+          afterUsaExpiry: {
+            status: "ready",
+            statusCode: "Ready",
+            rows: [
+              {
+                id: "london:0:same",
+                customerId: "london:customer",
+                price: 2,
+              },
+            ],
+            totalRows: 1,
+            version: expect.any(Number),
+          },
+          bothRegions: {
+            status: "ready",
+            statusCode: "Ready",
+            rows: [
+              {
+                id: "london:0:same",
+                customerId: "london:customer",
+                price: 2,
+              },
+              {
+                id: "usa:0:same",
+                customerId: "usa:customer",
+                price: 1,
+              },
+            ],
+            totalRows: 2,
+            version: expect.any(Number),
+          },
+          liveEventTypes: ["snapshot", "delta", "delta", "delta", "delta"],
+          liveMutationKeys: [
+            "insert:london:0:same",
+            "insert:usa:0:same",
+            "remove:london:0:same",
+            "remove:usa:0:same",
+          ],
+          retentionByRegion: [
             {
-              id: "london:same",
-              customerId: "london:customer",
-              price: 2,
+              region: "usa",
+              retention: {
+                declaredCleanupPolicy: "delete",
+                observedCleanupPolicy: "delete",
+                configuredRetention: {
+                  _tag: "MatchKafkaRetention",
+                },
+                resolvedRetention: {
+                  _tag: "Finite",
+                  durationNanos: 2_000_000_000n,
+                },
+                trackedRows: 0,
+                lastSweepRetryableFailures: 0,
+                expiredRows: 1n,
+                authoritativeExpiredDeletes: 0n,
+                failedWorkBacklog: 0,
+                expirationRetryFailures: 0n,
+                latestExpirationFailure: null,
+                sweepIntervalNanos: 25_000_000n,
+              },
+              sweepRecorded: true,
             },
             {
-              id: "usa:same",
-              customerId: "usa:customer",
-              price: 1,
+              region: "london",
+              retention: {
+                declaredCleanupPolicy: "delete",
+                observedCleanupPolicy: "delete",
+                configuredRetention: {
+                  _tag: "MatchKafkaRetention",
+                },
+                resolvedRetention: {
+                  _tag: "Finite",
+                  durationNanos: 5_000_000_000n,
+                },
+                trackedRows: 0,
+                lastSweepRetryableFailures: 0,
+                expiredRows: 1n,
+                authoritativeExpiredDeletes: 0n,
+                failedWorkBacklog: 0,
+                expirationRetryFailures: 0n,
+                latestExpirationFailure: null,
+                sweepIntervalNanos: 25_000_000n,
+              },
+              sweepRecorded: true,
             },
           ],
-          totalRows: 2,
-          version: expect.any(Number),
         });
+        yield* live.close();
+        yield* diagnostics.close();
       }),
     ),
   );
@@ -674,6 +1251,8 @@ describe("Kafka Source Adapter with real Apache Kafka", () => {
             earliestOrders: {
               schema: JsonOrder,
               source: kafka.source({
+                cleanupPolicy: "delete",
+                retentionPolicy: "Infinity",
                 topic: earliestTopic,
                 regions: ["local"],
                 key: kafka.string(),
@@ -689,6 +1268,8 @@ describe("Kafka Source Adapter with real Apache Kafka", () => {
             latestOrders: {
               schema: JsonOrder,
               source: kafka.source({
+                cleanupPolicy: "delete",
+                retentionPolicy: "Infinity",
                 topic: latestTopic,
                 regions: ["local"],
                 key: kafka.string(),
@@ -796,19 +1377,19 @@ describe("Kafka Source Adapter with real Apache Kafka", () => {
         }).toStrictEqual({
           earliest: [
             {
-              id: "local:new",
+              id: "local:0:new",
               customerId: "new",
               price: 2,
             },
             {
-              id: "local:old",
+              id: "local:0:old",
               customerId: "old",
               price: 1,
             },
           ],
           latest: [
             {
-              id: "local:new",
+              id: "local:0:new",
               customerId: "new",
               price: 2,
             },
@@ -838,7 +1419,7 @@ describe("Kafka Source Adapter with real Apache Kafka", () => {
           durationFail: uniqueName("duration-fail"),
         };
         yield* createTopics(kafkaBootstrapServers, Object.values(topics));
-        const nowMillis = (yield* Clock.currentTimeNanos) / 1_000_000n;
+        const nowMillis = BigInt(yield* Clock.currentTimeMillis);
         const futureNanos = (nowMillis + 86_400_000n) * 1_000_000n;
         const jsonValue = (customerId: string, price: number) =>
           bytes(JSON.stringify({ customerId, price }));
@@ -1178,15 +1759,15 @@ describe("Kafka Source Adapter with real Apache Kafka", () => {
             Object.entries(snapshots).map(([name, snapshot]) => [name, snapshot.rows[0]?.id]),
           ),
         ).toStrictEqual({
-          committedHit: "local:committed-hit",
-          committedEarliest: "local:committed-earliest",
-          committedLatest: "local:committed-latest",
-          timestampHit: "local:timestamp-hit",
-          timestampEarliest: "local:timestamp-earliest",
-          timestampLatest: "local:timestamp-latest",
-          durationHit: "local:duration-hit",
-          durationEarliest: "local:duration-earliest",
-          durationLatest: "local:duration-latest",
+          committedHit: "local:0:committed-hit",
+          committedEarliest: "local:0:committed-earliest",
+          committedLatest: "local:0:committed-latest",
+          timestampHit: "local:0:timestamp-hit",
+          timestampEarliest: "local:0:timestamp-earliest",
+          timestampLatest: "local:0:timestamp-latest",
+          durationHit: "local:0:duration-hit",
+          durationEarliest: "local:0:duration-earliest",
+          durationLatest: "local:0:duration-latest",
         });
 
         yield* Effect.all(
@@ -1299,6 +1880,8 @@ describe("Kafka Source Adapter with real Apache Kafka", () => {
               orders: {
                 schema: JsonOrder,
                 source: kafka.source({
+                  cleanupPolicy: "delete",
+                  retentionPolicy: "Infinity",
                   topic,
                   regions: ["local"],
                   key: kafka.string(),
@@ -1395,10 +1978,10 @@ describe("Kafka Source Adapter with real Apache Kafka", () => {
             replayed: replayed.rows,
             continued: continued.rows,
           }).toStrictEqual({
-            replayed: [{ id: "local:replayed", customerId: "replayed", price: 1 }],
+            replayed: [{ id: "local:0:replayed", customerId: "replayed", price: 1 }],
             continued: [
-              { id: "local:after", customerId: "after", price: 2 },
-              { id: "local:replayed", customerId: "replayed", price: 1 },
+              { id: "local:0:after", customerId: "after", price: 2 },
+              { id: "local:0:replayed", customerId: "replayed", price: 1 },
             ],
           });
           const recoveredDiagnostics = yield* runtime.liveClient.subscribeSourceHealth({
@@ -1455,6 +2038,8 @@ describe("Kafka Source Adapter with real Apache Kafka", () => {
             orders: {
               schema: JsonOrder,
               source: kafka.source({
+                cleanupPolicy: "delete",
+                retentionPolicy: "Infinity",
                 topic,
                 regions: ["local"],
                 key: kafka.string(),
@@ -1554,7 +2139,15 @@ describe("Kafka Source Adapter with real Apache Kafka", () => {
           );
         expect({
           rejection: Option.getOrThrow(
-            Option.liftPredicate(replayedRejection.status, (status) => status._tag === "Degraded"),
+            Option.liftPredicate(
+              Option.getOrThrow(
+                Option.liftPredicate(
+                  replayedRejection.status,
+                  (status) => status._tag === "Degraded",
+                ),
+              ).reasons[0],
+              (reason) => reason._tag === "SourceItemRejection",
+            ),
           ).latestRejection.location,
           rows: continued.rows,
         }).toStrictEqual({
@@ -1566,7 +2159,7 @@ describe("Kafka Source Adapter with real Apache Kafka", () => {
             phase: "valueDecode",
             message: 'Kafka value codec "gated-json-rejection" rejected the record.',
           },
-          rows: [{ id: "local:after", customerId: "after", price: 2 }],
+          rows: [{ id: "local:0:after", customerId: "after", price: 2 }],
         });
         yield* replayDiagnostics.close();
       }),
@@ -1674,7 +2267,7 @@ describe("Kafka Source Adapter with real Apache Kafka", () => {
           ),
         );
         expect(recovered.rows).toStrictEqual([
-          { id: "local:recovered", customerId: "recovered", price: 1 },
+          { id: "local:0:recovered", customerId: "recovered", price: 1 },
         ]);
         expect(recoveredHealth.metrics.adapter.regions[0]?.reconnects).toBeGreaterThanOrEqual(1n);
       }),
@@ -1692,6 +2285,8 @@ describe("Kafka Source Adapter with real Apache Kafka", () => {
             orders: {
               schema: JsonOrder,
               source: kafka.source({
+                cleanupPolicy: "delete",
+                retentionPolicy: "Infinity",
                 topic,
                 regions: ["local"],
                 key: kafka.string(),
@@ -1817,12 +2412,12 @@ describe("Kafka Source Adapter with real Apache Kafka", () => {
               );
             expect(restartedSnapshot.rows).toStrictEqual([
               {
-                id: "local:first",
+                id: "local:0:first",
                 customerId: "first",
                 price: 1,
               },
               {
-                id: "local:second",
+                id: "local:0:second",
                 customerId: "second",
                 price: 2,
               },

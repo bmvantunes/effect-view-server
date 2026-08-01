@@ -40,6 +40,8 @@ export const viewServer = defineViewServerConfig({
     orders: {
       schema: Order,
       source: kafka.source({
+        cleanupPolicy: "delete",
+        retentionPolicy: "Infinity",
         topic: "view-server-example-orders-usa",
         regions: ["usa"],
         value: kafka.json(() => Schema.toCodecJson(KafkaOrder)),
@@ -58,6 +60,8 @@ export const viewServer = defineViewServerConfig({
     trades: {
       schema: Trade,
       source: kafka.source({
+        cleanupPolicy: "delete",
+        retentionPolicy: "Infinity",
         topic: "view-server-example-trades-london",
         regions: ["london"],
         value: kafka.json(() => Schema.toCodecJson(KafkaTrade)),

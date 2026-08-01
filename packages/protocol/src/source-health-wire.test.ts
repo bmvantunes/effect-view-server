@@ -131,7 +131,15 @@ const materializedHealth = {
     _tag: "Degraded",
     attempt: 2n,
     degradedAtNanos: 10n,
-    latestRejection: rejection,
+    reasons: [
+      {
+        _tag: "SourceItemRejection",
+        latestRejection: rejection,
+      },
+      {
+        _tag: "AdapterMaintenanceFailure",
+      },
+    ],
   },
   metrics: {
     runtime: runtimeMetrics,
@@ -141,6 +149,43 @@ const materializedHealth = {
     },
   },
   sampledAtNanos: 12n,
+} as const;
+
+const maintenanceOnlyHealth = {
+  ...materializedHealth,
+  status: {
+    _tag: "Degraded",
+    attempt: 2n,
+    degradedAtNanos: 9n,
+    reasons: [
+      {
+        _tag: "AdapterMaintenanceFailure",
+      },
+    ],
+  },
+  sampledAtNanos: 11n,
+} as const;
+
+const invalidSettlementExhaustedHealth = {
+  ...materializedHealth,
+  status: {
+    _tag: "Exhausted",
+    exhaustion: {
+      _tag: "RetryExhausted",
+      lastTermination: {
+        _tag: "Failed",
+        failure: {
+          _tag: "RuntimeFailure",
+          failure: {
+            _tag: "InvalidSourceSettlement",
+            message: "Source Settlement callback threw before returning an Effect",
+          },
+        },
+      },
+    },
+    exhaustedAtNanos: 13n,
+  },
+  sampledAtNanos: 14n,
 } as const;
 
 const leasedHealth = {
@@ -236,6 +281,24 @@ describe("Source Health wire contract", () => {
         encoded,
       );
     }),
+  );
+
+  it.effect(
+    "round-trips maintenance-only, combined, and InvalidSourceSettlement diagnostics exactly",
+    () =>
+      Effect.gen(function* () {
+        for (const health of [
+          maintenanceOnlyHealth,
+          materializedHealth,
+          invalidSettlementExhaustedHealth,
+        ]) {
+          const encoded = yield* viewServerEncodeSourceHealth(config, "materialized", health);
+          const decoded = yield* viewServerDecodeSourceHealth(config, "materialized", encoded);
+          expect(
+            yield* viewServerEncodeSourceHealth(config, "materialized", decoded),
+          ).toStrictEqual(encoded);
+        }
+      }),
   );
 
   it.effect("round-trips bigint and BigDecimal leased routes and health", () =>

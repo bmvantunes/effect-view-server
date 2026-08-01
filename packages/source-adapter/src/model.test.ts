@@ -1,23 +1,40 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Chunk, Effect, Exit, Option, Schedule, Schema, Stream } from "effect";
-import type { SourceBufferMetrics, SourceDefinitionOptionsFamily } from "./index";
+import type {
+  SourceApplicationTransition,
+  SourceBufferMetrics,
+  SourceDefinitionOptionsFamily,
+  SourceDelivery,
+  SourceMutation,
+  SourceSettlement,
+} from "./index";
 import {
   decodeSourceToolkitUpsert,
   isSourceAdapterHandle,
+  isSourceApplicationTransition,
   isSourceAttempt,
   isSourceDefinition,
   isSourceDelivery,
   isSourceItemRejection,
   isSourceMutation,
+  isSourceMaintenanceOperation,
   isSourceToolkit,
   makeRuntimeSourceFailure,
   makeSourceAttempt,
+  makeSourceApplicationStateRegistration,
+  makeSourceApplicationTransition,
   makeSourceDelete,
   makeSourceDelivery,
   makeSourceItemRejection,
+  makeSourceMaintenanceOperation,
+  makeSourceTransitionDelivery,
   makeSourceUpsert,
   markSourceToolkit,
+  resolveSourceApplicationStateRegistration,
+  resolveSourceApplicationTransition,
+  resolveSourceMaintenanceOperation,
 } from "./internal";
+import { registerSourceDefinition } from "./definition-brand";
 import { resolveSourceAdapterHandle } from "./model";
 import { SourceAdapter, sourceExecutionFailureSchema } from "./index";
 
@@ -30,6 +47,29 @@ const Metrics = Schema.Struct({
 const Location = Schema.Struct({
   offset: Schema.BigInt,
 });
+
+type ToolkitRow = { readonly row: unknown };
+
+function toolkitDelivery(
+  mutations: Chunk.NonEmptyChunk<SourceMutation<ToolkitRow>>,
+  settlement?: SourceSettlement<unknown>,
+): Effect.Effect<SourceDelivery<ToolkitRow, unknown>>;
+function toolkitDelivery(
+  mutation: SourceMutation<ToolkitRow>,
+  settlement: SourceSettlement<unknown> | undefined,
+  transition: SourceApplicationTransition,
+): Effect.Effect<SourceDelivery<ToolkitRow, unknown>>;
+function toolkitDelivery(
+  mutationsOrMutation: Chunk.NonEmptyChunk<SourceMutation<ToolkitRow>> | SourceMutation<ToolkitRow>,
+  settlement?: SourceSettlement<unknown>,
+  transition?: SourceApplicationTransition,
+): Effect.Effect<SourceDelivery<ToolkitRow, unknown>> {
+  return transition === undefined && Chunk.isChunk(mutationsOrMutation)
+    ? Effect.succeed(makeSourceDelivery(mutationsOrMutation, settlement))
+    : transition !== undefined && !Chunk.isChunk(mutationsOrMutation)
+      ? Effect.succeed(makeSourceTransitionDelivery(mutationsOrMutation, settlement, transition))
+      : Effect.die(new TypeError("Invalid fixture delivery shape."));
+}
 
 type MappedDefinitionOptions<Row extends object> = {
   readonly row: Schema.Codec<Row, unknown, never, never>;
@@ -113,6 +153,116 @@ const nominalClone = <Value extends object>(
 };
 
 describe("Source Adapter portable model", () => {
+  it("rejects malformed nominal Application State lifecycle capabilities", () => {
+    const validInput = () => ({
+      bind: () => undefined,
+      forLifetime: () => undefined,
+      lifetimeIdentity: () => Object.freeze({}),
+      unbind: () => undefined,
+      sweepIntervalNanos: 1n,
+      runDueSweep: () => Effect.void,
+    });
+    const hostileBind = new Proxy(() => undefined, {
+      get: (target, property, receiver) => {
+        if (property === "constructor") {
+          throw new Error("hostile constructor");
+        }
+        return Reflect.get(target, property, receiver);
+      },
+    });
+    const missingCapability = validInput();
+    Reflect.deleteProperty(missingCapability, "bind");
+    const surplusCapability = {
+      ...validInput(),
+      select: () => undefined,
+    };
+    const asyncGeneratorBind = async function* () {
+      yield undefined;
+    };
+    const invalidInputs = [
+      missingCapability,
+      surplusCapability,
+      {
+        ...validInput(),
+        bind: undefined,
+      },
+      {
+        ...validInput(),
+        bind: hostileBind,
+      },
+      {
+        ...validInput(),
+        bind: asyncGeneratorBind,
+      },
+      {
+        ...validInput(),
+        forLifetime: async () => Promise.resolve(undefined),
+      },
+      {
+        ...validInput(),
+        lifetimeIdentity: undefined,
+      },
+      {
+        ...validInput(),
+        unbind: undefined,
+      },
+      {
+        ...validInput(),
+        sweepIntervalNanos: 0n,
+      },
+      {
+        ...validInput(),
+        sweepIntervalNanos: 1,
+      },
+      {
+        ...validInput(),
+        runDueSweep: undefined,
+      },
+    ];
+
+    for (const input of invalidInputs) {
+      expect(() =>
+        Reflect.apply(makeSourceApplicationStateRegistration, undefined, [input]),
+      ).toThrow(
+        "Source Application State registration requires exact synchronous lifecycle capabilities.",
+      );
+    }
+  });
+
+  it("snapshots nominal Application State lifecycle capabilities", () => {
+    let originalBindings = 0;
+    let replacementBindings = 0;
+    const input = {
+      bind: () => {
+        originalBindings += 1;
+      },
+      forLifetime: () => "original",
+      lifetimeIdentity: () => Object.freeze({}),
+      unbind: () => undefined,
+      sweepIntervalNanos: 1n,
+      runDueSweep: () => Effect.void,
+    };
+    const registration = makeSourceApplicationStateRegistration(input);
+    Reflect.set(input, "bind", () => {
+      replacementBindings += 1;
+    });
+    Reflect.set(input, "forLifetime", () => "replacement");
+    const internal = Option.getOrThrow(
+      Option.fromUndefinedOr(resolveSourceApplicationStateRegistration(registration)),
+    );
+    Reflect.apply(internal.bind, undefined, [{}]);
+
+    expect({
+      forLifetime: Reflect.apply(registration.forLifetime, undefined, [undefined, "orders"]),
+      originalBindings,
+      replacementBindings,
+    }).toStrictEqual({
+      forLifetime: "original",
+      originalBindings: 1,
+      replacementBindings: 0,
+    });
+  });
+
   it("creates frozen row-bound definition-option family tokens", () => {
     const token = SourceAdapter.definitionOptionsFamily<MappedDefinitionOptionsFamily>();
     expect(Object.isFrozen(token)).toBe(true);
@@ -598,7 +748,13 @@ describe("Source Adapter portable model", () => {
     expect(Object.isFrozen(materialized.retry)).toBe(true);
     expect(Object.isFrozen(leased.retry)).toBe(true);
     expect(isSourceDefinition(leased)).toBe(true);
-    expect(invalidValues.map(isSourceDefinition)).toStrictEqual(invalidValues.map(() => false));
+    expect(
+      invalidValues.map((value) =>
+        typeof value === "object" && value !== null
+          ? isSourceDefinition(registerSourceDefinition(value))
+          : isSourceDefinition(value),
+      ),
+    ).toStrictEqual(invalidValues.map(() => false));
   });
 
   it("constructs exact retry selections and validates leased route declarations", () => {
@@ -645,6 +801,20 @@ describe("Source Adapter portable model", () => {
       const upsert = makeSourceUpsert({ id: "a" });
       const deletion = makeSourceDelete("a");
       const delivery = makeSourceDelivery(Chunk.make(upsert, deletion));
+      let transitioned = 0;
+      const mutableCancellationIds = ["expiry:a:1"];
+      const lifetimeIdentity = Object.freeze({});
+      const transition = makeSourceApplicationTransition(
+        "orders",
+        () => {
+          transitioned += 1;
+        },
+        mutableCancellationIds,
+        lifetimeIdentity,
+      );
+      mutableCancellationIds[0] = "hostile-replacement";
+      mutableCancellationIds.push("hostile-addition");
+      const transitionedDelivery = makeSourceTransitionDelivery(deletion, undefined, transition);
       const rejection = makeSourceItemRejection({
         failure: makeRuntimeSourceFailure({
           _tag: "InvalidTopicRow",
@@ -668,13 +838,33 @@ describe("Source Adapter portable model", () => {
         upsert: (row: { readonly row: unknown }) => Effect.succeed(makeSourceUpsert(row)),
         decodeUpsert: (row: unknown) => Effect.succeed(makeSourceUpsert({ row })),
         delete: (id: string) => Effect.succeed(makeSourceDelete(id)),
-        delivery: (mutations) => Effect.succeed(makeSourceDelivery(mutations)),
+        delivery: toolkitDelivery,
         reject: (input) => Effect.succeed(makeSourceItemRejection(input)),
       });
 
       expect(isSourceMutation(upsert)).toBe(true);
       expect(isSourceMutation(deletion)).toBe(true);
       expect(isSourceDelivery(delivery)).toBe(true);
+      expect(isSourceDelivery(transitionedDelivery)).toBe(true);
+      expect(transitionedDelivery.transition).toBe(transition);
+      const internalTransition = Option.getOrThrow(
+        Option.fromUndefinedOr(resolveSourceApplicationTransition(transition)),
+      );
+      internalTransition.apply();
+      expect(transitioned).toBe(1);
+      expect(internalTransition.cancelledMaintenanceWorkIds).toStrictEqual(["expiry:a:1"]);
+      expect(Object.isFrozen(internalTransition.cancelledMaintenanceWorkIds)).toBe(true);
+      expect(() =>
+        makeSourceApplicationTransition(
+          "orders",
+          () => undefined,
+          ["duplicate", "duplicate"],
+          lifetimeIdentity,
+        ),
+      ).toThrow("unique non-empty strings");
+      expect(() =>
+        makeSourceApplicationTransition("orders", () => undefined, [""], lifetimeIdentity),
+      ).toThrow("unique non-empty strings");
       expect(isSourceItemRejection(rejection)).toBe(true);
       expect(isSourceAttempt(attempt)).toBe(true);
       expect(isSourceToolkit(toolkit)).toBe(true);
@@ -707,16 +897,76 @@ describe("Source Adapter portable model", () => {
     const adapter = makeMaterializedAdapter();
     const definition = adapter.materializedSource({ label: "orders" });
     const mutation = makeSourceDelete("a");
+    const lifetimeIdentity = Object.freeze({});
+    const transition = makeSourceApplicationTransition(
+      "orders",
+      () => undefined,
+      [],
+      lifetimeIdentity,
+    );
+    const maintenance = makeSourceMaintenanceOperation({
+      topic: "orders",
+      id: "a",
+      workId: "a:1",
+      lifetimeIdentity,
+      isCurrent: () => true,
+      onSuccess: () => undefined,
+      onFailure: () => undefined,
+      onStale: () => undefined,
+    });
     const copiedAdapter = Object.defineProperties({}, Object.getOwnPropertyDescriptors(adapter));
     const copiedDefinition = Object.defineProperties(
       {},
       Object.getOwnPropertyDescriptors(definition),
     );
+    const sourceDefinitionBrand = Option.getOrThrow(
+      Option.fromUndefinedOr(
+        Reflect.ownKeys(definition).find(
+          (key) =>
+            typeof key === "symbol" &&
+            key.description === "@effect-view-server/source-adapter/SourceDefinition",
+        ),
+      ),
+    );
+    const selfBrandedDefinitionCopy: Record<PropertyKey, unknown> = {};
+    for (const key of Reflect.ownKeys(definition)) {
+      const descriptor = Option.getOrThrow(
+        Option.fromUndefinedOr(Object.getOwnPropertyDescriptor(definition, key)),
+      );
+      Object.defineProperty(selfBrandedDefinitionCopy, key, {
+        ...descriptor,
+        value: key === sourceDefinitionBrand ? () => selfBrandedDefinitionCopy : descriptor.value,
+      });
+    }
+    Object.freeze(selfBrandedDefinitionCopy);
     const copiedMutation = Object.defineProperties({}, Object.getOwnPropertyDescriptors(mutation));
+    const copiedTransition = Object.defineProperties(
+      {},
+      Object.getOwnPropertyDescriptors(transition),
+    );
+    const copiedMaintenance = Object.defineProperties(
+      {},
+      Object.getOwnPropertyDescriptors(maintenance),
+    );
 
     expect(isSourceAdapterHandle(copiedAdapter)).toBe(false);
     expect(isSourceDefinition(copiedDefinition)).toBe(false);
+    expect(isSourceDefinition(selfBrandedDefinitionCopy)).toBe(false);
     expect(isSourceMutation(copiedMutation)).toBe(false);
+    expect(isSourceApplicationTransition(transition)).toBe(true);
+    expect(isSourceApplicationTransition(copiedTransition)).toBe(false);
+    expect(isSourceApplicationTransition(null)).toBe(false);
+    expect(isSourceApplicationTransition({})).toBe(false);
+    expect(
+      Reflect.apply(resolveSourceApplicationTransition, undefined, [copiedTransition]),
+    ).toBeUndefined();
+    expect(isSourceMaintenanceOperation(maintenance)).toBe(true);
+    expect(isSourceMaintenanceOperation(copiedMaintenance)).toBe(false);
+    expect(isSourceMaintenanceOperation(null)).toBe(false);
+    expect(isSourceMaintenanceOperation({})).toBe(false);
+    expect(
+      Reflect.apply(resolveSourceMaintenanceOperation, undefined, [copiedMaintenance]),
+    ).toBeUndefined();
     expect(isSourceAdapterHandle(null)).toBe(false);
     expect(isSourceDefinition({})).toBe(false);
     expect(isSourceDelivery({})).toBe(false);

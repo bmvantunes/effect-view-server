@@ -1,17 +1,20 @@
 import { Chunk, Context, Effect, Exit, Result, Schedule, Schema, Scope, Stream } from "effect";
+import {
+  hasSourceModelSelfBrand as hasSelfBrand,
+  isSourceAdapterHandle,
+  SourceAdapterTypeId,
+  sourceAdapterDescriptors,
+  sourceAdapterHandles,
+} from "./adapter-brand";
+import {
+  isSourceDefinition,
+  registerSourceDefinition,
+  SourceDefinitionTypeId,
+  SourceDefinitionTypesTypeId,
+  validateSourceDefinition,
+} from "./definition-brand";
 
-const SourceAdapterTypeId: unique symbol = Symbol(
-  "@effect-view-server/source-adapter/SourceAdapter",
-);
-const sourceAdapterHandles = new WeakMap<object, unknown>();
-const sourceAdapterDescriptors = new WeakMap<object, unknown>();
-const SourceDefinitionTypeId: unique symbol = Symbol(
-  "@effect-view-server/source-adapter/SourceDefinition",
-);
 declare const SourceDefinitionFactoryRowTypeId: unique symbol;
-const SourceDefinitionTypesTypeId: unique symbol = Symbol(
-  "@effect-view-server/source-adapter/SourceDefinitionTypes",
-);
 const SourceMutationTypeId: unique symbol = Symbol(
   "@effect-view-server/source-adapter/SourceMutation",
 );
@@ -33,6 +36,21 @@ const SourceAttemptTypeId: unique symbol = Symbol(
 const SourceExecutableTypeId: unique symbol = Symbol(
   "@effect-view-server/source-adapter/SourceExecutable",
 );
+const SourceApplicationTransitionTypeId: unique symbol = Symbol(
+  "@effect-view-server/source-adapter/SourceApplicationTransition",
+);
+const SourceMaintenanceOperationTypeId: unique symbol = Symbol(
+  "@effect-view-server/source-adapter/SourceMaintenanceOperation",
+);
+const SourceApplicationStateRegistrationTypeId: unique symbol = Symbol(
+  "@effect-view-server/source-adapter/SourceApplicationStateRegistration",
+);
+const sourceApplicationTransitions = new WeakMap<object, SourceApplicationTransitionInternal>();
+const sourceMaintenanceOperations = new WeakMap<object, SourceMaintenanceOperationInternal>();
+const sourceApplicationStateRegistrations = new WeakMap<
+  object,
+  SourceApplicationStateRegistrationInternal
+>();
 
 export type SourceLifecycle = "materialized" | "leased";
 
@@ -75,6 +93,7 @@ export type SourceLifecycleDeclaration<
   readonly metrics: Schema.Codec<Metrics, unknown, never, never>;
   readonly rejectionLocation: Schema.Codec<RejectionLocation, unknown, never, never>;
   readonly definitionOptions: SourceDefinitionOptionsToken<DefinitionOptions, DefinitionFamily>;
+  readonly applicationState?: "required";
 };
 
 const SourceDefinitionOptionsTokenTypeId: unique symbol = Symbol(
@@ -129,6 +148,10 @@ export type SourceRuntimeFailure =
       readonly message: string;
     }
   | {
+      readonly _tag: "InvalidSourceSettlement";
+      readonly message: "Source Settlement callback threw before returning an Effect";
+    }
+  | {
       readonly _tag: "SourceBufferOverflow";
       readonly message: string;
       readonly capacity: number;
@@ -155,6 +178,9 @@ export const SourceRuntimeFailureSchema: Schema.Codec<SourceRuntimeFailure> = Sc
   }),
   Schema.TaggedStruct("InvalidSourceMetrics", {
     message: Schema.String,
+  }),
+  Schema.TaggedStruct("InvalidSourceSettlement", {
+    message: Schema.Literal("Source Settlement callback threw before returning an Effect"),
   }),
   Schema.TaggedStruct("SourceBufferOverflow", {
     message: Schema.String,
@@ -246,15 +272,102 @@ export type SourceMutation<Row extends object> = SourceUpsert<Row> | SourceDelet
 
 export type SourceApplicationExit = Exit.Exit<void, SourceRuntimeFailure>;
 
+export type SourceApplicationTransition<Topic extends string = string> = {
+  readonly _tag: "SourceApplicationTransition";
+  readonly topic: Topic;
+  readonly [SourceApplicationTransitionTypeId]: () => SourceApplicationTransition<Topic>;
+};
+
+type SourceApplicationTransitionInternal = {
+  readonly topic: string;
+  readonly apply: () => void;
+  readonly cancelledMaintenanceWorkIds: ReadonlyArray<string>;
+  readonly lifetimeIdentity: object;
+};
+
+export type SourceMaintenanceOperation<Topic extends string = string> = {
+  readonly _tag: "SourceMaintenanceOperation";
+  readonly topic: Topic;
+  readonly id: string;
+  readonly workId: string;
+  readonly [SourceMaintenanceOperationTypeId]: () => SourceMaintenanceOperation<Topic>;
+};
+
+type SourceMaintenanceOperationInternal = {
+  readonly topic: string;
+  readonly id: string;
+  readonly workId: string;
+  readonly lifetimeIdentity: object;
+  readonly isCurrent: () => boolean;
+  readonly onSuccess: () => void;
+  readonly onFailure: (exit: SourceApplicationExit) => void;
+  readonly onStale: () => void;
+};
+
+export type SourceMaintenanceResult =
+  | {
+      readonly _tag: "Applied";
+      readonly exit: SourceApplicationExit;
+    }
+  | {
+      readonly _tag: "Stale";
+    }
+  | {
+      readonly _tag: "Inactive";
+    };
+
+export type SourceApplicationStateForLifetime = (
+  lifetimeScope: Scope.Scope,
+  topic: string,
+) => unknown;
+
+export type SourceApplicationStateRegistration<
+  ForLifetime extends SourceApplicationStateForLifetime = SourceApplicationStateForLifetime,
+> = {
+  readonly _tag: "SourceApplicationStateRegistration";
+  readonly forLifetime: ForLifetime;
+  readonly [SourceApplicationStateRegistrationTypeId]: () => SourceApplicationStateRegistration<ForLifetime>;
+};
+
+export type SourceApplicationStateRegistrationBindingInput = {
+  readonly topic: string;
+  readonly definition: unknown;
+  readonly lifetimeScope: Scope.Scope;
+  readonly target: SourceTarget<Readonly<Record<string, unknown>>>;
+};
+
+type SourceApplicationStateRegistrationInternal = {
+  readonly bind: (input: SourceApplicationStateRegistrationBindingInput) => void;
+  readonly lifetimeIdentity: (lifetimeScope: Scope.Scope) => object;
+  readonly unbind: (lifetimeScope: Scope.Scope) => void;
+  readonly sweepIntervalNanos: bigint;
+  readonly runDueSweep: (
+    lifetimeScope: Scope.Scope,
+    epochNowNanos: bigint,
+    execute: (operation: SourceMaintenanceOperation) => Effect.Effect<SourceMaintenanceResult>,
+  ) => Effect.Effect<unknown>;
+};
+
 export type SourceSettlement<AdapterFailure, Services = never> = (
   exit: SourceApplicationExit,
 ) => Effect.Effect<void, AdapterFailure, Services>;
 
-export type SourceDelivery<Row extends object, AdapterFailure, SettlementServices = never> = {
+export type SourceDelivery<
+  Row extends object,
+  AdapterFailure,
+  SettlementServices = never,
+  Topic extends string = string,
+> = {
   readonly _tag: "SourceDelivery";
   readonly mutations: Chunk.NonEmptyChunk<SourceMutation<Row>>;
   readonly settle: SourceSettlement<AdapterFailure, SettlementServices>;
-  readonly [SourceDeliveryTypeId]: () => SourceDelivery<Row, AdapterFailure, SettlementServices>;
+  readonly transition?: SourceApplicationTransition<Topic>;
+  readonly [SourceDeliveryTypeId]: () => SourceDelivery<
+    Row,
+    AdapterFailure,
+    SettlementServices,
+    Topic
+  >;
 };
 
 export type SourceItemRejectionDiagnostic<AdapterFailure, RejectionLocation> = {
@@ -279,8 +392,9 @@ export type SourceLaneEvent<
   AdapterFailure,
   RejectionLocation,
   SettlementServices = never,
+  Topic extends string = string,
 > =
-  | SourceDelivery<Row, AdapterFailure, SettlementServices>
+  | SourceDelivery<Row, AdapterFailure, SettlementServices, Topic>
   | SourceItemRejection<AdapterFailure, RejectionLocation, SettlementServices>;
 
 export type SourceBufferMetrics =
@@ -300,10 +414,11 @@ export type SourceDeliveryLane<
   AdapterFailure,
   RejectionLocation,
   Services = never,
+  Topic extends string = string,
 > = {
   readonly id: string;
   readonly events: Stream.Stream<
-    SourceLaneEvent<Row, AdapterFailure, RejectionLocation, Services>,
+    SourceLaneEvent<Row, AdapterFailure, RejectionLocation, Services, Topic>,
     SourceExecutionFailure<AdapterFailure>,
     Services
   >;
@@ -315,16 +430,18 @@ export type SourceAttempt<
   AdapterFailure,
   RejectionLocation,
   Services = never,
+  Topic extends string = string,
 > = {
   readonly lanes: readonly [
-    SourceDeliveryLane<Row, AdapterFailure, RejectionLocation, Services>,
-    ...ReadonlyArray<SourceDeliveryLane<Row, AdapterFailure, RejectionLocation, Services>>,
+    SourceDeliveryLane<Row, AdapterFailure, RejectionLocation, Services, Topic>,
+    ...ReadonlyArray<SourceDeliveryLane<Row, AdapterFailure, RejectionLocation, Services, Topic>>,
   ];
   readonly [SourceAttemptTypeId]: () => SourceAttempt<
     Row,
     AdapterFailure,
     RejectionLocation,
-    Services
+    Services,
+    Topic
   >;
 };
 
@@ -345,13 +462,23 @@ export type SourceToolkit<
   readonly delete: (
     id: string,
   ) => Effect.Effect<SourceDelete, SourceExecutionFailure<AdapterFailure>>;
-  readonly delivery: (
-    mutations: Chunk.NonEmptyChunk<SourceMutation<Row>>,
-    settlement?: SourceSettlement<AdapterFailure, SettlementServices>,
-  ) => Effect.Effect<
-    SourceDelivery<Row, AdapterFailure, SettlementServices>,
-    SourceExecutionFailure<AdapterFailure>
-  >;
+  readonly delivery: {
+    (
+      mutations: Chunk.NonEmptyChunk<SourceMutation<Row>>,
+      settlement?: SourceSettlement<AdapterFailure, SettlementServices>,
+    ): Effect.Effect<
+      SourceDelivery<Row, AdapterFailure, SettlementServices, Topic>,
+      SourceExecutionFailure<AdapterFailure>
+    >;
+    (
+      mutation: SourceMutation<Row>,
+      settlement: SourceSettlement<AdapterFailure, SettlementServices> | undefined,
+      transition: SourceApplicationTransition<Topic>,
+    ): Effect.Effect<
+      SourceDelivery<Row, AdapterFailure, SettlementServices, Topic>,
+      SourceExecutionFailure<AdapterFailure>
+    >;
+  };
   readonly reject: (input: {
     readonly failure: SourceExecutionFailure<AdapterFailure>;
     readonly location: RejectionLocation;
@@ -429,6 +556,7 @@ export type SourceRuntimeLifecycle<
   Metrics,
   RejectionLocation,
 > = {
+  readonly applicationState?: SourceApplicationStateRegistration;
   readonly initialLaneIds?: <
     const Topic extends string,
     Row extends object,
@@ -862,18 +990,6 @@ type RejectUnsafeLifecycleDeclaration<Declaration> = [Exclude<Declaration, undef
     ? RejectAnyOrUnknown<Metrics> & RejectAnyOrUnknown<RejectionLocation>
     : unknown;
 
-const hasSelfBrand = (value: unknown, key: symbol): boolean => {
-  if ((typeof value !== "object" && typeof value !== "function") || value === null) {
-    return false;
-  }
-  const inspected = Result.try(() => Reflect.get(value, key));
-  if (Result.isFailure(inspected) || typeof inspected.success !== "function") {
-    return false;
-  }
-  const branded = Result.try(() => Reflect.apply(inspected.success, undefined, []));
-  return Result.isSuccess(branded) && branded.success === value;
-};
-
 const sourceExecutable = <Value extends object>(value: Value): Value => {
   if (hasSelfBrand(value, SourceExecutableTypeId)) {
     return value;
@@ -915,21 +1031,39 @@ const hasExactEnumerableDataKeys = (
   });
 };
 
+const hasInspectableSynchronousFunction = (value: unknown): boolean => {
+  if (typeof value !== "function") {
+    return false;
+  }
+  const constructor = Result.try(() => Reflect.get(value, "constructor"));
+  if (Result.isFailure(constructor)) {
+    return false;
+  }
+  const constructorName = Result.try(() => Reflect.get(constructor.success, "name"));
+  return (
+    Result.isSuccess(constructorName) &&
+    constructorName.success !== "AsyncFunction" &&
+    constructorName.success !== "AsyncGeneratorFunction"
+  );
+};
+
 const validateLifecycleDeclaration = <Declaration extends SourceLifecycleDeclarationAny>(
   declaration: Declaration,
 ): Declaration => {
+  const applicationState = Reflect.get(declaration, "applicationState");
+  const expectedKeys =
+    applicationState === "required"
+      ? ["metrics", "rejectionLocation", "definitionOptions", "applicationState"]
+      : ["metrics", "rejectionLocation", "definitionOptions"];
   if (
-    !hasExactEnumerableDataKeys(declaration, [
-      "metrics",
-      "rejectionLocation",
-      "definitionOptions",
-    ]) ||
+    !hasExactEnumerableDataKeys(declaration, expectedKeys) ||
     !Schema.isSchema(declaration.metrics) ||
     !Schema.isSchema(declaration.rejectionLocation) ||
-    !hasSelfBrand(declaration.definitionOptions, SourceDefinitionOptionsTokenTypeId)
+    !hasSelfBrand(declaration.definitionOptions, SourceDefinitionOptionsTokenTypeId) ||
+    (applicationState !== undefined && applicationState !== "required")
   ) {
     throw new TypeError(
-      "Every Source Adapter lifecycle requires exact metrics, rejection-location, and definition-options declarations.",
+      "Every Source Adapter lifecycle requires exact metrics, rejection-location, definition-options, and optional required Application State declarations.",
     );
   }
   return Object.freeze(declaration);
@@ -1052,7 +1186,7 @@ const makeDefinition = <
       routeFields: capturedRouteBy,
     }),
   });
-  return definition;
+  return registerSourceDefinition(definition);
 };
 
 const makeDescriptorDefinition = <
@@ -1107,7 +1241,7 @@ const makeDescriptorDefinition = <
       routeFields: capturedRouteBy,
     }),
   });
-  return definition;
+  return registerSourceDefinition(definition);
 };
 
 export const makeMaterializedSourceDefinition = <
@@ -1373,136 +1507,6 @@ export const sourceDefinitionOptionsFamily = <
   return Object.freeze(token);
 };
 
-export function isSourceAdapterHandle<
-  Name extends string,
-  Version extends string | undefined,
-  AdapterFailure,
-  Materialized extends SourceLifecycleDeclarationAny | undefined,
-  Leased extends SourceLifecycleDeclarationAny | undefined,
->(value: SourceAdapterDescriptor<Name, Version, AdapterFailure, Materialized, Leased>): boolean;
-export function isSourceAdapterHandle(
-  value: unknown,
-): value is SourceAdapterDescriptor<
-  string,
-  string | undefined,
-  unknown,
-  SourceLifecycleDeclarationAny | undefined,
-  SourceLifecycleDeclarationAny | undefined
->;
-export function isSourceAdapterHandle(value: unknown): boolean {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    sourceAdapterHandles.has(value) &&
-    Reflect.get(value, SourceAdapterTypeId) === SourceAdapterTypeId
-  );
-}
-
-const hasExactDefinitionDataKeys = (
-  value: object,
-  expectedKeys: ReadonlyArray<PropertyKey>,
-): boolean => {
-  const keys = Result.try(() => Reflect.ownKeys(value));
-  if (
-    Result.isFailure(keys) ||
-    keys.success.length !== expectedKeys.length ||
-    keys.success.some((key) => !expectedKeys.includes(key))
-  ) {
-    return false;
-  }
-  return expectedKeys.every((key) => {
-    const descriptor = Result.try(() => Object.getOwnPropertyDescriptor(value, key));
-    return (
-      Result.isSuccess(descriptor) &&
-      descriptor.success !== undefined &&
-      descriptor.success.enumerable === true &&
-      "value" in descriptor.success
-    );
-  });
-};
-
-const validateSourceDefinitionEnvelope = (value: unknown): boolean => {
-  if (
-    typeof value !== "object" ||
-    value === null ||
-    !hasSelfBrand(value, SourceDefinitionTypeId) ||
-    !hasExactDefinitionDataKeys(value, [
-      "adapter",
-      "identity",
-      "lifecycle",
-      "options",
-      "routeBy",
-      "retry",
-      SourceDefinitionTypeId,
-      SourceDefinitionTypesTypeId,
-    ]) ||
-    !Object.isFrozen(value)
-  ) {
-    return false;
-  }
-  const adapter = Reflect.get(value, "adapter");
-  const identity = Reflect.get(value, "identity");
-  const lifecycle = Reflect.get(value, "lifecycle");
-  const options = Reflect.get(value, "options");
-  const routeBy = Reflect.get(value, "routeBy");
-  const retry = Reflect.get(value, "retry");
-  const types = Reflect.get(value, SourceDefinitionTypesTypeId);
-  if (
-    typeof adapter !== "object" ||
-    adapter === null ||
-    !isSourceAdapterHandle(adapter) ||
-    !Object.isFrozen(adapter) ||
-    Reflect.get(adapter, "identity") !== identity ||
-    (lifecycle !== "materialized" && lifecycle !== "leased") ||
-    !Array.isArray(routeBy) ||
-    !Object.isFrozen(routeBy) ||
-    routeBy.some((field) => typeof field !== "string" || field.length === 0) ||
-    new Set(routeBy).size !== routeBy.length ||
-    (lifecycle === "materialized" ? routeBy.length !== 0 : routeBy.length === 0) ||
-    Reflect.get(adapter, lifecycle) === undefined ||
-    typeof retry !== "object" ||
-    retry === null ||
-    !Object.isFrozen(retry) ||
-    typeof types !== "object" ||
-    types === null ||
-    !hasExactDefinitionDataKeys(types, ["adapter", "lifecycle", "options", "routeFields"]) ||
-    !Object.isFrozen(types) ||
-    Reflect.get(types, "adapter") !== adapter ||
-    Reflect.get(types, "lifecycle") !== lifecycle ||
-    Reflect.get(types, "options") !== options ||
-    Reflect.get(types, "routeFields") !== routeBy
-  ) {
-    return false;
-  }
-  const retryTag = Reflect.get(retry, "_tag");
-  return retryTag === "UseAdapterDefault"
-    ? hasExactDefinitionDataKeys(retry, ["_tag"])
-    : retryTag === "Override" &&
-        hasExactDefinitionDataKeys(retry, ["_tag", "policy"]) &&
-        Schedule.isSchedule(Reflect.get(retry, "policy"));
-};
-
-export const validateSourceDefinition = (value: unknown): boolean => {
-  const validation = Result.try(() => validateSourceDefinitionEnvelope(value));
-  return Result.isSuccess(validation) && validation.success;
-};
-
-export const isSourceDefinition = (
-  value: unknown,
-): value is SourceDefinition<
-  SourceAdapterHandle<
-    string,
-    string | undefined,
-    unknown,
-    SourceLifecycleDeclarationAny | undefined,
-    SourceLifecycleDeclarationAny | undefined
-  >,
-  SourceLifecycle,
-  unknown,
-  ReadonlyArray<string>,
-  never
-> => validateSourceDefinition(value);
-
 export const makeSourceUpsert = <Row extends object>(row: Row): SourceUpsert<Row> => {
   const mutation: SourceUpsert<Row> = {
     _tag: "Upsert",
@@ -1540,11 +1544,172 @@ export const isSourceMutation = (value: unknown): value is SourceMutation<object
 
 const noSettlement = () => Effect.void;
 
-export const makeSourceDelivery = <Row extends object, AdapterFailure, Services = never>(
+const snapshotMaintenanceWorkIds = (
+  cancelledMaintenanceWorkIds: ReadonlyArray<string>,
+): ReadonlyArray<string> => {
+  const snapshot = Array.from(cancelledMaintenanceWorkIds);
+  if (
+    snapshot.some((workId) => typeof workId !== "string" || workId.length === 0) ||
+    new Set(snapshot).size !== snapshot.length
+  ) {
+    throw new TypeError(
+      "Source Application Transition cancellation IDs must be unique non-empty strings.",
+    );
+  }
+  return Object.freeze(snapshot);
+};
+
+export const makeSourceApplicationTransition = <const Topic extends string>(
+  topic: Topic,
+  apply: () => void,
+  cancelledMaintenanceWorkIds: ReadonlyArray<string>,
+  lifetimeIdentity: object,
+): SourceApplicationTransition<Topic> => {
+  const cancellationSnapshot = snapshotMaintenanceWorkIds(cancelledMaintenanceWorkIds);
+  const transition: SourceApplicationTransition<Topic> = {
+    _tag: "SourceApplicationTransition",
+    topic,
+    [SourceApplicationTransitionTypeId]: () => transition,
+  };
+  sourceApplicationTransitions.set(transition, {
+    topic,
+    apply,
+    cancelledMaintenanceWorkIds: cancellationSnapshot,
+    lifetimeIdentity,
+  });
+  Object.freeze(transition);
+  return transition;
+};
+
+export const makeSourceApplicationStateRegistration = <
+  ForLifetime extends SourceApplicationStateForLifetime,
+>(input: {
+  readonly bind: (input: SourceApplicationStateRegistrationBindingInput) => void;
+  readonly forLifetime: ForLifetime;
+  readonly lifetimeIdentity: (lifetimeScope: Scope.Scope) => object;
+  readonly unbind: (lifetimeScope: Scope.Scope) => void;
+  readonly sweepIntervalNanos: bigint;
+  readonly runDueSweep: (
+    lifetimeScope: Scope.Scope,
+    epochNowNanos: bigint,
+    execute: (operation: SourceMaintenanceOperation) => Effect.Effect<SourceMaintenanceResult>,
+  ) => Effect.Effect<unknown>;
+}): SourceApplicationStateRegistration<ForLifetime> => {
+  if (
+    !hasExactEnumerableDataKeys(input, [
+      "bind",
+      "forLifetime",
+      "lifetimeIdentity",
+      "unbind",
+      "sweepIntervalNanos",
+      "runDueSweep",
+    ]) ||
+    !hasInspectableSynchronousFunction(input.bind) ||
+    !hasInspectableSynchronousFunction(input.forLifetime) ||
+    !hasInspectableSynchronousFunction(input.lifetimeIdentity) ||
+    !hasInspectableSynchronousFunction(input.unbind) ||
+    typeof input.sweepIntervalNanos !== "bigint" ||
+    input.sweepIntervalNanos <= 0n ||
+    !hasInspectableSynchronousFunction(input.runDueSweep)
+  ) {
+    throw new TypeError(
+      "Source Application State registration requires exact synchronous lifecycle capabilities.",
+    );
+  }
+  const snapshot = Object.freeze({
+    bind: input.bind,
+    forLifetime: input.forLifetime,
+    lifetimeIdentity: input.lifetimeIdentity,
+    unbind: input.unbind,
+    sweepIntervalNanos: input.sweepIntervalNanos,
+    runDueSweep: input.runDueSweep,
+  });
+  const registration: SourceApplicationStateRegistration<ForLifetime> = {
+    _tag: "SourceApplicationStateRegistration",
+    forLifetime: snapshot.forLifetime,
+    [SourceApplicationStateRegistrationTypeId]: () => registration,
+  };
+  sourceApplicationStateRegistrations.set(registration, snapshot);
+  Object.freeze(registration);
+  return registration;
+};
+
+export const resolveSourceApplicationStateRegistration = (
+  registration: SourceApplicationStateRegistration,
+): SourceApplicationStateRegistrationInternal | undefined =>
+  sourceApplicationStateRegistrations.get(registration);
+
+export const isSourceApplicationStateRegistration = (
+  value: unknown,
+): value is SourceApplicationStateRegistration =>
+  typeof value === "object" &&
+  value !== null &&
+  hasSelfBrand(value, SourceApplicationStateRegistrationTypeId) &&
+  sourceApplicationStateRegistrations.has(value);
+
+export const resolveSourceApplicationTransition = (
+  transition: SourceApplicationTransition,
+): SourceApplicationTransitionInternal | undefined => sourceApplicationTransitions.get(transition);
+
+export const isSourceApplicationTransition = (
+  value: unknown,
+): value is SourceApplicationTransition =>
+  typeof value === "object" &&
+  value !== null &&
+  hasSelfBrand(value, SourceApplicationTransitionTypeId) &&
+  sourceApplicationTransitions.has(value);
+
+export const makeSourceMaintenanceOperation = <const Topic extends string>(input: {
+  readonly topic: Topic;
+  readonly id: string;
+  readonly workId: string;
+  readonly lifetimeIdentity: object;
+  readonly isCurrent: () => boolean;
+  readonly onSuccess: () => void;
+  readonly onFailure: (exit: SourceApplicationExit) => void;
+  readonly onStale: () => void;
+}): SourceMaintenanceOperation<Topic> => {
+  const operation: SourceMaintenanceOperation<Topic> = {
+    _tag: "SourceMaintenanceOperation",
+    topic: input.topic,
+    id: input.id,
+    workId: input.workId,
+    [SourceMaintenanceOperationTypeId]: () => operation,
+  };
+  sourceMaintenanceOperations.set(operation, {
+    topic: input.topic,
+    id: input.id,
+    workId: input.workId,
+    lifetimeIdentity: input.lifetimeIdentity,
+    isCurrent: input.isCurrent,
+    onSuccess: input.onSuccess,
+    onFailure: input.onFailure,
+    onStale: input.onStale,
+  });
+  Object.freeze(operation);
+  return operation;
+};
+
+export const resolveSourceMaintenanceOperation = (
+  operation: SourceMaintenanceOperation,
+): SourceMaintenanceOperationInternal | undefined => sourceMaintenanceOperations.get(operation);
+
+export const isSourceMaintenanceOperation = (value: unknown): value is SourceMaintenanceOperation =>
+  typeof value === "object" &&
+  value !== null &&
+  hasSelfBrand(value, SourceMaintenanceOperationTypeId) &&
+  sourceMaintenanceOperations.has(value);
+
+export const makeSourceDelivery = <
+  Row extends object,
+  AdapterFailure,
+  Services = never,
+  Topic extends string = string,
+>(
   mutationsChunk: Chunk.NonEmptyChunk<SourceMutation<Row>>,
   settlement?: SourceSettlement<AdapterFailure, Services>,
-): SourceDelivery<Row, AdapterFailure, Services> => {
-  const delivery: SourceDelivery<Row, AdapterFailure, Services> = {
+): SourceDelivery<Row, AdapterFailure, Services, Topic> => {
+  const delivery: SourceDelivery<Row, AdapterFailure, Services, Topic> = {
     _tag: "SourceDelivery",
     mutations: mutationsChunk,
     settle: settlement ?? noSettlement,
@@ -1554,9 +1719,39 @@ export const makeSourceDelivery = <Row extends object, AdapterFailure, Services 
   return delivery;
 };
 
-export const isSourceDelivery = (
+export const makeSourceTransitionDelivery = <
+  Row extends object,
+  AdapterFailure,
+  Services = never,
+  const Topic extends string = string,
+>(
+  mutation: SourceMutation<Row>,
+  settlement: SourceSettlement<AdapterFailure, Services> | undefined,
+  transition: SourceApplicationTransition<Topic>,
+): SourceDelivery<Row, AdapterFailure, Services, Topic> => {
+  const delivery: SourceDelivery<Row, AdapterFailure, Services, Topic> = {
+    _tag: "SourceDelivery",
+    mutations: Chunk.of(mutation),
+    settle: settlement ?? noSettlement,
+    transition,
+    [SourceDeliveryTypeId]: () => delivery,
+  };
+  Object.freeze(delivery);
+  return delivery;
+};
+
+export function isSourceDelivery<
+  Row extends object,
+  AdapterFailure,
+  SettlementServices,
+  Topic extends string,
+>(
+  value: SourceDelivery<Row, AdapterFailure, SettlementServices, Topic>,
+): value is SourceDelivery<Row, AdapterFailure, SettlementServices, Topic>;
+export function isSourceDelivery(value: unknown): value is SourceDelivery<object, unknown, unknown>;
+export function isSourceDelivery(
   value: unknown,
-): value is SourceDelivery<object, unknown, unknown> => {
+): value is SourceDelivery<object, unknown, unknown> {
   if (!hasSelfBrand(value, SourceDeliveryTypeId) || typeof value !== "object" || value === null) {
     return false;
   }
@@ -1567,11 +1762,13 @@ export const isSourceDelivery = (
       Chunk.isChunk(mutations) &&
       Chunk.isNonEmpty(mutations) &&
       Chunk.every(mutations, isSourceMutation) &&
-      typeof Reflect.get(value, "settle") === "function"
+      typeof Reflect.get(value, "settle") === "function" &&
+      (!Reflect.has(value, "transition") ||
+        isSourceApplicationTransition(Reflect.get(value, "transition")))
     );
   });
   return Result.isSuccess(inspected) && inspected.success;
-};
+}
 
 export const makeSourceItemRejection = <
   AdapterFailure,
@@ -1719,3 +1916,5 @@ export const sourceModelInternals = {
   makeSourceUpsert,
   markSourceToolkit,
 } as const;
+
+export { isSourceAdapterHandle, isSourceDefinition, validateSourceDefinition };

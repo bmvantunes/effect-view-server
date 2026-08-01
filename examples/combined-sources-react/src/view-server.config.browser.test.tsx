@@ -64,8 +64,8 @@ describe("combined-sources React example topic-owned sources", () => {
       });
       const tradeLocalRowKey = tradeOptions.localRowKey({
         key: tradeKey,
+        value: tradeValue,
         region: "london",
-        metadata: tradeMetadata,
       });
       const tradeRow = tradeOptions.map({
         key: tradeKey,

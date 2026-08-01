@@ -68,6 +68,24 @@
           "name": "64-partition assignment, commit, lag, and snapshot metrics",
           "p99Ms": 0.05666600000040489,
           "sampleCount": 5
+        },
+        {
+          "groupName": "src/source-lanes.bench.ts > Kafka Source Adapter lanes",
+          "maxMs": 2549.856083999999,
+          "meanMs": 2447.452341799999,
+          "minMs": 2376.7867499999993,
+          "name": "finite-retention ingestion (10000 indexed records)",
+          "p99Ms": 2549.856083999999,
+          "sampleCount": 5
+        },
+        {
+          "groupName": "src/source-lanes.bench.ts > Kafka Source Adapter lanes",
+          "maxMs": 3979.9238750000004,
+          "meanMs": 3871.5716666000008,
+          "minMs": 3754.1606670000037,
+          "name": "retention due sweep and Runtime Core convergence (10000 rows)",
+          "p99Ms": 3979.9238750000004,
+          "sampleCount": 5
         }
       ],
       "benchmarkCases": [
@@ -77,22 +95,24 @@
         "sustained JSON/protobuf ingestion (2000 records per wave)",
         "poison Rejection plus valid continuation (2000 records across 64 partitions)",
         "four concurrent Region Lanes (2000 accepted records across 64 partitions)",
-        "64-partition assignment, commit, lag, and snapshot metrics"
+        "64-partition assignment, commit, lag, and snapshot metrics",
+        "finite-retention ingestion (10000 indexed records)",
+        "retention due sweep and Runtime Core convergence (10000 rows)"
       ],
       "benchmarkName": "Kafka Source Adapter lane and metrics benchmark",
       "benchmarkScope": "kafka-source-adapter",
       "cleanupLeakCount": 0,
       "latencySource": "vitest-output-json",
-      "memoryRssTotalDeltaBytes": 171786240,
+      "memoryRssTotalDeltaBytes": 298057728,
       "minimumSampleCount": 5,
-      "mutationCount": 155994,
+      "mutationCount": 335994,
       "outputJsonPath": "packages/kafka/.artifacts/source-lanes-2000rows-64partitions.json",
       "queuedEventCount": 0,
       "rowCount": 2000,
       "subscriberCount": 0,
       "summaryPath": "packages/kafka/.artifacts/source-lanes-2000rows-64partitions.summary.json",
       "taskLabel": "Kafka Source Adapter 2000 rows 64 partitions",
-      "topics": ["accepted", "protobuf", "poisoned", "multiRegion"]
+      "topics": ["accepted", "protobuf", "poisoned", "multiRegion", "retained"]
     },
     {
       "artifactKind": "runtime-benchmark-summary",

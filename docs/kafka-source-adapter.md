@@ -12,7 +12,9 @@ split by platform:
 
 Applications declare Kafka on the Topic's canonical `source` property. The
 Topic row must contain the canonical `id: ViewServerId`; the adapter derives
-that ID from the source region and `localRowKey`.
+that ID according to the mandatory cleanup policy. Delete-only identity uses
+Region, partition, and `localRowKey`; compaction-capable identity uses Region,
+partition, and the exact serialized Kafka key bytes.
 
 ## Define and run a source
 
@@ -41,6 +43,8 @@ const viewServer = defineViewServerConfig({
     orders: {
       schema: Order,
       source: kafka.source({
+        cleanupPolicy: "delete",
+        retentionPolicy: "match-kafka-retention",
         topic: "orders.v1",
         regions: ["primary", "recovery"],
         key: kafka.string(),
@@ -59,6 +63,7 @@ const viewServer = defineViewServerConfig({
 
 const KafkaLive = kafkaNode.layer(viewServer, {
   consumerGroupPrefix: "orders-view-v1",
+  retentionSweepInterval: "15 minutes",
   regions: {
     primary: {
       bootstrapServers: "kafka-primary.internal:9092",
@@ -95,24 +100,41 @@ Every source supplies explicit key and value codecs:
 - `kafka.codec({ name, decode })` owns a custom Effect decoder and its typed
   error channel.
 
-`localRowKey` receives the decoded key, source region, and exact Kafka metadata.
-It never receives the value, so a compacted-topic tombstone can identify the row
-without decoding a missing value. `map` receives decoded key and value,
-metadata, and region. It returns every Topic field except `id`; returning a
+Every source declares `cleanupPolicy` as `delete`, `compact`, or
+`compact-and-delete`, and declares `retentionPolicy` as
+`match-kafka-retention` or an Effect `Duration.Input`. Neither field has a
+default.
+
+Delete-only sources use the ordinary codecs above. `localRowKey` receives the
+decoded key, decoded non-null value, and exact Region. Its `map` additionally
+receives the derived `localRowKey` and detached metadata.
+
+Compaction-capable sources use `kafka.compactionKey.bytes()`,
+`.string()`, `.json(...)`, `.protobuf(...)`, or `.codec(...)` for the key and
+must omit `localRowKey`. Those key decoders receive only exact non-null
+serialized bytes—never metadata—so application behavior cannot influence
+canonical compact identity. Their `map` receives decoded key/value, Region, and
+metadata, but no local key or identity override.
+
+Both mapping branches return every Topic field except `id`; returning a
 missing, extra, or incorrectly typed field is rejected by the public type.
-Runtime Core also decodes the mapped row through the Topic Schema before
-applying it.
+Runtime Core also decodes the complete adapter-injected row through the Topic
+Schema before applying it.
 
 Every executable codec and Mapping callback receives a detached, frozen
 metadata envelope and header collection. Header byte arrays are copied once
 into that snapshot. Custom codec names are quoted in safe rejection diagnostics;
 decoder failures and payload bytes are never included.
 
-The canonical row ID is the exact text `region:localRowKey`. Region names cannot
-contain a colon, so `kafka.decodeRowId(...)` splits only at the first colon and
-preserves the local key verbatim, including any later colons or percent
-characters. Two regions may therefore publish the same local key without
-overwriting one another.
+Delete-only canonical row ID is
+`region:partition:localRowKey`. The decoder preserves the local key verbatim,
+including colons. Compaction-capable canonical row ID is
+`region:partition:k<unpadded-base64url(serializedKeyBytes)>`. It reversibly
+encodes the exact bytes; byte-equal keys address the same row only inside the
+same Region and partition, while byte-distinct keys never collapse merely
+because they decode to the same application value. Browser-safe
+`deleteRowId`/`compactionRowId` and policy-specific decode helpers are available
+on `kafka`.
 
 ## Start positions and consumer groups
 
@@ -152,12 +174,14 @@ The per-region `decoded` metric counts each fully decoded Kafka record once:
 after key decoding for a tombstone, or after both key and value decoding for an
 upsert. A key or value decode rejection does not increment it.
 
-A non-null record produces an Upsert. A null value is a tombstone and produces
-a Delete for the canonical row ID. Decode, key, mapping, and Topic-Schema
-failures become exact item Rejections: the adapter publishes Degraded health,
-settles and commits the rejected record, then continues the lane. Diagnostics
-contain safe codec names and Kafka locations, never payload bytes or
-credentials.
+A non-null record produces an Upsert unless its finite deadline is already due,
+in which case it takes the keyed ordinary Delete path without a transient
+Upsert. A null value is a tombstone Delete only for `compact` and
+`compact-and-delete`; under `delete`, it is a settled Source Item Rejection.
+Decode, key, mapping, and Topic-Schema failures become exact item Rejections:
+the adapter publishes Degraded health, settles and commits the rejected record,
+then continues the lane. Diagnostics contain safe codec names and Kafka
+locations, never payload bytes or credentials.
 
 The offset is committed only after Runtime Core settles the corresponding
 Delivery or Rejection successfully. A commit failure terminates that source
@@ -165,13 +189,55 @@ attempt so supervision can close its consumers and retry. All consumers,
 iterators, and network resources are scoped; runtime shutdown and interrupted
 consumers release them before the Layer closes.
 
+## Broker contract and retention
+
+The aggregate Node Layer opens one Platformatic Kafka Admin client per Region
+and batches effective `cleanup.policy` and `retention.ms` discovery for all
+unique source topics. Cleanup parsing is order-insensitive and trims whitespace,
+so `compact,delete`, `compact, delete`, and `delete,compact` are equivalent.
+
+Validation happens once during Layer acquisition. Missing `DESCRIBE_CONFIGS`
+permission, Admin or response failure, missing/malformed fields, cleanup
+mismatch, and invalid `retention.ms` are accumulated into one typed redacted
+failure. The complete runtime fails before any consumer, retention sweep,
+listener, or server port starts; validation failure is never reduced to health
+degradation.
+
+For `match-kafka-retention`, compact-only topics and broker
+`retention.ms = -1` retain rows forever. Delete-capable topics use the
+non-negative broker duration. Explicit positive finite durations or Effect
+infinity override the broker value; zero and negative explicit values are
+configuration errors. This projects configured time retention only—it does not
+claim exact segment deletion or emulate `retention.bytes`.
+
+Finite deadlines are `Kafka record timestamp + resolved duration`, all in
+Unix-epoch nanoseconds. Eligibility compares them with epoch wall time from
+Effect `Clock.currentTimeMillis`; monotonic nanoseconds are used only for
+elapsed sweep duration and cadence. One logical Topic lifetime owns the
+generation-protected index and one coarse sweep. `retentionSweepInterval` is a
+positive finite Node Layer option and defaults to 15 minutes. Successful
+Upserts replace deadlines with never-reused lifetime generation tokens;
+tombstones, already-expired records, and expiration all use the same keyed
+ordinary Delete path.
+
+Expiration Delete failure never stops or pauses ingestion. The exact work
+identity remains retryable, the Source/Topic/aggregate health trees degrade
+immediately, and a later sweep retries it. Startup broker configuration is a
+snapshot: coordinated stop, broker change, and restart is required to change
+the contract safely.
+
 ## Health and metrics
 
-`liveClient.subscribeSourceHealth("orders")` exposes the standard
+`liveClient.subscribeSourceHealth({ topic: "orders" })` exposes the standard
 Source Health stream. Kafka metrics include exact per-region assignment and
 offset state plus counts for decode, mapping, rejection, commit, reconnect,
-rebalance, and close outcomes. Metrics are sampled at the Source Adapter SDK's
-bounded cadence and lifecycle or rejection transitions publish immediately.
+rebalance, and close outcomes. Retention metrics expose declared/observed
+cleanup, configured/resolved retention, tracked rows, retryable expiration
+failures from the last completed sweep, expired and authoritative-expired
+Deletes, unique failed work, cumulative retry failures, latest safe failure,
+last sweep epoch/duration, and interval. Metrics are
+sampled at the Source Adapter SDK's bounded cadence; lifecycle, rejection, and
+maintenance-ledger transitions publish immediately.
 
 The package's shared behavioral conformance suite places controllable Kafka
 Region drivers behind the production server Layer and validates the resulting

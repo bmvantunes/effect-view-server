@@ -98,6 +98,17 @@ describe("combined-sources runtime composition", () => {
       const ordersFinalized = yield* Deferred.make<void>();
       const KafkaLive = kafkaServer.layer({
         consumerGroupPrefix: "combined-sources-integration",
+        brokerContracts: ["usa", "london"].map((region) => ({
+          viewServerTopic: "trades",
+          sourceTopic: "view-server-example-trades",
+          region,
+          cleanupPolicy: "delete",
+          retentionPolicy: { _tag: "Forever" },
+          observedCleanupPolicy: "delete",
+          observedRetentionMs: -1n,
+          resolvedRetention: { _tag: "Forever" },
+        })),
+        retentionSweepIntervalNanos: 900_000_000_000n,
         regions: new Map([
           ["usa", makeKafkaRegion("usa", kafkaUsaAcquired, kafkaUsaFinalized)],
           ["london", makeKafkaRegion("london", kafkaLondonAcquired, kafkaLondonFinalized)],

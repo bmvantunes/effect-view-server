@@ -8,10 +8,11 @@ import {
   SourceFixture,
   inspectSourceAdapterPackageConformance,
   makeSourceAdapterConformanceDriver,
+  type SourceAdapterPackageInspectionError,
   type SourceAdapterPackageInspectionOptions,
   validateSourceAdapterPackageConformance,
 } from "@effect-view-server/source-adapter-testing";
-import { Config, Effect, Layer, Stream } from "effect";
+import { Cause, Config, Effect, Layer, Result, Stream } from "effect";
 
 Reflect.set(
   globalThis,
@@ -27,6 +28,26 @@ const {
   leasedSource: builtPackageLeasedSource,
   source: builtPackageSource,
 } = await import("../../source-adapter-testing/test-fixtures/package-adapter/contract.js");
+
+const fixtureResourceValidationFailure = (
+  failure: SourceAdapterPackageInspectionError,
+): boolean => {
+  if (
+    failure.cause instanceof TypeError &&
+    failure.cause.message === "Expected exactly one logical client resource."
+  ) {
+    return true;
+  }
+  if (!Cause.isCause(failure.cause)) {
+    return false;
+  }
+  const defect = Cause.findDefect(failure.cause);
+  return (
+    Result.isSuccess(defect) &&
+    defect.success instanceof TypeError &&
+    defect.success.message === "Expected exactly one logical client resource."
+  );
+};
 import {
   makeSourceAdapterPackageConformanceCheck,
   makeSourceAdapterPackageConformanceRegistrar,
@@ -95,6 +116,7 @@ const builtPackageInspection: SourceAdapterPackageInspectionOptions = {
       extraResources: { resources: ["client"], extra: true },
       duplicateResources: { resources: ["client", "client"] },
       exactConfigResources: { resources: Config.succeed(["client"]) },
+      resourceValidationFailure: fixtureResourceValidationFailure,
     },
   ],
   effectPeerDependencies: ["@effect/platform-node"],

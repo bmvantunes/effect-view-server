@@ -1,12 +1,13 @@
 import { describe, expect, it } from "@effect/vitest";
 import { SourceAdapter } from "@effect-view-server/source-adapter";
 import { SourceAdapterServer } from "@effect-view-server/source-adapter/server";
-import { Config, Effect, Exit } from "effect";
+import { Cause, Config, Effect, Exit, Layer, Option, Result } from "effect";
 import { fileURLToPath } from "node:url";
 import {
   classifySourceAdapterContractBrowserModules,
   inspectSourceAdapterContractBrowserBundle,
   inspectSourceAdapterPackageConformance,
+  SourceAdapterPackageInspectionError,
   type SourceAdapterPackageInspectionOptions,
   type SourceAdapterPackageConformanceSnapshot,
   validateSourceAdapterPackageConformance,
@@ -78,6 +79,36 @@ const privatePeerRuntime = fileURLToPath(
 );
 const forbiddenPublicServerSdk = "effect-view-server/source-adapter/server";
 const forbiddenEffectPlatform = "@effect/platform-node";
+
+const fixtureResourceValidationFailure = (
+  failure: import("./package-conformance").SourceAdapterPackageInspectionError,
+): boolean => {
+  if (
+    failure.cause instanceof TypeError &&
+    failure.cause.message === "Expected exactly one logical client resource."
+  ) {
+    return true;
+  }
+  if (!Cause.isCause(failure.cause)) {
+    return false;
+  }
+  const defect = Cause.findDefect(failure.cause);
+  return (
+    Result.isSuccess(defect) &&
+    defect.success instanceof TypeError &&
+    defect.success.message === "Expected exactly one logical client resource."
+  );
+};
+
+const fixtureExternalValidationFailure = (
+  failure: import("./package-conformance").SourceAdapterPackageInspectionError,
+): boolean => {
+  if (!Cause.isCause(failure.cause)) {
+    return false;
+  }
+  const expected = Cause.findErrorOption(failure.cause);
+  return Option.isSome(expected) && expected.value === "layer acquisition failed";
+};
 
 const options = {
   name: "Source Adapter built-package conformance contract",
@@ -165,6 +196,7 @@ const options = {
       exactConfigResources: {
         resources: Config.succeed(["client"]),
       },
+      resourceValidationFailure: fixtureResourceValidationFailure,
     },
   ],
   effectPeerDependencies: ["@effect/platform-node"],
@@ -202,6 +234,28 @@ it.effect(options.name, () =>
   Effect.gen(function* () {
     const snapshot = yield* inspectSourceAdapterPackageConformance(options);
     expect(validateSourceAdapterPackageConformance(snapshot, options)).toStrictEqual([]);
+  }),
+);
+
+it.effect("supports platform layers whose exact acquisition requires external validation", () =>
+  Effect.gen(function* () {
+    const externalOptions: SourceAdapterPackageInspectionOptions = {
+      ...options,
+      name: "External validation package conformance contract",
+      platforms: [
+        {
+          ...options.platforms[0],
+          export: "./failing-node",
+          exactLayerAcquisition: "external-validation-failure",
+          externalValidationFailure: fixtureExternalValidationFailure,
+        },
+      ],
+    };
+    const snapshot = yield* inspectSourceAdapterPackageConformance(externalOptions);
+
+    expect(snapshot.platforms["./failing-node"]?.exactRuntimeService._tag).toBe("Failure");
+    expect(snapshot.platforms["./failing-node"]?.exactConfigRuntimeService._tag).toBe("Failure");
+    expect(validateSourceAdapterPackageConformance(snapshot, externalOptions)).toStrictEqual([]);
   }),
 );
 
@@ -835,5 +889,85 @@ describe("Source Adapter package conformance validation", () => {
     });
 
     expect(issues.some((issue) => issue.detail === "@effect/platform-node")).toBe(false);
+  });
+
+  it("accepts only the declared resource and external startup validation failures", () => {
+    const platform = {
+      ...options.platforms[0],
+      exactLayerAcquisition: "external-validation-failure" as const,
+      externalValidationFailure: fixtureExternalValidationFailure,
+    };
+    const resourceFailure = Exit.fail(
+      new SourceAdapterPackageInspectionError({
+        message: "Platform layer rejected resources.",
+        cause: new TypeError("Expected exactly one logical client resource."),
+      }),
+    );
+    const externalFailure = Exit.fail(
+      new SourceAdapterPackageInspectionError({
+        message: "Platform layer acquisition failed.",
+        cause: Cause.fail("layer acquisition failed"),
+      }),
+    );
+    const matchingIssues = validateSourceAdapterPackageConformance(
+      {
+        ...invalidSnapshot,
+        platforms: {
+          "./node": {
+            module: {
+              layer: () => Layer.empty,
+              layerConfig: () => Layer.empty,
+            },
+            emptyResources: resourceFailure,
+            missingResources: resourceFailure,
+            extraResources: resourceFailure,
+            duplicateResources: resourceFailure,
+            exactRuntimeService: externalFailure,
+            exactConfigRuntimeService: externalFailure,
+          },
+        },
+      },
+      {
+        platforms: [platform],
+      },
+    );
+    const unrelatedIssues = validateSourceAdapterPackageConformance(
+      {
+        ...invalidSnapshot,
+        platforms: {
+          "./node": {
+            module: {
+              layer: () => Layer.empty,
+              layerConfig: () => Layer.empty,
+            },
+            emptyResources: failed,
+            missingResources: failed,
+            extraResources: failed,
+            duplicateResources: failed,
+            exactRuntimeService: failed,
+            exactConfigRuntimeService: failed,
+          },
+        },
+      },
+      {
+        platforms: [platform],
+      },
+    );
+
+    expect(matchingIssues.filter((issue) => issue.code === "PlatformCheckFailed")).toStrictEqual(
+      [],
+    );
+    expect(
+      unrelatedIssues
+        .filter((issue) => issue.code === "PlatformCheckFailed")
+        .map((issue) => issue.detail),
+    ).toStrictEqual([
+      "./node:rejectsEmptyResources",
+      "./node:rejectsMissingResources",
+      "./node:rejectsExtraResources",
+      "./node:rejectsDuplicateResources",
+      "./node:honorsExactRuntimeAcquisition",
+      "./node:honorsExactConfigRuntimeAcquisition",
+    ]);
   });
 });

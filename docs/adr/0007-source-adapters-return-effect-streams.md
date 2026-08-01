@@ -6,10 +6,10 @@ Accepted. Issue #384 implemented the generic Source Attempt, lane, delivery,
 rejection, settlement, supervision, diagnostics, and conformance contracts.
 Issues #385 and #386 implemented the first-party Kafka and gRPC integrations.
 ADR 0011 supersedes this decision's universal uninterruptible Source Settlement
-rule with an accepted target contract that issue #402 will implement: callback
+rule with the implemented Source Settlement contract: callback
 application remains exactly once, while the returned settlement Effect is owned
 and interrupted by the Source Attempt Scope. ADR 0011 also supersedes this
-decision's rejection-only `Degraded` payload with the accepted canonical
+decision's rejection-only `Degraded` payload with the implemented canonical
 non-empty degradation-reason tuple; the older payload is no longer normative.
 
 ## Context
@@ -106,7 +106,7 @@ type SourceRuntimeMetrics = {
 };
 ```
 
-The epoch-clock migration in this paragraph is accepted target behavior tracked by PRD #400 and implementation issues #401 and #402; it becomes normative only after every public timestamp producer and Kafka broker-boundary calculation is migrated. All absolute times are then epoch nanoseconds derived through Effect `Clock.currentTimeMillis`, validated as non-negative safe-integer wall milliseconds and converted as `BigInt(wallMillis) * 1_000_000n`; number-space nanosecond multiplication is invalid. `Clock.currentTimeNanos` is monotonic and is reserved for elapsed durations and cadence, never public or persisted epoch fields. Contracts and the Wire Protocol carry the raw `bigint`, never Date or Temporal objects; consumers may pass it to `Temporal.Instant.fromEpochNanoseconds`. Cumulative counters use `bigint`, while actual JavaScript collection sizes and capacities use `number`. Delivery, rejection, mutation, and settlement counters remain source-wide aggregates. `lanes` is always non-empty; each entry has a non-empty ID that is unique within the attempt and stable across retries, plus its exact buffer state. A simple source reports one lane, and Kafka uses exact region names as lane IDs. `completedSettlementCount` records completion of the settlement Effect without guessing adapter-specific acknowledgement semantics. Lifecycle status and exact failures remain outside metrics.
+Every public timestamp producer and Kafka broker-boundary calculation implements the epoch-clock contract in this paragraph. All absolute times are epoch nanoseconds derived through Effect `Clock.currentTimeMillis`, validated as non-negative safe-integer wall milliseconds and converted as `BigInt(wallMillis) * 1_000_000n`; number-space nanosecond multiplication is invalid. `Clock.currentTimeNanos` is monotonic and is reserved for elapsed durations and cadence, never public or persisted epoch fields. Contracts and the Wire Protocol carry the raw `bigint`, never Date or Temporal objects; consumers may pass it to `Temporal.Instant.fromEpochNanoseconds`. Cumulative counters use `bigint`, while actual JavaScript collection sizes and capacities use `number`. Delivery, rejection, mutation, and settlement counters remain source-wide aggregates. `lanes` is always non-empty; each entry has a non-empty ID that is unique within the attempt and stable across retries, plus its exact buffer state. A simple source reports one lane, and Kafka uses exact region names as lane IDs. `completedSettlementCount` records completion of the settlement Effect without guessing adapter-specific acknowledgement semantics. Lifecycle status and exact failures remain outside metrics.
 
 Source health uses exhaustive Effect Schema tagged unions rather than status strings plus optional fields:
 

@@ -1,7 +1,17 @@
 import { describe, expect, it } from "@effect/vitest";
 import type { ViewServerLiveEvent, ViewServerLiveSubscription } from "@effect-view-server/client";
 import { SourceAdapter } from "@effect-view-server/source-adapter";
-import { Deferred, Effect, Result, Schema, SchemaGetter, Stream } from "effect";
+import {
+  Cause,
+  Deferred,
+  Effect,
+  Exit,
+  Option,
+  Result,
+  Schema,
+  SchemaGetter,
+  Stream,
+} from "effect";
 import { make as makeBigDecimal } from "effect/BigDecimal";
 import {
   sourceLeaseTerminalObserver,
@@ -38,6 +48,95 @@ const entry: SourceRuntimeRouteEntry = {
 };
 
 describe("Source Runtime internal contracts", () => {
+  it("classifies only a closing-time interruption as ordinary maintenance shutdown", () => {
+    const interruption = Cause.interrupt();
+    expect(Cause.hasInterruptsOnly(interruption)).toBe(true);
+    expect(
+      sourceRuntimeInternals.maintenanceSupervisorCause("rows", Exit.failCause(interruption), true),
+    ).toBeUndefined();
+    expect(
+      sourceRuntimeInternals.maintenanceSupervisorCause(
+        "rows",
+        Exit.failCause(
+          Cause.combine(
+            Cause.fail({
+              _tag: "ViewServerRuntimeError",
+              code: "RuntimeUnavailable",
+              topic: "rows",
+              message: "not ordinary",
+            }),
+            interruption,
+          ),
+        ),
+        true,
+      ),
+    ).not.toBeUndefined();
+  });
+
+  it("turns premature maintenance completion into a root-fatal runtime cause", () => {
+    const cause = sourceRuntimeInternals.maintenanceSupervisorCause("rows", Exit.void, false);
+    expect(cause).not.toBeUndefined();
+    expect(
+      Option.getOrThrow(Cause.findErrorOption(Option.getOrThrow(Option.fromUndefinedOr(cause)))),
+    ).toStrictEqual({
+      _tag: "ViewServerRuntimeError",
+      code: "RuntimeUnavailable",
+      topic: "rows",
+      message:
+        "Source maintenance supervisor stopped unexpectedly and closed the complete runtime.",
+    });
+  });
+
+  it("maps typed fatal application failures without replacing their original defects", () => {
+    const defect = new Error("original application defect");
+    const cause = sourceRuntimeInternals.fatalSourceApplicationCause(
+      "rows",
+      Cause.combine(
+        Cause.fail({
+          _tag: "InvalidSourceDelivery",
+          message: "secondary typed failure",
+        }),
+        Cause.die(defect),
+      ),
+      "Source application transition failed and stopped the complete runtime.",
+    );
+
+    expect(Option.getOrThrow(Cause.findErrorOption(cause))).toStrictEqual({
+      _tag: "ViewServerRuntimeError",
+      code: "RuntimeUnavailable",
+      topic: "rows",
+      message: "Source application transition failed and stopped the complete runtime.",
+    });
+    expect(Result.getOrThrow(Cause.findDefect(cause))).toBe(defect);
+  });
+
+  it("adds the exact typed fatal root to a pure application defect", () => {
+    const defect = new Error("pure application defect");
+    const cause = sourceRuntimeInternals.fatalSourceApplicationCause(
+      "rows",
+      Cause.die(defect),
+      "Source application transition failed and stopped the complete runtime.",
+    );
+
+    expect(Option.getOrThrow(Cause.findErrorOption(cause))).toStrictEqual({
+      _tag: "ViewServerRuntimeError",
+      code: "RuntimeUnavailable",
+      topic: "rows",
+      message: "Source application transition failed and stopped the complete runtime.",
+    });
+    expect(Result.getOrThrow(Cause.findDefect(cause))).toBe(defect);
+  });
+
+  it("converts safe epoch milliseconds to nanoseconds", () => {
+    expect(sourceRuntimeInternals.epochNanos(1_234)).toBe(1_234_000_000n);
+    expect(() => sourceRuntimeInternals.epochNanos(-1)).toThrow(
+      "Effect Clock returned an invalid wall-clock millisecond value.",
+    );
+    expect(() => sourceRuntimeInternals.epochNanos(Number.MAX_SAFE_INTEGER + 1)).toThrow(
+      "Effect Clock returned an invalid wall-clock millisecond value.",
+    );
+  });
+
   it("rejects cyclic and non-data values while freezing decoded metrics", () => {
     const cyclicArray: Array<unknown> = [];
     cyclicArray.push(cyclicArray);
@@ -361,17 +460,22 @@ describe("Source Runtime internal contracts", () => {
         _tag: "Degraded",
         attempt: 1n,
         degradedAtNanos: 1n,
-        latestRejection: {
-          failure: {
-            _tag: "RuntimeFailure",
-            failure: {
-              _tag: "InvalidSourceDelivery",
-              message: "rejected",
+        reasons: [
+          {
+            _tag: "SourceItemRejection",
+            latestRejection: {
+              failure: {
+                _tag: "RuntimeFailure",
+                failure: {
+                  _tag: "InvalidSourceDelivery",
+                  message: "rejected",
+                },
+              },
+              location: { offset: 1n },
+              rejectedAtNanos: 1n,
             },
           },
-          location: { offset: 1n },
-          rejectedAtNanos: 1n,
-        },
+        ],
       },
       {
         _tag: "WaitingToRetry",
@@ -407,7 +511,7 @@ describe("Source Runtime internal contracts", () => {
     ).toStrictEqual([
       "stale:SnapshotStale:Source is starting; retained rows may be incomplete.",
       "ready:Ready:Source is ready.",
-      "ready:Ready:Source delivery continues with one or more settled item rejections.",
+      "ready:Ready:Source delivery continues with active degradation diagnostics.",
       "stale:SnapshotStale:Source is retrying; retained rows may be stale.",
       "stale:SnapshotStale:Source is retrying; retained rows may be stale.",
       "error:RuntimeUnavailable:Source retries are exhausted; retained rows are preserved.",

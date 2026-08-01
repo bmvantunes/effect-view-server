@@ -13,6 +13,9 @@ import {
 describe("benchmark baseline runner", () => {
   it("defines the Kafka Source Adapter multi-partition baseline", () => {
     const sourceTask = kafkaSourceAdapterTask(64, 64);
+    const overriddenRetentionTask = kafkaSourceAdapterTask(64, 64, {
+      VIEW_SERVER_KAFKA_RETENTION_BENCH_ROWS: "25",
+    });
     const brokerTask = kafkaSourceAdapterBrokerTask(64);
     const sourceProfile = profiles.get("kafka-source-adapter") ?? [];
 
@@ -23,19 +26,29 @@ describe("benchmark baseline runner", () => {
       minimumSampleCount: sourceTask.minimumSampleCount,
       outputJsonPath: sourceTask.packageOutputJsonPath,
       partitions: sourceTask.env["VIEW_SERVER_KAFKA_SOURCE_BENCH_PARTITIONS"],
+      retentionRows: sourceTask.env["VIEW_SERVER_KAFKA_RETENTION_BENCH_ROWS"],
       rowCount: sourceTask.expectedRowCount,
       rows: sourceTask.env["VIEW_SERVER_KAFKA_SOURCE_BENCH_ROWS"],
       task: sourceTask.args,
     }).toStrictEqual({
       benchmarkScope: "kafka-source-adapter",
-      expectedMutationCount: 4_986,
+      expectedMutationCount: 184_986,
       iterations: undefined,
       minimumSampleCount: 5,
       outputJsonPath: ".artifacts/source-lanes-64rows-64partitions.json",
       partitions: "64",
+      retentionRows: "10000",
       rowCount: 64,
       rows: "64",
       task: ["run", "--no-cache", "kafka#bench:source-lanes"],
+    });
+    expect({
+      expectedMutationCount: overriddenRetentionTask.expectedMutationCount,
+      retentionRows:
+        overriddenRetentionTask.env["VIEW_SERVER_KAFKA_RETENTION_BENCH_ROWS"],
+    }).toStrictEqual({
+      expectedMutationCount: 5_436,
+      retentionRows: "25",
     });
     expect(
       sourceProfile.map((task) => ({
@@ -55,7 +68,7 @@ describe("benchmark baseline runner", () => {
     ).toStrictEqual([
       {
         benchmarkScope: "kafka-source-adapter",
-        expectedMutationCount: 155_994,
+        expectedMutationCount: 335_994,
         iterations: "5",
         minimumSampleCount: 5,
         partitions: "64",

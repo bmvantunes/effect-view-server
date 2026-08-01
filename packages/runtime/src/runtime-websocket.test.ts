@@ -1,22 +1,33 @@
 import { describe, expect, it } from "@effect/vitest";
 import type { ColumnLiveViewEngineHealth } from "@effect-view-server/column-live-view-engine";
 import { makeViewServerClient } from "@effect-view-server/client/remote";
-import { ViewServerId, defineViewServerConfig } from "@effect-view-server/config";
+import {
+  ViewServerId,
+  defineViewServerConfig,
+  type ViewServerRuntimeError,
+} from "@effect-view-server/config";
 import { makeViewServerRuntimeCoreInternal } from "@effect-view-server/runtime-core/internal";
+import { SourceAdapter } from "@effect-view-server/source-adapter";
+import { SourceAdapterServer } from "@effect-view-server/source-adapter/server";
 import {
   SourceFixture,
   type SourceFixtureTarget,
 } from "@effect-view-server/source-adapter-testing";
 import {
   Cause,
+  Clock,
   Deferred,
+  Duration,
   Effect,
   Exit,
   Fiber,
   Layer,
   Logger,
   Option,
+  Queue,
   References,
+  Result,
+  Schedule,
   Schema,
   Stream,
 } from "effect";
@@ -815,6 +826,516 @@ describe("Runtime WebSocket and operational endpoints", () => {
         () => Effect.void,
         (runtime) => runtime.close,
       );
+    }),
+  );
+
+  it.live(
+    "every transition-defect settlement mode preserves the original cause and closes all listeners and Sources",
+    () =>
+      Effect.gen(function* () {
+        const settlementModes = ["success", "throw", "failure", "blocked"] as const;
+        yield* Effect.forEach(
+          settlementModes,
+          (settlementMode) =>
+            Effect.gen(function* () {
+              const fixture = yield* SourceFixture.make(SourceRow);
+              const transitionDefect = new Error(
+                `injected ${settlementMode} application transition executor defect`,
+              );
+              const TransitionFailure = Schema.TaggedStruct("TransitionFixtureFailure", {
+                message: Schema.String,
+              });
+              const transitionAdapter = SourceAdapter.make({
+                identity: { name: `transition-defect-${settlementMode}` },
+                failure: TransitionFailure,
+                materialized: {
+                  applicationState: "required",
+                  metrics: Schema.Struct({ transitions: Schema.Number }),
+                  rejectionLocation: Schema.Struct({ offset: Schema.BigInt }),
+                  definitionOptions: SourceAdapter.definitionOptions<{ readonly label: string }>(),
+                },
+                leased: undefined,
+              });
+              type TransitionState = {
+                readonly transitions: number;
+              };
+              type TransitionCommand = {
+                readonly _tag: "Throw";
+              };
+              const transitionState = SourceAdapterServer.applicationState({
+                sweepIntervalNanos: 900_000_000_000n,
+                initialState: () => Object.freeze({ transitions: 0 }),
+                reduce: (_state: TransitionState, _command: TransitionCommand) => {
+                  throw transitionDefect;
+                },
+                metrics: (state) => state,
+                runDueSweep: () => Effect.void,
+              });
+              const emitTransitionDefect = yield* Deferred.make<Effect.Effect<void>>();
+              const applicationExits: Array<Exit.Exit<void, unknown>> = [];
+              let settlementCallbacks = 0;
+              let returnedSettlementFinalizations = 0;
+              let returnedSettlementStarts = 0;
+              let transitionFinalizations = 0;
+              const transitionLayer = SourceAdapterServer.make(transitionAdapter, {
+                materialized: {
+                  applicationState: transitionState,
+                  initialLaneIds: () => ["transition-defect"],
+                  acquire: (input) =>
+                    Effect.gen(function* () {
+                      const queue = yield* Queue.unbounded<TransitionCommand>();
+                      const module = transitionState.forLifetime(
+                        input.lifetimeScope,
+                        input.toolkit.topic,
+                      );
+                      yield* Deferred.succeed(
+                        emitTransitionDefect,
+                        Queue.offer(queue, { _tag: "Throw" }),
+                      );
+                      yield* Effect.addFinalizer(() =>
+                        Effect.sync(() => {
+                          transitionFinalizations += 1;
+                        }),
+                      );
+                      return SourceAdapterServer.attempt([
+                        SourceAdapterServer.lane({
+                          id: "transition-defect",
+                          events: Stream.fromQueue(queue).pipe(
+                            Stream.mapEffect((command) =>
+                              Effect.gen(function* () {
+                                const prepared = yield* module.prepare(command);
+                                const mutation = yield* input.toolkit.delete("transition-row");
+                                return yield* input.toolkit.delivery(
+                                  mutation,
+                                  (applicationExit) => {
+                                    settlementCallbacks += 1;
+                                    applicationExits.push(applicationExit);
+                                    if (settlementMode === "throw") {
+                                      throw new Error(
+                                        "injected transition settlement callback defect",
+                                      );
+                                    }
+                                    const started = Effect.sync(() => {
+                                      returnedSettlementStarts += 1;
+                                    });
+                                    const returned =
+                                      settlementMode === "failure"
+                                        ? started.pipe(
+                                            Effect.andThen(
+                                              Effect.fail({
+                                                _tag: "TransitionFixtureFailure" as const,
+                                                message: "injected returned settlement failure",
+                                              }),
+                                            ),
+                                          )
+                                        : settlementMode === "blocked"
+                                          ? started.pipe(Effect.andThen(Effect.never))
+                                          : started;
+                                    return returned.pipe(
+                                      Effect.ensuring(
+                                        Effect.sync(() => {
+                                          returnedSettlementFinalizations += 1;
+                                        }),
+                                      ),
+                                    );
+                                  },
+                                  prepared.transition,
+                                );
+                              }),
+                            ),
+                          ),
+                        }),
+                      ]);
+                    }),
+                  metrics: (input) =>
+                    Effect.sync(() =>
+                      transitionState.forLifetime(input.lifetimeScope, input.topic).metrics(),
+                    ),
+                  retry: Schedule.recurs(0),
+                },
+              });
+              const sourcedConfig = defineViewServerConfig({
+                topics: {
+                  defective: {
+                    schema: SourceRow,
+                    source: transitionAdapter.materializedSource({
+                      label: "root-fatal-transition",
+                    }),
+                  },
+                  sibling: {
+                    schema: SourceRow,
+                    source: fixture.materializedSource({
+                      label: "root-fatal-sibling",
+                    }),
+                  },
+                },
+              });
+              const signals = yield* makeRuntimeLaunchSignals();
+              const launchLayer = Layer.mergeAll(
+                transitionLayer,
+                fixture.layer,
+                Logger.layer([signals.logger]),
+                Layer.succeed(References.MinimumLogLevel, "Trace"),
+              );
+              const runtimeFiber = yield* runViewServerRuntime(sourcedConfig, {
+                host: "127.0.0.1",
+                websocketPort: 0,
+              }).pipe(Effect.provide(launchLayer), Effect.forkChild({ startImmediately: true }));
+              const healthUrl = yield* Deferred.await(signals.healthUrl);
+              const port = yield* listenerPort(healthUrl);
+              yield* fixture.controls.awaitActive(sourceTarget);
+              yield* yield* Deferred.await(emitTransitionDefect);
+              const runtimeExit = yield* Fiber.await(runtimeFiber);
+              const runtimeCause = Option.getOrThrow(Exit.getCause(runtimeExit));
+              const applicationCause = Option.getOrThrow(
+                Exit.getCause(Option.getOrThrow(Option.fromUndefinedOr(applicationExits[0]))),
+              );
+
+              expect({
+                applicationDefect: Result.getOrThrow(Cause.findDefect(applicationCause)),
+                applicationExitCount: applicationExits.length,
+                rootDefect: Result.getOrThrow(Cause.findDefect(runtimeCause)),
+                rootFailure: Option.getOrThrow(Cause.findErrorOption(runtimeCause)),
+                settlementCallbacks,
+              }).toStrictEqual({
+                applicationDefect: transitionDefect,
+                applicationExitCount: 1,
+                rootDefect: transitionDefect,
+                rootFailure: {
+                  _tag: "ViewServerRuntimeError",
+                  code: "RuntimeUnavailable",
+                  topic: "defective",
+                  message: "Source application transition failed and stopped the complete runtime.",
+                },
+                settlementCallbacks: 1,
+              });
+
+              const replacement = yield* Effect.retry(
+                makeViewServerRuntime(viewServer, {
+                  host: "127.0.0.1",
+                  websocketPort: port,
+                }),
+                Schedule.addDelay(Schedule.recurs(50), () => Effect.succeed("5 millis")),
+              );
+              yield* fixture.controls.awaitCounts(sourceTarget, {
+                acquisitions: 1n,
+                finalizations: 1n,
+              });
+              expect({
+                returnedSettlementFinalizations,
+                returnedSettlementStarts,
+                transitionFinalizations,
+              }).toStrictEqual({
+                returnedSettlementFinalizations: settlementMode === "throw" ? 0 : 1,
+                returnedSettlementStarts: settlementMode === "throw" ? 0 : 1,
+                transitionFinalizations: 1,
+              });
+
+              yield* replacement.close;
+            }),
+          { discard: true },
+        );
+      }),
+  );
+
+  it.live(
+    "every maintenance-supervisor phase fault closes the listener and all Sources without retry supervision",
+    () =>
+      Effect.gen(function* () {
+        const phases = ["sleep", "index-read", "lease-acquisition", "outcome-execution"] as const;
+        yield* Effect.forEach(
+          phases,
+          (phase) =>
+            Effect.gen(function* () {
+              const fixture = yield* SourceFixture.make(SourceRow);
+              const fault = new Error(`injected maintenance ${phase} defect`);
+              const sweepIntervalNanos = 7_654_321n;
+              const sweepTrigger = yield* Deferred.make<void>();
+              const sourceActive = yield* Deferred.make<void>();
+              let leaseAcquisitions = 0;
+              let leaseHeld = false;
+              let leaseReleases = 0;
+              let scheduleSteps = 0;
+              let sourceAcquisitions = 0;
+              let sourceFinalizations = 0;
+              const maintenanceAdapter = SourceAdapter.make({
+                identity: { name: `maintenance-fatal-${phase}` },
+                failure: RuntimeTestFailure,
+                materialized: {
+                  applicationState: "required",
+                  metrics: Schema.Struct({ sweeps: Schema.Number }),
+                  rejectionLocation: Schema.Struct({ offset: Schema.BigInt }),
+                  definitionOptions: SourceAdapter.definitionOptions<{
+                    readonly label: string;
+                  }>(),
+                },
+                leased: undefined,
+              });
+              type MaintenanceState = {
+                readonly sweeps: number;
+              };
+              type MaintenanceCommand = {
+                readonly _tag: "Sweep";
+              };
+              const sweepCommand: MaintenanceCommand = Object.freeze({
+                _tag: "Sweep",
+              });
+              const applicationState = SourceAdapterServer.applicationState({
+                sweepIntervalNanos,
+                initialState: () => Object.freeze({ sweeps: 0 }),
+                reduce: (state: MaintenanceState, _command: MaintenanceCommand) =>
+                  Object.freeze({
+                    sweeps: state.sweeps + 1,
+                  }),
+                metrics: (state) => state,
+                runDueSweep: (input) => {
+                  if (phase === "sleep") {
+                    return Effect.void;
+                  }
+                  const afterTrigger = Deferred.await(sweepTrigger);
+                  if (phase === "index-read") {
+                    return afterTrigger.pipe(Effect.andThen(Effect.die(fault)));
+                  }
+                  if (phase === "lease-acquisition") {
+                    return afterTrigger.pipe(
+                      Effect.andThen(
+                        Effect.acquireUseRelease(
+                          Effect.sync((): void => {
+                            leaseAcquisitions += 1;
+                            throw fault;
+                          }),
+                          () => Effect.void,
+                          () =>
+                            Effect.sync(() => {
+                              leaseReleases += 1;
+                            }),
+                        ),
+                      ),
+                    );
+                  }
+                  return afterTrigger.pipe(
+                    Effect.andThen(
+                      Effect.acquireUseRelease(
+                        Effect.sync(() => {
+                          leaseAcquisitions += 1;
+                          leaseHeld = true;
+                        }),
+                        () =>
+                          input
+                            .execute(
+                              input.operation({
+                                id: "maintenance-fatal",
+                                workId: "maintenance-fatal:1",
+                                isCurrent: () => {
+                                  throw fault;
+                                },
+                                onSuccess: sweepCommand,
+                                onFailure: () => sweepCommand,
+                                onStale: sweepCommand,
+                              }),
+                            )
+                            .pipe(Effect.asVoid),
+                        () =>
+                          Effect.sync(() => {
+                            leaseHeld = false;
+                            leaseReleases += 1;
+                          }),
+                      ),
+                    ),
+                  );
+                },
+              });
+              const maintenanceLayer = SourceAdapterServer.make(maintenanceAdapter, {
+                materialized: {
+                  applicationState,
+                  initialLaneIds: () => ["maintenance"],
+                  acquire: () =>
+                    Effect.gen(function* () {
+                      sourceAcquisitions += 1;
+                      yield* Effect.addFinalizer(() =>
+                        Effect.sync(() => {
+                          sourceFinalizations += 1;
+                        }),
+                      );
+                      yield* Deferred.succeed(sourceActive, undefined);
+                      return SourceAdapterServer.attempt([
+                        SourceAdapterServer.lane({
+                          id: "maintenance",
+                          events: Stream.never,
+                        }),
+                      ]);
+                    }),
+                  metrics: (input) =>
+                    Effect.sync(() =>
+                      applicationState.forLifetime(input.lifetimeScope, input.topic).metrics(),
+                    ),
+                  retry: Schedule.recurs(10).pipe(
+                    Schedule.tap(() =>
+                      Effect.sync(() => {
+                        scheduleSteps += 1;
+                      }),
+                    ),
+                  ),
+                },
+              });
+              const config = defineViewServerConfig({
+                topics: {
+                  defective: {
+                    schema: SourceRow,
+                    source: maintenanceAdapter.materializedSource({
+                      label: `maintenance-${phase}`,
+                    }),
+                  },
+                  sibling: {
+                    schema: SourceRow,
+                    source: fixture.materializedSource({
+                      label: `maintenance-sibling-${phase}`,
+                    }),
+                  },
+                },
+              });
+              const signals = yield* makeRuntimeLaunchSignals();
+              const baseClock = yield* Clock.Clock;
+              const maintenanceClock: Clock.Clock = {
+                currentTimeMillisUnsafe: () => baseClock.currentTimeMillisUnsafe(),
+                currentTimeMillis: baseClock.currentTimeMillis,
+                currentTimeNanosUnsafe: () => baseClock.currentTimeNanosUnsafe(),
+                currentTimeNanos: baseClock.currentTimeNanos,
+                sleep: (duration) =>
+                  phase === "sleep" && Duration.toNanosUnsafe(duration) === sweepIntervalNanos
+                    ? Deferred.await(sweepTrigger).pipe(Effect.andThen(Effect.die(fault)))
+                    : baseClock.sleep(duration),
+              };
+              const runtimeFiber = yield* runViewServerRuntime(config, {
+                host: "127.0.0.1",
+                websocketPort: 0,
+              }).pipe(
+                Effect.provide(
+                  Layer.mergeAll(
+                    maintenanceLayer,
+                    fixture.layer,
+                    Logger.layer([signals.logger]),
+                    Layer.succeed(References.MinimumLogLevel, "Trace"),
+                  ),
+                ),
+                Effect.provideService(Clock.Clock, maintenanceClock),
+                Effect.forkChild({ startImmediately: true }),
+              );
+              const healthUrl = yield* Deferred.await(signals.healthUrl);
+              const port = yield* listenerPort(healthUrl);
+              yield* Deferred.await(sourceActive);
+              yield* fixture.controls.awaitActive(sourceTarget);
+              yield* Deferred.succeed(sweepTrigger, undefined);
+              const runtimeExit = yield* Fiber.await(runtimeFiber);
+              const runtimeCause = Option.getOrThrow(Exit.getCause(runtimeExit));
+              const expectedMessage =
+                phase === "outcome-execution"
+                  ? "Source maintenance state validation failed fatally and stopped the complete runtime."
+                  : "Source maintenance supervisor failed fatally and closed the complete runtime.";
+
+              expect({
+                defect: Result.getOrThrow(Cause.findDefect(runtimeCause)),
+                failure: Option.getOrThrow(Cause.findErrorOption(runtimeCause)),
+                leaseAcquisitions,
+                leaseHeld,
+                leaseReleases,
+                scheduleSteps,
+                sourceAcquisitions,
+                sourceFinalizations,
+              }).toStrictEqual({
+                defect: fault,
+                failure: {
+                  _tag: "ViewServerRuntimeError",
+                  code: "RuntimeUnavailable",
+                  topic: "defective",
+                  message: expectedMessage,
+                },
+                leaseAcquisitions:
+                  phase === "lease-acquisition" || phase === "outcome-execution" ? 1 : 0,
+                leaseHeld: false,
+                leaseReleases: phase === "outcome-execution" ? 1 : 0,
+                scheduleSteps: 0,
+                sourceAcquisitions: 1,
+                sourceFinalizations: 1,
+              });
+
+              const replacement = yield* Effect.retry(
+                makeViewServerRuntime(viewServer, {
+                  host: "127.0.0.1",
+                  websocketPort: port,
+                }),
+                Schedule.addDelay(Schedule.recurs(50), () => Effect.succeed("5 millis")),
+              );
+              yield* fixture.controls.awaitCounts(sourceTarget, {
+                acquisitions: 1n,
+                finalizations: 1n,
+              });
+              yield* replacement.close;
+            }),
+          { discard: true },
+        );
+      }),
+  );
+
+  it.live("direct runtime factory closes for pure defect and interrupt fatal causes", () =>
+    Effect.gen(function* () {
+      const fatalCases = [
+        {
+          label: "pure-defect",
+          cause: Cause.die(new Error("pure fatal defect")),
+        },
+        {
+          label: "pure-interrupt",
+          cause: Cause.interrupt(917),
+        },
+      ];
+      for (const fatalCase of fatalCases) {
+        const fixture = yield* SourceFixture.make(SourceRow);
+        const sourcedConfig = defineViewServerConfig({
+          topics: {
+            sourced: {
+              schema: SourceRow,
+              source: fixture.materializedSource({
+                label: fatalCase.label,
+              }),
+            },
+          },
+        });
+        const fatalSignal = yield* Deferred.make<Cause.Cause<ViewServerRuntimeError>>();
+        const defaults = makeDefaultRuntimeDependencies<typeof sourcedConfig.topics>();
+        const dependencies: ViewServerRuntimeDependencies<typeof sourcedConfig.topics> = {
+          ...defaults,
+          makeRuntimeCore: (config, options) =>
+            defaults.makeRuntimeCore(config, options).pipe(
+              Effect.map((runtimeCore) => ({
+                ...runtimeCore,
+                fatal: Deferred.await(fatalSignal).pipe(Effect.flatMap(Effect.failCause)),
+              })),
+            ),
+        };
+        const runtime = yield* makeViewServerRuntimeWithDependencies(dependencies, sourcedConfig, {
+          host: "127.0.0.1",
+          websocketPort: 0,
+        }).pipe(Effect.provide(fixture.layer));
+        const port = yield* listenerPort(runtime.healthUrl);
+        yield* fixture.controls.awaitActive(sourceTarget);
+        yield* Deferred.succeed(fatalSignal, fatalCase.cause);
+
+        const replacement = yield* Effect.retry(
+          makeViewServerRuntime(viewServer, {
+            host: "127.0.0.1",
+            websocketPort: port,
+          }),
+          Schedule.addDelay(Schedule.recurs(50), () => Effect.succeed("5 millis")),
+        );
+        yield* fixture.controls.awaitCounts(sourceTarget, {
+          acquisitions: 1n,
+          finalizations: 1n,
+        });
+
+        yield* replacement.close;
+        yield* runtime.close;
+      }
     }),
   );
 

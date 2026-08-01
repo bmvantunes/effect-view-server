@@ -6,6 +6,15 @@ import type {
 } from "./contract";
 
 const NonNegativeBigInt = Schema.BigInt.check(Schema.isGreaterThanOrEqualToBigInt(0n));
+const PositiveBigInt = NonNegativeBigInt.check(Schema.isGreaterThanBigInt(0n));
+const KafkaCleanupPolicySchema = Schema.Literals(["delete", "compact", "compact-and-delete"]);
+const KafkaCapturedRetentionPolicySchema = Schema.Union([
+  Schema.TaggedStruct("MatchKafkaRetention", {}),
+  Schema.TaggedStruct("Forever", {}),
+  Schema.TaggedStruct("Finite", {
+    durationNanos: PositiveBigInt,
+  }),
+]);
 
 export const KafkaBrokerContractIssue = Schema.Union([
   Schema.TaggedStruct("BrokerConfigurationUnavailable", {
@@ -66,6 +75,22 @@ export type KafkaResolvedBrokerContract = KafkaBrokerContractDeclaration & {
   readonly resolvedRetention: KafkaResolvedRetention;
 };
 
+const KafkaResolvedBrokerContractSchema = Schema.Struct({
+  viewServerTopic: Schema.NonEmptyString,
+  sourceTopic: Schema.NonEmptyString,
+  region: Schema.NonEmptyString,
+  cleanupPolicy: KafkaCleanupPolicySchema,
+  retentionPolicy: KafkaCapturedRetentionPolicySchema,
+  observedCleanupPolicy: KafkaCleanupPolicySchema,
+  observedRetentionMs: Schema.Union([Schema.Literal(-1n), NonNegativeBigInt]),
+  resolvedRetention: Schema.Union([
+    Schema.TaggedStruct("Forever", {}),
+    Schema.TaggedStruct("Finite", {
+      durationNanos: NonNegativeBigInt,
+    }),
+  ]),
+});
+
 const snapshotCapturedRetentionPolicy = (
   policy: KafkaCapturedRetentionPolicy,
 ): KafkaCapturedRetentionPolicy =>
@@ -113,6 +138,10 @@ export type KafkaBrokerRegionDiscovery =
     }
   | {
       readonly _tag: "Unavailable";
+      readonly region: string;
+    }
+  | {
+      readonly _tag: "Malformed";
       readonly region: string;
     };
 
@@ -184,6 +213,26 @@ export const resolveKafkaRetention = (
   };
 };
 
+export const isKafkaResolvedBrokerContract = (
+  contract: unknown,
+): contract is KafkaResolvedBrokerContract => {
+  if (!Schema.is(KafkaResolvedBrokerContractSchema)(contract)) {
+    return false;
+  }
+  if (contract.cleanupPolicy !== contract.observedCleanupPolicy) {
+    return false;
+  }
+  const expected = resolveKafkaRetention(
+    contract.cleanupPolicy,
+    contract.retentionPolicy,
+    contract.observedRetentionMs,
+  );
+  return expected._tag === "Forever"
+    ? contract.resolvedRetention._tag === "Forever"
+    : contract.resolvedRetention._tag === "Finite" &&
+        contract.resolvedRetention.durationNanos === expected.durationNanos;
+};
+
 const unavailableIssue = (
   declaration: KafkaBrokerContractDeclaration,
 ): KafkaBrokerContractIssue => ({
@@ -234,6 +283,10 @@ export const resolveKafkaBrokerContracts = (
     const discovery = discoveryByRegion.get(declaration.region);
     if (discovery === undefined || discovery._tag === "Unavailable") {
       issues.push(unavailableIssue(declaration));
+      continue;
+    }
+    if (discovery._tag === "Malformed") {
+      issues.push(malformedIssue(declaration, "response"));
       continue;
     }
     let resource: KafkaBrokerConfigResource | undefined;

@@ -704,6 +704,31 @@ describe("Kafka Source Adapter Server", () => {
           regions: new Map(),
         }),
       ).toThrow("Kafka broker contract for Topic orders Region eu is duplicated.");
+      const invalidResolvedContracts = [
+        {
+          ...duplicateContract,
+          observedRetentionMs: -2n,
+          resolvedRetention: { _tag: "Finite" as const, durationNanos: -2_000_000n },
+        },
+        {
+          ...duplicateContract,
+          observedCleanupPolicy: "compact" as const,
+        },
+        {
+          ...duplicateContract,
+          resolvedRetention: { _tag: "Finite" as const, durationNanos: 1n },
+        },
+      ];
+      for (const brokerContract of invalidResolvedContracts) {
+        expect(() =>
+          makeKafkaServerLayer({
+            brokerContracts: [brokerContract],
+            retentionSweepIntervalNanos: 1_000_000_000n,
+            consumerGroupPrefix: "replica",
+            regions: new Map(),
+          }),
+        ).toThrow("Kafka broker contract must be a complete validated broker-resolution result.");
+      }
       expect(() =>
         makeKafkaServerLayer({
           brokerContracts: [],
@@ -2948,7 +2973,10 @@ describe("Kafka Source Adapter Server", () => {
                 regions: ["eu"],
                 key: kafka.compactionKey.codec({
                   name: "same-logical-key",
-                  decode: () => Effect.succeed("logical-key"),
+                  decode: ({ bytes }) =>
+                    bytes[0] === 33
+                      ? Effect.fail({ _tag: "UndecodableKey" } as const)
+                      : Effect.succeed("logical-key"),
                 }),
                 value: kafka.json(() =>
                   Schema.toCodecJson(Schema.Struct({ price: Schema.Number })),
@@ -3066,7 +3094,12 @@ describe("Kafka Source Adapter Server", () => {
           value: null,
           offset: 10n,
         });
-        yield* awaitCondition(() => eu.commits.length === 10);
+        yield* eu.offer({
+          key: "!",
+          value: null,
+          offset: 11n,
+        });
+        yield* awaitCondition(() => eu.commits.length === 11);
         expect(
           yield* runtime.client.snapshot("orders", {
             select: ["id", "price", "region"],

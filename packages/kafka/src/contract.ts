@@ -1051,16 +1051,26 @@ type KafkaDurationComponentsContainAny<Value> = true extends {
   ? true
   : false;
 
+type KafkaDurationTupleContainsAny<Value> = Value extends readonly [number, number]
+  ? IsAny<Value[0]> extends true
+    ? true
+    : IsAny<Value[1]>
+  : false;
+
 type IsSafeKafkaRetentionPolicy<Value> =
   IsAny<Value> extends true
     ? false
-    : Value extends KafkaDurationComponents
-      ? KafkaDurationComponentsContainAny<Value> extends true
+    : Value extends readonly [number, number]
+      ? KafkaDurationTupleContainsAny<Value> extends true
         ? false
-        : HasExactKeys<Value, Duration.DurationObject>
-      : Value extends KafkaRetentionPolicy
-        ? true
-        : false;
+        : true
+      : Value extends KafkaDurationComponents
+        ? KafkaDurationComponentsContainAny<Value> extends true
+          ? false
+          : HasExactKeys<Value, Duration.DurationObject>
+        : Value extends KafkaRetentionPolicy
+          ? true
+          : false;
 
 export type KafkaRetentionPolicy =
   | "match-kafka-retention"

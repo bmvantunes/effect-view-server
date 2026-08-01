@@ -567,6 +567,16 @@ describe("Kafka Source Adapter type contract", () => {
     // @ts-expect-error retentionPolicy accepts only the documented policies and Effect Duration inputs.
     kafka.source(invalidRetentionPolicy);
 
+    const validReadonlyRetentionTuple: readonly [seconds: number, nanoseconds: number] = [300, 0];
+    kafka.source({
+      ...validDeleteSourceOptions,
+      retentionPolicy: validReadonlyRetentionTuple,
+    });
+    kafka.source({
+      ...validDeleteSourceOptions,
+      retentionPolicy: [300, 0],
+    });
+
     const retentionPolicyWithExtraField = {
       ...validDeleteSourceOptions,
       retentionPolicy: {
@@ -585,6 +595,25 @@ describe("Kafka Source Adapter type contract", () => {
     };
     // @ts-expect-error structured retentionPolicy fields cannot be any.
     kafka.source(retentionPolicyWithAnyField);
+
+    const retentionPolicyWithAnySeconds = {
+      ...validDeleteSourceOptions,
+      retentionPolicy: [unsafeAny, 0] as const,
+    };
+    // @ts-expect-error retentionPolicy tuple seconds cannot be any.
+    kafka.source(retentionPolicyWithAnySeconds);
+
+    const retentionPolicyWithAnyNanoseconds = {
+      ...validDeleteSourceOptions,
+      retentionPolicy: [0, unsafeAny] as const,
+    };
+    // @ts-expect-error retentionPolicy tuple nanoseconds cannot be any.
+    kafka.source(retentionPolicyWithAnyNanoseconds);
+
+    // @ts-expect-error inline retentionPolicy tuple seconds cannot be any.
+    kafka.source({ ...validDeleteSourceOptions, retentionPolicy: [unsafeAny, 0] });
+    // @ts-expect-error inline retentionPolicy tuple nanoseconds cannot be any.
+    kafka.source({ ...validDeleteSourceOptions, retentionPolicy: [0, unsafeAny] });
 
     const anyCleanupPolicy = {
       ...validDeleteSourceOptions,

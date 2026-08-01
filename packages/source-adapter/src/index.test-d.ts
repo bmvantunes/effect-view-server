@@ -1167,13 +1167,13 @@ describe("Source Adapter public type contracts", () => {
       reduce: (state: ApplicationState): ApplicationState => state,
       metrics: (state: ApplicationState): ApplicationMetrics => ({ count: state.count }),
     });
+    // @ts-expect-error Source Application State descriptors reject unknown capabilities.
     SourceAdapterServer.applicationState({
       sweepIntervalNanos: 1n,
       initialState: (): ApplicationState => ({ count: 0 }),
       reduce: (state: ApplicationState): ApplicationState => state,
       metrics: (state: ApplicationState): ApplicationMetrics => ({ count: state.count }),
       runDueSweep: () => Effect.succeed({ attempted: 0 }),
-      // @ts-expect-error Source Application State descriptors reject unknown capabilities.
       unknownCapability: () => undefined,
     });
     const validApplicationStateOptions = {
@@ -1186,6 +1186,7 @@ describe("Source Adapter public type contracts", () => {
     SourceAdapterServer.applicationState(validApplicationStateOptions);
     const applicationStateOptionsWithExtra = {
       ...validApplicationStateOptions,
+      sweepIntervalNanos: 2n as const,
       unknownCapability: () => undefined,
     };
     // @ts-expect-error Source Application State descriptor variables reject unknown capabilities.
@@ -1202,6 +1203,24 @@ describe("Source Adapter public type contracts", () => {
         : applicationStateOptionsWithAnySweepInterval;
     // @ts-expect-error every descriptor union member requires a typed sweep interval.
     SourceAdapterServer.applicationState(applicationStateOptionsUnionWithAnySweepInterval);
+    const applicationStateOptionsWithAnyInitialState = {
+      ...validApplicationStateOptions,
+      initialState: unsafeAny,
+    };
+    // @ts-expect-error application-state callbacks cannot be any.
+    SourceAdapterServer.applicationState(applicationStateOptionsWithAnyInitialState);
+    const applicationStateOptionsWithAnyOptionalCallback = {
+      ...validApplicationStateOptions,
+      acquireTransition: unsafeAny,
+    };
+    // @ts-expect-error optional application-state callbacks cannot be any.
+    SourceAdapterServer.applicationState(applicationStateOptionsWithAnyOptionalCallback);
+    const applicationStateOptionsUnionWithAnyCallback =
+      Math.random() > 0.5
+        ? validApplicationStateOptions
+        : applicationStateOptionsWithAnyInitialState;
+    // @ts-expect-error every descriptor union member requires typed callbacks.
+    SourceAdapterServer.applicationState(applicationStateOptionsUnionWithAnyCallback);
     SourceAdapterServer.applicationState({
       sweepIntervalNanos: 1n,
       initialState: (): ApplicationState => ({ count: 0 }),

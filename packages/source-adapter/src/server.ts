@@ -691,9 +691,8 @@ const makeSourceApplicationStateModule = <State, Command, Metrics, SweepOutcome>
   const dispatch = (command: Command): void => {
     const next = input.reduce(state, command);
     if (
-      Effect.isEffect(next) ||
-      (typeof next === "object" && next !== null && "then" in next) ||
-      (typeof next === "object" && next !== null && (next === state || !Object.isFrozen(next)))
+      isSourceAsynchronousValue(next) ||
+      (isSourceStateReference(next) && (next === state || !Object.isFrozen(next)))
     ) {
       throw new TypeError(
         "Source Application State reducer must return a new immutable state synchronously.",
@@ -845,6 +844,20 @@ const hasInspectableSynchronousFunction = (value: unknown): boolean => {
   );
 };
 
+const isSourceAsynchronousValue = (value: unknown): boolean => {
+  if (Effect.isEffect(value)) {
+    return true;
+  }
+  if ((typeof value !== "object" && typeof value !== "function") || value === null) {
+    return false;
+  }
+  const then = Result.try(() => Reflect.get(value, "then"));
+  return Result.isFailure(then) || typeof then.success === "function";
+};
+
+const isSourceStateReference = (value: unknown): boolean =>
+  (typeof value === "object" && value !== null) || typeof value === "function";
+
 export type SourceApplicationStateRegistration<State, Command, Metrics, SweepOutcome> =
   SourceApplicationStateRegistrationDescriptor<
     <const Topic extends string>(
@@ -890,9 +903,16 @@ type SourceApplicationStateRegistrationInput<State, Command, Metrics, SweepOutco
   ) => Effect.Effect<SweepOutcome>;
 };
 
+type ApplicationStateCandidateKeys<Candidate> = Candidate extends unknown ? keyof Candidate : never;
+
 type RejectExtraApplicationStateKeys<Candidate, Shape> = {
-  readonly [Key in Exclude<keyof Candidate, keyof Shape>]: never;
+  readonly [Key in Exclude<ApplicationStateCandidateKeys<Candidate>, keyof Shape>]: never;
 };
+
+type SourceApplicationStateAdditionalArguments<Candidate, Shape> =
+  Exclude<ApplicationStateCandidateKeys<Candidate>, keyof Shape> extends never
+    ? readonly []
+    : readonly [never];
 
 type SourceApplicationStateCandidateField<Input, Key extends PropertyKey> = Input extends unknown
   ? Key extends keyof Input
@@ -918,9 +938,16 @@ export const makeSourceApplicationStateRegistration = <
       NoInfer<Input>,
       SourceApplicationStateRegistrationInput<State, Command, Metrics, SweepOutcome>
     > &
-    RejectAnyApplicationStateField<NoInfer<Input>, "sweepIntervalNanos"> &
+    RejectAnyApplicationStateField<
+      NoInfer<Input>,
+      keyof SourceApplicationStateRegistrationInput<State, Command, Metrics, SweepOutcome>
+    > &
     RejectSourceAsynchronousValue<State> &
     RejectSourceAsynchronousValue<Metrics>,
+  ..._unsupported: SourceApplicationStateAdditionalArguments<
+    NoInfer<Input>,
+    SourceApplicationStateRegistrationInput<State, Command, Metrics, SweepOutcome>
+  >
 ): SourceApplicationStateRegistration<State, Command, Metrics, SweepOutcome> => {
   if (
     !hasExactRegistrationKeys(
@@ -964,18 +991,16 @@ export const makeSourceApplicationStateRegistration = <
         );
       }
       const initialState = snapshot.initialState(binding);
-      if (
-        typeof initialState === "object" &&
-        initialState !== null &&
-        !Object.isFrozen(initialState)
-      ) {
+      if (isSourceAsynchronousValue(initialState)) {
+        throw new TypeError(
+          "Source Application State initial state must return a synchronous snapshot.",
+        );
+      }
+      if (isSourceStateReference(initialState) && !Object.isFrozen(initialState)) {
         throw new TypeError("Source Application State initial state must be immutable.");
       }
       const initialMetrics = snapshot.metrics(initialState);
-      if (
-        Effect.isEffect(initialMetrics) ||
-        (typeof initialMetrics === "object" && initialMetrics !== null && "then" in initialMetrics)
-      ) {
+      if (isSourceAsynchronousValue(initialMetrics)) {
         throw new TypeError("Source Application State metrics must return a synchronous snapshot.");
       }
       modules.set(

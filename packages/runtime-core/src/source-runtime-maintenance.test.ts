@@ -1162,9 +1162,13 @@ describe("Runtime Core Source Application State", () => {
           workId: "current-defect:1",
           current: "throw",
         },
+        {
+          id: "row-2",
+          workId: "current-after-fatal:1",
+        },
       ]);
       const currentResult = yield* currentHarness.control.sweep();
-      expect(currentResult.map((result) => result._tag)).toStrictEqual(["Applied"]);
+      expect(currentResult.map((result) => result._tag)).toStrictEqual(["Applied", "Inactive"]);
       expect(maintenanceFailureCause(currentResult).toJSON()).toStrictEqual(
         Cause.die(currentStateDefect).toJSON(),
       );
@@ -1187,9 +1191,13 @@ describe("Runtime Core Source Application State", () => {
           current: "stale",
           stale: "throw",
         },
+        {
+          id: "row-2",
+          workId: "stale-after-fatal:1",
+        },
       ]);
       const staleResult = yield* staleHarness.control.sweep();
-      expect(staleResult.map((result) => result._tag)).toStrictEqual(["Applied"]);
+      expect(staleResult.map((result) => result._tag)).toStrictEqual(["Applied", "Inactive"]);
       expect(maintenanceFailureCause(staleResult).toJSON()).toStrictEqual(
         Cause.die(applicationStateDefect).toJSON(),
       );
@@ -1211,9 +1219,13 @@ describe("Runtime Core Source Application State", () => {
           workId: "success-defect:1",
           success: "throw",
         },
+        {
+          id: "row-2",
+          workId: "success-after-fatal:1",
+        },
       ]);
       const successResult = yield* successHarness.control.sweep();
-      expect(successResult.map((result) => result._tag)).toStrictEqual(["Applied"]);
+      expect(successResult.map((result) => result._tag)).toStrictEqual(["Applied", "Inactive"]);
       expect(maintenanceFailureCause(successResult).toJSON()).toStrictEqual(
         Cause.die(applicationStateDefect).toJSON(),
       );
@@ -1236,9 +1248,13 @@ describe("Runtime Core Source Application State", () => {
           workId: "failure-defect:1",
           failure: "throw",
         },
+        {
+          id: "row-2",
+          workId: "failure-after-fatal:1",
+        },
       ]);
       const failureResult = yield* failureHarness.control.sweep();
-      expect(failureResult.map((result) => result._tag)).toStrictEqual(["Applied"]);
+      expect(failureResult.map((result) => result._tag)).toStrictEqual(["Applied", "Inactive"]);
       expect(maintenanceFailureCause(failureResult).toJSON()).toStrictEqual(
         Cause.die(applicationStateDefect).toJSON(),
       );
@@ -1261,9 +1277,16 @@ describe("Runtime Core Source Application State", () => {
           workId: "combined-failure-defect:1",
           failure: "throw",
         },
+        {
+          id: "row-2",
+          workId: "combined-after-fatal:1",
+        },
       ]);
       const combinedFailureResult = yield* combinedFailureHarness.control.sweep();
-      expect(combinedFailureResult.map((result) => result._tag)).toStrictEqual(["Applied"]);
+      expect(combinedFailureResult.map((result) => result._tag)).toStrictEqual([
+        "Applied",
+        "Inactive",
+      ]);
       expect(maintenanceFailureCause(combinedFailureResult).toJSON()).toStrictEqual(
         Cause.combine(Cause.die(applicationStateDefect), Cause.die(deleteDefect)).toJSON(),
       );
@@ -1283,9 +1306,12 @@ describe("Runtime Core Source Application State", () => {
 
       const deleteHarness = yield* makeHarness();
       deleteHarness.setDeleteMode("defect");
-      deleteHarness.plan([{ id: "row-1", workId: "delete-defect:1" }]);
+      deleteHarness.plan([
+        { id: "row-1", workId: "delete-defect:1" },
+        { id: "row-2", workId: "delete-after-fatal:1" },
+      ]);
       const deleteResult = yield* deleteHarness.control.sweep();
-      expect(deleteResult.map((result) => result._tag)).toStrictEqual(["Applied"]);
+      expect(deleteResult.map((result) => result._tag)).toStrictEqual(["Applied", "Inactive"]);
       expect(maintenanceFailureCause(deleteResult).toJSON()).toStrictEqual(
         Cause.die(deleteDefect).toJSON(),
       );

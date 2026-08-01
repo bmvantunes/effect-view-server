@@ -1569,7 +1569,7 @@ const adminOptions = (
   ...(options.tls === undefined ? {} : { tls: nodeTlsOptions(options.tls) }),
 });
 
-const configValue = (
+const unsafeConfigValue = (
   configs: ReadonlyArray<unknown>,
   name: "cleanup.policy" | "retention.ms",
 ): string | undefined => {
@@ -1589,7 +1589,15 @@ const configValue = (
   return typeof value === "string" ? value : undefined;
 };
 
-const brokerConfigResource = (value: unknown): KafkaBrokerConfigResource | undefined => {
+const configValue = (
+  configs: ReadonlyArray<unknown>,
+  name: "cleanup.policy" | "retention.ms",
+): string | undefined => {
+  const parsed = Result.try(() => unsafeConfigValue(configs, name));
+  return Result.isFailure(parsed) ? undefined : parsed.success;
+};
+
+const unsafeBrokerConfigResource = (value: unknown): KafkaBrokerConfigResource | undefined => {
   if (
     typeof value !== "object" ||
     value === null ||
@@ -1602,8 +1610,8 @@ const brokerConfigResource = (value: unknown): KafkaBrokerConfigResource | undef
   if (typeof resourceName !== "string" || resourceName.length === 0 || !Array.isArray(configs)) {
     return undefined;
   }
-  const cleanupPolicy = configValue(configs, "cleanup.policy");
-  const retentionMs = configValue(configs, "retention.ms");
+  const cleanupPolicy = unsafeConfigValue(configs, "cleanup.policy");
+  const retentionMs = unsafeConfigValue(configs, "retention.ms");
   if (cleanupPolicy === undefined) {
     return {
       resourceName,
@@ -1623,17 +1631,29 @@ const brokerConfigResource = (value: unknown): KafkaBrokerConfigResource | undef
   };
 };
 
+const brokerConfigResource = (value: unknown): KafkaBrokerConfigResource | undefined => {
+  const parsed = Result.try(() => unsafeBrokerConfigResource(value));
+  return Result.isFailure(parsed) ? undefined : parsed.success;
+};
+
 const snapshotAdminResponse = (
-  response: ReadonlyArray<unknown>,
-): ReadonlyArray<KafkaBrokerConfigResource> => {
-  const resources: Array<KafkaBrokerConfigResource> = [];
-  for (const candidate of response) {
-    const resource = brokerConfigResource(candidate);
-    if (resource !== undefined) {
-      resources.push(resource);
+  response: unknown,
+): ReadonlyArray<KafkaBrokerConfigResource> | undefined => {
+  const parsed = Result.try(() => {
+    if (!Array.isArray(response)) {
+      return undefined;
     }
-  }
-  return Object.freeze(resources);
+    const candidates: ReadonlyArray<unknown> = response;
+    const resources: Array<KafkaBrokerConfigResource> = [];
+    for (const candidate of candidates) {
+      const resource = unsafeBrokerConfigResource(candidate);
+      if (resource !== undefined) {
+        resources.push(resource);
+      }
+    }
+    return Object.freeze(resources);
+  });
+  return Result.isFailure(parsed) ? undefined : parsed.success;
 };
 
 const discoverKafkaBrokerRegion = Effect.fn("KafkaNode.brokerContract.discoverRegion")(function* (
@@ -1670,11 +1690,17 @@ const discoverKafkaBrokerRegion = Effect.fn("KafkaNode.brokerContract.discoverRe
       region,
     };
   }
-  return {
-    _tag: "Available",
-    region,
-    resources: snapshotAdminResponse(available.value),
-  };
+  const resources = snapshotAdminResponse(available.value);
+  return resources === undefined
+    ? {
+        _tag: "Malformed",
+        region,
+      }
+    : {
+        _tag: "Available",
+        region,
+        resources,
+      };
 });
 
 type KafkaLayerSnapshot = {

@@ -6,6 +6,7 @@ import type {
 } from "effect-view-server/source-adapter";
 import { SourceAdapterServer } from "effect-view-server/source-adapter/server";
 import {
+  isKafkaResolvedBrokerContract,
   kafkaBrokerContractKey,
   type KafkaResolvedBrokerContract,
   snapshotKafkaResolvedBrokerContract,
@@ -543,21 +544,6 @@ const recordEvent = Effect.fn("KafkaSourceAdapter.record.event")(function* <
   // Compaction identity owns an immutable snapshot that application codecs can never mutate.
   const serializedKeyBytes =
     definition.cleanupPolicy === "delete" ? undefined : Uint8Array.from(record.key);
-  const processedKey = yield* effectFailure(
-    definition.cleanupPolicy === "delete"
-      ? decodeKafkaCodec(definition.key, {
-          bytes: record.key,
-          metadata,
-        })
-      : decodeKafkaCompactionKeyCodec(definition.key, {
-          bytes: record.key,
-        }),
-    () => rejectDecode("keyDecode", codecRejectionMessage("key", definition.key)),
-  );
-  if (processedKey._tag === "Rejected") {
-    return processedKey.event;
-  }
-  const key = processedKey.value;
   if (record.value === null) {
     if (definition.cleanupPolicy === "delete") {
       return yield* rejectDecode(
@@ -580,6 +566,21 @@ const recordEvent = Effect.fn("KafkaSourceAdapter.record.event")(function* <
       authoritativeExpired: false,
     });
   }
+  const processedKey = yield* effectFailure(
+    definition.cleanupPolicy === "delete"
+      ? decodeKafkaCodec(definition.key, {
+          bytes: record.key,
+          metadata,
+        })
+      : decodeKafkaCompactionKeyCodec(definition.key, {
+          bytes: record.key,
+        }),
+    () => rejectDecode("keyDecode", codecRejectionMessage("key", definition.key)),
+  );
+  if (processedKey._tag === "Rejected") {
+    return processedKey.event;
+  }
+  const key = processedKey.value;
   const processedValueResult = yield* effectFailure(
     decodeKafkaCodec(definition.value, {
       bytes: record.value,
@@ -771,6 +772,11 @@ export const makeKafkaServerLayer = (
   kafkaConsumerGroupId(options.consumerGroupPrefix, "x");
   const brokerContracts = new Map<string, KafkaResolvedBrokerContract>();
   for (const suppliedContract of options.brokerContracts) {
+    if (!isKafkaResolvedBrokerContract(suppliedContract)) {
+      throw new KafkaSourceConfigurationError(
+        "Kafka broker contract must be a complete validated broker-resolution result.",
+      );
+    }
     const contract = snapshotKafkaResolvedBrokerContract(suppliedContract);
     kafkaConsumerGroupId(options.consumerGroupPrefix, contract.viewServerTopic);
     const key = kafkaBrokerContractKey(contract.viewServerTopic, contract.region);

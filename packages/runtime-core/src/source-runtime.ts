@@ -1530,6 +1530,13 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
     },
   );
 
+  const signalMaintenanceFatal = Effect.fn("ViewServerRuntimeCore.source.maintenance.signalFatal")(
+    function* (cause: Cause.Cause<ViewServerRuntimeError>) {
+      maintenanceActive = false;
+      return yield* input.onFatal(cause);
+    },
+  );
+
   const runMaintenance = Effect.fn("ViewServerRuntimeCore.source.maintenance.run")(function* (
     operation: import("@effect-view-server/source-adapter").SourceMaintenanceOperation,
   ): Effect.fn.Return<import("@effect-view-server/source-adapter").SourceMaintenanceResult> {
@@ -1538,7 +1545,7 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
         Effect.gen(function* () {
           const internal = resolveSourceMaintenanceOperation(operation);
           if (internal === undefined) {
-            yield* input.onFatal(
+            yield* signalMaintenanceFatal(
               Cause.fail(
                 runtimeError(
                   input.entry.topic,
@@ -1554,7 +1561,7 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
             internal.topic !== input.entry.topic ||
             internal.lifetimeIdentity !== applicationLifetimeIdentity
           ) {
-            yield* input.onFatal(
+            yield* signalMaintenanceFatal(
               Cause.fail(
                 runtimeError(
                   input.entry.topic,
@@ -1577,7 +1584,7 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
           }
           const current = yield* Effect.exit(Effect.sync(internal.isCurrent));
           if (Exit.isFailure(current)) {
-            yield* input.onFatal(
+            yield* signalMaintenanceFatal(
               fatalRuntimeCause(
                 input.entry.topic,
                 current.cause,
@@ -1592,7 +1599,7 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
           if (!current.value) {
             const stale = yield* Effect.exit(Effect.sync(internal.onStale));
             if (Exit.isFailure(stale)) {
-              yield* input.onFatal(
+              yield* signalMaintenanceFatal(
                 fatalRuntimeCause(
                   input.entry.topic,
                   stale.cause,
@@ -1614,7 +1621,7 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
           if (Exit.isSuccess(applicationExit)) {
             const transitioned = yield* Effect.exit(Effect.sync(internal.onSuccess));
             if (Exit.isFailure(transitioned)) {
-              yield* input.onFatal(
+              yield* signalMaintenanceFatal(
                 fatalRuntimeCause(
                   input.entry.topic,
                   transitioned.cause,
@@ -1643,7 +1650,7 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
               const transitionCause = Cause.hasDies(applicationExit.cause)
                 ? Cause.combine(transitioned.cause, applicationExit.cause)
                 : transitioned.cause;
-              yield* input.onFatal(
+              yield* signalMaintenanceFatal(
                 fatalRuntimeCause(
                   input.entry.topic,
                   transitionCause,
@@ -1652,7 +1659,7 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
               );
               maintenanceExit = Exit.failCause(transitionCause);
             } else if (Cause.hasDies(applicationExit.cause)) {
-              yield* input.onFatal(
+              yield* signalMaintenanceFatal(
                 fatalSourceApplicationCause(
                   input.entry.topic,
                   applicationExit.cause,

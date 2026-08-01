@@ -843,7 +843,88 @@ describe("Source Adapter server SDK", () => {
     }),
   );
 
-  it("rejects mutable initial state and asynchronous metrics at lifetime binding", () => {
+  it.effect("accepts distinct frozen function-valued application states", () =>
+    Effect.gen(function* () {
+      type FunctionState = () => number;
+      const makeState = (value: number): FunctionState => Object.freeze(() => value);
+      const registration = SourceAdapterServer.applicationState({
+        sweepIntervalNanos: 1_000n,
+        initialState: (): FunctionState => makeState(0),
+        reduce: (state: FunctionState, _command: undefined): FunctionState =>
+          makeState(state() + 1),
+        metrics: (state: FunctionState) => state(),
+        runDueSweep: () => Effect.void,
+      });
+      const lifetimeScope = yield* Scope.make();
+      const internal = Option.getOrThrow(
+        Option.fromUndefinedOr(resolveSourceApplicationStateRegistration(registration)),
+      );
+      internal.bind({
+        topic: "orders",
+        definition: undefined,
+        lifetimeScope,
+        target: { _tag: "Materialized" },
+      });
+      const module = registration.forLifetime(lifetimeScope, "orders");
+      const prepared = yield* module
+        .prepare(undefined)
+        .pipe(Effect.provideService(Scope.Scope, lifetimeScope));
+      Option.getOrThrow(
+        Option.fromUndefinedOr(resolveSourceApplicationTransition(prepared.transition)),
+      ).apply();
+
+      expect(module.metrics()).toBe(1);
+      yield* Scope.close(lifetimeScope, Exit.void);
+    }),
+  );
+
+  it.effect("accepts synchronous state and metrics with non-callable then fields", () =>
+    Effect.gen(function* () {
+      class ThenState {
+        constructor(
+          readonly then: string,
+          readonly count: number,
+        ) {
+          Object.freeze(this);
+        }
+      }
+      const registration = SourceAdapterServer.applicationState({
+        sweepIntervalNanos: 1_000n,
+        initialState: (): ThenState => new ThenState("state", 0),
+        reduce: (state: ThenState): ThenState => new ThenState(state.then, state.count + 1),
+        metrics: (state: ThenState) => new ThenState("metrics", state.count),
+        runDueSweep: () => Effect.void,
+      });
+      const lifetimeScope = yield* Scope.make();
+      const internal = Option.getOrThrow(
+        Option.fromUndefinedOr(resolveSourceApplicationStateRegistration(registration)),
+      );
+      internal.bind({
+        topic: "orders",
+        definition: undefined,
+        lifetimeScope,
+        target: { _tag: "Materialized" },
+      });
+      const module = registration.forLifetime(lifetimeScope, "orders");
+      const prepared = yield* module
+        .prepare({})
+        .pipe(Effect.provideService(Scope.Scope, lifetimeScope));
+      Option.getOrThrow(
+        Option.fromUndefinedOr(resolveSourceApplicationTransition(prepared.transition)),
+      ).apply();
+
+      expect(module.metrics().then).toBe("metrics");
+      expect(module.metrics().count).toBe(1);
+      yield* Scope.close(lifetimeScope, Exit.void);
+    }),
+  );
+
+  it("rejects mutable or asynchronous initial state and asynchronous metrics at binding", () => {
+    const callableThenState = () =>
+      new Proxy(Object.freeze({ value: 0 }), {
+        get: (target, property, receiver) =>
+          property === "then" ? () => undefined : Reflect.get(target, property, receiver),
+      });
     const registrations = [
       SourceAdapterServer.applicationState({
         sweepIntervalNanos: 1_000n,
@@ -852,6 +933,42 @@ describe("Source Adapter server SDK", () => {
         metrics: () => undefined,
         runDueSweep: () => Effect.void,
       }),
+      Reflect.apply(SourceAdapterServer.applicationState, undefined, [
+        {
+          sweepIntervalNanos: 1_000n,
+          initialState: (): (() => void) => () => undefined,
+          reduce: (state: () => void): (() => void) => state,
+          metrics: () => undefined,
+          runDueSweep: () => Effect.void,
+        },
+      ]),
+      Reflect.apply(SourceAdapterServer.applicationState, undefined, [
+        {
+          sweepIntervalNanos: 1_000n,
+          initialState: () => Effect.succeed(0),
+          reduce: (state: number) => state,
+          metrics: () => undefined,
+          runDueSweep: () => Effect.void,
+        },
+      ]),
+      Reflect.apply(SourceAdapterServer.applicationState, undefined, [
+        {
+          sweepIntervalNanos: 1_000n,
+          initialState: () => Object.freeze(Promise.resolve(0)),
+          reduce: (state: number) => state,
+          metrics: () => undefined,
+          runDueSweep: () => Effect.void,
+        },
+      ]),
+      Reflect.apply(SourceAdapterServer.applicationState, undefined, [
+        {
+          sweepIntervalNanos: 1_000n,
+          initialState: callableThenState,
+          reduce: (state: { readonly value: number }) => state,
+          metrics: () => undefined,
+          runDueSweep: () => Effect.void,
+        },
+      ]),
       Reflect.apply(SourceAdapterServer.applicationState, undefined, [
         {
           sweepIntervalNanos: 1_000n,
@@ -873,6 +990,10 @@ describe("Source Adapter server SDK", () => {
     ];
     const expectedMessages = [
       "Source Application State initial state must be immutable.",
+      "Source Application State initial state must be immutable.",
+      "Source Application State initial state must return a synchronous snapshot.",
+      "Source Application State initial state must return a synchronous snapshot.",
+      "Source Application State initial state must return a synchronous snapshot.",
       "Source Application State metrics must return a synchronous snapshot.",
       "Source Application State metrics must return a synchronous snapshot.",
     ];
@@ -921,6 +1042,13 @@ describe("Source Adapter server SDK", () => {
         sweepIntervalNanos: 1_000n,
         initialState: () => Object.freeze({ value: 0 }),
         reduce: () => ({ value: 1 }),
+        metrics: () => undefined,
+        runDueSweep: () => Effect.void,
+      },
+      {
+        sweepIntervalNanos: 1_000n,
+        initialState: () => Object.freeze(() => undefined),
+        reduce: () => () => undefined,
         metrics: () => undefined,
         runDueSweep: () => Effect.void,
       },

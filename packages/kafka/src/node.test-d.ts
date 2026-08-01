@@ -189,6 +189,28 @@ describe("Kafka Node type contract", () => {
         us: { bootstrapServers: "us:9092" },
       },
     });
+    const optionsWithAnySweepInterval = {
+      consumerGroupPrefix: "replica",
+      retentionSweepInterval: unsafeAny,
+      regions: {
+        eu: { bootstrapServers: "eu:9092" },
+        us: { bootstrapServers: "us:9092" },
+      },
+    };
+    // @ts-expect-error Layer option variables reject any-typed retention sweep intervals.
+    layer(config, optionsWithAnySweepInterval);
+    const validLayerOptions = {
+      consumerGroupPrefix: "replica",
+      retentionSweepInterval: "15 minutes",
+      regions: {
+        eu: { bootstrapServers: "eu:9092" },
+        us: { bootstrapServers: "us:9092" },
+      },
+    };
+    const layerOptionsUnionWithAnySweepInterval =
+      Math.random() > 0.5 ? validLayerOptions : optionsWithAnySweepInterval;
+    // @ts-expect-error every Layer option union member requires a typed retention sweep interval.
+    layer(config, layerOptionsUnionWithAnySweepInterval);
     layer(config, {
       consumerGroupPrefix: "replica",
       // @ts-expect-error every referenced Region is required.
@@ -310,15 +332,37 @@ describe("Kafka Node type contract", () => {
     // @ts-expect-error aggregate Config Layer options cannot be any.
     layerConfig(config, unsafeAny);
 
+    // @ts-expect-error Config-wrapped retention sweep cadence accepts only Effect Duration inputs.
     layerConfig(config, {
       consumerGroupPrefix: Config.succeed("replica"),
-      // @ts-expect-error Config-wrapped retention sweep cadence accepts only Effect Duration inputs.
       retentionSweepInterval: Config.succeed(true),
       regions: {
         eu: { bootstrapServers: Config.succeed("eu:9092") },
         us: { bootstrapServers: Config.succeed("us:9092") },
       },
     });
+    const configWithAnySweepInterval = {
+      consumerGroupPrefix: Config.succeed("replica"),
+      retentionSweepInterval: Config.succeed(unsafeAny),
+      regions: {
+        eu: { bootstrapServers: Config.succeed("eu:9092") },
+        us: { bootstrapServers: Config.succeed("us:9092") },
+      },
+    };
+    // @ts-expect-error Config Layer option variables reject any-typed retention sweep intervals.
+    layerConfig(config, configWithAnySweepInterval);
+    const validConfigOptions = {
+      consumerGroupPrefix: Config.succeed("replica"),
+      retentionSweepInterval: Config.succeed("15 minutes"),
+      regions: {
+        eu: { bootstrapServers: Config.succeed("eu:9092") },
+        us: { bootstrapServers: Config.succeed("us:9092") },
+      },
+    };
+    const configOptionsUnionWithAnySweepInterval =
+      Math.random() > 0.5 ? validConfigOptions : configWithAnySweepInterval;
+    // @ts-expect-error every Config Layer union member requires a typed sweep interval.
+    layerConfig(config, configOptionsUnionWithAnySweepInterval);
 
     const configWithTopLevelExtra = {
       consumerGroupPrefix: Config.succeed("replica"),

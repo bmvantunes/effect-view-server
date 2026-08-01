@@ -424,6 +424,41 @@ describe("Kafka Source Adapter type contract", () => {
     kafka.protobuf(protobufDescriptorOrString);
     // @ts-expect-error custom codec definitions cannot be any.
     kafka.codec(unsafeAny);
+    const compactionCodecWithAnyName = {
+      name: unsafeAny,
+      decode: () => Effect.succeed("decoded"),
+    };
+    // @ts-expect-error compaction codec descriptor variables reject any-typed names.
+    kafka.compactionKey.codec(compactionCodecWithAnyName);
+    const validCompactionCodecDescriptor = {
+      name: "valid-compaction-codec" as const,
+      decode: () => Effect.succeed("decoded" as const),
+    };
+    const alternateValidCompactionCodecDescriptor = {
+      name: "alternate-valid-compaction-codec" as const,
+      decode: () => Effect.succeed(1 as const),
+    };
+    const validCompactionCodecUnion =
+      Math.random() > 0.5
+        ? validCompactionCodecDescriptor
+        : alternateValidCompactionCodecDescriptor;
+    const validCompactionUnionCodec = kafka.compactionKey.codec(validCompactionCodecUnion);
+    expectTypeOf<KafkaCodecValue<typeof validCompactionUnionCodec>>().toEqualTypeOf<
+      "decoded" | 1
+    >();
+    const compactionCodecUnionWithAnyName =
+      Math.random() > 0.5 ? validCompactionCodecDescriptor : compactionCodecWithAnyName;
+    // @ts-expect-error every compaction codec descriptor union member must have a typed name.
+    kafka.compactionKey.codec(compactionCodecUnionWithAnyName);
+    const compactionCodecWithExtra = {
+      name: "valid-compaction-codec" as const,
+      decode: () => Effect.succeed(1 as const),
+      extra: true,
+    };
+    const compactionCodecUnionWithExtra =
+      Math.random() > 0.5 ? validCompactionCodecDescriptor : compactionCodecWithExtra;
+    // @ts-expect-error every compaction codec descriptor union member must be exact.
+    kafka.compactionKey.codec(compactionCodecUnionWithExtra);
     kafka.codec({
       name: "non-effect",
       // @ts-expect-error custom decoders must return an Effect.

@@ -626,7 +626,7 @@ describe("Kafka Source Adapter contract", () => {
       }).pipe(Effect.flip);
       const throwingCustom = kafka.compactionKey.codec({
         name: "throwing",
-        decode: () => {
+        decode: (_input) => {
           throw new Error("escaped");
         },
       });
@@ -713,7 +713,7 @@ describe("Kafka Source Adapter contract", () => {
       isKafkaCompactionKeyCodec(
         kafka.compactionKey.codec({
           name: "custom",
-          decode: () => Effect.succeed("decoded"),
+          decode: (_input) => Effect.succeed("decoded"),
         }),
       ),
     ).toBe(true);

@@ -172,6 +172,15 @@ type IsUnknown<Value> =
 
 type IsNever<Value> = [Value] extends [never] ? true : false;
 
+type NodeCandidateField<Candidate, Key extends PropertyKey> = Candidate extends unknown
+  ? Key extends keyof Candidate
+    ? Candidate[Key]
+    : never
+  : never;
+
+type RejectAnyNodeField<Candidate, Key extends PropertyKey> =
+  IsAny<NodeCandidateField<Candidate, Key>> extends true ? never : unknown;
+
 type ExactSaslOptions<Candidate> =
   IsAny<Candidate> extends true
     ? never
@@ -233,7 +242,7 @@ type ExactNodeOptions<ViewServer extends KafkaNodeViewServer, Candidate> =
                 Candidate["regions"][Region]
               >;
             };
-        }
+        } & RejectAnyNodeField<Candidate, "retentionSweepInterval">
     : never;
 
 type KafkaNodeOptionsGuard<ViewServer, Options> =
@@ -251,6 +260,17 @@ type KafkaNodeOptionsGuard<ViewServer, Options> =
               : never
             : never;
 
+type UnwrapRetentionSweepIntervalCandidate<Candidate> =
+  IsAny<Candidate> extends true
+    ? Candidate
+    : Candidate extends Config.Config<infer Value>
+      ? IsAny<Value> extends true
+        ? Value
+        : NonNullable<Value> extends string
+          ? Duration.Input
+          : NonNullable<Value>
+      : Candidate;
+
 type UnwrapConfigCandidate<Candidate> =
   IsAny<Candidate> extends true
     ? Candidate
@@ -259,7 +279,7 @@ type UnwrapConfigCandidate<Candidate> =
       : Candidate extends object
         ? {
             readonly [Key in keyof Candidate]: Key extends "retentionSweepInterval"
-              ? Duration.Input
+              ? UnwrapRetentionSweepIntervalCandidate<Candidate[Key]>
               : UnwrapConfigCandidate<Candidate[Key]>;
           }
         : Candidate;

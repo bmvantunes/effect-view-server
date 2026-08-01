@@ -50,6 +50,8 @@ const Location = Schema.Struct({
   offset: Schema.BigInt,
 });
 
+declare const unsafeAny: any;
+
 type MappedDefinitionOptions<Row extends object> = {
   readonly initial: Row;
 };
@@ -1188,6 +1190,18 @@ describe("Source Adapter public type contracts", () => {
     };
     // @ts-expect-error Source Application State descriptor variables reject unknown capabilities.
     SourceAdapterServer.applicationState(applicationStateOptionsWithExtra);
+    const applicationStateOptionsWithAnySweepInterval = {
+      ...validApplicationStateOptions,
+      sweepIntervalNanos: unsafeAny,
+    };
+    // @ts-expect-error Source Application State descriptor variables reject any-typed sweep intervals.
+    SourceAdapterServer.applicationState(applicationStateOptionsWithAnySweepInterval);
+    const applicationStateOptionsUnionWithAnySweepInterval =
+      Math.random() > 0.5
+        ? validApplicationStateOptions
+        : applicationStateOptionsWithAnySweepInterval;
+    // @ts-expect-error every descriptor union member requires a typed sweep interval.
+    SourceAdapterServer.applicationState(applicationStateOptionsUnionWithAnySweepInterval);
     SourceAdapterServer.applicationState({
       sweepIntervalNanos: 1n,
       initialState: (): ApplicationState => ({ count: 0 }),

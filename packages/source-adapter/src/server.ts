@@ -894,6 +894,17 @@ type RejectExtraApplicationStateKeys<Candidate, Shape> = {
   readonly [Key in Exclude<keyof Candidate, keyof Shape>]: never;
 };
 
+type SourceApplicationStateCandidateField<Input, Key extends PropertyKey> = Input extends unknown
+  ? Key extends keyof Input
+    ? Input[Key]
+    : never
+  : never;
+
+type RejectAnyApplicationStateField<Input, Key extends PropertyKey> = 0 extends 1 &
+  SourceApplicationStateCandidateField<Input, Key>
+  ? never
+  : unknown;
+
 export const makeSourceApplicationStateRegistration = <
   State,
   Command,
@@ -907,6 +918,7 @@ export const makeSourceApplicationStateRegistration = <
       NoInfer<Input>,
       SourceApplicationStateRegistrationInput<State, Command, Metrics, SweepOutcome>
     > &
+    RejectAnyApplicationStateField<NoInfer<Input>, "sweepIntervalNanos"> &
     RejectSourceAsynchronousValue<State> &
     RejectSourceAsynchronousValue<Metrics>,
 ): SourceApplicationStateRegistration<State, Command, Metrics, SweepOutcome> => {

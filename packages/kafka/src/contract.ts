@@ -556,6 +556,17 @@ type KafkaCompactionCustomCodecShape = {
   readonly decode: (input: KafkaCompactionKeyCodecDecodeInput) => KafkaCustomDecodeResult;
 };
 
+type KafkaCompactionCustomCodecUnionKeys<Definition> = Definition extends unknown
+  ? keyof Definition
+  : never;
+
+type RejectKafkaCompactionCustomCodecExtraKeys<Definition> = {
+  readonly [Key in Exclude<
+    KafkaCompactionCustomCodecUnionKeys<Definition>,
+    keyof KafkaCompactionCustomCodecShape
+  >]: never;
+};
+
 const compactionBytesCodec = (): KafkaCompactionBytesCodec =>
   makeCompactionKeyCodec("bytes", (input) => Effect.succeed(Uint8Array.from(input.bytes)));
 
@@ -634,18 +645,21 @@ function compactionProtobufCodec(
 }
 
 function compactionCustomCodec<
+  const Name,
   const Definition extends {
-    readonly name: string;
+    readonly name: Name;
     readonly decode: (...arguments_: ReadonlyArray<never>) => unknown;
   },
 >(
   definition: Definition & {
+    readonly name: Name & string;
     readonly decode: (input: KafkaCompactionKeyCodecDecodeInput) => KafkaCustomDecodeResult;
-  } & RejectAny<KafkaCustomDecodeValue<NoInfer<ReturnType<Definition["decode"]>>>> &
+  } & RejectAny<NoInfer<Name>> &
+    RejectAny<KafkaCustomDecodeValue<NoInfer<ReturnType<Definition["decode"]>>>> &
     RejectUnknown<KafkaCustomDecodeValue<NoInfer<ReturnType<Definition["decode"]>>>> &
     RejectAny<KafkaCustomDecodeFailure<NoInfer<ReturnType<Definition["decode"]>>>> &
     RejectUnknown<KafkaCustomDecodeFailure<NoInfer<ReturnType<Definition["decode"]>>>> &
-    RejectExtraKeys<Definition, KafkaCompactionCustomCodecShape>,
+    RejectKafkaCompactionCustomCodecExtraKeys<Definition>,
   ..._unsupported: KafkaCustomCodecAdditionalArguments<NoInfer<Definition>>
 ): KafkaCompactionCustomCodec<
   KafkaCustomDecodeValue<NoInfer<ReturnType<Definition["decode"]>>>,

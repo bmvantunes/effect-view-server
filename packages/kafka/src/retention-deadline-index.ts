@@ -120,15 +120,17 @@ function* orderedDeadlines(
 ): IterableIterator<KafkaRetentionDeadline> {
   const stack: Array<KafkaRetentionDeadlineNode> = [];
   let current = node;
-  while (current !== null || stack.length > 0) {
+  while (true) {
     while (current !== null) {
       stack.push(current);
       current = current.left;
     }
-    for (const next of stack.splice(-1, 1)) {
-      yield next.deadline;
-      current = next.right;
+    const next = stack.pop();
+    if (next === undefined) {
+      return;
     }
+    yield next.deadline;
+    current = next.right;
   }
 }
 

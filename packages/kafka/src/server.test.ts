@@ -2190,7 +2190,7 @@ describe("Kafka Source Adapter Server", () => {
               failedAtNanos: 10n,
               message: "Kafka retention expiration Delete failed.",
             },
-            lastSweepAtNanos: 10n,
+            lastSweepAtNanos: 0n,
             lastSweepDurationNanos: 0n,
             sweepIntervalNanos: 1_000_000_000n,
           },
@@ -2443,6 +2443,7 @@ describe("Kafka Source Adapter Server", () => {
             execute: (operation) =>
               Effect.sync(() => {
                 deleted.push(operation.id);
+                wallMillis += 500;
                 const resolved = Option.getOrThrow(
                   Option.fromUndefinedOr(resolveSourceMaintenanceOperation(operation)),
                 );
@@ -2481,7 +2482,7 @@ describe("Kafka Source Adapter Server", () => {
             failedWorkBacklog: 0,
             expirationRetryFailures: 0n,
             latestExpirationFailure: null,
-            lastSweepAtNanos: 2_000_000_000n,
+            lastSweepAtNanos: 2_500_000_000n,
             lastSweepDurationNanos: 50n,
             sweepIntervalNanos: 1_000n,
           },
@@ -2511,7 +2512,7 @@ describe("Kafka Source Adapter Server", () => {
             generation: 2n,
           },
           sweepDuration: 50n,
-          unchangedWallEpoch: 2_000_000_000n,
+          unchangedWallEpoch: 2_500_000_000n,
         });
 
         wallMillis = 5_000;

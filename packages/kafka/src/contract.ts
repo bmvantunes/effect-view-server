@@ -2,14 +2,14 @@ import { create, createFileRegistry, fromBinary, toBinary } from "@bufbuild/prot
 import type { DescFile, DescMessage, MessageShape } from "@bufbuild/protobuf";
 import { FileDescriptorSetSchema } from "@bufbuild/protobuf/wkt";
 import { Duration, Effect, Option, Result, Schedule, Schema } from "effect";
-import {
-  SourceAdapter,
-  type SourceAdapterDescriptor,
-  type SourceDefinition,
-  type SourceLifecycleDeclaration,
-  type SourceRetryPolicy,
-  type SourceTermination,
+import type {
+  SourceAdapterDescriptor,
+  SourceDefinition,
+  SourceLifecycleDeclaration,
+  SourceRetryPolicy,
+  SourceTermination,
 } from "effect-view-server/source-adapter";
+import { SourceAdapter } from "effect-view-server/source-adapter";
 
 const KafkaCodecTypeId: unique symbol = Symbol("@effect-view-server/kafka/KafkaCodec");
 const KafkaCodecDecodeTypeId: unique symbol = Symbol("@effect-view-server/kafka/KafkaCodecDecode");
@@ -48,8 +48,10 @@ type RejectUnknown<Value> =
       }
     : unknown;
 
+type KafkaCandidateKeys<Candidate> = Candidate extends unknown ? keyof Candidate : never;
+
 type RejectExtraKeys<Candidate, Shape> = {
-  readonly [Key in Exclude<keyof Candidate, keyof Shape>]: never;
+  readonly [Key in Exclude<KafkaCandidateKeys<Candidate>, keyof Shape>]: never;
 };
 
 type KafkaRowSchema = Schema.Codec<object, unknown, never, never> & {
@@ -2853,13 +2855,20 @@ export function kafkaRowId(input: KafkaRowIdInput): string {
 
 export type KafkaDecodedRowId = KafkaDecodedDeleteRowId | KafkaDecodedCompactionRowId;
 
-export function decodeKafkaRowId(id: string, cleanupPolicy: "delete"): KafkaDecodedDeleteRowId;
-export function decodeKafkaRowId(
+type KafkaDecodedRowIdForPolicy<Policy> =
+  IsAny<Policy> extends true
+    ? KafkaDecodedRowId
+    : Policy extends "delete"
+      ? KafkaDecodedDeleteRowId
+      : Policy extends "compact" | "compact-and-delete"
+        ? KafkaDecodedCompactionRowId
+        : KafkaDecodedRowId;
+
+export function decodeKafkaRowId<const Policy extends KafkaCleanupPolicy>(
   id: string,
-  cleanupPolicy: "compact" | "compact-and-delete",
-): KafkaDecodedCompactionRowId;
-export function decodeKafkaRowId(id: string, cleanupPolicy: KafkaCleanupPolicy): KafkaDecodedRowId;
-export function decodeKafkaRowId(id: string, cleanupPolicy: KafkaCleanupPolicy): KafkaDecodedRowId {
+  cleanupPolicy: Policy & RejectAny<NoInfer<Policy>>,
+): KafkaDecodedRowIdForPolicy<Policy>;
+export function decodeKafkaRowId(id: string, cleanupPolicy: unknown): KafkaDecodedRowId {
   if (cleanupPolicy === "delete") {
     return decodeKafkaDeleteRowId(id);
   }

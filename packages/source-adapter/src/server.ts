@@ -690,12 +690,15 @@ const makeSourceApplicationStateModule = <State, Command, Metrics, SweepOutcome>
   );
   const dispatch = (command: Command): void => {
     const next = input.reduce(state, command);
-    if (
-      isSourceAsynchronousValue(next) ||
-      (isSourceStateReference(next) && (next === state || !Object.isFrozen(next)))
-    ) {
+    if (isSourceAsynchronousValue(next)) {
+      discardSourceAsynchronousValue(next);
       throw new TypeError(
-        "Source Application State reducer must return a new immutable state synchronously.",
+        "Source Application State reducer must return an immutable state synchronously.",
+      );
+    }
+    if (isSourceStateReference(next) && !Object.isFrozen(next)) {
+      throw new TypeError(
+        "Source Application State reducer must return an immutable state synchronously.",
       );
     }
     state = next;
@@ -720,8 +723,20 @@ const makeSourceApplicationStateModule = <State, Command, Metrics, SweepOutcome>
     [SourceApplicationStateModuleStateTypeId]: preserveSourceApplicationState<State>,
     prepare: <const Topic extends string>(topic: Topic, command: Command) =>
       Effect.suspend(() => {
+        const cancelledMaintenanceWorkIdsCandidate = input.cancelledMaintenanceWorkIds(
+          state,
+          command,
+        );
+        if (isSourceAsynchronousValue(cancelledMaintenanceWorkIdsCandidate)) {
+          discardSourceAsynchronousValue(cancelledMaintenanceWorkIdsCandidate);
+          return Effect.die(
+            new TypeError(
+              "Source Application State cancelled maintenance work IDs must return synchronously.",
+            ),
+          );
+        }
         const cancelledMaintenanceWorkIds = Object.freeze(
-          Array.from(input.cancelledMaintenanceWorkIds(state, command)),
+          Array.from(cancelledMaintenanceWorkIdsCandidate),
         );
         return Effect.uninterruptibleMask(() =>
           Effect.gen(function* () {
@@ -729,7 +744,16 @@ const makeSourceApplicationStateModule = <State, Command, Metrics, SweepOutcome>
             if (registry.closed) {
               return yield* Effect.interrupt;
             }
-            const release = yield* input.acquireTransition(state, command);
+            const acquisition = input.acquireTransition(state, command);
+            if (!Effect.isEffect(acquisition)) {
+              discardSourceAsynchronousValue(acquisition);
+              return yield* Effect.die(
+                new TypeError(
+                  "Source Application State transition acquisition must return an Effect.",
+                ),
+              );
+            }
+            const release = yield* acquisition;
             let released = false;
             const releaseOnce = (): void => {
               if (released) {
@@ -763,6 +787,7 @@ const makeSourceApplicationStateModule = <State, Command, Metrics, SweepOutcome>
     metrics: () => {
       const snapshot = input.metrics(state);
       if (isSourceAsynchronousValue(snapshot)) {
+        discardSourceAsynchronousValue(snapshot);
         throw new TypeError("Source Application State metrics must return a synchronous snapshot.");
       }
       return snapshot;
@@ -773,14 +798,22 @@ const makeSourceApplicationStateModule = <State, Command, Metrics, SweepOutcome>
       execute: (
         operation: SourceMaintenanceOperation<Topic>,
       ) => Effect.Effect<SourceMaintenanceResult>,
-    ) =>
-      input.runDueSweep({
+    ) => {
+      const sweep = input.runDueSweep({
         epochNowNanos,
         state,
         update: dispatch,
         operation: (maintenance) => operation(topic, maintenance),
         execute,
-      }),
+      });
+      if (Effect.isEffect(sweep)) {
+        return sweep;
+      }
+      discardSourceAsynchronousValue(sweep);
+      return Effect.die(
+        new TypeError("Source Application State retention sweep must return an Effect."),
+      );
+    },
   });
 };
 
@@ -861,6 +894,16 @@ const isSourceAsynchronousValue = (value: unknown): boolean => {
   return Result.isFailure(then) || typeof then.success === "function";
 };
 
+const discardSourceAsynchronousValue = (value: unknown): void => {
+  if (Effect.isEffect(value)) {
+    return;
+  }
+  void Promise.resolve(value).then(
+    () => undefined,
+    () => undefined,
+  );
+};
+
 const isSourceStateReference = (value: unknown): boolean =>
   (typeof value === "object" && value !== null) || typeof value === "function";
 
@@ -926,8 +969,24 @@ type SourceApplicationStateCandidateField<Input, Key extends PropertyKey> = Inpu
     : never
   : never;
 
+type SourceApplicationStateFunctionReturn<Value> = Value extends (
+  ...args: ReadonlyArray<never>
+) => infer R
+  ? R
+  : never;
+
+type SourceApplicationStateCandidateReturn<
+  Input,
+  Key extends PropertyKey,
+> = SourceApplicationStateFunctionReturn<SourceApplicationStateCandidateField<Input, Key>>;
+
 type RejectAnyApplicationStateField<Input, Key extends PropertyKey> = 0 extends 1 &
   SourceApplicationStateCandidateField<Input, Key>
+  ? never
+  : unknown;
+
+type RejectAnyApplicationStateReturn<Input, Key extends PropertyKey> = 0 extends 1 &
+  SourceApplicationStateCandidateReturn<Input, Key>
   ? never
   : unknown;
 
@@ -947,6 +1006,13 @@ export const makeSourceApplicationStateRegistration = <
     RejectAnyApplicationStateField<
       NoInfer<Input>,
       keyof SourceApplicationStateRegistrationInput<State, Command, Metrics, SweepOutcome>
+    > &
+    RejectAnyApplicationStateReturn<
+      NoInfer<Input>,
+      Exclude<
+        keyof SourceApplicationStateRegistrationInput<State, Command, Metrics, SweepOutcome>,
+        "sweepIntervalNanos"
+      >
     > &
     RejectSourceAsynchronousValue<State> &
     RejectSourceAsynchronousValue<Metrics>,
@@ -998,6 +1064,7 @@ export const makeSourceApplicationStateRegistration = <
       }
       const initialState = snapshot.initialState(binding);
       if (isSourceAsynchronousValue(initialState)) {
+        discardSourceAsynchronousValue(initialState);
         throw new TypeError(
           "Source Application State initial state must return a synchronous snapshot.",
         );

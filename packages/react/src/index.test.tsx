@@ -14,7 +14,7 @@ import {
 } from "@effect-view-server/config";
 import { createInMemoryViewServer as createCoreInMemoryViewServer } from "@effect-view-server/in-memory";
 import { makeViewServerRuntimeCore } from "@effect-view-server/runtime-core";
-import { Cause, Effect, Option, Queue, Schedule, Schema, Scope, Stream } from "effect";
+import { Cause, Effect, Match, Option, Queue, Schedule, Schema, Scope, Stream } from "effect";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import { Component, Suspense, type ReactNode } from "react";
 import { render } from "vitest-browser-react";
@@ -1449,29 +1449,32 @@ describe("createViewServerReact", () => {
       const result = diagnosticHealthReact.useSourceHealth({
         topic: "orders",
       });
-      if (!AsyncResult.isSuccess(result)) {
-        return <output role="status">Loading</output>;
-      }
-      const status = result.value.status;
-      if (status._tag === "Degraded") {
-        return (
-          <output role="status">
-            {`${status._tag}:${status.reasons.map((reason) => reason._tag).join("+")}`}
-          </output>
-        );
-      }
-      if (
-        status._tag === "Exhausted" &&
-        status.exhaustion.lastTermination._tag === "Failed" &&
-        status.exhaustion.lastTermination.failure._tag === "RuntimeFailure"
-      ) {
-        return (
-          <output role="status">
-            {`${status._tag}:${status.exhaustion.lastTermination.failure.failure._tag}`}
-          </output>
-        );
-      }
-      return <output role="status">{status._tag}</output>;
+      const text = AsyncResult.match(result, {
+        onInitial: () => "Loading",
+        onFailure: () => "Loading",
+        onSuccess: ({ value }) =>
+          Match.value(value.status).pipe(
+            Match.when(
+              { _tag: "Degraded" },
+              (status) => `${status._tag}:${status.reasons.map((reason) => reason._tag).join("+")}`,
+            ),
+            Match.when(
+              {
+                _tag: "Exhausted",
+                exhaustion: {
+                  lastTermination: {
+                    _tag: "Failed",
+                    failure: { _tag: "RuntimeFailure" },
+                  },
+                },
+              },
+              (status) =>
+                `${status._tag}:${status.exhaustion.lastTermination.failure.failure._tag}`,
+            ),
+            Match.orElse((status) => status._tag),
+          ),
+      });
+      return <output role="status">{text}</output>;
     }
 
     const view = await render(
@@ -1498,11 +1501,16 @@ describe("createViewServerReact", () => {
         topic: "orders",
         routeBy: { region: "remote" },
       });
-      const text = AsyncResult.isSuccess(result)
-        ? result.value._tag === "Inactive"
-          ? `Inactive:${result.value.route.region}`
-          : `Active:${result.value.health.adapter.name}`
-        : "Loading";
+      const text = AsyncResult.match(result, {
+        onInitial: () => "Loading",
+        onFailure: () => "Loading",
+        onSuccess: ({ value }) =>
+          Match.value(value).pipe(
+            Match.when({ _tag: "Inactive" }, (inactive) => `Inactive:${inactive.route.region}`),
+            Match.when({ _tag: "Active" }, (active) => `Active:${active.health.adapter.name}`),
+            Match.exhaustive,
+          ),
+      });
       return <output role="status">{text}</output>;
     }
 
@@ -1539,40 +1547,39 @@ describe("createViewServerReact", () => {
       const result = diagnosticRemoteReact.useSourceHealth({
         topic: "diagnostics",
       });
-      if (!AsyncResult.isSuccess(result)) {
-        return <output role="status">Loading</output>;
-      }
-      const health = result.value;
-      if (health.status._tag === "Degraded") {
-        const retention = health.metrics.adapter.regions[0].retention;
-        return (
-          <output role="status">
-            {[
-              "Degraded",
-              health.status.degradedAtNanos,
-              health.status.reasons.map((reason) => reason._tag).join("+"),
-              `backlog=${retention.failedWorkBacklog}`,
-              `failure=${retention.latestExpirationFailure?.message ?? "none"}`,
-              `retries=${retention.expirationRetryFailures}`,
-            ].join(":")}
-          </output>
-        );
-      }
-      if (health.status._tag === "Ready") {
-        return <output role="status">{`Ready:${health.status.readyAtNanos}`}</output>;
-      }
-      if (
-        health.status._tag === "Exhausted" &&
-        health.status.exhaustion.lastTermination._tag === "Failed" &&
-        health.status.exhaustion.lastTermination.failure._tag === "RuntimeFailure"
-      ) {
-        return (
-          <output role="status">
-            {`Exhausted:${health.status.exhaustion.lastTermination.failure.failure._tag}`}
-          </output>
-        );
-      }
-      return <output role="status">{health.status._tag}</output>;
+      const text = AsyncResult.match(result, {
+        onInitial: () => "Loading",
+        onFailure: () => "Loading",
+        onSuccess: ({ value: health }) =>
+          Match.value(health.status).pipe(
+            Match.when({ _tag: "Degraded" }, (status) => {
+              const retention = health.metrics.adapter.regions[0].retention;
+              return [
+                "Degraded",
+                status.degradedAtNanos,
+                status.reasons.map((reason) => reason._tag).join("+"),
+                `backlog=${retention.failedWorkBacklog}`,
+                `failure=${retention.latestExpirationFailure?.message ?? "none"}`,
+                `retries=${retention.expirationRetryFailures}`,
+              ].join(":");
+            }),
+            Match.when({ _tag: "Ready" }, (status) => `Ready:${status.readyAtNanos}`),
+            Match.when(
+              {
+                _tag: "Exhausted",
+                exhaustion: {
+                  lastTermination: {
+                    _tag: "Failed",
+                    failure: { _tag: "RuntimeFailure" },
+                  },
+                },
+              },
+              (status) => `Exhausted:${status.exhaustion.lastTermination.failure.failure._tag}`,
+            ),
+            Match.orElse((status) => status._tag),
+          ),
+      });
+      return <output role="status">{text}</output>;
     }
 
     const view = await render(

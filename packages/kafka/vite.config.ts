@@ -55,7 +55,11 @@ export default defineConfig({
       },
     },
   },
-  pack: libraryPack(["src/contract.ts", "src/server.ts", "src/node.ts"]),
+  pack: libraryPack(["src/contract.ts", "src/server.ts", "src/node.ts"], {
+    deps: {
+      neverBundle: ["effect-view-server"],
+    },
+  }),
   lint: {
     options: {
       typeAware: true,

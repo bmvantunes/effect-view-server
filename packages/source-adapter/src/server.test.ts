@@ -1061,7 +1061,209 @@ describe("Source Adapter server SDK", () => {
     }),
   );
 
-  it("rejects Effect, Promise, same-state, and mutable-state application reducers", () => {
+  it.effect("observes rejected Promise-like metrics before rejecting the snapshot", () =>
+    Effect.gen(function* () {
+      let rejectionObserverInstalled = false;
+      const rejectedMetrics = new Proxy(
+        {},
+        {
+          get: (_target, property) =>
+            property === "then"
+              ? (_onSuccess: (value: never) => void, onFailure: (failure: Error) => void): void => {
+                  rejectionObserverInstalled = true;
+                  onFailure(new Error("hostile metrics rejection"));
+                }
+              : undefined,
+        },
+      );
+      const registration = Reflect.apply(SourceAdapterServer.applicationState, undefined, [
+        {
+          sweepIntervalNanos: 1_000n,
+          initialState: () => 0,
+          reduce: () => 1,
+          metrics: (state: number) => (state === 0 ? 0 : rejectedMetrics),
+          runDueSweep: () => Effect.void,
+        },
+      ]);
+      const lifetimeScope = yield* Scope.make();
+      const internal = Option.getOrThrow(
+        Option.fromUndefinedOr(resolveSourceApplicationStateRegistration(registration)),
+      );
+      internal.bind({
+        topic: "orders",
+        definition: undefined,
+        lifetimeScope,
+        target: { _tag: "Materialized" },
+      });
+      const module = Reflect.apply(Reflect.get(registration, "forLifetime"), registration, [
+        lifetimeScope,
+        "orders",
+      ]);
+      const preparedEffect = invokeUnknownMethod(module, "prepare", [undefined]);
+      if (!Effect.isEffect(preparedEffect)) {
+        throw new TypeError("Expected prepare to return an Effect.");
+      }
+      const prepared = yield* preparedEffect.pipe(
+        Effect.provideService(Scope.Scope, lifetimeScope),
+        Effect.orDie,
+      );
+      if (typeof prepared !== "object" || prepared === null) {
+        throw new TypeError("Expected prepare to return a transition.");
+      }
+      Option.getOrThrow(
+        Option.fromUndefinedOr(
+          resolveSourceApplicationTransition(Reflect.get(prepared, "transition")),
+        ),
+      ).apply();
+
+      expect(() => invokeUnknownMethod(module, "metrics", [])).toThrow(
+        "Source Application State metrics must return a synchronous snapshot.",
+      );
+      yield* Effect.yieldNow;
+      expect(rejectionObserverInstalled).toBe(true);
+      yield* Scope.close(lifetimeScope, Exit.void);
+    }),
+  );
+
+  it.effect("rejects hostile asynchronous application-state capability results", () =>
+    Effect.gen(function* () {
+      const cancelledRegistration = Reflect.apply(SourceAdapterServer.applicationState, undefined, [
+        {
+          sweepIntervalNanos: 1_000n,
+          initialState: () => 0,
+          reduce: (state: number) => state,
+          cancelledMaintenanceWorkIds: () => Promise.resolve([]),
+          metrics: () => 0,
+          runDueSweep: () => Effect.void,
+        },
+      ]);
+      const cancelledLifetimeScope = yield* Scope.make();
+      const cancelledAttemptScope = yield* Scope.make();
+      const cancelledInternal = Option.getOrThrow(
+        Option.fromUndefinedOr(resolveSourceApplicationStateRegistration(cancelledRegistration)),
+      );
+      cancelledInternal.bind({
+        topic: "orders",
+        definition: undefined,
+        lifetimeScope: cancelledLifetimeScope,
+        target: { _tag: "Materialized" },
+      });
+      const cancelledModule = Reflect.apply(
+        Reflect.get(cancelledRegistration, "forLifetime"),
+        cancelledRegistration,
+        [cancelledLifetimeScope, "orders"],
+      );
+      const cancelledPreparation = invokeUnknownMethod(cancelledModule, "prepare", [undefined]);
+      if (!Effect.isEffect(cancelledPreparation)) {
+        throw new TypeError("Expected cancellation preparation to return an Effect.");
+      }
+      const cancelledExit = yield* Effect.exit(
+        cancelledPreparation.pipe(Effect.provideService(Scope.Scope, cancelledAttemptScope)),
+      );
+      expect(
+        Exit.isFailure(cancelledExit)
+          ? Result.getOrThrow(Cause.findDefect(cancelledExit.cause))
+          : undefined,
+      ).toStrictEqual(
+        new TypeError(
+          "Source Application State cancelled maintenance work IDs must return synchronously.",
+        ),
+      );
+
+      const acquisitionRegistration = Reflect.apply(
+        SourceAdapterServer.applicationState,
+        undefined,
+        [
+          {
+            sweepIntervalNanos: 1_000n,
+            initialState: () => 0,
+            reduce: (state: number) => state,
+            acquireTransition: () => Promise.resolve(() => undefined),
+            metrics: () => 0,
+            runDueSweep: () => Effect.void,
+          },
+        ],
+      );
+      const acquisitionLifetimeScope = yield* Scope.make();
+      const acquisitionAttemptScope = yield* Scope.make();
+      const acquisitionInternal = Option.getOrThrow(
+        Option.fromUndefinedOr(resolveSourceApplicationStateRegistration(acquisitionRegistration)),
+      );
+      acquisitionInternal.bind({
+        topic: "orders",
+        definition: undefined,
+        lifetimeScope: acquisitionLifetimeScope,
+        target: { _tag: "Materialized" },
+      });
+      const acquisitionModule = Reflect.apply(
+        Reflect.get(acquisitionRegistration, "forLifetime"),
+        acquisitionRegistration,
+        [acquisitionLifetimeScope, "orders"],
+      );
+      const acquisitionPreparation = invokeUnknownMethod(acquisitionModule, "prepare", [undefined]);
+      if (!Effect.isEffect(acquisitionPreparation)) {
+        throw new TypeError("Expected acquisition preparation to return an Effect.");
+      }
+      const acquisitionExit = yield* Effect.exit(
+        acquisitionPreparation.pipe(Effect.provideService(Scope.Scope, acquisitionAttemptScope)),
+      );
+      expect(
+        Exit.isFailure(acquisitionExit)
+          ? Result.getOrThrow(Cause.findDefect(acquisitionExit.cause))
+          : undefined,
+      ).toStrictEqual(
+        new TypeError("Source Application State transition acquisition must return an Effect."),
+      );
+
+      const sweepRegistration = Reflect.apply(SourceAdapterServer.applicationState, undefined, [
+        {
+          sweepIntervalNanos: 1_000n,
+          initialState: () => 0,
+          reduce: (state: number) => state,
+          metrics: () => 0,
+          runDueSweep: () => Promise.resolve({ attempted: 0 }),
+        },
+      ]);
+      const sweepLifetimeScope = yield* Scope.make();
+      const sweepInternal = Option.getOrThrow(
+        Option.fromUndefinedOr(resolveSourceApplicationStateRegistration(sweepRegistration)),
+      );
+      sweepInternal.bind({
+        topic: "orders",
+        definition: undefined,
+        lifetimeScope: sweepLifetimeScope,
+        target: { _tag: "Materialized" },
+      });
+      const sweepModule = Reflect.apply(
+        Reflect.get(sweepRegistration, "forLifetime"),
+        sweepRegistration,
+        [sweepLifetimeScope, "orders"],
+      );
+      const sweep = invokeUnknownMethod(sweepModule, "runDueSweep", [
+        1n,
+        () => Effect.succeed({ _tag: "Inactive" }),
+      ]);
+      if (!Effect.isEffect(sweep)) {
+        throw new TypeError("Expected retention sweep to return an Effect.");
+      }
+      const sweepExit = yield* Effect.exit(sweep);
+      expect(
+        Exit.isFailure(sweepExit)
+          ? Result.getOrThrow(Cause.findDefect(sweepExit.cause))
+          : undefined,
+      ).toStrictEqual(
+        new TypeError("Source Application State retention sweep must return an Effect."),
+      );
+
+      yield* Scope.close(cancelledAttemptScope, Exit.void);
+      yield* Scope.close(cancelledLifetimeScope, Exit.void);
+      yield* Scope.close(acquisitionAttemptScope, Exit.void);
+      yield* Scope.close(acquisitionLifetimeScope, Exit.void);
+      yield* Scope.close(sweepLifetimeScope, Exit.void);
+    }),
+  );
+
+  it("rejects Effect, Promise, and mutable-state application reducers", () => {
     const effectRegistration = Reflect.apply(SourceAdapterServer.applicationState, undefined, [
       {
         sweepIntervalNanos: 1_000n,
@@ -1076,13 +1278,6 @@ describe("Source Adapter server SDK", () => {
         sweepIntervalNanos: 1_000n,
         initialState: () => 0,
         reduce: () => Promise.resolve(1),
-        metrics: () => undefined,
-        runDueSweep: () => Effect.void,
-      },
-      {
-        sweepIntervalNanos: 1_000n,
-        initialState: () => Object.freeze({ value: 0 }),
-        reduce: (state: { readonly value: number }) => state,
         metrics: () => undefined,
         runDueSweep: () => Effect.void,
       },
@@ -1149,10 +1344,46 @@ describe("Source Adapter server SDK", () => {
         "orders",
       ]);
       expect(() => applyPreparedTransition(module, scope)).toThrow(
-        "Source Application State reducer must return a new immutable state synchronously.",
+        "Source Application State reducer must return an immutable state synchronously.",
       );
     }
   });
+
+  it.effect("accepts an unchanged frozen reducer state as an immutable no-op", () =>
+    Effect.gen(function* () {
+      const initialState = Object.freeze({ value: 1 });
+      const registration = SourceAdapterServer.applicationState({
+        sweepIntervalNanos: 1_000n,
+        initialState: () => initialState,
+        reduce: (state: { readonly value: number }) => state,
+        metrics: (state) => ({ value: state.value }),
+        runDueSweep: () => Effect.void,
+      });
+      const lifetimeScope = yield* Scope.make();
+      const attemptScope = yield* Scope.make();
+      const internal = Option.getOrThrow(
+        Option.fromUndefinedOr(resolveSourceApplicationStateRegistration(registration)),
+      );
+      internal.bind({
+        topic: "orders",
+        definition: undefined,
+        lifetimeScope,
+        target: { _tag: "Materialized" },
+      });
+      const module = registration.forLifetime(lifetimeScope, "orders");
+      const prepared = yield* module
+        .prepare(undefined)
+        .pipe(Effect.provideService(Scope.Scope, attemptScope));
+      Option.getOrThrow(
+        Option.fromUndefinedOr(resolveSourceApplicationTransition(prepared.transition)),
+      ).apply();
+
+      expect(module.metrics()).toStrictEqual({ value: 1 });
+      yield* prepared.release;
+      yield* Scope.close(attemptScope, Exit.void);
+      yield* Scope.close(lifetimeScope, Exit.void);
+    }),
+  );
 
   it("collects only nominal definitions belonging to the requested Adapter", () => {
     const definition = Adapter.materializedSource({ label: "orders" });

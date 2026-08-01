@@ -21,6 +21,7 @@ import {
 } from "@effect-view-server/source-adapter-testing";
 import {
   BigDecimal,
+  Cause,
   Chunk,
   Context,
   Deferred,
@@ -38,6 +39,8 @@ import {
 } from "effect";
 import { TestClock } from "effect/testing";
 import { makeViewServerRuntimeCore } from "./index";
+import type { ViewServerRuntimeCoreInternalMutations } from "./source-mutation-pipeline";
+import { makeRuntimeCoreSourceManager } from "./source-runtime";
 
 const Row = Schema.Struct({
   id: ViewServerId,
@@ -2021,6 +2024,125 @@ describe("Runtime Core adversarial Source runtime", () => {
     }),
   );
 
+  it.effect("redacts a composite late adapter metrics defect as a safe runtime failure", () =>
+    Effect.gen(function* () {
+      const fixture = yield* SourceFixture.make(Row);
+      const config = defineViewServerConfig({
+        topics: {
+          rows: {
+            schema: Row,
+            source: fixture.materializedSource(
+              { label: "defective-metric-sample" },
+              Schedule.recurs(0),
+            ),
+          },
+        },
+      });
+      const context = yield* Layer.build(fixture.layer);
+      const service = Context.get(context, fixture.adapter.runtimeService);
+      const materialized = materializedLifecycle(service);
+      let sampleCount = 0;
+      const lifecycle = new Proxy(materialized, {
+        get: (target, property, receiver) =>
+          property === "metrics"
+            ? () => {
+                sampleCount += 1;
+                return sampleCount === 1
+                  ? Effect.succeed({ observed: 0n })
+                  : Effect.failCause(
+                      Cause.combine(
+                        Cause.interrupt(),
+                        Cause.combine(
+                          Cause.fail(
+                            makeRuntimeSourceFailure({
+                              _tag: "InvalidSourceMetrics",
+                              message: "typed metrics failure must not hide a parallel defect",
+                            }),
+                          ),
+                          Cause.die(new Error("hostile metrics defect")),
+                        ),
+                      ),
+                    );
+              }
+            : Reflect.get(target, property, receiver),
+      });
+      const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(
+        Effect.provideService(fixture.adapter.runtimeService, {
+          ...service,
+          materialized: lifecycle,
+        }),
+      );
+      const diagnostics = yield* runtime.liveClient.subscribeSourceHealth({ topic: "rows" });
+
+      yield* TestClock.adjust("1 second");
+      expect((yield* awaitExhausted(diagnostics)).exhaustion.lastTermination).toStrictEqual({
+        _tag: "Failed",
+        failure: {
+          _tag: "RuntimeFailure",
+          failure: {
+            _tag: "InvalidSourceMetrics",
+            message: "Source Adapter controllable-fixture failed while sampling metrics.",
+          },
+        },
+      });
+      yield* runtime.close;
+    }),
+  );
+
+  it.effect("propagates adapter metrics interruption instead of continuing the cadence", () =>
+    Effect.gen(function* () {
+      const fixture = yield* SourceFixture.make(Row);
+      const config = defineViewServerConfig({
+        topics: {
+          rows: {
+            schema: Row,
+            source: fixture.materializedSource({ label: "interrupted-metric-sample" }),
+          },
+        },
+      });
+      const context = yield* Layer.build(fixture.layer);
+      const service = Context.get(context, fixture.adapter.runtimeService);
+      const materialized = materializedLifecycle(service);
+      const sampleStarted = yield* Deferred.make<void>();
+      let sampleCount = 0;
+      const lifecycle = new Proxy(materialized, {
+        get: (target, property, receiver) =>
+          property === "metrics"
+            ? () => {
+                sampleCount += 1;
+                return sampleCount === 1
+                  ? Effect.succeed({ observed: 0n })
+                  : Deferred.succeed(sampleStarted, undefined).pipe(
+                      Effect.andThen(Effect.interrupt),
+                    );
+              }
+            : Reflect.get(target, property, receiver),
+      });
+      const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(
+        Effect.provideService(fixture.adapter.runtimeService, {
+          ...service,
+          materialized: lifecycle,
+        }),
+      );
+
+      yield* TestClock.adjust("1 second");
+      yield* Deferred.await(sampleStarted);
+      yield* TestClock.adjust("1 second");
+      expect(sampleCount).toBe(2);
+      const health = yield* runtime.client.health();
+      expect({
+        adapterMetrics: health.sources.rows?.metrics.adapter,
+        runtimeStatus: health.status,
+        sourceStatus: health.sources.rows?.status._tag,
+      }).toStrictEqual({
+        adapterMetrics: { observed: 0n },
+        runtimeStatus: "ready",
+        sourceStatus: "Ready",
+      });
+      yield* runtime.close;
+    }),
+  );
+
   it.effect("supervises invalid lane buffer metrics as an exact runtime failure", () =>
     Effect.gen(function* () {
       const fixture = yield* SourceFixture.make(Row);
@@ -2162,6 +2284,97 @@ describe("Runtime Core adversarial Source runtime", () => {
 
       expect(yield* Deferred.await(ordered)).toStrictEqual(["first", "second"]);
       yield* runtime.close;
+    }),
+  );
+
+  it.effect("applies transition-free sibling lanes without the lifecycle gate", () =>
+    Effect.gen(function* () {
+      const fixture = yield* SourceFixture.make(Row);
+      const config = defineViewServerConfig({
+        topics: {
+          rows: {
+            schema: Row,
+            source: fixture.materializedSource({
+              label: "concurrent-applications",
+            }),
+          },
+        },
+      });
+      const context = yield* Layer.build(fixture.layer);
+      const service = Context.get(context, fixture.adapter.runtimeService);
+      const materialized = materializedLifecycle(service);
+      const firstApplicationBlocked = yield* Deferred.make<void>();
+      const releaseFirstApplication = yield* Deferred.make<void>();
+      const secondApplicationCompleted = yield* Deferred.make<void>();
+      let applicationCount = 0;
+      const afterMutationApplication = Effect.gen(function* () {
+        applicationCount += 1;
+        if (applicationCount === 1) {
+          yield* Deferred.succeed(firstApplicationBlocked, undefined);
+          yield* Deferred.await(releaseFirstApplication);
+          return;
+        }
+        yield* Deferred.succeed(secondApplicationCompleted, undefined);
+      });
+      const acquire: typeof materialized.acquire = (input) =>
+        Effect.gen(function* () {
+          const firstMutation = yield* decodeSourceToolkitUpsert(input.toolkit, {
+            id: "first",
+            region: "eu",
+            value: "first",
+          });
+          const secondMutation = yield* decodeSourceToolkitUpsert(input.toolkit, {
+            id: "second",
+            region: "eu",
+            value: "second",
+          });
+          const first = yield* input.toolkit.delivery(Chunk.of(firstMutation), () => Effect.void);
+          const second = yield* input.toolkit.delivery(Chunk.of(secondMutation), () => Effect.void);
+          const secondLane = Stream.unwrap(
+            Deferred.await(firstApplicationBlocked).pipe(
+              Effect.as(Stream.make(second).pipe(Stream.concat(Stream.never))),
+            ),
+          );
+          return SourceAdapterServer.attempt([
+            SourceAdapterServer.lane({
+              id: "first",
+              events: Stream.make(first).pipe(Stream.concat(Stream.never)),
+            }),
+            SourceAdapterServer.lane({
+              id: "second",
+              events: secondLane,
+            }),
+          ]);
+        });
+      const lifecycle = new Proxy(materialized, {
+        get: (target, property, receiver) =>
+          property === "acquire" ? acquire : Reflect.get(target, property, receiver),
+      });
+      const mutations: ViewServerRuntimeCoreInternalMutations<typeof config.topics> = {
+        publish: () => Effect.void,
+        publishMany: () => Effect.void,
+        patch: () => Effect.void,
+        delete: () => Effect.void,
+        reset: () => Effect.void,
+        deleteStorageKey: () => Effect.void,
+        patchDecodedFields: () => Effect.void,
+        publishManyDecodedRows: () => Effect.void,
+        publishManyDecodedRowsWithStorageKeys: () => Effect.void,
+        publishManyWithStorageKeys: () => Effect.void,
+      };
+      const manager = yield* makeRuntimeCoreSourceManager(config, mutations, Effect.void, {
+        afterMutationApplication,
+      }).pipe(
+        Effect.provideService(fixture.adapter.runtimeService, {
+          ...service,
+          materialized: lifecycle,
+        }),
+      );
+
+      yield* Deferred.await(secondApplicationCompleted);
+      yield* Deferred.succeed(releaseFirstApplication, undefined);
+      expect(applicationCount).toBe(2);
+      yield* manager.close;
     }),
   );
 });

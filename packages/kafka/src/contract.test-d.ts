@@ -8,6 +8,11 @@ import {
 } from "effect-view-server/source-adapter";
 import { Context, Effect, Option, Schedule, Schema } from "effect";
 import type * as KafkaPublicContract from "@effect-view-server/kafka/contract";
+
+type TypeEqual<Left, Right> =
+  (<Value>() => Value extends Left ? 1 : 2) extends <Value>() => Value extends Right ? 1 : 2
+    ? true
+    : false;
 import {
   KafkaSourceAdapter,
   kafka,
@@ -659,6 +664,10 @@ describe("Kafka Source Adapter type contract", () => {
     };
     // @ts-expect-error delete row identity fields cannot be any.
     kafka.deleteRowId(deleteRowIdWithAnyKey);
+    const decodedUnsafePolicy = kafka.decodeRowId("eu:0:kYWJj", unsafeAny);
+    expectTypeOf<
+      TypeEqual<typeof decodedUnsafePolicy, KafkaPublicContract.KafkaDecodedRowId>
+    >().toEqualTypeOf<true>();
 
     const canonicalRowIdInput = {
       cleanupPolicy: "compact" as const,

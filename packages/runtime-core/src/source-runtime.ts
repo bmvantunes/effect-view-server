@@ -1205,15 +1205,36 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
   );
   const sampleAdapterMetrics = Effect.fn("ViewServerRuntimeCore.source.metrics.adapter.sample")(
     function* () {
-      const result = yield* input.entry.lifecycle
-        .metrics({
-          topic: input.entry.topic,
-          definition: input.entry.definition.options,
-          lifetimeScope: scope,
-          target: input.target,
-        })
-        .pipe(Effect.flatMap(validateAdapterMetrics), Effect.result);
-      yield* metricFailureObservation.record(result);
+      const exit = yield* Effect.exit(
+        input.entry.lifecycle
+          .metrics({
+            topic: input.entry.topic,
+            definition: input.entry.definition.options,
+            lifetimeScope: scope,
+            target: input.target,
+          })
+          .pipe(Effect.flatMap(validateAdapterMetrics)),
+      );
+      if (Exit.isSuccess(exit)) {
+        yield* metricFailureObservation.record(Result.succeed(undefined));
+        return;
+      }
+      if (Cause.hasInterruptsOnly(exit.cause)) {
+        return yield* Effect.interrupt;
+      }
+      if (Cause.hasDies(exit.cause)) {
+        yield* metricFailureObservation.record(
+          Result.fail(
+            sourceRuntimeFailure({
+              _tag: "InvalidSourceMetrics",
+              message: `Source Adapter ${input.entry.definition.identity.name} failed while sampling metrics.`,
+            }),
+          ),
+        );
+        return;
+      }
+      const typedFailure = Option.getOrThrow(Cause.findErrorOption(exit.cause));
+      yield* metricFailureObservation.record(Result.fail(typedFailure));
     },
   );
 
@@ -1796,6 +1817,7 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
     "ViewServerRuntimeCore.source.application.applyWithSettlement",
   )(function* (
     arbitration: SourceAttemptArbitration,
+    requiresLifecycleGate: boolean,
     operation: (
       restore: <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>,
       executeTransition: (effect: Effect.Effect<void>) => Effect.Effect<void>,
@@ -1815,11 +1837,14 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
             ),
           );
         };
-        const permits = yield* restore(lifecycleGate.take(1));
-        const applicationExit = yield* Effect.exit(
-          Effect.suspend(() => operation(restore, executeTransition)),
-        );
-        yield* lifecycleGate.release(permits);
+        const application = Effect.suspend(() => operation(restore, executeTransition));
+        const applicationExit = requiresLifecycleGate
+          ? yield* Effect.acquireUseRelease(
+              restore(lifecycleGate.take(1)),
+              () => Effect.exit(application),
+              (permits) => lifecycleGate.release(permits),
+            )
+          : yield* Effect.exit(application);
         yield* input.constructionOptions.settlementHandoff?.afterApplicationExit ?? Effect.void;
         const attemptScope = yield* Effect.scope;
         const handoff =
@@ -1996,6 +2021,7 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
     if (isSourceItemRejection(event)) {
       return yield* applyWithSettlement(
         arbitration,
+        false,
         (restore) =>
           restore(
             Effect.gen(function* () {
@@ -2049,6 +2075,7 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
     lastDeliveryAtNanos = yield* currentEpochNanos;
     yield* applyWithSettlement(
       arbitration,
+      event.transition !== undefined,
       (restore, executeTransition) =>
         Effect.gen(function* () {
           if (event.transition !== undefined) {

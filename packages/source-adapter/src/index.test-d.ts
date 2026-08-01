@@ -1221,6 +1221,66 @@ describe("Source Adapter public type contracts", () => {
         : applicationStateOptionsWithAnyInitialState;
     // @ts-expect-error every descriptor union member requires typed callbacks.
     SourceAdapterServer.applicationState(applicationStateOptionsUnionWithAnyCallback);
+    const applicationStateOptionsWithAnyInitialStateResult = {
+      ...validApplicationStateOptions,
+      initialState: () => unsafeAny,
+    };
+    const applicationStateOptionsWithAnyReducerResult = {
+      ...validApplicationStateOptions,
+      reduce: () => unsafeAny,
+    };
+    const applicationStateOptionsWithAnyCancellationResult = {
+      ...validApplicationStateOptions,
+      cancelledMaintenanceWorkIds: () => unsafeAny,
+    };
+    const applicationStateOptionsWithAnyAcquisitionResult = {
+      ...validApplicationStateOptions,
+      acquireTransition: () => unsafeAny,
+    };
+    const applicationStateOptionsWithAnyMetricsResult = {
+      ...validApplicationStateOptions,
+      metrics: () => unsafeAny,
+    };
+    const applicationStateOptionsWithAnySweepResult = {
+      ...validApplicationStateOptions,
+      runDueSweep: () => unsafeAny,
+    };
+    // @ts-expect-error initial-state callbacks cannot return any.
+    SourceAdapterServer.applicationState(applicationStateOptionsWithAnyInitialStateResult);
+    // @ts-expect-error reducers cannot return any.
+    SourceAdapterServer.applicationState(applicationStateOptionsWithAnyReducerResult);
+    // @ts-expect-error cancellation callbacks cannot return any.
+    SourceAdapterServer.applicationState(applicationStateOptionsWithAnyCancellationResult);
+    // @ts-expect-error transition acquisition callbacks cannot return any.
+    SourceAdapterServer.applicationState(applicationStateOptionsWithAnyAcquisitionResult);
+    // @ts-expect-error metrics callbacks cannot return any.
+    SourceAdapterServer.applicationState(applicationStateOptionsWithAnyMetricsResult);
+    // @ts-expect-error sweep callbacks cannot return any.
+    SourceAdapterServer.applicationState(applicationStateOptionsWithAnySweepResult);
+    const applicationStateOptionsUnionWithAnyInitialStateResult =
+      Math.random() > 0.5
+        ? validApplicationStateOptions
+        : applicationStateOptionsWithAnyInitialStateResult;
+    const applicationStateOptionsUnionWithAnyReducerResult =
+      Math.random() > 0.5
+        ? validApplicationStateOptions
+        : applicationStateOptionsWithAnyReducerResult;
+    const applicationStateOptionsUnionWithAnyMetricsResult =
+      Math.random() > 0.5
+        ? validApplicationStateOptions
+        : applicationStateOptionsWithAnyMetricsResult;
+    const applicationStateOptionsUnionWithAnySweepResult =
+      Math.random() > 0.5
+        ? validApplicationStateOptions
+        : applicationStateOptionsWithAnySweepResult;
+    // @ts-expect-error every descriptor union member requires a typed initial-state result.
+    SourceAdapterServer.applicationState(applicationStateOptionsUnionWithAnyInitialStateResult);
+    // @ts-expect-error every descriptor union member requires a typed reducer result.
+    SourceAdapterServer.applicationState(applicationStateOptionsUnionWithAnyReducerResult);
+    // @ts-expect-error every descriptor union member requires a typed metrics result.
+    SourceAdapterServer.applicationState(applicationStateOptionsUnionWithAnyMetricsResult);
+    // @ts-expect-error every descriptor union member requires a typed sweep result.
+    SourceAdapterServer.applicationState(applicationStateOptionsUnionWithAnySweepResult);
     SourceAdapterServer.applicationState({
       sweepIntervalNanos: 1n,
       initialState: (): ApplicationState => ({ count: 0 }),

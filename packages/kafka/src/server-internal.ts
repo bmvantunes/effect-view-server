@@ -767,9 +767,10 @@ export const runKafkaDueSweep = <Topic extends string>(
         yield* Effect.yieldNow;
       }
       const sweepFinishedMonotonicNanos = yield* Clock.currentTimeNanos;
+      const sweepFinishedEpochNanos = yield* currentEpochNanos().pipe(Effect.orDie);
       input.update({
         _tag: "SweepCompleted",
-        completedAtNanos: input.epochNowNanos,
+        completedAtNanos: sweepFinishedEpochNanos,
         // Duration is elapsed monotonic time; completedAtNanos is the distinct
         // public epoch-wall timestamp and must never be arithmetically combined with it.
         durationNanos: sweepFinishedMonotonicNanos - sweepStartedMonotonicNanos,

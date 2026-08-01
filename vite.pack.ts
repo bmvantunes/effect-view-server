@@ -1,9 +1,8 @@
+import type { PackUserConfig } from "vite-plus/pack";
+
 type LibraryPackEntry = string | Array<string>;
 
-type LibraryPackOptions = {
-  readonly alias?: Readonly<Record<string, string>>;
-  readonly tsconfig?: string;
-};
+type LibraryPackOptions = Pick<PackUserConfig, "alias" | "deps" | "tsconfig">;
 
 export const libraryPack = (entry: LibraryPackEntry, options: LibraryPackOptions = {}) => ({
   ...options,

@@ -223,6 +223,50 @@ describe("Kafka broker contract", () => {
     });
   });
 
+  it("preserves the exact malformed broker configuration field", () => {
+    expect(
+      resolveKafkaBrokerContracts(
+        [
+          declaration({ sourceTopic: "missing-cleanup" }),
+          declaration({ sourceTopic: "missing-retention" }),
+        ],
+        [
+          {
+            _tag: "Available",
+            region: "eu",
+            resources: [
+              {
+                resourceName: "missing-cleanup",
+                malformedConfiguration: "cleanup.policy",
+              },
+              {
+                resourceName: "missing-retention",
+                malformedConfiguration: "retention.ms",
+              },
+            ],
+          },
+        ],
+      ),
+    ).toStrictEqual({
+      _tag: "KafkaBrokerContractValidationFailure",
+      message: "Kafka broker cleanup and retention validation failed before runtime startup.",
+      issues: [
+        {
+          _tag: "MalformedBrokerConfiguration",
+          region: "eu",
+          topic: "missing-cleanup",
+          configuration: "cleanup.policy",
+        },
+        {
+          _tag: "MalformedBrokerConfiguration",
+          region: "eu",
+          topic: "missing-retention",
+          configuration: "retention.ms",
+        },
+      ],
+    });
+  });
+
   it("rejects duplicate Region discovery responses deterministically", () => {
     expect(
       resolveKafkaBrokerContracts(

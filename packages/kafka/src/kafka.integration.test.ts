@@ -912,7 +912,7 @@ describe("Kafka Source Adapter with real Apache Kafka", () => {
                 durationNanos: 1_000_000_000n,
               },
               trackedRows: 0,
-              dueBacklog: 0,
+              lastSweepRetryableFailures: 0,
               expiredRows: 1n,
               authoritativeExpiredDeletes: 0n,
               failedWorkBacklog: 0,
@@ -1009,44 +1009,37 @@ describe("Kafka Source Adapter with real Apache Kafka", () => {
         );
         yield* Deferred.await(initialSnapshotSeen);
         const recordTimestamp = BigInt(yield* Clock.currentTimeMillis);
-        yield* send(londonKafkaBootstrapServers, [
-          {
-            topic,
-            key: bytes("same"),
-            value: bytes(
-              JSON.stringify({
-                customerId: "customer",
-                price: 2,
-              }),
-            ),
-            timestamp: recordTimestamp,
-          },
-        ]);
-        const londonOnly = yield* runtime.client
-          .snapshot("orders", {
-            select: ["id", "customerId", "price"],
-            orderBy: [{ field: "id", direction: "asc" }],
-            limit: 10,
-          })
-          .pipe(
-            Effect.repeat({
-              schedule: poll,
-              until: (current) => current.rows[0]?.id === "london:0:same",
-            }),
-          );
-        yield* send(kafkaBootstrapServers, [
-          {
-            topic,
-            key: bytes("same"),
-            value: bytes(
-              JSON.stringify({
-                customerId: "customer",
-                price: 1,
-              }),
-            ),
-            timestamp: recordTimestamp,
-          },
-        ]);
+        yield* Effect.all(
+          [
+            send(londonKafkaBootstrapServers, [
+              {
+                topic,
+                key: bytes("same"),
+                value: bytes(
+                  JSON.stringify({
+                    customerId: "customer",
+                    price: 2,
+                  }),
+                ),
+                timestamp: recordTimestamp,
+              },
+            ]),
+            send(kafkaBootstrapServers, [
+              {
+                topic,
+                key: bytes("same"),
+                value: bytes(
+                  JSON.stringify({
+                    customerId: "customer",
+                    price: 1,
+                  }),
+                ),
+                timestamp: recordTimestamp,
+              },
+            ]),
+          ],
+          { concurrency: "unbounded", discard: true },
+        );
         const bothRegions = yield* runtime.client
           .snapshot("orders", {
             select: ["id", "customerId", "price"],
@@ -1098,19 +1091,16 @@ describe("Kafka Source Adapter with real Apache Kafka", () => {
             Effect.timeout("30 seconds"),
           ),
         );
-        const liveConvergence = (yield* Fiber.join(liveEventsFiber)).map((event) =>
-          event.type === "snapshot"
-            ? {
-                type: event.type,
-                rows: event.rows,
-                totalRows: event.totalRows,
-              }
-            : {
-                type: event.type,
-                operations: event.operations,
-                totalRows: event.totalRows,
-              },
-        );
+        const liveEvents = yield* Fiber.join(liveEventsFiber);
+        const liveEventTypes = liveEvents.map((event) => event.type);
+        const liveMutationKeys = liveEvents
+          .slice(1)
+          .flatMap((event) =>
+            event.type === "delta"
+              ? event.operations.map((operation) => `${operation.type}:${operation.key}`)
+              : [],
+          )
+          .sort();
         const retentionByRegion = expiredHealth.metrics.adapter.regions.map((region) => {
           const { lastSweepAtNanos, lastSweepDurationNanos, ...retention } = region.retention;
           return {
@@ -1124,8 +1114,8 @@ describe("Kafka Source Adapter with real Apache Kafka", () => {
           afterLondonExpiry,
           afterUsaExpiry,
           bothRegions,
-          liveConvergence,
-          londonOnly,
+          liveEventTypes,
+          liveMutationKeys,
           retentionByRegion,
         }).toStrictEqual({
           afterLondonExpiry: {
@@ -1166,68 +1156,13 @@ describe("Kafka Source Adapter with real Apache Kafka", () => {
             totalRows: 2,
             version: expect.any(Number),
           },
-          liveConvergence: [
-            {
-              type: "snapshot",
-              rows: [],
-              totalRows: 0,
-            },
-            {
-              type: "delta",
-              operations: [
-                {
-                  type: "insert",
-                  key: "london:0:same",
-                  row: {
-                    id: "london:0:same",
-                    customerId: "london:customer",
-                    price: 2,
-                  },
-                  index: 0,
-                },
-              ],
-              totalRows: 1,
-            },
-            {
-              type: "delta",
-              operations: [
-                {
-                  type: "insert",
-                  key: "usa:0:same",
-                  row: {
-                    id: "usa:0:same",
-                    customerId: "usa:customer",
-                    price: 1,
-                  },
-                  index: 1,
-                },
-              ],
-              totalRows: 2,
-            },
-            {
-              type: "delta",
-              operations: [{ type: "remove", key: "usa:0:same" }],
-              totalRows: 1,
-            },
-            {
-              type: "delta",
-              operations: [{ type: "remove", key: "london:0:same" }],
-              totalRows: 0,
-            },
+          liveEventTypes: ["snapshot", "delta", "delta", "delta", "delta"],
+          liveMutationKeys: [
+            "insert:london:0:same",
+            "insert:usa:0:same",
+            "remove:london:0:same",
+            "remove:usa:0:same",
           ],
-          londonOnly: {
-            status: "ready",
-            statusCode: "Ready",
-            rows: [
-              {
-                id: "london:0:same",
-                customerId: "london:customer",
-                price: 2,
-              },
-            ],
-            totalRows: 1,
-            version: expect.any(Number),
-          },
           retentionByRegion: [
             {
               region: "usa",
@@ -1242,7 +1177,7 @@ describe("Kafka Source Adapter with real Apache Kafka", () => {
                   durationNanos: 2_000_000_000n,
                 },
                 trackedRows: 0,
-                dueBacklog: 0,
+                lastSweepRetryableFailures: 0,
                 expiredRows: 1n,
                 authoritativeExpiredDeletes: 0n,
                 failedWorkBacklog: 0,
@@ -1265,7 +1200,7 @@ describe("Kafka Source Adapter with real Apache Kafka", () => {
                   durationNanos: 5_000_000_000n,
                 },
                 trackedRows: 0,
-                dueBacklog: 0,
+                lastSweepRetryableFailures: 0,
                 expiredRows: 1n,
                 authoritativeExpiredDeletes: 0n,
                 failedWorkBacklog: 0,

@@ -576,6 +576,8 @@ function compactionJsonCodec<const SourceSchema extends KafkaRowSchema>(
     );
   }
   const codec = Result.try(factory);
+  // Compaction keys define canonical row identity, so an unusable key Schema must
+  // reject the Source Definition before startup rather than reject every record later.
   if (
     Result.isFailure(codec) ||
     !Schema.isSchema(codec.success) ||
@@ -955,7 +957,7 @@ export const KafkaRetentionMetrics = Schema.Struct({
   configuredRetention: KafkaCapturedRetentionPolicySchema,
   resolvedRetention: KafkaResolvedRetentionSchema,
   trackedRows: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
-  dueBacklog: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  lastSweepRetryableFailures: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   expiredRows: KafkaNonNegativeBigInt,
   authoritativeExpiredDeletes: KafkaNonNegativeBigInt,
   failedWorkBacklog: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
@@ -1026,6 +1028,25 @@ type KafkaDurationComponents = {
     Required<Pick<Duration.DurationObject, Key>> & Partial<Omit<Duration.DurationObject, Key>>
   >;
 }[keyof Duration.DurationObject];
+
+type KafkaDurationComponentsContainAny<Value> = true extends {
+  readonly [Key in keyof Duration.DurationObject]-?: Key extends keyof Value
+    ? IsAny<Value[Key]>
+    : false;
+}[keyof Duration.DurationObject]
+  ? true
+  : false;
+
+type IsSafeKafkaRetentionPolicy<Value> =
+  IsAny<Value> extends true
+    ? false
+    : Value extends KafkaDurationComponents
+      ? KafkaDurationComponentsContainAny<Value> extends true
+        ? false
+        : HasExactKeys<Value, Duration.DurationObject>
+      : Value extends KafkaRetentionPolicy
+        ? true
+        : false;
 
 export type KafkaRetentionPolicy =
   | "match-kafka-retention"
@@ -1332,15 +1353,14 @@ type RejectUnsafeStart<Input> = Input extends { readonly startFrom: infer Start 
 type RejectUnsafeRetentionPolicy<Input> = Input extends {
   readonly retentionPolicy: infer RetentionPolicy;
 }
-  ? IsAny<RetentionPolicy> extends true
-    ? { readonly retentionPolicy: never }
-    : RetentionPolicy extends KafkaRetentionPolicy
-      ? unknown
-      : { readonly retentionPolicy: never }
+  ? [IsSafeKafkaRetentionPolicy<RetentionPolicy>] extends [true]
+    ? unknown
+    : { readonly retentionPolicy: never }
   : unknown;
 
 type KafkaSourceInputGuards<Input, Shape> = KafkaNotAny<Input> &
   RejectExtraKeys<Input, Shape> &
+  RejectAnySourceField<Input, "cleanupPolicy"> &
   RejectAnySourceField<Input, "topic"> &
   RejectUnsafeSourceRegions<Input> &
   RejectUnsafeSourceCodec<Input, "key"> &
@@ -1870,6 +1890,7 @@ type RejectUnsafeCompactionKeyCodec<Input> =
 
 type KafkaCompactionSourceInputGuards<Input, Shape> = KafkaNotAny<Input> &
   RejectExtraKeys<Input, Shape> &
+  RejectAnySourceField<Input, "cleanupPolicy"> &
   RejectAnySourceField<Input, "topic"> &
   RejectUnsafeSourceRegions<Input> &
   RejectUnsafeCompactionKeyCodec<Input> &
@@ -2089,13 +2110,6 @@ type KafkaSourceApi = {
   >;
 };
 
-const positiveDurationMillisToNanos = (millis: number): bigint | undefined => {
-  if (!Number.isFinite(millis) || millis <= 0) {
-    return undefined;
-  }
-  return BigInt(millis) * 1_000_000n;
-};
-
 const captureRetentionPolicy = (input: unknown): KafkaCapturedRetentionPolicy => {
   if (input === "match-kafka-retention") {
     return Object.freeze({ _tag: "MatchKafkaRetention" });
@@ -2107,15 +2121,13 @@ const captureRetentionPolicy = (input: unknown): KafkaCapturedRetentionPolicy =>
     );
   }
   const captured = Duration.match(duration.value, {
-    onMillis: (millis) => {
-      const durationNanos = positiveDurationMillisToNanos(millis);
-      return durationNanos === undefined
-        ? undefined
-        : {
+    onMillis: (millis) =>
+      millis > 0
+        ? {
             _tag: "Finite" as const,
-            durationNanos,
-          };
-    },
+            durationNanos: BigInt(millis) * 1_000_000n,
+          }
+        : undefined,
     onNanos: (nanos) =>
       nanos > 0n
         ? {
@@ -2512,16 +2524,17 @@ export type KafkaDeleteRowIdInput = {
   readonly localRowKey: string;
 };
 
-export const kafkaDeleteRowId = (input: KafkaDeleteRowIdInput): string => {
-  const captured = captureExactOwnDataValues(input, ["region", "partition", "localRowKey"]);
-  if (captured === undefined) {
-    throw new KafkaSourceConfigurationError(
-      "Kafka delete rowId requires exactly region, partition, and localRowKey.",
-    );
-  }
-  const region = captured.get("region");
-  const partition = captured.get("partition");
-  const localRowKey = captured.get("localRowKey");
+type KafkaDeleteRowIdInputGuards<Input> = KafkaNotAny<Input> &
+  RejectExtraKeys<Input, KafkaDeleteRowIdInput> &
+  RejectAnySourceField<Input, "region"> &
+  RejectAnySourceField<Input, "partition"> &
+  RejectAnySourceField<Input, "localRowKey">;
+
+const makeKafkaDeleteRowId = (
+  region: unknown,
+  partition: unknown,
+  localRowKey: unknown,
+): string => {
   if (!validateRegion(region)) {
     throw new KafkaSourceConfigurationError(
       "Kafka delete rowId region must be non-empty and cannot contain ':'.",
@@ -2538,6 +2551,21 @@ export const kafkaDeleteRowId = (input: KafkaDeleteRowIdInput): string => {
     );
   }
   return `${region}:${partition}:${localRowKey}`;
+};
+
+export const kafkaDeleteRowId = <const Input extends KafkaDeleteRowIdInput>(
+  input: Input & KafkaDeleteRowIdInputGuards<NoInfer<Input>>,
+): string => {
+  const captured = captureExactOwnDataValues(input, ["region", "partition", "localRowKey"]);
+  if (captured === undefined) {
+    throw new KafkaSourceConfigurationError(
+      "Kafka delete rowId requires exactly region, partition, and localRowKey.",
+    );
+  }
+  const region = captured.get("region");
+  const partition = captured.get("partition");
+  const localRowKey = captured.get("localRowKey");
+  return makeKafkaDeleteRowId(region, partition, localRowKey);
 };
 
 export type KafkaDecodedDeleteRowId = {
@@ -2649,16 +2677,17 @@ export type KafkaCompactionRowIdInput = {
   readonly serializedKeyBytes: Uint8Array;
 };
 
-export const kafkaCompactionRowId = (input: KafkaCompactionRowIdInput): string => {
-  const captured = captureExactOwnDataValues(input, ["region", "partition", "serializedKeyBytes"]);
-  if (captured === undefined) {
-    throw new KafkaSourceConfigurationError(
-      "Kafka compact rowId requires exactly region, partition, and serializedKeyBytes.",
-    );
-  }
-  const region = captured.get("region");
-  const partition = captured.get("partition");
-  const serializedKeyBytes = captured.get("serializedKeyBytes");
+type KafkaCompactionRowIdInputGuards<Input> = KafkaNotAny<Input> &
+  RejectExtraKeys<Input, KafkaCompactionRowIdInput> &
+  RejectAnySourceField<Input, "region"> &
+  RejectAnySourceField<Input, "partition"> &
+  RejectAnySourceField<Input, "serializedKeyBytes">;
+
+const makeKafkaCompactionRowId = (
+  region: unknown,
+  partition: unknown,
+  serializedKeyBytes: unknown,
+): string => {
   if (!validateRegion(region) || !validatePartition(partition)) {
     throw new KafkaSourceConfigurationError(
       "Kafka compact rowId requires a valid region and Kafka partition.",
@@ -2670,6 +2699,21 @@ export const kafkaCompactionRowId = (input: KafkaCompactionRowIdInput): string =
     );
   }
   return `${region}:${partition}:k${encodeBase64Url(serializedKeyBytes)}`;
+};
+
+export const kafkaCompactionRowId = <const Input extends KafkaCompactionRowIdInput>(
+  input: Input & KafkaCompactionRowIdInputGuards<NoInfer<Input>>,
+): string => {
+  const captured = captureExactOwnDataValues(input, ["region", "partition", "serializedKeyBytes"]);
+  if (captured === undefined) {
+    throw new KafkaSourceConfigurationError(
+      "Kafka compact rowId requires exactly region, partition, and serializedKeyBytes.",
+    );
+  }
+  const region = captured.get("region");
+  const partition = captured.get("partition");
+  const serializedKeyBytes = captured.get("serializedKeyBytes");
+  return makeKafkaCompactionRowId(region, partition, serializedKeyBytes);
 };
 
 export type KafkaDecodedCompactionRowId = {
@@ -2720,7 +2764,33 @@ export type KafkaRowIdInput =
       readonly cleanupPolicy: "compact" | "compact-and-delete";
     } & KafkaCompactionRowIdInput);
 
-export const kafkaRowId = (input: KafkaRowIdInput): string => {
+type KafkaDeleteRowIdWithPolicy = Extract<KafkaRowIdInput, { readonly cleanupPolicy: "delete" }>;
+type KafkaCompactionRowIdWithPolicy = Extract<
+  KafkaRowIdInput,
+  { readonly cleanupPolicy: "compact" | "compact-and-delete" }
+>;
+
+type KafkaRowIdInputGuards<Input> = KafkaNotAny<Input> &
+  RejectAnySourceField<Input, "cleanupPolicy"> &
+  (Input extends KafkaDeleteRowIdWithPolicy
+    ? RejectExtraKeys<Input, KafkaDeleteRowIdWithPolicy> &
+        RejectAnySourceField<Input, "region"> &
+        RejectAnySourceField<Input, "partition"> &
+        RejectAnySourceField<Input, "localRowKey">
+    : Input extends KafkaCompactionRowIdWithPolicy
+      ? RejectExtraKeys<Input, KafkaCompactionRowIdWithPolicy> &
+          RejectAnySourceField<Input, "region"> &
+          RejectAnySourceField<Input, "partition"> &
+          RejectAnySourceField<Input, "serializedKeyBytes">
+      : never);
+
+export function kafkaRowId<const Input extends KafkaDeleteRowIdWithPolicy>(
+  input: Input & KafkaRowIdInputGuards<NoInfer<Input>>,
+): string;
+export function kafkaRowId<const Input extends KafkaCompactionRowIdWithPolicy>(
+  input: Input & KafkaRowIdInputGuards<NoInfer<Input>>,
+): string;
+export function kafkaRowId(input: KafkaRowIdInput): string {
   const captured = captureOwnDataValues(input);
   if (captured === undefined) {
     throw new KafkaSourceConfigurationError("Kafka rowId input must be an object.");
@@ -2733,25 +2803,11 @@ export const kafkaRowId = (input: KafkaRowIdInput): string => {
         "Kafka delete rowId requires exactly cleanupPolicy, region, partition, and localRowKey.",
       );
     }
-    const region = captured.get("region");
-    const partition = captured.get("partition");
-    const localRowKey = captured.get("localRowKey");
-    if (!validateRegion(region)) {
-      throw new KafkaSourceConfigurationError(
-        "Kafka delete rowId region must be non-empty and cannot contain ':'.",
-      );
-    }
-    if (!validatePartition(partition)) {
-      throw new KafkaSourceConfigurationError(
-        "Kafka delete rowId partition must be a non-negative Kafka partition.",
-      );
-    }
-    if (typeof localRowKey !== "string" || localRowKey.length === 0) {
-      throw new KafkaSourceConfigurationError(
-        "Kafka delete rowId localRowKey must be a non-empty string.",
-      );
-    }
-    return `${region}:${partition}:${localRowKey}`;
+    return makeKafkaDeleteRowId(
+      captured.get("region"),
+      captured.get("partition"),
+      captured.get("localRowKey"),
+    );
   }
   if (cleanupPolicy === "compact" || cleanupPolicy === "compact-and-delete") {
     const expected = ["cleanupPolicy", "region", "partition", "serializedKeyBytes"];
@@ -2760,25 +2816,16 @@ export const kafkaRowId = (input: KafkaRowIdInput): string => {
         "Kafka compact rowId requires exactly cleanupPolicy, region, partition, and serializedKeyBytes.",
       );
     }
-    const region = captured.get("region");
-    const partition = captured.get("partition");
-    const serializedKeyBytes = captured.get("serializedKeyBytes");
-    if (!validateRegion(region) || !validatePartition(partition)) {
-      throw new KafkaSourceConfigurationError(
-        "Kafka compact rowId requires a valid region and Kafka partition.",
-      );
-    }
-    if (!(serializedKeyBytes instanceof Uint8Array)) {
-      throw new KafkaSourceConfigurationError(
-        "Kafka compact rowId serializedKeyBytes must be a Uint8Array.",
-      );
-    }
-    return `${region}:${partition}:k${encodeBase64Url(serializedKeyBytes)}`;
+    return makeKafkaCompactionRowId(
+      captured.get("region"),
+      captured.get("partition"),
+      captured.get("serializedKeyBytes"),
+    );
   }
   throw new KafkaSourceConfigurationError(
     "Kafka rowId cleanupPolicy must be delete, compact, or compact-and-delete.",
   );
-};
+}
 
 export type KafkaDecodedRowId = KafkaDecodedDeleteRowId | KafkaDecodedCompactionRowId;
 

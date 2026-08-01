@@ -105,6 +105,7 @@ const applicationStateDefect = new Error("injected application state failure");
 const currentStateDefect = new Error("injected current-state failure");
 const deleteDefect = new Error("injected Delete defect");
 const sweepDefect = new Error("injected sweep defect");
+const attemptDefect = new Error("injected active attempt defect");
 
 type Plan = {
   readonly id: string;
@@ -144,6 +145,9 @@ type Emission =
     }
   | {
       readonly _tag: "Failure";
+    }
+  | {
+      readonly _tag: "Defect";
     };
 
 type MaintenanceControl = {
@@ -174,6 +178,7 @@ type MaintenanceControl = {
     readonly message?: string;
   }) => Effect.Effect<SourceApplicationExit>;
   readonly fail: Effect.Effect<void>;
+  readonly defect: Effect.Effect<void>;
 };
 
 const initialState = (): State =>
@@ -330,12 +335,7 @@ const makeHarness = Effect.fn("RuntimeCoreTest.makeMaintenanceHarness")(function
   const releaseSweepOperation = yield* Deferred.make<void>();
   const sweepResults = yield* Queue.unbounded<ReadonlyArray<SourceMaintenanceResult>>();
   const cancelledByCommand = new WeakMap<object, ReadonlyArray<string>>();
-  const applicationState = SourceAdapterServer.applicationState<
-    State,
-    Command,
-    State,
-    ReadonlyArray<SourceMaintenanceResult>
-  >({
+  const applicationState = SourceAdapterServer.applicationState({
     sweepIntervalNanos: 1_000_000_000n,
     initialState: (binding) => {
       bindings.push({
@@ -533,6 +533,7 @@ const makeHarness = Effect.fn("RuntimeCoreTest.makeMaintenanceHarness")(function
             emit,
             reject,
             fail: Queue.offer(events, { _tag: "Failure" }),
+            defect: Queue.offer(events, { _tag: "Defect" }),
           });
           if (options?.invalidApplicationLifetimeLookup === true && acquisitions > 1) {
             applicationState.forLifetime(yield* Scope.make(), input.toolkit.topic);
@@ -565,6 +566,9 @@ const makeHarness = Effect.fn("RuntimeCoreTest.makeMaintenanceHarness")(function
                           message: "injected active attempt failure",
                         },
                       });
+                    }
+                    if (emission._tag === "Defect") {
+                      return yield* Effect.die(attemptDefect);
                     }
                     if (emission._tag === "Rejection") {
                       return yield* input.toolkit.reject({
@@ -1914,6 +1918,30 @@ describe("Runtime Core Source Application State", () => {
     }),
   );
 
+  it.effect("deactivates maintenance before propagating an active attempt defect", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness();
+      harness.setSweepMode("gated-operation");
+      const sweep = yield* harness.control.sweep().pipe(Effect.forkChild);
+      yield* Deferred.await(harness.sweepEnumerated);
+
+      yield* harness.control.defect;
+      const fatalExit = yield* Effect.exit(harness.manager.fatal);
+      expect(fatalDefect(fatalExit)).toBe(attemptDefect);
+      yield* harness.releaseSweepOperation;
+
+      expect(yield* Fiber.join(sweep)).toStrictEqual([{ _tag: "Inactive" }]);
+      expect({
+        attemptedDeletes: harness.attemptedDeletes,
+        state: harness.control.module.metrics(),
+      }).toStrictEqual({
+        attemptedDeletes: [],
+        state: initialState(),
+      });
+      yield* harness.close;
+    }),
+  );
+
   it.effect("lets Stopping win before enumerated maintenance is admitted", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness();
@@ -2013,6 +2041,12 @@ describe("Runtime Core Source Application State", () => {
       const invalid = yield* makeHarness();
       invalid.setSweepMode("invalid-operation");
       expect(yield* invalid.control.sweep()).toStrictEqual([{ _tag: "Inactive" }]);
+      expect(yield* Effect.flip(invalid.manager.fatal)).toStrictEqual({
+        _tag: "ViewServerRuntimeError",
+        code: "RuntimeUnavailable",
+        topic: "rows",
+        message: "Source Maintenance Operation was not issued by the Source Adapter SDK.",
+      });
       yield* invalid.close;
 
       const foreign = yield* makeHarness();

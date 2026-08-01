@@ -326,7 +326,7 @@ export type SourceApplicationStateRegistration<
 > = {
   readonly _tag: "SourceApplicationStateRegistration";
   readonly forLifetime: ForLifetime;
-  readonly [SourceApplicationStateRegistrationTypeId]: () => SourceApplicationStateRegistration;
+  readonly [SourceApplicationStateRegistrationTypeId]: () => SourceApplicationStateRegistration<ForLifetime>;
 };
 
 export type SourceApplicationStateRegistrationBindingInput = {
@@ -352,12 +352,22 @@ export type SourceSettlement<AdapterFailure, Services = never> = (
   exit: SourceApplicationExit,
 ) => Effect.Effect<void, AdapterFailure, Services>;
 
-export type SourceDelivery<Row extends object, AdapterFailure, SettlementServices = never> = {
+export type SourceDelivery<
+  Row extends object,
+  AdapterFailure,
+  SettlementServices = never,
+  Topic extends string = string,
+> = {
   readonly _tag: "SourceDelivery";
   readonly mutations: Chunk.NonEmptyChunk<SourceMutation<Row>>;
   readonly settle: SourceSettlement<AdapterFailure, SettlementServices>;
-  readonly transition?: SourceApplicationTransition;
-  readonly [SourceDeliveryTypeId]: () => SourceDelivery<Row, AdapterFailure, SettlementServices>;
+  readonly transition?: SourceApplicationTransition<Topic>;
+  readonly [SourceDeliveryTypeId]: () => SourceDelivery<
+    Row,
+    AdapterFailure,
+    SettlementServices,
+    Topic
+  >;
 };
 
 export type SourceItemRejectionDiagnostic<AdapterFailure, RejectionLocation> = {
@@ -382,8 +392,9 @@ export type SourceLaneEvent<
   AdapterFailure,
   RejectionLocation,
   SettlementServices = never,
+  Topic extends string = string,
 > =
-  | SourceDelivery<Row, AdapterFailure, SettlementServices>
+  | SourceDelivery<Row, AdapterFailure, SettlementServices, Topic>
   | SourceItemRejection<AdapterFailure, RejectionLocation, SettlementServices>;
 
 export type SourceBufferMetrics =
@@ -403,10 +414,11 @@ export type SourceDeliveryLane<
   AdapterFailure,
   RejectionLocation,
   Services = never,
+  Topic extends string = string,
 > = {
   readonly id: string;
   readonly events: Stream.Stream<
-    SourceLaneEvent<Row, AdapterFailure, RejectionLocation, Services>,
+    SourceLaneEvent<Row, AdapterFailure, RejectionLocation, Services, Topic>,
     SourceExecutionFailure<AdapterFailure>,
     Services
   >;
@@ -418,16 +430,18 @@ export type SourceAttempt<
   AdapterFailure,
   RejectionLocation,
   Services = never,
+  Topic extends string = string,
 > = {
   readonly lanes: readonly [
-    SourceDeliveryLane<Row, AdapterFailure, RejectionLocation, Services>,
-    ...ReadonlyArray<SourceDeliveryLane<Row, AdapterFailure, RejectionLocation, Services>>,
+    SourceDeliveryLane<Row, AdapterFailure, RejectionLocation, Services, Topic>,
+    ...ReadonlyArray<SourceDeliveryLane<Row, AdapterFailure, RejectionLocation, Services, Topic>>,
   ];
   readonly [SourceAttemptTypeId]: () => SourceAttempt<
     Row,
     AdapterFailure,
     RejectionLocation,
-    Services
+    Services,
+    Topic
   >;
 };
 
@@ -453,7 +467,7 @@ export type SourceToolkit<
       mutations: Chunk.NonEmptyChunk<SourceMutation<Row>>,
       settlement?: SourceSettlement<AdapterFailure, SettlementServices>,
     ): Effect.Effect<
-      SourceDelivery<Row, AdapterFailure, SettlementServices>,
+      SourceDelivery<Row, AdapterFailure, SettlementServices, Topic>,
       SourceExecutionFailure<AdapterFailure>
     >;
     (
@@ -461,7 +475,7 @@ export type SourceToolkit<
       settlement: SourceSettlement<AdapterFailure, SettlementServices> | undefined,
       transition: SourceApplicationTransition<Topic>,
     ): Effect.Effect<
-      SourceDelivery<Row, AdapterFailure, SettlementServices>,
+      SourceDelivery<Row, AdapterFailure, SettlementServices, Topic>,
       SourceExecutionFailure<AdapterFailure>
     >;
   };
@@ -1026,7 +1040,11 @@ const hasInspectableSynchronousFunction = (value: unknown): boolean => {
     return false;
   }
   const constructorName = Result.try(() => Reflect.get(constructor.success, "name"));
-  return Result.isSuccess(constructorName) && constructorName.success !== "AsyncFunction";
+  return (
+    Result.isSuccess(constructorName) &&
+    constructorName.success !== "AsyncFunction" &&
+    constructorName.success !== "AsyncGeneratorFunction"
+  );
 };
 
 const validateLifecycleDeclaration = <Declaration extends SourceLifecycleDeclarationAny>(
@@ -1598,12 +1616,20 @@ export const makeSourceApplicationStateRegistration = <
       "Source Application State registration requires exact synchronous lifecycle capabilities.",
     );
   }
+  const snapshot = Object.freeze({
+    bind: input.bind,
+    forLifetime: input.forLifetime,
+    lifetimeIdentity: input.lifetimeIdentity,
+    unbind: input.unbind,
+    sweepIntervalNanos: input.sweepIntervalNanos,
+    runDueSweep: input.runDueSweep,
+  });
   const registration: SourceApplicationStateRegistration<ForLifetime> = {
     _tag: "SourceApplicationStateRegistration",
-    forLifetime: input.forLifetime,
+    forLifetime: snapshot.forLifetime,
     [SourceApplicationStateRegistrationTypeId]: () => registration,
   };
-  sourceApplicationStateRegistrations.set(registration, input);
+  sourceApplicationStateRegistrations.set(registration, snapshot);
   Object.freeze(registration);
   return registration;
 };
@@ -1674,11 +1700,16 @@ export const isSourceMaintenanceOperation = (value: unknown): value is SourceMai
   hasSelfBrand(value, SourceMaintenanceOperationTypeId) &&
   sourceMaintenanceOperations.has(value);
 
-export const makeSourceDelivery = <Row extends object, AdapterFailure, Services = never>(
+export const makeSourceDelivery = <
+  Row extends object,
+  AdapterFailure,
+  Services = never,
+  Topic extends string = string,
+>(
   mutationsChunk: Chunk.NonEmptyChunk<SourceMutation<Row>>,
   settlement?: SourceSettlement<AdapterFailure, Services>,
-): SourceDelivery<Row, AdapterFailure, Services> => {
-  const delivery: SourceDelivery<Row, AdapterFailure, Services> = {
+): SourceDelivery<Row, AdapterFailure, Services, Topic> => {
+  const delivery: SourceDelivery<Row, AdapterFailure, Services, Topic> = {
     _tag: "SourceDelivery",
     mutations: mutationsChunk,
     settle: settlement ?? noSettlement,
@@ -1688,12 +1719,17 @@ export const makeSourceDelivery = <Row extends object, AdapterFailure, Services 
   return delivery;
 };
 
-export const makeSourceTransitionDelivery = <Row extends object, AdapterFailure, Services = never>(
+export const makeSourceTransitionDelivery = <
+  Row extends object,
+  AdapterFailure,
+  Services = never,
+  const Topic extends string = string,
+>(
   mutation: SourceMutation<Row>,
   settlement: SourceSettlement<AdapterFailure, Services> | undefined,
-  transition: SourceApplicationTransition,
-): SourceDelivery<Row, AdapterFailure, Services> => {
-  const delivery: SourceDelivery<Row, AdapterFailure, Services> = {
+  transition: SourceApplicationTransition<Topic>,
+): SourceDelivery<Row, AdapterFailure, Services, Topic> => {
+  const delivery: SourceDelivery<Row, AdapterFailure, Services, Topic> = {
     _tag: "SourceDelivery",
     mutations: Chunk.of(mutation),
     settle: settlement ?? noSettlement,
@@ -1704,9 +1740,14 @@ export const makeSourceTransitionDelivery = <Row extends object, AdapterFailure,
   return delivery;
 };
 
-export function isSourceDelivery<Row extends object, AdapterFailure, SettlementServices>(
-  value: SourceDelivery<Row, AdapterFailure, SettlementServices>,
-): value is SourceDelivery<Row, AdapterFailure, SettlementServices>;
+export function isSourceDelivery<
+  Row extends object,
+  AdapterFailure,
+  SettlementServices,
+  Topic extends string,
+>(
+  value: SourceDelivery<Row, AdapterFailure, SettlementServices, Topic>,
+): value is SourceDelivery<Row, AdapterFailure, SettlementServices, Topic>;
 export function isSourceDelivery(value: unknown): value is SourceDelivery<object, unknown, unknown>;
 export function isSourceDelivery(
   value: unknown,

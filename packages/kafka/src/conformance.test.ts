@@ -8,6 +8,7 @@ import {
   type SourceAdapterConformanceTarget,
   type SourceAdapterConformanceTransportObservation,
   type SourceAdapterPackageInspectionOptions,
+  type SourceAdapterPackageInspectionError,
 } from "@effect-view-server/source-adapter-conformance-host";
 import {
   makeSourceApplicationTransition,
@@ -17,6 +18,7 @@ import {
 import type { SourceApplicationExit } from "effect-view-server/source-adapter";
 import {
   Chunk,
+  Cause,
   Config,
   Context,
   Deferred,
@@ -44,6 +46,22 @@ import {
   type KafkaServerRecord,
   type KafkaServerRegion,
 } from "@effect-view-server/kafka/server";
+
+const kafkaResourceValidationFailure = (failure: SourceAdapterPackageInspectionError): boolean =>
+  failure.cause instanceof Error && failure.cause.name === "KafkaSourceConfigurationError";
+
+const kafkaExternalValidationFailure = (failure: SourceAdapterPackageInspectionError): boolean => {
+  if (!Cause.isCause(failure.cause)) {
+    return false;
+  }
+  const brokerFailure = Cause.findErrorOption(failure.cause);
+  return (
+    Option.isSome(brokerFailure) &&
+    typeof brokerFailure.value === "object" &&
+    brokerFailure.value !== null &&
+    Reflect.get(brokerFailure.value, "_tag") === "KafkaBrokerContractValidationFailure"
+  );
+};
 
 type ActiveAttempt = {
   readonly queues: ReadonlyMap<
@@ -133,7 +151,7 @@ const foreverRetentionMetrics = (cleanupPolicy: "delete" | "compact") => ({
   configuredRetention: { _tag: "Forever" as const },
   resolvedRetention: { _tag: "Forever" as const },
   trackedRows: 0,
-  dueBacklog: 0,
+  lastSweepRetryableFailures: 0,
   expiredRows: 0n,
   authoritativeExpiredDeletes: 0n,
   failedWorkBacklog: 0,
@@ -816,6 +834,7 @@ const packageInspection: SourceAdapterPackageInspectionOptions = {
     {
       export: "./node",
       exactLayerAcquisition: "external-validation-failure",
+      externalValidationFailure: kafkaExternalValidationFailure,
       viewServer: (contractModule: object) => ({
         topics: {
           rows: {
@@ -897,6 +916,7 @@ const packageInspection: SourceAdapterPackageInspectionOptions = {
           },
         },
       },
+      resourceValidationFailure: kafkaResourceValidationFailure,
     },
   ],
 };

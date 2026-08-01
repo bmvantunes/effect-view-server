@@ -109,7 +109,7 @@ const validRegionMetrics = () => ({
     configuredRetention: { _tag: "Forever" },
     resolvedRetention: { _tag: "Forever" },
     trackedRows: 0,
-    dueBacklog: 0,
+    lastSweepRetryableFailures: 0,
     expiredRows: 0n,
     authoritativeExpiredDeletes: 0n,
     failedWorkBacklog: 0,
@@ -1191,6 +1191,10 @@ describe("Kafka Source Adapter contract", () => {
       ...validSourceInput(),
       retentionPolicy: Duration.millis(1.000_001),
     });
+    const halfMillis = kafka.source({
+      ...validSourceInput(),
+      retentionPolicy: Duration.millis(0.5),
+    });
     const maximumSafeMillis = kafka.source({
       ...validSourceInput(),
       retentionPolicy: Duration.millis(Number.MAX_SAFE_INTEGER),
@@ -1213,6 +1217,7 @@ describe("Kafka Source Adapter contract", () => {
       finiteMillis: finiteMillis.options.retentionPolicy,
       finiteNanos: finiteNanos.options.retentionPolicy,
       fractionalMillis: fractionalMillis.options.retentionPolicy,
+      halfMillis: halfMillis.options.retentionPolicy,
       maximumSafeMillis: maximumSafeMillis.options.retentionPolicy,
       maximumFiniteMillis: maximumFiniteMillis.options.retentionPolicy,
       forever: forever.options.retentionPolicy,
@@ -1223,6 +1228,7 @@ describe("Kafka Source Adapter contract", () => {
       finiteMillis: { _tag: "Finite", durationNanos: 1_000_000n },
       finiteNanos: { _tag: "Finite", durationNanos: 1n },
       fractionalMillis: { _tag: "Finite", durationNanos: 1_000_001n },
+      halfMillis: { _tag: "Finite", durationNanos: 500_000n },
       maximumSafeMillis: {
         _tag: "Finite",
         durationNanos: BigInt(Number.MAX_SAFE_INTEGER) * 1_000_000n,
@@ -1247,6 +1253,12 @@ describe("Kafka Source Adapter contract", () => {
         ]),
       ).toThrow(KafkaSourceConfigurationError);
     }
+    expect(() =>
+      kafka.source({
+        ...validSourceInput(),
+        retentionPolicy: Duration.millis(0.000_000_1),
+      }),
+    ).toThrow(KafkaSourceConfigurationError);
     expect(() =>
       Reflect.apply(kafka.source, undefined, [
         {

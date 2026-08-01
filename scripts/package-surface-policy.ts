@@ -78,6 +78,7 @@ export const packageSurfacePolicy = {
     "@effect-view-server/runtime-core/health",
     "@effect-view-server/server/src/rpc-handlers",
     "@effect-view-server/server/rpc-handlers",
+    "@effect-view-server/source-adapter/src/definition",
     "@effect-view-server/source-adapter/src/model",
     "@effect-view-server/source-adapter/model",
     "@effect-view-server/source-adapter-testing/src/index",

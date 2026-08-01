@@ -118,12 +118,18 @@ const removeDeadline = (
 function* orderedDeadlines(
   node: KafkaRetentionDeadlineNode | null,
 ): IterableIterator<KafkaRetentionDeadline> {
-  if (node === null) {
-    return;
+  const stack: Array<KafkaRetentionDeadlineNode> = [];
+  let current = node;
+  while (current !== null || stack.length > 0) {
+    while (current !== null) {
+      stack.push(current);
+      current = current.left;
+    }
+    for (const next of stack.splice(-1, 1)) {
+      yield next.deadline;
+      current = next.right;
+    }
   }
-  yield* orderedDeadlines(node.left);
-  yield node.deadline;
-  yield* orderedDeadlines(node.right);
 }
 
 export class KafkaRetentionDeadlineIndex implements Iterable<KafkaRetentionDeadline> {

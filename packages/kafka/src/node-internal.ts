@@ -109,6 +109,10 @@ export type KafkaNodeRegionOptions = {
   readonly tls?: KafkaNodeTlsOptions;
 };
 
+type KafkaNodeRegionSnapshot = Omit<KafkaNodeRegionOptions, "bootstrapServers"> & {
+  readonly bootstrapServers: readonly [string, ...ReadonlyArray<string>];
+};
+
 export type KafkaNodeLayerOptions<ViewServer extends KafkaNodeViewServer> = [
   KafkaRequiredRegion<ViewServer>,
 ] extends [never]
@@ -539,7 +543,7 @@ const nodeTlsOptions = (tls: KafkaNodeTlsOptions): NodeTlsConnectionOptions => (
 const finiteNonNegative = (value: number | undefined): boolean =>
   value === undefined || (Number.isFinite(value) && value >= 0);
 
-const snapshotRegionOptions = (options: unknown): KafkaNodeRegionOptions => {
+const snapshotRegionOptions = (options: unknown): KafkaNodeRegionSnapshot => {
   if (typeof options !== "object" || options === null || Array.isArray(options)) {
     throw new KafkaSourceConfigurationError("Kafka Region options are invalid.");
   }
@@ -763,7 +767,7 @@ const snapshotLayerOptions = <ViewServer extends KafkaNodeViewServer>(
   options: unknown,
 ): {
   readonly consumerGroupPrefix: string;
-  readonly regions: ReadonlyMap<string, KafkaNodeRegionOptions>;
+  readonly regions: ReadonlyMap<string, KafkaNodeRegionSnapshot>;
   readonly retentionSweepIntervalNanos: bigint;
 } => {
   if (typeof options !== "object" || options === null || Array.isArray(options)) {
@@ -810,7 +814,7 @@ const snapshotLayerOptions = <ViewServer extends KafkaNodeViewServer>(
       "Kafka Node Layer regions must contain all and only referenced Regions.",
     );
   }
-  const regions = new Map<string, KafkaNodeRegionOptions>();
+  const regions = new Map<string, KafkaNodeRegionSnapshot>();
   for (const [region, value] of provided) {
     if (typeof value !== "object" || value === null) {
       throw new KafkaSourceConfigurationError(`Kafka Node Region ${region} options are invalid.`);
@@ -1085,7 +1089,7 @@ const resolveFallback = Effect.fn("KafkaNode.offsets.fallback")(function* (
 });
 
 const makeResolverConsumer = Effect.fn("KafkaNode.consumer.make")(function* (
-  regionOptions: KafkaNodeRegionOptions,
+  regionOptions: KafkaNodeRegionSnapshot,
   groupId: string,
   input: KafkaServerRegionAcquireInput,
 ) {
@@ -1093,7 +1097,7 @@ const makeResolverConsumer = Effect.fn("KafkaNode.consumer.make")(function* (
     try: () =>
       new Consumer<Buffer | null, Buffer | null, Buffer, Buffer>({
         autocreateTopics: false,
-        bootstrapBrokers: [...bootstrapServers(regionOptions.bootstrapServers)],
+        bootstrapBrokers: [...regionOptions.bootstrapServers],
         clientId: regionOptions.clientId ?? `effect-view-server-${input.region}`,
         groupId,
         retries: regionOptions.retries ?? true,
@@ -1115,7 +1119,7 @@ const makeResolverConsumer = Effect.fn("KafkaNode.consumer.make")(function* (
 });
 
 const resolveInitial = Effect.fn("KafkaNode.offsets.initial")(function* (
-  regionOptions: KafkaNodeRegionOptions,
+  regionOptions: KafkaNodeRegionSnapshot,
   input: KafkaServerRegionAcquireInput,
   activeConsumer: KafkaConsumer,
   metrics: KafkaMutableRegionMetrics,
@@ -1348,7 +1352,7 @@ const updateCommit = (
   }
 };
 
-const makeNodeRegion = (regionOptions: KafkaNodeRegionOptions): KafkaServerRegion => {
+const makeNodeRegion = (regionOptions: KafkaNodeRegionSnapshot): KafkaServerRegion => {
   const lifetimes = new Map<Scope.Scope, Map<string, KafkaBindingState>>();
   const lifetimeStates = Effect.fn("KafkaNode.region.lifetime.state")(function* (
     lifetimeScope: Scope.Scope,
@@ -1532,9 +1536,9 @@ const makeNodeRegion = (regionOptions: KafkaNodeRegionOptions): KafkaServerRegio
 
 const adminOptions = (
   region: string,
-  options: KafkaNodeRegionOptions,
+  options: KafkaNodeRegionSnapshot,
 ): ConstructorParameters<typeof Admin>[0] => ({
-  bootstrapBrokers: [...bootstrapServers(options.bootstrapServers)],
+  bootstrapBrokers: [...options.bootstrapServers],
   clientId: options.clientId ?? `effect-view-server-${region}-broker-validation`,
   retries: options.retries ?? true,
   ...(options.connectTimeout === undefined ? {} : { connectTimeout: options.connectTimeout }),
@@ -1580,13 +1584,23 @@ const brokerConfigResource = (value: unknown): KafkaBrokerConfigResource | undef
   }
   const cleanupPolicy = configValue(configs, "cleanup.policy");
   const retentionMs = configValue(configs, "retention.ms");
-  return cleanupPolicy === undefined || retentionMs === undefined
-    ? undefined
-    : {
-        resourceName,
-        cleanupPolicy,
-        retentionMs,
-      };
+  if (cleanupPolicy === undefined) {
+    return {
+      resourceName,
+      malformedConfiguration: "cleanup.policy",
+    };
+  }
+  if (retentionMs === undefined) {
+    return {
+      resourceName,
+      malformedConfiguration: "retention.ms",
+    };
+  }
+  return {
+    resourceName,
+    cleanupPolicy,
+    retentionMs,
+  };
 };
 
 const snapshotAdminResponse = (
@@ -1604,7 +1618,7 @@ const snapshotAdminResponse = (
 
 const discoverKafkaBrokerRegion = Effect.fn("KafkaNode.brokerContract.discoverRegion")(function* (
   region: string,
-  options: KafkaNodeRegionOptions,
+  options: KafkaNodeRegionSnapshot,
   topics: ReadonlyArray<string>,
 ): Effect.fn.Return<KafkaBrokerRegionDiscovery> {
   const available = yield* Effect.acquireUseRelease(
@@ -1645,7 +1659,7 @@ const discoverKafkaBrokerRegion = Effect.fn("KafkaNode.brokerContract.discoverRe
 
 type KafkaLayerSnapshot = {
   readonly consumerGroupPrefix: string;
-  readonly regions: ReadonlyMap<string, KafkaNodeRegionOptions>;
+  readonly regions: ReadonlyMap<string, KafkaNodeRegionSnapshot>;
   readonly retentionSweepIntervalNanos: bigint;
 };
 
@@ -1663,12 +1677,15 @@ const validateKafkaBrokerContracts = Effect.fn("KafkaNode.brokerContract.validat
     topics.add(declaration.sourceTopic);
     topicsByRegion.set(declaration.region, topics);
   }
-  const discoveries = yield* Effect.forEach(topicsByRegion, ([region, topics]) =>
-    discoverKafkaBrokerRegion(
-      region,
-      Option.getOrThrow(Option.fromUndefinedOr(snapshot.regions.get(region))),
-      [...topics].sort(),
-    ),
+  const discoveries = yield* Effect.forEach(
+    topicsByRegion,
+    ([region, topics]) =>
+      discoverKafkaBrokerRegion(
+        region,
+        Option.getOrThrow(Option.fromUndefinedOr(snapshot.regions.get(region))),
+        [...topics].sort(),
+      ),
+    { concurrency: "unbounded" },
   );
   const resolution = resolveKafkaBrokerContracts(declarations, discoveries);
   return resolution._tag === "Resolved" ? resolution.contracts : yield* Effect.fail(resolution);

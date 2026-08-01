@@ -1,4 +1,16 @@
-import { Chunk, Context, Effect, Layer, Result, Schedule, Scope, Stream } from "effect";
+import {
+  Cause,
+  Chunk,
+  Context,
+  Deferred,
+  Effect,
+  Exit,
+  Layer,
+  Result,
+  Schedule,
+  Scope,
+  Stream,
+} from "effect";
 import {
   decodeSourceToolkitUpsert,
   isSourceApplicationStateRegistration,
@@ -95,7 +107,7 @@ const closeToolkitEnvironment = <
     mutations: Chunk.NonEmptyChunk<SourceMutation<Row>>,
     settlement?: SourceSettlement<AdapterFailure, Services>,
   ): Effect.Effect<
-    SourceDelivery<Row, AdapterFailure, Services>,
+    SourceDelivery<Row, AdapterFailure, Services, Topic>,
     SourceExecutionFailure<AdapterFailure>
   >;
   function delivery(
@@ -103,7 +115,7 @@ const closeToolkitEnvironment = <
     settlement: SourceSettlement<AdapterFailure, Services> | undefined,
     transition: SourceApplicationTransition<Topic>,
   ): Effect.Effect<
-    SourceDelivery<Row, AdapterFailure, Services>,
+    SourceDelivery<Row, AdapterFailure, Services, Topic>,
     SourceExecutionFailure<AdapterFailure>
   >;
   function delivery(
@@ -111,7 +123,7 @@ const closeToolkitEnvironment = <
     settlement?: SourceSettlement<AdapterFailure, Services>,
     transition?: SourceApplicationTransition<Topic>,
   ): Effect.Effect<
-    SourceDelivery<Row, AdapterFailure, Services>,
+    SourceDelivery<Row, AdapterFailure, Services, Topic>,
     SourceExecutionFailure<AdapterFailure>
   > {
     const closedSettlement =
@@ -630,6 +642,52 @@ const makeSourceApplicationStateModule = <State, Command, Metrics, SweepOutcome>
 }): InternalSourceApplicationStateModule<State, Command, Metrics, SweepOutcome> => {
   let state = input.initialState;
   const lifetimeIdentity = Object.freeze({});
+  type AttemptTransitionReleases = {
+    closed: boolean;
+    readonly active: Set<() => void>;
+  };
+  const attemptReleaseSlots = new WeakMap<
+    Scope.Scope,
+    Deferred.Deferred<AttemptTransitionReleases>
+  >();
+  const releaseActiveTransitions = (registry: AttemptTransitionReleases) =>
+    Effect.suspend(() => {
+      registry.closed = true;
+      return releaseAttemptTransitions(registry);
+    });
+  const releaseAttemptTransitions = Effect.fn(
+    "SourceAdapterServer.applicationState.releaseAttemptTransitions",
+  )(function* (registry: AttemptTransitionReleases) {
+    let failure: Cause.Cause<never> | undefined;
+    for (const release of registry.active) {
+      const exit = yield* Effect.exit(Effect.sync(release));
+      if (Exit.isFailure(exit)) {
+        failure = failure === undefined ? exit.cause : Cause.combine(failure, exit.cause);
+      }
+    }
+    registry.active.clear();
+    if (failure !== undefined) {
+      return yield* Effect.failCause(failure);
+    }
+  });
+  const attemptTransitionReleases = Effect.uninterruptibleMask((restore) =>
+    Effect.gen(function* () {
+      const scope = yield* Effect.scope;
+      const existing = attemptReleaseSlots.get(scope);
+      if (existing !== undefined) {
+        return yield* restore(Deferred.await(existing));
+      }
+      const slot = Deferred.makeUnsafe<AttemptTransitionReleases>();
+      attemptReleaseSlots.set(scope, slot);
+      const registry: AttemptTransitionReleases = {
+        closed: false,
+        active: new Set(),
+      };
+      yield* Scope.addFinalizer(scope, releaseActiveTransitions(registry));
+      Deferred.doneUnsafe(slot, Effect.succeed(registry));
+      return registry;
+    }),
+  );
   const dispatch = (command: Command): void => {
     const next = input.reduce(state, command);
     if (
@@ -666,20 +724,39 @@ const makeSourceApplicationStateModule = <State, Command, Metrics, SweepOutcome>
         const cancelledMaintenanceWorkIds = Object.freeze(
           Array.from(input.cancelledMaintenanceWorkIds(state, command)),
         );
-        return input.acquireTransition(state, command).pipe(
-          Effect.map((release) => {
+        return Effect.uninterruptibleMask(() =>
+          Effect.gen(function* () {
+            const registry = yield* attemptTransitionReleases;
+            if (registry.closed) {
+              return yield* Effect.interrupt;
+            }
+            const release = yield* input.acquireTransition(state, command);
+            let released = false;
+            const releaseOnce = (): void => {
+              if (released) {
+                return;
+              }
+              released = true;
+              registry.active.delete(releaseOnce);
+              release();
+            };
+            if (registry.closed) {
+              releaseOnce();
+              return yield* Effect.interrupt;
+            }
+            registry.active.add(releaseOnce);
             const transition = makeSourceApplicationTransition(
               topic,
               () => {
                 dispatch(command);
-                release();
+                releaseOnce();
               },
               cancelledMaintenanceWorkIds,
               lifetimeIdentity,
             );
             return {
               transition,
-              release: Effect.sync(release),
+              release: Effect.sync(releaseOnce),
             };
           }),
         );
@@ -761,7 +838,11 @@ const hasInspectableSynchronousFunction = (value: unknown): boolean => {
     return false;
   }
   const constructorName = Result.try(() => Reflect.get(constructor.success, "name"));
-  return Result.isSuccess(constructorName) && constructorName.success !== "AsyncFunction";
+  return (
+    Result.isSuccess(constructorName) &&
+    constructorName.success !== "AsyncFunction" &&
+    constructorName.success !== "AsyncGeneratorFunction"
+  );
 };
 
 export type SourceApplicationStateRegistration<State, Command, Metrics, SweepOutcome> =
@@ -787,26 +868,46 @@ type RejectSourceAsynchronousValue<Value> = [Extract<Value, SourceAsynchronousVa
   ? unknown
   : never;
 
-export const makeSourceApplicationStateRegistration = <State, Command, Metrics, SweepOutcome>(
-  input: {
-    readonly sweepIntervalNanos: bigint;
-    readonly initialState: (
-      input: SourceApplicationStateRegistrationBindingInput,
-    ) => SourceSynchronousValue<State>;
-    readonly reduce: (state: State, command: Command) => SourceSynchronousValue<State>;
-    readonly cancelledMaintenanceWorkIds?: (
-      state: State,
-      command: Command,
-    ) => ReadonlyArray<string>;
-    readonly acquireTransition?: (
-      state: State,
-      command: Command,
-    ) => Effect.Effect<() => void, never, Scope.Scope>;
-    readonly metrics: (state: State) => SourceSynchronousValue<Metrics>;
-    readonly runDueSweep: <Topic extends string>(
-      input: SourceApplicationStateSweepInput<Topic, State, Command>,
-    ) => Effect.Effect<SweepOutcome>;
-  } & RejectSourceAsynchronousValue<State> &
+type SourceApplicationStateRegistrationInput<State, Command, Metrics, SweepOutcome> = {
+  readonly sweepIntervalNanos: bigint;
+  readonly initialState: (
+    input: SourceApplicationStateRegistrationBindingInput,
+  ) => SourceSynchronousValue<State>;
+  readonly reduce: (state: State, command: Command) => SourceSynchronousValue<State>;
+  readonly cancelledMaintenanceWorkIds?: (state: State, command: Command) => ReadonlyArray<string>;
+  /**
+   * Runs inside the SDK's masked ownership-transfer region. Implementations with a blocking permit
+   * wait must mask their own bookkeeping and make only that wait explicitly interruptible before
+   * returning an idempotent release callback.
+   */
+  readonly acquireTransition?: (
+    state: State,
+    command: Command,
+  ) => Effect.Effect<() => void, never, Scope.Scope>;
+  readonly metrics: (state: State) => SourceSynchronousValue<Metrics>;
+  readonly runDueSweep: <Topic extends string>(
+    input: SourceApplicationStateSweepInput<Topic, State, Command>,
+  ) => Effect.Effect<SweepOutcome>;
+};
+
+type RejectExtraApplicationStateKeys<Candidate, Shape> = {
+  readonly [Key in Exclude<keyof Candidate, keyof Shape>]: never;
+};
+
+export const makeSourceApplicationStateRegistration = <
+  State,
+  Command,
+  Metrics,
+  SweepOutcome,
+  const Input,
+>(
+  input: SourceApplicationStateRegistrationInput<State, Command, Metrics, SweepOutcome> &
+    Input &
+    RejectExtraApplicationStateKeys<
+      NoInfer<Input>,
+      SourceApplicationStateRegistrationInput<State, Command, Metrics, SweepOutcome>
+    > &
+    RejectSourceAsynchronousValue<State> &
     RejectSourceAsynchronousValue<Metrics>,
 ): SourceApplicationStateRegistration<State, Command, Metrics, SweepOutcome> => {
   if (
@@ -830,6 +931,15 @@ export const makeSourceApplicationStateRegistration = <State, Command, Metrics, 
       "Source Application State registration requires exact synchronous state capabilities and a positive finite sweep interval.",
     );
   }
+  const snapshot = Object.freeze({
+    sweepIntervalNanos: input.sweepIntervalNanos,
+    initialState: input.initialState,
+    reduce: input.reduce,
+    cancelledMaintenanceWorkIds: input.cancelledMaintenanceWorkIds ?? (() => []),
+    acquireTransition: input.acquireTransition ?? (() => Effect.succeed(() => undefined)),
+    metrics: input.metrics,
+    runDueSweep: input.runDueSweep,
+  });
   const modules = new WeakMap<
     Scope.Scope,
     InternalSourceApplicationStateModule<State, Command, Metrics, SweepOutcome>
@@ -841,7 +951,7 @@ export const makeSourceApplicationStateRegistration = <State, Command, Metrics, 
           "Source Application State registration cannot bind one logical lifetime twice.",
         );
       }
-      const initialState = input.initialState(binding);
+      const initialState = snapshot.initialState(binding);
       if (
         typeof initialState === "object" &&
         initialState !== null &&
@@ -849,7 +959,7 @@ export const makeSourceApplicationStateRegistration = <State, Command, Metrics, 
       ) {
         throw new TypeError("Source Application State initial state must be immutable.");
       }
-      const initialMetrics = input.metrics(initialState);
+      const initialMetrics = snapshot.metrics(initialState);
       if (
         Effect.isEffect(initialMetrics) ||
         (typeof initialMetrics === "object" && initialMetrics !== null && "then" in initialMetrics)
@@ -861,11 +971,11 @@ export const makeSourceApplicationStateRegistration = <State, Command, Metrics, 
         makeSourceApplicationStateModule<State, Command, Metrics, SweepOutcome>({
           topic: binding.topic,
           initialState,
-          reduce: input.reduce,
-          cancelledMaintenanceWorkIds: input.cancelledMaintenanceWorkIds ?? (() => []),
-          acquireTransition: input.acquireTransition ?? (() => Effect.succeed(() => undefined)),
-          metrics: input.metrics,
-          runDueSweep: input.runDueSweep,
+          reduce: snapshot.reduce,
+          cancelledMaintenanceWorkIds: snapshot.cancelledMaintenanceWorkIds,
+          acquireTransition: snapshot.acquireTransition,
+          metrics: snapshot.metrics,
+          runDueSweep: snapshot.runDueSweep,
         }),
       );
     },
@@ -890,12 +1000,14 @@ export const makeSourceApplicationStateRegistration = <State, Command, Metrics, 
     unbind: (lifetimeScope) => {
       modules.delete(lifetimeScope);
     },
-    sweepIntervalNanos: input.sweepIntervalNanos,
+    sweepIntervalNanos: snapshot.sweepIntervalNanos,
     runDueSweep: (lifetimeScope, epochNowNanos, execute) => {
       const module = modules.get(lifetimeScope);
       if (module === undefined) {
-        throw new TypeError(
-          "Source Application State registration is not bound to this logical lifetime.",
+        return Effect.die(
+          new TypeError(
+            "Source Application State registration is not bound to this logical lifetime.",
+          ),
         );
       }
       return module.runDueSweep(module.topic, epochNowNanos, execute);

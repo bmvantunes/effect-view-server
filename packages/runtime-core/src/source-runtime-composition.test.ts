@@ -4,6 +4,7 @@ import { SourceAdapter } from "@effect-view-server/source-adapter";
 import { SourceAdapterServer } from "@effect-view-server/source-adapter/server";
 import {
   decodeSourceToolkitUpsert,
+  makeSourceApplicationStateRegistration,
   makeSourceDelivery,
   resolveSourceApplicationStateRegistration,
 } from "@effect-view-server/source-adapter/internal";
@@ -60,18 +61,20 @@ describe("Runtime Core Source composition validation", () => {
         Option.fromUndefinedOr(resolveSourceApplicationStateRegistration(applicationState)),
       );
       let boundScope: Parameters<typeof registration.bind>[0]["lifetimeScope"] | undefined;
-      const bind = registration.bind;
-      Object.defineProperty(registration, "bind", {
-        configurable: true,
-        enumerable: true,
-        value: (binding: Parameters<typeof registration.bind>[0]) => {
+      const capturingApplicationState = makeSourceApplicationStateRegistration({
+        bind: (binding) => {
           boundScope = binding.lifetimeScope;
-          bind(binding);
+          registration.bind(binding);
         },
+        forLifetime: applicationState.forLifetime,
+        lifetimeIdentity: registration.lifetimeIdentity,
+        unbind: registration.unbind,
+        sweepIntervalNanos: registration.sweepIntervalNanos,
+        runDueSweep: registration.runDueSweep,
       });
       const layer = SourceAdapterServer.make(otherAdapter, {
         materialized: {
-          applicationState,
+          applicationState: capturingApplicationState,
           acquire: () =>
             Effect.succeed(
               SourceAdapterServer.attempt([
@@ -341,26 +344,23 @@ describe("Runtime Core Source composition validation", () => {
         Option.fromUndefinedOr(resolveSourceApplicationStateRegistration(applicationState)),
       );
       let boundScope: Parameters<typeof internal.bind>[0]["lifetimeScope"] | undefined;
-      const bind = internal.bind;
-      Object.defineProperty(internal, "bind", {
-        configurable: true,
-        enumerable: true,
-        value: (binding: Parameters<typeof internal.bind>[0]) => {
+      const hostileApplicationState = makeSourceApplicationStateRegistration({
+        bind: (binding) => {
           boundScope = binding.lifetimeScope;
-          bind(binding);
+          internal.bind(binding);
         },
-      });
-      Object.defineProperty(internal, "lifetimeIdentity", {
-        configurable: true,
-        enumerable: true,
-        value: () => {
+        forLifetime: applicationState.forLifetime,
+        lifetimeIdentity: () => {
           throw new Error("injected lifetime identity failure");
         },
+        unbind: internal.unbind,
+        sweepIntervalNanos: internal.sweepIntervalNanos,
+        runDueSweep: internal.runDueSweep,
       });
       let acquisitions = 0;
       const layer = SourceAdapterServer.make(otherAdapter, {
         materialized: {
-          applicationState,
+          applicationState: hostileApplicationState,
           acquire: () => {
             acquisitions += 1;
             return Effect.succeed(

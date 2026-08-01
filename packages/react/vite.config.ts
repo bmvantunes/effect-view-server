@@ -7,7 +7,7 @@ export default defineConfig({
     include: ["effect/Function", "effect/unstable/reactivity"],
   },
   test: {
-    include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
+    include: ["src/**/*.test.ts", "src/**/*.test.tsx", "test/**/*.test.ts"],
     benchmark: {
       include: ["src/**/*.bench.tsx"],
     },

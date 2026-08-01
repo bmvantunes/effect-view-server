@@ -862,15 +862,10 @@ describe("Runtime WebSocket and operational endpoints", () => {
               type TransitionCommand = {
                 readonly _tag: "Throw";
               };
-              const transitionState = SourceAdapterServer.applicationState<
-                TransitionState,
-                TransitionCommand,
-                TransitionState,
-                void
-              >({
+              const transitionState = SourceAdapterServer.applicationState({
                 sweepIntervalNanos: 900_000_000_000n,
                 initialState: () => Object.freeze({ transitions: 0 }),
-                reduce: () => {
+                reduce: (_state: TransitionState, _command: TransitionCommand) => {
                   throw transitionDefect;
                 },
                 metrics: (state) => state,
@@ -1085,15 +1080,10 @@ describe("Runtime WebSocket and operational endpoints", () => {
               const sweepCommand: MaintenanceCommand = Object.freeze({
                 _tag: "Sweep",
               });
-              const applicationState = SourceAdapterServer.applicationState<
-                MaintenanceState,
-                MaintenanceCommand,
-                MaintenanceState,
-                void
-              >({
+              const applicationState = SourceAdapterServer.applicationState({
                 sweepIntervalNanos,
                 initialState: () => Object.freeze({ sweeps: 0 }),
-                reduce: (state) =>
+                reduce: (state: MaintenanceState, _command: MaintenanceCommand) =>
                   Object.freeze({
                     sweeps: state.sweeps + 1,
                   }),

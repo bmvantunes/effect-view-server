@@ -681,7 +681,7 @@ const foreverRetentionMetrics = () => ({
   configuredRetention: { _tag: "Forever" as const },
   resolvedRetention: { _tag: "Forever" as const },
   trackedRows: 0,
-  dueBacklog: 0,
+  lastSweepRetryableFailures: 0,
   expiredRows: 0n,
   authoritativeExpiredDeletes: 0n,
   failedWorkBacklog: 0,
@@ -1093,6 +1093,9 @@ describe("Kafka Node Adapter", () => {
           ),
         );
         yield* awaitCondition(() => platformatic.state.streams.length === 1);
+        const retryDiagnostics = yield* runtime.liveClient.subscribeSourceHealth({
+          topic: "orders",
+        });
         expect({
           groupId: platformatic.state.consumers[0]?.options.groupId,
           brokers: platformatic.state.consumers[0]?.options.bootstrapBrokers,
@@ -1137,8 +1140,15 @@ describe("Kafka Node Adapter", () => {
           () => platformatic.state.committedByGroup.get("replica:orders")?.[0] === 11n,
         );
         yield* awaitCondition(() => platformatic.state.streams[0]?.closed === true);
+        yield* retryDiagnostics.events.pipe(
+          Stream.filter((health) => health.status._tag === "WaitingToRetry"),
+          Stream.take(1),
+          Stream.runDrain,
+        );
+        yield* TestClock.withLive(Effect.sleep("1 millis"));
         yield* TestClock.adjust("1 second");
         yield* awaitCondition(() => platformatic.state.streams.length === 2);
+        yield* retryDiagnostics.close();
 
         expect({
           offsetCalls: platformatic.state.offsetCalls.map(({ input }) => input.timestamp),
@@ -2854,18 +2864,31 @@ describe("Kafka Node Adapter", () => {
       { ...validBrokerResource, resourceType: 1 },
       { ...validBrokerResource, resourceName: "" },
       { ...validBrokerResource, configs: null },
-      {
-        ...validBrokerResource,
-        configs: [{ name: "cleanup.policy", value: "delete" }],
-      },
     ]) {
       expect(
         Reflect.apply(kafkaNodeInternals.brokerConfigResource, undefined, [malformed]),
       ).toBeUndefined();
     }
+    const malformedRetentionResource = {
+      ...validBrokerResource,
+      configs: [{ name: "cleanup.policy", value: "delete" }],
+    };
+    const malformedCleanupResource = {
+      ...validBrokerResource,
+      configs: [{ name: "retention.ms", value: "-1" }],
+    };
+    expect(kafkaNodeInternals.brokerConfigResource(malformedRetentionResource)).toStrictEqual({
+      resourceName: "source-orders",
+      malformedConfiguration: "retention.ms",
+    });
+    expect(kafkaNodeInternals.brokerConfigResource(malformedCleanupResource)).toStrictEqual({
+      resourceName: "source-orders",
+      malformedConfiguration: "cleanup.policy",
+    });
     expect(
       kafkaNodeInternals.snapshotAdminResponse([
         validBrokerResource,
+        malformedRetentionResource,
         { resourceType: 1, resourceName: "ignored", configs: [] },
       ]),
     ).toStrictEqual([
@@ -2873,6 +2896,10 @@ describe("Kafka Node Adapter", () => {
         resourceName: "source-orders",
         cleanupPolicy: "delete",
         retentionMs: "-1",
+      },
+      {
+        resourceName: "source-orders",
+        malformedConfiguration: "retention.ms",
       },
     ]);
 

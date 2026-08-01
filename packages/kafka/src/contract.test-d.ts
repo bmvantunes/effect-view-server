@@ -353,8 +353,11 @@ describe("Kafka Source Adapter type contract", () => {
     expectTypeOf<Health["metrics"]["adapter"]["regions"][0]["region"]>().toEqualTypeOf<"eu">();
     expectTypeOf<Health["metrics"]["adapter"]["regions"][1]["region"]>().toEqualTypeOf<"us">();
     expectTypeOf<
-      Health["metrics"]["adapter"]["regions"][number]["retention"]["dueBacklog"]
+      Health["metrics"]["adapter"]["regions"][number]["retention"]["lastSweepRetryableFailures"]
     >().toEqualTypeOf<number>();
+    type RetentionMetrics = Health["metrics"]["adapter"]["regions"][number]["retention"];
+    // @ts-expect-error the ambiguous due-row name is not part of the public retention metrics.
+    expectTypeOf<RetentionMetrics["dueBacklog"]>().not.toBeAny();
     expectTypeOf<
       Health["metrics"]["adapter"]["regions"][number]["retention"]["expirationRetryFailures"]
     >().toEqualTypeOf<bigint>();
@@ -528,6 +531,88 @@ describe("Kafka Source Adapter type contract", () => {
     };
     // @ts-expect-error retentionPolicy accepts only the documented policies and Effect Duration inputs.
     kafka.source(invalidRetentionPolicy);
+
+    const retentionPolicyWithExtraField = {
+      ...validDeleteSourceOptions,
+      retentionPolicy: {
+        minutes: 5,
+        garbage: 1,
+      },
+    };
+    // @ts-expect-error structured retentionPolicy inputs are exact through variables.
+    kafka.source(retentionPolicyWithExtraField);
+
+    const retentionPolicyWithAnyField = {
+      ...validDeleteSourceOptions,
+      retentionPolicy: {
+        minutes: unsafeAny,
+      },
+    };
+    // @ts-expect-error structured retentionPolicy fields cannot be any.
+    kafka.source(retentionPolicyWithAnyField);
+
+    const anyCleanupPolicy = {
+      ...validDeleteSourceOptions,
+      cleanupPolicy: unsafeAny,
+    };
+    // @ts-expect-error cleanupPolicy cannot be any.
+    kafka.source(anyCleanupPolicy);
+
+    const compactionRowIdInput = {
+      region: "eu",
+      partition: 0,
+      serializedKeyBytes: new Uint8Array([1]),
+    };
+    expectTypeOf(kafka.compactionRowId(compactionRowIdInput)).toEqualTypeOf<string>();
+    const compactionRowIdWithExtraField = {
+      ...compactionRowIdInput,
+      localRowKey: "application-owned",
+    };
+    // @ts-expect-error compaction row identity accepts exactly the canonical Kafka coordinates.
+    kafka.compactionRowId(compactionRowIdWithExtraField);
+    const compactionRowIdWithAnyPartition = {
+      ...compactionRowIdInput,
+      partition: unsafeAny,
+    };
+    // @ts-expect-error compaction row identity fields cannot be any.
+    kafka.compactionRowId(compactionRowIdWithAnyPartition);
+
+    const deleteRowIdInput = {
+      region: "eu",
+      partition: 0,
+      localRowKey: "order-1",
+    };
+    expectTypeOf(kafka.deleteRowId(deleteRowIdInput)).toEqualTypeOf<string>();
+    const deleteRowIdWithExtraField = {
+      ...deleteRowIdInput,
+      serializedKeyBytes: new Uint8Array([1]),
+    };
+    // @ts-expect-error delete row identity accepts exactly its documented decoded inputs.
+    kafka.deleteRowId(deleteRowIdWithExtraField);
+    const deleteRowIdWithAnyKey = {
+      ...deleteRowIdInput,
+      localRowKey: unsafeAny,
+    };
+    // @ts-expect-error delete row identity fields cannot be any.
+    kafka.deleteRowId(deleteRowIdWithAnyKey);
+
+    const canonicalRowIdInput = {
+      cleanupPolicy: "compact" as const,
+      ...compactionRowIdInput,
+    };
+    expectTypeOf(kafka.rowId(canonicalRowIdInput)).toEqualTypeOf<string>();
+    const canonicalRowIdWithExtraField = {
+      ...canonicalRowIdInput,
+      localRowKey: "application-owned",
+    };
+    // @ts-expect-error canonical row identity rejects policy-incompatible surplus fields.
+    kafka.rowId(canonicalRowIdWithExtraField);
+    const canonicalRowIdWithAnyCleanup = {
+      ...canonicalRowIdInput,
+      cleanupPolicy: unsafeAny,
+    };
+    // @ts-expect-error canonical row identity cleanupPolicy cannot be any.
+    kafka.rowId(canonicalRowIdWithAnyCleanup);
 
     const compactionWithOrdinaryKey = {
       cleanupPolicy: "compact" as const,

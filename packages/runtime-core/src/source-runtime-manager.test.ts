@@ -9,6 +9,7 @@ import { makeSourceApplicationTransition } from "@effect-view-server/source-adap
 import { SourceAdapterServer } from "@effect-view-server/source-adapter/server";
 import {
   SourceFixture,
+  type ControllableSourceFixture,
   type SourceFixtureFailure,
   type SourceFixtureTarget,
 } from "@effect-view-server/source-adapter-testing";
@@ -794,32 +795,14 @@ describe("Runtime Core Source manager lifecycle", () => {
     () =>
       Effect.gen(function* () {
         const applicationDefect = new Error("application defect");
-        const cases = [
-          {
-            mode: "success",
-            application: Effect.void,
-            expectedExit: Exit.void,
-          },
-          {
-            mode: "typed-failure",
-            application: Effect.fail(mutationFailure()),
-            expectedExit: Exit.fail({
-              _tag: "InvalidSourceDelivery" as const,
-              message: "Injected Source mutation failure.",
-            }),
-          },
-          {
-            mode: "defect",
-            application: Effect.die(applicationDefect),
-            expectedExit: Exit.die(applicationDefect),
-          },
-          {
-            mode: "rejection",
-            application: Effect.void,
-            expectedExit: Exit.void,
-          },
-        ] as const;
-        for (const { application, expectedExit, mode } of cases) {
+        const observe = Effect.fn("RuntimeCoreSourceManager.test.throwingSettlement")(function* (
+          label: string,
+          application: Effect.Effect<void, ViewServerRuntimeError>,
+          deliver: (
+            controls: ControllableSourceFixture["controls"],
+            settle: (exit: SourceApplicationExit) => never,
+          ) => Effect.Effect<void, SourceFixtureFailure>,
+        ) {
           const fixture = yield* SourceFixture.make(Row);
           const scheduleInputs: Array<SourceTermination<SourceFixtureFailure>> = [];
           const retry = Schedule.spaced("1 second").pipe(
@@ -835,7 +818,7 @@ describe("Runtime Core Source manager lifecycle", () => {
             topics: {
               rows: {
                 schema: Row,
-                source: fixture.materializedSource({ label: `callback-throw-${mode}` }, retry),
+                source: fixture.materializedSource({ label }, retry),
               },
             },
           });
@@ -866,22 +849,9 @@ describe("Runtime Core Source manager lifecycle", () => {
           const settle = (exit: SourceApplicationExit) => {
             callbackCount += 1;
             observedExit = exit;
-            throw new Error(`raw settlement throw ${mode}`);
+            throw new Error(`raw settlement throw ${label}`);
           };
-          if (mode === "rejection") {
-            yield* fixture.controls.reject(
-              { _tag: "Materialized" },
-              SourceFixture.failure("rejected item", "stream"),
-              { lane: "fixture", offset: 1n },
-              settle,
-            );
-          } else {
-            yield* fixture.controls.upsert(
-              { _tag: "Materialized" },
-              { id: `callback-throw-${mode}`, region: "eu", value: mode },
-              settle,
-            );
-          }
+          yield* deliver(fixture.controls, settle);
 
           const waiting = Option.getOrThrow(
             yield* diagnostics.events.pipe(
@@ -965,7 +935,6 @@ describe("Runtime Core Source manager lifecycle", () => {
                 onSome: Exit.fail,
               }),
           });
-          expect(capturedSemanticExit).toStrictEqual(expectedExit);
 
           const stillAvailable = yield* manager.subscribeSourceHealth({ topic: "rows" });
           expect(
@@ -975,7 +944,60 @@ describe("Runtime Core Source manager lifecycle", () => {
           yield* stillAvailable.close();
           yield* diagnostics.close();
           yield* manager.close;
-        }
+          return capturedSemanticExit;
+        });
+
+        const succeeded = yield* observe(
+          "callback-throw-success",
+          Effect.void,
+          (controls, settle) =>
+            controls.upsert(
+              { _tag: "Materialized" },
+              { id: "callback-throw-success", region: "eu", value: "success" },
+              settle,
+            ),
+        );
+        const failed = yield* observe(
+          "callback-throw-typed-failure",
+          Effect.fail(mutationFailure()),
+          (controls, settle) =>
+            controls.upsert(
+              { _tag: "Materialized" },
+              { id: "callback-throw-typed-failure", region: "eu", value: "typed-failure" },
+              settle,
+            ),
+        );
+        const defected = yield* observe(
+          "callback-throw-defect",
+          Effect.die(applicationDefect),
+          (controls, settle) =>
+            controls.upsert(
+              { _tag: "Materialized" },
+              { id: "callback-throw-defect", region: "eu", value: "defect" },
+              settle,
+            ),
+        );
+        const rejected = yield* observe(
+          "callback-throw-rejection",
+          Effect.void,
+          (controls, settle) =>
+            controls.reject(
+              { _tag: "Materialized" },
+              SourceFixture.failure("rejected item", "stream"),
+              { lane: "fixture", offset: 1n },
+              settle,
+            ),
+        );
+
+        expect(succeeded).toStrictEqual(Exit.void);
+        expect(failed).toStrictEqual(
+          Exit.fail({
+            _tag: "InvalidSourceDelivery",
+            message: "Injected Source mutation failure.",
+          }),
+        );
+        expect(defected).toStrictEqual(Exit.die(applicationDefect));
+        expect(rejected).toStrictEqual(Exit.void);
       }),
   );
 
@@ -1068,8 +1090,9 @@ describe("Runtime Core Source manager lifecycle", () => {
         },
       });
       const applicationStarted = yield* Deferred.make<void>();
+      const settlementObserved = yield* Deferred.make<SourceApplicationExit>();
+      const context = yield* Effect.context<never>();
       let settlementCount = 0;
-      let settledExit: SourceApplicationExit | undefined;
       const mutations: ViewServerRuntimeCoreInternalMutations<typeof config.topics> = {
         publish: () => Effect.void,
         publishMany: () => Effect.void,
@@ -1092,28 +1115,19 @@ describe("Runtime Core Source manager lifecycle", () => {
         { id: "interrupted", region: "eu", value: "value" },
         (exit) => {
           settlementCount += 1;
-          settledExit = exit;
+          Effect.runSyncWith(context)(Deferred.succeed(settlementObserved, exit));
           return Effect.never;
         },
       );
       yield* Deferred.await(applicationStarted);
       const closeFiber = yield* manager.close.pipe(Effect.forkDetach({ startImmediately: true }));
-      const awaitSettlement = (): Effect.Effect<void> =>
-        Effect.suspend(() =>
-          settlementCount === 1
-            ? Effect.void
-            : Effect.yieldNow.pipe(Effect.andThen(awaitSettlement())),
-        );
-      yield* awaitSettlement();
+      const settledExit = yield* Deferred.await(settlementObserved);
       expect(settlementCount).toBe(1);
       yield* Fiber.join(closeFiber);
 
       expect(settlementCount).toBe(1);
-      expect(
-        settledExit !== undefined &&
-          Exit.isFailure(settledExit) &&
-          Cause.hasInterruptsOnly(settledExit.cause),
-      ).toBe(true);
+      const failedExit = Option.getOrThrow(Option.liftPredicate(settledExit, Exit.isFailure));
+      expect(Cause.hasInterruptsOnly(failedExit.cause)).toBe(true);
     }),
   );
 

@@ -1538,6 +1538,14 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
         Effect.gen(function* () {
           const internal = resolveSourceMaintenanceOperation(operation);
           if (internal === undefined) {
+            yield* input.onFatal(
+              Cause.fail(
+                runtimeError(
+                  input.entry.topic,
+                  "Source Maintenance Operation was not issued by the Source Adapter SDK.",
+                ),
+              ),
+            );
             return {
               _tag: "Inactive",
             } satisfies import("@effect-view-server/source-adapter").SourceMaintenanceResult;
@@ -2273,6 +2281,13 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
               maintenanceActive = false;
               previousTermination = termination;
               lastTerminationAtNanos = yield* currentEpochNanos;
+            }),
+          ),
+        ),
+        Effect.ensuring(
+          lifecycleGate.withPermit(
+            Effect.sync(() => {
+              maintenanceActive = false;
             }),
           ),
         ),

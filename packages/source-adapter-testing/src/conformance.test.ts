@@ -30,21 +30,26 @@ import {
 function toolkitDelivery(
   mutations: Chunk.NonEmptyChunk<SourceMutation<SourceAdapterConformanceRow>>,
   settlement?: SourceSettlement<SourceFixtureFailure>,
-): Effect.Effect<SourceDelivery<SourceAdapterConformanceRow, SourceFixtureFailure>>;
+): Effect.Effect<SourceDelivery<SourceAdapterConformanceRow, SourceFixtureFailure, never, "rows">>;
 function toolkitDelivery(
   mutation: SourceMutation<SourceAdapterConformanceRow>,
   settlement: SourceSettlement<SourceFixtureFailure> | undefined,
   transition: SourceApplicationTransition<"rows">,
-): Effect.Effect<SourceDelivery<SourceAdapterConformanceRow, SourceFixtureFailure>>;
+): Effect.Effect<SourceDelivery<SourceAdapterConformanceRow, SourceFixtureFailure, never, "rows">>;
 function toolkitDelivery(
   mutationsOrMutation:
     | Chunk.NonEmptyChunk<SourceMutation<SourceAdapterConformanceRow>>
     | SourceMutation<SourceAdapterConformanceRow>,
   settlement?: SourceSettlement<SourceFixtureFailure>,
   transition?: SourceApplicationTransition<"rows">,
-): Effect.Effect<SourceDelivery<SourceAdapterConformanceRow, SourceFixtureFailure>> {
+): Effect.Effect<SourceDelivery<SourceAdapterConformanceRow, SourceFixtureFailure, never, "rows">> {
   return transition === undefined && Chunk.isChunk(mutationsOrMutation)
-    ? Effect.succeed(makeSourceDelivery(mutationsOrMutation, settlement))
+    ? Effect.succeed(
+        makeSourceDelivery<SourceAdapterConformanceRow, SourceFixtureFailure, never, "rows">(
+          mutationsOrMutation,
+          settlement,
+        ),
+      )
     : transition !== undefined && !Chunk.isChunk(mutationsOrMutation)
       ? Effect.succeed(makeSourceTransitionDelivery(mutationsOrMutation, settlement, transition))
       : Effect.die(new TypeError("Invalid fixture delivery shape."));

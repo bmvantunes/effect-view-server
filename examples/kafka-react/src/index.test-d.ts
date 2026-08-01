@@ -69,6 +69,8 @@ describe("kafka example type contracts", () => {
       }),
       startFrom: "latest" as const,
     };
+    const validSource = kafka.source(validSourceOptions);
+    expectTypeOf(validSource).not.toBeAny();
     const numericTopicSource = {
       ...validSourceOptions,
       topic: 42,

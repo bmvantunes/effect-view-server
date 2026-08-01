@@ -203,6 +203,19 @@ while operationally Ready or Degraded, applies an ordinary Delete, and commits
 the closed success/failure/stale outcome under the same Source Lifecycle Gate.
 Adapters never receive the Runtime Client or expose their private due index.
 
+`applicationState.acquireTransition` runs inside the SDK's uninterruptible
+ownership-transfer region. An Adapter with a blocking keyed-permit wait must use
+its own `Effect.uninterruptibleMask`, make only that wait explicitly
+`Effect.interruptible`, then return its idempotent release callback without
+another suspension. A nested mask's `restore` is insufficient because it
+restores the SDK's already-masked state. The SDK keeps acquisition return,
+closed-attempt arbitration, and insertion into its single Source Attempt
+live-release registry masked. Returning an ordinary blocking acquisition Effect
+is non-conformant because the SDK mask would prevent prompt attempt shutdown;
+making the whole acquisition interruptible is also non-conformant because
+interruption could land after the permit is acquired but before the SDK owns its
+release.
+
 Maintenance failure is not Source Supervision. Exact failed work remains
 retryable and is reflected immediately as a transport-neutral maintenance
 degradation reason at Source, Topic, and aggregate health. Reducer defects,

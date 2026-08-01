@@ -132,7 +132,7 @@ const DiagnosticKafkaRetentionMetrics = Schema.Struct({
     durationNanos: Schema.Literal(5_000_000_000n),
   }),
   trackedRows: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
-  dueBacklog: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  lastSweepRetryableFailures: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   expiredRows: DiagnosticNonNegativeBigInt,
   authoritativeExpiredDeletes: DiagnosticNonNegativeBigInt,
   failedWorkBacklog: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),

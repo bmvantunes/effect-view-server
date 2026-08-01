@@ -30,6 +30,7 @@ import {
   makeSourceTransitionDelivery,
   makeSourceUpsert,
   markSourceToolkit,
+  resolveSourceApplicationStateRegistration,
   resolveSourceApplicationTransition,
   resolveSourceMaintenanceOperation,
 } from "./internal";
@@ -169,7 +170,18 @@ describe("Source Adapter portable model", () => {
         return Reflect.get(target, property, receiver);
       },
     });
+    const missingCapability = validInput();
+    Reflect.deleteProperty(missingCapability, "bind");
+    const surplusCapability = {
+      ...validInput(),
+      select: () => undefined,
+    };
+    const asyncGeneratorBind = async function* () {
+      yield undefined;
+    };
     const invalidInputs = [
+      missingCapability,
+      surplusCapability,
       {
         ...validInput(),
         bind: undefined,
@@ -177,6 +189,10 @@ describe("Source Adapter portable model", () => {
       {
         ...validInput(),
         bind: hostileBind,
+      },
+      {
+        ...validInput(),
+        bind: asyncGeneratorBind,
       },
       {
         ...validInput(),
@@ -211,6 +227,40 @@ describe("Source Adapter portable model", () => {
         "Source Application State registration requires exact synchronous lifecycle capabilities.",
       );
     }
+  });
+
+  it("snapshots nominal Application State lifecycle capabilities", () => {
+    let originalBindings = 0;
+    let replacementBindings = 0;
+    const input = {
+      bind: () => {
+        originalBindings += 1;
+      },
+      forLifetime: () => "original",
+      lifetimeIdentity: () => Object.freeze({}),
+      unbind: () => undefined,
+      sweepIntervalNanos: 1n,
+      runDueSweep: () => Effect.void,
+    };
+    const registration = makeSourceApplicationStateRegistration(input);
+    Reflect.set(input, "bind", () => {
+      replacementBindings += 1;
+    });
+    Reflect.set(input, "forLifetime", () => "replacement");
+    const internal = Option.getOrThrow(
+      Option.fromUndefinedOr(resolveSourceApplicationStateRegistration(registration)),
+    );
+    Reflect.apply(internal.bind, undefined, [{}]);
+
+    expect({
+      forLifetime: Reflect.apply(registration.forLifetime, undefined, [undefined, "orders"]),
+      originalBindings,
+      replacementBindings,
+    }).toStrictEqual({
+      forLifetime: "original",
+      originalBindings: 1,
+      replacementBindings: 0,
+    });
   });
 
   it("creates frozen row-bound definition-option family tokens", () => {

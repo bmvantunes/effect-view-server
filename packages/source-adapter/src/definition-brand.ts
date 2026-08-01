@@ -6,7 +6,7 @@ import type {
   SourceLifecycle,
   SourceLifecycleDeclaration,
 } from "./model";
-import { isSourceAdapterHandle } from "./adapter-brand";
+import { hasSourceModelSelfBrand, isSourceAdapterHandle } from "./adapter-brand";
 
 type SourceLifecycleDeclarationAny = SourceLifecycleDeclaration<
   unknown,
@@ -29,15 +29,6 @@ export const registerSourceDefinition = <Definition extends object>(
 ): Definition => {
   sourceDefinitions.add(definition);
   return definition;
-};
-
-const hasSourceModelSelfBrand = (value: object, key: symbol): boolean => {
-  const inspected = Result.try(() => Reflect.get(value, key));
-  if (Result.isFailure(inspected) || typeof inspected.success !== "function") {
-    return false;
-  }
-  const branded = Result.try(() => Reflect.apply(inspected.success, undefined, []));
-  return Result.isSuccess(branded) && branded.success === value;
 };
 
 const hasExactDefinitionDataKeys = (

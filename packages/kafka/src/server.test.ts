@@ -107,7 +107,10 @@ type FakeRegion = {
   readonly awaitAcquisitions: (count: number) => Effect.Effect<void>;
 };
 
-const awaitCondition = (predicate: () => boolean): Effect.Effect<void> =>
+const awaitCondition = (
+  predicate: () => boolean,
+  diagnostic = "unspecified",
+): Effect.Effect<void> =>
   Effect.gen(function* () {
     for (let attempt = 0; attempt < 100_000; attempt += 1) {
       if (predicate()) {
@@ -115,7 +118,9 @@ const awaitCondition = (predicate: () => boolean): Effect.Effect<void> =>
       }
       yield* Effect.yieldNow;
     }
-    return yield* Effect.die(new Error("Kafka server test condition was not satisfied."));
+    return yield* Effect.die(
+      new Error(`Kafka server test condition was not satisfied: ${diagnostic}.`),
+    );
   });
 
 const awaitEffectCondition = <Error>(
@@ -255,7 +260,11 @@ const makeFakeRegion = (
         acquisitions: acquisitions.length,
         finalizations,
       }),
-      awaitAcquisitions: (count) => awaitCondition(() => acquisitions.length >= count),
+      awaitAcquisitions: (count) =>
+        awaitCondition(
+          () => acquisitions.length >= count,
+          `${region} acquisition ${count}; observed ${acquisitions.length}`,
+        ),
     };
   });
 
@@ -281,7 +290,7 @@ const foreverRetentionMetrics = () => ({
   configuredRetention: { _tag: "Forever" as const },
   resolvedRetention: { _tag: "Forever" as const },
   trackedRows: 0,
-  dueBacklog: 0,
+  lastSweepRetryableFailures: 0,
   expiredRows: 0n,
   authoritativeExpiredDeletes: 0n,
   failedWorkBacklog: 0,
@@ -306,7 +315,7 @@ const retentionMetricsFixture = (
     durationNanos: 5_000_000_000n,
   },
   trackedRows: 0,
-  dueBacklog: 0,
+  lastSweepRetryableFailures: 0,
   expiredRows: 0n,
   authoritativeExpiredDeletes: 0n,
   failedWorkBacklog: 0,
@@ -638,11 +647,54 @@ describe("Kafka Source Adapter Server", () => {
       ).toThrow(
         "Kafka broker contract for Topic orders Region eu does not match its Source Definition.",
       );
+      const multiRegion = kafka.source({
+        cleanupPolicy: "delete",
+        retentionPolicy: "match-kafka-retention",
+        topic: "source-orders",
+        regions: ["eu", "us"],
+        key: kafka.string(),
+        value: kafka.string(),
+        localRowKey: ({ key }) => key,
+        map: ({ value }) => ({ value }),
+        startFrom: "earliest",
+      }).options;
+      expect(() =>
+        kafkaServerInternals.resolveKafkaContracts(
+          "orders",
+          multiRegion,
+          new Map([
+            [
+              kafkaBrokerContractKey("orders", "eu"),
+              {
+                ...finiteContract,
+                sourceTopic: "other-source-orders",
+              },
+            ],
+          ]),
+        ),
+      ).toThrow(
+        "Kafka broker contract for Topic orders Region eu does not match its Source Definition. Kafka broker contract for Topic orders Region us is unavailable.",
+      );
       expect(kafkaServerInternals.isKafkaRuntimeDefinition(forever)).toBe(true);
       expect(kafkaServerInternals.isKafkaRuntimeDefinition(null)).toBe(false);
       expect(kafkaServerInternals.isKafkaRuntimeDefinition({ cleanupPolicy: "delete" })).toBe(
         false,
       );
+      expect(
+        [
+          { ...forever, topic: "" },
+          { ...forever, regions: [] },
+          { ...forever, retentionPolicy: null },
+          { ...forever, retentionPolicy: { _tag: "Unknown" } },
+          { ...forever, retentionPolicy: { _tag: "Finite", durationNanos: 0n } },
+          Object.defineProperty({ ...forever }, "retentionPolicy", {
+            enumerable: true,
+            get: () => {
+              throw new Error("hostile retention policy");
+            },
+          }),
+        ].map(kafkaServerInternals.isKafkaRuntimeDefinition),
+      ).toStrictEqual([false, false, false, false, false, false]);
       const duplicateContract = finiteBrokerContract();
       expect(() =>
         makeKafkaServerLayer({
@@ -705,7 +757,7 @@ describe("Kafka Source Adapter Server", () => {
   );
 
   it.effect(
-    "releases keyed leases on interruption, duplicate release, and attempt finalization",
+    "releases keyed leases on interruption, duplicate release, and ownership transfer",
     () =>
       Effect.gen(function* () {
         const registry = kafkaServerInternals.makeKafkaKeyLeaseRegistry();
@@ -846,71 +898,6 @@ describe("Kafka Source Adapter Server", () => {
         });
         const afterTransferInterruption = yield* transferRegistry.acquire("transfer-interruption");
         yield* afterTransferInterruption.release;
-
-        yield* Effect.scoped(
-          Effect.gen(function* () {
-            const attempt = yield* kafkaServerInternals.makeKafkaAttemptLeaseRegistry(registry);
-            yield* attempt.acquire("scoped");
-          }),
-        );
-        const afterFinalizer = yield* registry.acquire("scoped");
-        yield* afterFinalizer.release;
-
-        const ownerSelected = yield* Deferred.make<void>();
-        const releaseOwner = yield* Deferred.make<void>();
-        const attemptOwner = kafkaServerInternals.makeKafkaAttemptLeaseRegistryOwner(
-          registry,
-          Deferred.succeed(ownerSelected, undefined).pipe(
-            Effect.andThen(Deferred.await(releaseOwner)),
-          ),
-        );
-        const sharedAttemptScope = yield* Scope.make();
-        const firstRegistryFiber = yield* attemptOwner
-          .forScope(sharedAttemptScope)
-          .pipe(Effect.forkChild({ startImmediately: true }));
-        yield* Deferred.await(ownerSelected);
-        const secondRegistryFiber = yield* attemptOwner
-          .forScope(sharedAttemptScope)
-          .pipe(Effect.forkChild({ startImmediately: true }));
-        yield* Effect.yieldNow;
-        expect(secondRegistryFiber.pollUnsafe()).toBeUndefined();
-        yield* Deferred.succeed(releaseOwner, undefined);
-        const firstRegistry = yield* Fiber.join(firstRegistryFiber);
-        const secondRegistry = yield* Fiber.join(secondRegistryFiber);
-        expect(secondRegistry).toBe(firstRegistry);
-        yield* firstRegistry.acquire("shared-attempt");
-        expect(registry.users("shared-attempt")).toBe(1);
-        yield* Scope.close(sharedAttemptScope, Exit.void);
-        expect(registry.users("shared-attempt")).toBe(0);
-
-        const blockedAttemptScope = yield* Scope.make();
-        const blockedAttempt = yield* attemptOwner.forScope(blockedAttemptScope);
-        yield* blockedAttempt.acquire("blocked-attempt");
-        const downstreamEffects: Array<string> = [];
-        const blockedAttemptWaiter = yield* blockedAttempt.acquire("blocked-attempt").pipe(
-          Effect.tap(() =>
-            Effect.sync(() => {
-              downstreamEffects.push("acquired");
-            }),
-          ),
-          Effect.forkIn(blockedAttemptScope, { startImmediately: true }),
-        );
-        yield* Effect.yieldNow;
-        expect(blockedAttemptWaiter.pollUnsafe()).toBeUndefined();
-        yield* Scope.close(blockedAttemptScope, Exit.void);
-        const blockedAttemptExit = yield* Fiber.await(blockedAttemptWaiter);
-        expect({
-          interrupted:
-            Exit.isFailure(blockedAttemptExit) && Cause.hasInterruptsOnly(blockedAttemptExit.cause),
-          downstreamEffects,
-          users: registry.users("blocked-attempt"),
-        }).toStrictEqual({
-          interrupted: true,
-          downstreamEffects: [],
-          users: 0,
-        });
-        const afterBlockedAttempt = yield* registry.acquire("blocked-attempt");
-        yield* afterBlockedAttempt.release;
 
         let failureReleaseCount = 0;
         const failedDelivery = yield* kafkaServerInternals
@@ -1406,7 +1393,7 @@ describe("Kafka Source Adapter Server", () => {
       }).toStrictEqual({
         deleted: [],
         firstGeneration: 1n,
-        outcome: { dueByRegion: new Map() },
+        outcome: { retryableFailuresByRegion: new Map() },
         retainedDeadline: {
           id: "row",
           region: "eu",
@@ -1502,7 +1489,7 @@ describe("Kafka Source Adapter Server", () => {
       _tag: "SweepCompleted",
       completedAtNanos: 10n,
       durationNanos: 2n,
-      dueByRegion: new Map([["eu", 1]]),
+      retryableFailuresByRegion: new Map([["eu", 1]]),
     });
     const afterDelete = kafkaServerInternals.reduceKafkaRetentionState(afterSweep, {
       _tag: "AppliedDelete",
@@ -1594,7 +1581,7 @@ describe("Kafka Source Adapter Server", () => {
       }),
       sweep: retentionMetricsFixture({
         trackedRows: 1,
-        dueBacklog: 1,
+        lastSweepRetryableFailures: 1,
         failedWorkBacklog: 1,
         expirationRetryFailures: 1n,
         latestExpirationFailure: {
@@ -1725,7 +1712,7 @@ describe("Kafka Source Adapter Server", () => {
           _tag: "SweepCompleted",
           completedAtNanos: 10n,
           durationNanos: 3n,
-          dueByRegion: new Map([["eu", 1]]),
+          retryableFailuresByRegion: new Map([["eu", 1]]),
         });
         const before = kafkaServerInternals.retentionMetrics(state, "eu", 1_000n);
         const snapshot = state;
@@ -1773,7 +1760,7 @@ describe("Kafka Source Adapter Server", () => {
         }).toStrictEqual({
           executed: ["failed-row"],
           metrics: before,
-          outcome: { dueByRegion: new Map() },
+          outcome: { retryableFailuresByRegion: new Map() },
           retainedSnapshot: true,
         });
       }),
@@ -2165,7 +2152,7 @@ describe("Kafka Source Adapter Server", () => {
               durationNanos: 5_000_000_000n,
             },
             trackedRows: 1,
-            dueBacklog: 1,
+            lastSweepRetryableFailures: 1,
             expiredRows: 0n,
             authoritativeExpiredDeletes: 0n,
             failedWorkBacklog: 1,
@@ -2182,13 +2169,13 @@ describe("Kafka Source Adapter Server", () => {
             lastSweepDurationNanos: 0n,
             sweepIntervalNanos: 1_000_000_000n,
           },
-          failureSweep: { dueByRegion: new Map([["eu", 1]]) },
+          failureSweep: { retryableFailuresByRegion: new Map([["eu", 1]]) },
           firstGeneration: 1n,
           secondGeneration: 2n,
-          staleSweep: { dueByRegion: new Map() },
+          staleSweep: { retryableFailuresByRegion: new Map() },
           sortedIds: ["first", "a", "b", "later"],
-          sortedSweep: { dueByRegion: new Map() },
-          successSweep: { dueByRegion: new Map() },
+          sortedSweep: { retryableFailuresByRegion: new Map() },
+          successSweep: { retryableFailuresByRegion: new Map() },
           tracked: 0,
         });
       }),
@@ -2266,7 +2253,7 @@ describe("Kafka Source Adapter Server", () => {
       }).toStrictEqual({
         deadlines: 0,
         insertedFuture: true,
-        outcome: { dueByRegion: new Map() },
+        outcome: { retryableFailuresByRegion: new Map() },
       });
     }),
   );
@@ -2463,7 +2450,7 @@ describe("Kafka Source Adapter Server", () => {
               durationNanos: 5_000_000_000n,
             },
             trackedRows: 0,
-            dueBacklog: 0,
+            lastSweepRetryableFailures: 0,
             expiredRows: 1n,
             authoritativeExpiredDeletes: 0n,
             failedWorkBacklog: 0,
@@ -2557,7 +2544,7 @@ describe("Kafka Source Adapter Server", () => {
         _tag: "SweepCompleted",
         completedAtNanos: 100n,
         durationNanos: 5n,
-        dueByRegion: new Map(),
+        retryableFailuresByRegion: new Map(),
       });
       const missingCandidate = {
         id: "missing",
@@ -2643,7 +2630,7 @@ describe("Kafka Source Adapter Server", () => {
           _tag: "SweepCompleted",
           completedAtNanos: 1n,
           durationNanos: 1n,
-          dueByRegion: new Map(),
+          retryableFailuresByRegion: new Map(),
         })
         .pipe(Effect.provideService(Scope.Scope, validLifetimeScope), Effect.sandbox, Effect.flip);
       expect(Cause.pretty(invalidTransitionCause)).toContain(
@@ -2668,7 +2655,7 @@ describe("Kafka Source Adapter Server", () => {
             durationNanos: 5_000_000_000n,
           },
           trackedRows: 0,
-          dueBacklog: 0,
+          lastSweepRetryableFailures: 0,
           expiredRows: 0n,
           authoritativeExpiredDeletes: 1n,
           failedWorkBacklog: 0,
@@ -2690,7 +2677,7 @@ describe("Kafka Source Adapter Server", () => {
             durationNanos: 5_000_000_000n,
           },
           trackedRows: 0,
-          dueBacklog: 0,
+          lastSweepRetryableFailures: 0,
           expiredRows: 0n,
           authoritativeExpiredDeletes: 1n,
           failedWorkBacklog: 0,
@@ -3389,7 +3376,7 @@ describe("Kafka Source Adapter Server", () => {
                 durationNanos: 0n,
               },
               trackedRows: 0,
-              dueBacklog: 0,
+              lastSweepRetryableFailures: 0,
               expiredRows: 1n,
               authoritativeExpiredDeletes: 2n,
               failedWorkBacklog: 0,
@@ -3603,7 +3590,7 @@ describe("Kafka Source Adapter Server", () => {
             durationNanos: 5_000_000_000n,
           },
           trackedRows: 0,
-          dueBacklog: 0,
+          lastSweepRetryableFailures: 0,
           expiredRows: 2n,
           authoritativeExpiredDeletes: 1n,
           failedWorkBacklog: 0,
@@ -3653,6 +3640,9 @@ describe("Kafka Source Adapter Server", () => {
       );
       yield* eu.awaitAcquisitions(1);
       yield* us.awaitAcquisitions(1);
+      const retryDiagnostics = yield* runtime.liveClient.subscribeSourceHealth({
+        topic: "orders",
+      });
       const initialAcquisition = Option.getOrThrow(Option.fromUndefinedOr(eu.acquisitions[0]));
       const initialStart = initialAcquisition.start;
       expect(initialStart).toStrictEqual({
@@ -3670,7 +3660,13 @@ describe("Kafka Source Adapter Server", () => {
         offset: 1n,
         commitFailure: commitFailure("eu"),
       });
-      yield* awaitCondition(() => eu.counts().finalizations === 1);
+      yield* awaitCondition(() => eu.counts().finalizations === 1, "retry finalization");
+      yield* retryDiagnostics.events.pipe(
+        Stream.filter((health) => health.status._tag === "WaitingToRetry"),
+        Stream.take(1),
+        Stream.runDrain,
+      );
+      yield* TestClock.withLive(Effect.sleep("1 millis"));
       yield* TestClock.adjust("1 second");
       yield* eu.awaitAcquisitions(2);
       yield* us.awaitAcquisitions(2);
@@ -3708,7 +3704,7 @@ describe("Kafka Source Adapter Server", () => {
         value: JSON.stringify({ price: 2 }),
         offset: 2n,
       });
-      yield* awaitCondition(() => eu.commits.length === 1);
+      yield* awaitCondition(() => eu.commits.length === 1, "post-retry commit");
       const snapshot = yield* runtime.client.snapshot("orders", {
         select: ["id", "price", "region"],
       });
@@ -3720,6 +3716,7 @@ describe("Kafka Source Adapter Server", () => {
         statusCode: "Ready",
       });
 
+      yield* retryDiagnostics.close();
       yield* runtime.close;
     }),
   );
@@ -4503,6 +4500,9 @@ describe("Kafka Source Adapter Server", () => {
         ),
       );
       yield* eu.awaitAcquisitions(1);
+      const retryDiagnostics = yield* runtime.liveClient.subscribeSourceHealth({
+        topic: "orders",
+      });
       yield* eu.offer({
         key: "poison",
         value: "{",
@@ -4510,6 +4510,12 @@ describe("Kafka Source Adapter Server", () => {
         commitFailure: commitFailure("eu"),
       });
       yield* awaitCondition(() => eu.counts().finalizations === 1);
+      yield* retryDiagnostics.events.pipe(
+        Stream.filter((health) => health.status._tag === "WaitingToRetry"),
+        Stream.take(1),
+        Stream.runDrain,
+      );
+      yield* TestClock.withLive(Effect.sleep("1 millis"));
       yield* TestClock.adjust("1 second");
       yield* eu.awaitAcquisitions(2);
       expect(eu.commits).toStrictEqual([]);
@@ -4537,6 +4543,7 @@ describe("Kafka Source Adapter Server", () => {
         status: "ready",
         statusCode: "Ready",
       });
+      yield* retryDiagnostics.close();
       yield* runtime.close;
     }),
   );
@@ -4824,7 +4831,16 @@ describe("Kafka Source Adapter Server", () => {
           }),
         ),
       );
+      const retryDiagnostics = yield* runtime.liveClient.subscribeSourceHealth({
+        topic: "orders",
+      });
       yield* awaitCondition(() => eu.counts().finalizations === 1);
+      yield* retryDiagnostics.events.pipe(
+        Stream.filter((health) => health.status._tag === "WaitingToRetry"),
+        Stream.take(1),
+        Stream.runDrain,
+      );
+      yield* TestClock.withLive(Effect.sleep("1 millis"));
       yield* TestClock.adjust("1 second");
       yield* eu.awaitAcquisitions(2);
       yield* us.awaitAcquisitions(1);
@@ -4838,6 +4854,7 @@ describe("Kafka Source Adapter Server", () => {
         us: { acquisitions: 1, finalizations: 0 },
       });
 
+      yield* retryDiagnostics.close();
       yield* runtime.close;
     }),
   );
@@ -4848,14 +4865,10 @@ describe("Kafka Source Adapter Server", () => {
         const acquisitionOrder: Array<string> = [];
         const eu = yield* makeFakeRegion("eu", acquisitionOrder);
         const keyDecodeStarted = yield* Deferred.make<void>();
-        const originalKafkaRowId = kafkaContract.kafkaRowId;
         yield* Effect.acquireRelease(
           Effect.sync(() =>
-            vi.spyOn(kafkaContract, "kafkaRowId").mockImplementation((input) => {
-              if (input.cleanupPolicy === "delete" && input.localRowKey === "canonical-fail") {
-                throw new Error("canonical row ID failed");
-              }
-              return originalKafkaRowId(input);
+            vi.spyOn(kafkaContract, "kafkaRowId").mockImplementationOnce(() => {
+              throw new Error("canonical row ID failed");
             }),
           ),
           (spy) =>

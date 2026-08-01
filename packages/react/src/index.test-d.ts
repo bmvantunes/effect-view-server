@@ -438,6 +438,16 @@ describe("React type contracts", () => {
     expectTypeOf<LeasedRejection["location"]>().toEqualTypeOf<
       typeof ReactSourceRejectionLocation.Type
     >();
+    const unknownDegradationReason: MaterializedDegraded["reasons"][number] = {
+      // @ts-expect-error Source Health rejects unknown degradation-reason variants.
+      _tag: "UnknownDegradationReason",
+    };
+    const unknownRuntimeFailure: MaterializedInvalidSettlement = {
+      // @ts-expect-error Source Health rejects unknown runtime-failure variants.
+      _tag: "UnknownRuntimeFailure",
+    };
+    void unknownDegradationReason;
+    void unknownRuntimeFailure;
 
     // @ts-expect-error source-free Topics do not expose Source Health.
     react.useSourceHealth({ topic: "orders" });

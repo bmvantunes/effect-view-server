@@ -3,11 +3,13 @@ import {
   Cause,
   Chunk,
   Context,
+  Deferred,
   Effect,
   Exit,
   Fiber,
   Layer,
   Option,
+  Result,
   Schedule,
   Schema,
   Scope,
@@ -81,19 +83,19 @@ const StatefulAdapter = SourceAdapter.make({
 function toolkitDelivery(
   mutations: Chunk.NonEmptyChunk<SourceMutation<{ readonly id: string }>>,
   settlement?: SourceSettlement<typeof Failure.Type>,
-): Effect.Effect<SourceDelivery<{ readonly id: string }, typeof Failure.Type>>;
+): Effect.Effect<SourceDelivery<{ readonly id: string }, typeof Failure.Type, never, "orders">>;
 function toolkitDelivery(
   mutation: SourceMutation<{ readonly id: string }>,
   settlement: SourceSettlement<typeof Failure.Type> | undefined,
   transition: SourceApplicationTransition<"orders">,
-): Effect.Effect<SourceDelivery<{ readonly id: string }, typeof Failure.Type>>;
+): Effect.Effect<SourceDelivery<{ readonly id: string }, typeof Failure.Type, never, "orders">>;
 function toolkitDelivery(
   mutationsOrMutation:
     | Chunk.NonEmptyChunk<SourceMutation<{ readonly id: string }>>
     | SourceMutation<{ readonly id: string }>,
   settlement?: SourceSettlement<typeof Failure.Type>,
   transition?: SourceApplicationTransition<"orders">,
-): Effect.Effect<SourceDelivery<{ readonly id: string }, typeof Failure.Type>> {
+): Effect.Effect<SourceDelivery<{ readonly id: string }, typeof Failure.Type, never, "orders">> {
   return transition === undefined && Chunk.isChunk(mutationsOrMutation)
     ? Effect.succeed(makeSourceDelivery(mutationsOrMutation, settlement))
     : transition !== undefined && !Chunk.isChunk(mutationsOrMutation)
@@ -200,26 +202,16 @@ describe("Source Adapter server SDK", () => {
       const mutableCancellationIds = ["obsolete:1"];
       let activeTransitionLeases = 0;
       let releaseCount = 0;
-      const registration = SourceAdapterServer.applicationState<
-        number,
-        { readonly delta: number },
-        { readonly value: number },
-        { readonly operations: number }
-      >({
+      const registration = SourceAdapterServer.applicationState({
         sweepIntervalNanos: 1_000n,
         initialState: () => 0,
-        reduce: (state, command) => state + command.delta,
+        reduce: (state: number, command: { readonly delta: number }) => state + command.delta,
         cancelledMaintenanceWorkIds: (_state, command) =>
           command.delta === 1 ? mutableCancellationIds : [],
         acquireTransition: () =>
           Effect.sync(() => {
             activeTransitionLeases += 1;
-            let released = false;
             return () => {
-              if (released) {
-                return;
-              }
-              released = true;
               activeTransitionLeases -= 1;
               releaseCount += 1;
             };
@@ -288,6 +280,7 @@ describe("Source Adapter server SDK", () => {
         "Source Application State registration requires exact synchronous state capabilities and a positive finite sweep interval.",
       );
       const lifetimeScope = yield* Scope.make();
+      const attemptScope = yield* Scope.make();
       const registrationInternal = Option.getOrThrow(
         Option.fromUndefinedOr(resolveSourceApplicationStateRegistration(registration)),
       );
@@ -312,7 +305,7 @@ describe("Source Adapter server SDK", () => {
       expect(invokeUnknownMethod(module, stateContract, [42])).toBe(42);
       const prepared = yield* module
         .prepare({ delta: 1 })
-        .pipe(Effect.provideService(Scope.Scope, lifetimeScope));
+        .pipe(Effect.provideService(Scope.Scope, attemptScope));
       const transition = prepared.transition;
       const transitionInternal = Option.getOrThrow(
         Option.fromUndefinedOr(resolveSourceApplicationTransition(transition)),
@@ -335,11 +328,11 @@ describe("Source Adapter server SDK", () => {
       yield* settlement();
       const noChange = yield* module
         .prepare({ delta: 0 })
-        .pipe(Effect.provideService(Scope.Scope, lifetimeScope));
+        .pipe(Effect.provideService(Scope.Scope, attemptScope));
       expect(noChange.transition.topic).toBe("orders");
       const second = yield* module
         .prepare({ delta: 2 })
-        .pipe(Effect.provideService(Scope.Scope, lifetimeScope));
+        .pipe(Effect.provideService(Scope.Scope, attemptScope));
       Option.getOrThrow(
         Option.fromUndefinedOr(resolveSourceApplicationTransition(second.transition)),
       ).apply();
@@ -412,6 +405,19 @@ describe("Source Adapter server SDK", () => {
         outcome: { operations: 3 },
         internalOutcome: { operations: 3 },
       });
+      const fallbackReleased = yield* module
+        .prepare({ delta: 0 })
+        .pipe(Effect.provideService(Scope.Scope, attemptScope));
+      expect(fallbackReleased.transition.topic).toBe("orders");
+      expect(activeTransitionLeases).toBe(1);
+      yield* Scope.close(attemptScope, Exit.void);
+      expect({
+        activeTransitionLeases,
+        releaseCount,
+      }).toStrictEqual({
+        activeTransitionLeases: 0,
+        releaseCount: 4,
+      });
       registrationInternal.unbind(lifetimeScope);
       expect(() => registration.forLifetime(lifetimeScope, "orders")).toThrow(
         "Source Application State registration is not bound to this logical lifetime.",
@@ -419,11 +425,16 @@ describe("Source Adapter server SDK", () => {
       expect(() => registrationInternal.lifetimeIdentity(lifetimeScope)).toThrow(
         "Source Application State registration is not bound to this logical lifetime.",
       );
-      expect(() =>
-        registrationInternal.runDueSweep(lifetimeScope, 2_000n, () =>
-          Effect.succeed({ _tag: "Inactive" }),
+      const unboundSweep = registrationInternal.runDueSweep(lifetimeScope, 2_000n, () =>
+        Effect.succeed({ _tag: "Inactive" }),
+      );
+      const unboundCause = yield* unboundSweep.pipe(Effect.sandbox, Effect.flip);
+      expect(Result.getOrThrow(Cause.findDefect(unboundCause))).toStrictEqual(
+        new TypeError(
+          "Source Application State registration is not bound to this logical lifetime.",
         ),
-      ).toThrow("Source Application State registration is not bound to this logical lifetime.");
+      );
+      yield* Scope.close(lifetimeScope, Exit.void);
 
       const defaultLeaseRegistration = SourceAdapterServer.applicationState({
         sweepIntervalNanos: 1_000n,
@@ -433,6 +444,7 @@ describe("Source Adapter server SDK", () => {
         runDueSweep: () => Effect.void,
       });
       const defaultLeaseScope = yield* Scope.make();
+      const defaultAttemptScope = yield* Scope.make();
       Option.getOrThrow(
         Option.fromUndefinedOr(resolveSourceApplicationStateRegistration(defaultLeaseRegistration)),
       ).bind({
@@ -444,14 +456,236 @@ describe("Source Adapter server SDK", () => {
       const defaultLeaseModule = defaultLeaseRegistration.forLifetime(defaultLeaseScope, "orders");
       const defaultLeaseTransition = yield* defaultLeaseModule
         .prepare({ delta: 1 })
-        .pipe(Effect.provideService(Scope.Scope, defaultLeaseScope));
+        .pipe(Effect.provideService(Scope.Scope, defaultAttemptScope));
       Option.getOrThrow(
         Option.fromUndefinedOr(
           resolveSourceApplicationTransition(defaultLeaseTransition.transition),
         ),
       ).apply();
       yield* defaultLeaseTransition.release;
+      yield* Scope.close(defaultAttemptScope, Exit.void);
+      yield* Scope.close(defaultLeaseScope, Exit.void);
       expect(defaultLeaseModule.metrics()).toBe(1);
+    }),
+  );
+
+  it.effect("attempts every active transition release when attempt cleanup defects", () =>
+    Effect.gen(function* () {
+      const releaseAttempts: Array<number> = [];
+      const registration = SourceAdapterServer.applicationState({
+        sweepIntervalNanos: 1_000n,
+        initialState: () => 0,
+        reduce: (state: number, command: number) => state + command,
+        acquireTransition: (_state, command) =>
+          Effect.succeed(() => {
+            releaseAttempts.push(command);
+            throw new Error(`release ${command}`);
+          }),
+        metrics: (state) => state,
+        runDueSweep: () => Effect.void,
+      });
+      const lifetimeScope = yield* Scope.make();
+      const attemptScope = yield* Scope.make();
+      Option.getOrThrow(
+        Option.fromUndefinedOr(resolveSourceApplicationStateRegistration(registration)),
+      ).bind({
+        topic: "orders",
+        definition: undefined,
+        lifetimeScope,
+        target: { _tag: "Materialized" },
+      });
+      const module = registration.forLifetime(lifetimeScope, "orders");
+      yield* module.prepare(1).pipe(Effect.provideService(Scope.Scope, attemptScope));
+      yield* module.prepare(2).pipe(Effect.provideService(Scope.Scope, attemptScope));
+
+      const cause = yield* Scope.close(attemptScope, Exit.void).pipe(Effect.sandbox, Effect.flip);
+
+      expect(releaseAttempts).toStrictEqual([1, 2]);
+      expect(Cause.hasDies(cause)).toBe(true);
+      yield* Scope.close(lifetimeScope, Exit.void);
+    }),
+  );
+
+  it.effect("does not acquire a transition after its attempt scope has closed", () =>
+    Effect.gen(function* () {
+      let acquisitions = 0;
+      const registration = SourceAdapterServer.applicationState({
+        sweepIntervalNanos: 1_000n,
+        initialState: () => 0,
+        reduce: (state: number, command: number) => state + command,
+        acquireTransition: () => {
+          acquisitions += 1;
+          return Effect.succeed(() => undefined);
+        },
+        metrics: (state) => state,
+        runDueSweep: () => Effect.void,
+      });
+      const lifetimeScope = yield* Scope.make();
+      const attemptScope = yield* Scope.make();
+      Option.getOrThrow(
+        Option.fromUndefinedOr(resolveSourceApplicationStateRegistration(registration)),
+      ).bind({
+        topic: "orders",
+        definition: undefined,
+        lifetimeScope,
+        target: { _tag: "Materialized" },
+      });
+      const module = registration.forLifetime(lifetimeScope, "orders");
+      yield* Scope.close(attemptScope, Exit.void);
+
+      const exit = yield* Effect.exit(
+        module.prepare(1).pipe(Effect.provideService(Scope.Scope, attemptScope)),
+      );
+
+      expect(Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)).toBe(true);
+      expect(acquisitions).toBe(0);
+      yield* Scope.close(lifetimeScope, Exit.void);
+    }),
+  );
+
+  it.effect("releases a transition acquired while its attempt scope closes", () =>
+    Effect.gen(function* () {
+      const acquisitionStarted = yield* Deferred.make<void>();
+      const allowAcquisition = yield* Deferred.make<void>();
+      let releases = 0;
+      const registration = SourceAdapterServer.applicationState({
+        sweepIntervalNanos: 1_000n,
+        initialState: () => 0,
+        reduce: (state: number, command: number) => state + command,
+        acquireTransition: () =>
+          Effect.gen(function* () {
+            yield* Deferred.succeed(acquisitionStarted, undefined);
+            yield* Deferred.await(allowAcquisition);
+            return () => {
+              releases += 1;
+            };
+          }),
+        metrics: (state) => state,
+        runDueSweep: () => Effect.void,
+      });
+      const lifetimeScope = yield* Scope.make();
+      const attemptScope = yield* Scope.make();
+      Option.getOrThrow(
+        Option.fromUndefinedOr(resolveSourceApplicationStateRegistration(registration)),
+      ).bind({
+        topic: "orders",
+        definition: undefined,
+        lifetimeScope,
+        target: { _tag: "Materialized" },
+      });
+      const module = registration.forLifetime(lifetimeScope, "orders");
+      const preparing = yield* module
+        .prepare(1)
+        .pipe(Effect.provideService(Scope.Scope, attemptScope), Effect.forkChild);
+      yield* Deferred.await(acquisitionStarted);
+
+      yield* Scope.close(attemptScope, Exit.void);
+      yield* Deferred.succeed(allowAcquisition, undefined);
+      const exit = yield* Fiber.await(preparing);
+
+      expect(Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)).toBe(true);
+      expect(releases).toBe(1);
+      yield* Scope.close(lifetimeScope, Exit.void);
+    }),
+  );
+
+  it.effect("registers an acquired transition before honoring a pending interruption", () =>
+    Effect.gen(function* () {
+      const allowPermit = yield* Deferred.make<void>();
+      const permitAcquired = yield* Deferred.make<void>();
+      const allowTransfer = yield* Deferred.make<void>();
+      let releases = 0;
+      const registration = SourceAdapterServer.applicationState({
+        sweepIntervalNanos: 1_000n,
+        initialState: () => 0,
+        reduce: (state: number, command: number) => state + command,
+        acquireTransition: () =>
+          Effect.uninterruptibleMask(() =>
+            Effect.gen(function* () {
+              yield* Effect.interruptible(Deferred.await(allowPermit));
+              yield* Deferred.succeed(permitAcquired, undefined);
+              yield* Deferred.await(allowTransfer);
+              return () => {
+                releases += 1;
+              };
+            }),
+          ),
+        metrics: (state) => state,
+        runDueSweep: () => Effect.void,
+      });
+      const lifetimeScope = yield* Scope.make();
+      const attemptScope = yield* Scope.make();
+      Option.getOrThrow(
+        Option.fromUndefinedOr(resolveSourceApplicationStateRegistration(registration)),
+      ).bind({
+        topic: "orders",
+        definition: undefined,
+        lifetimeScope,
+        target: { _tag: "Materialized" },
+      });
+      const module = registration.forLifetime(lifetimeScope, "orders");
+      const preparing = yield* module
+        .prepare(1)
+        .pipe(Effect.provideService(Scope.Scope, attemptScope), Effect.forkChild);
+      yield* Deferred.succeed(allowPermit, undefined);
+      yield* Deferred.await(permitAcquired);
+
+      preparing.interruptUnsafe();
+      yield* Deferred.succeed(allowTransfer, undefined);
+      const exit = yield* Fiber.await(preparing);
+      expect(Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)).toBe(true);
+      expect(releases).toBe(0);
+
+      yield* Scope.close(attemptScope, Exit.void);
+      expect(releases).toBe(1);
+      yield* Scope.close(lifetimeScope, Exit.void);
+    }),
+  );
+
+  it.effect("allows a conforming adapter permit wait to interrupt before acquisition", () =>
+    Effect.gen(function* () {
+      const permitWaitStarted = yield* Deferred.make<void>();
+      const permitAvailable = yield* Deferred.make<void>();
+      let acquired = false;
+      const registration = SourceAdapterServer.applicationState({
+        sweepIntervalNanos: 1_000n,
+        initialState: () => 0,
+        reduce: (state: number, command: number) => state + command,
+        acquireTransition: () =>
+          Effect.uninterruptibleMask(() =>
+            Effect.gen(function* () {
+              yield* Deferred.succeed(permitWaitStarted, undefined);
+              yield* Effect.interruptible(Deferred.await(permitAvailable));
+              acquired = true;
+              return () => undefined;
+            }),
+          ),
+        metrics: (state) => state,
+        runDueSweep: () => Effect.void,
+      });
+      const lifetimeScope = yield* Scope.make();
+      const attemptScope = yield* Scope.make();
+      Option.getOrThrow(
+        Option.fromUndefinedOr(resolveSourceApplicationStateRegistration(registration)),
+      ).bind({
+        topic: "orders",
+        definition: undefined,
+        lifetimeScope,
+        target: { _tag: "Materialized" },
+      });
+      const module = registration.forLifetime(lifetimeScope, "orders");
+      const preparing = yield* module
+        .prepare(1)
+        .pipe(Effect.provideService(Scope.Scope, attemptScope), Effect.forkChild);
+      yield* Deferred.await(permitWaitStarted);
+
+      yield* Fiber.interrupt(preparing);
+      const exit = yield* Fiber.await(preparing);
+
+      expect(Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)).toBe(true);
+      expect(acquired).toBe(false);
+      yield* Scope.close(attemptScope, Exit.void);
+      yield* Scope.close(lifetimeScope, Exit.void);
     }),
   );
 
@@ -503,6 +737,9 @@ describe("Source Adapter server SDK", () => {
       },
     });
     const asyncReducer = async (state: number) => Promise.resolve(state);
+    const asyncGeneratorReducer = async function* (state: number) {
+      yield state;
+    };
     const invalidInputs = [
       missingCapability,
       surplusCapability,
@@ -529,6 +766,10 @@ describe("Source Adapter server SDK", () => {
       },
       {
         ...validInput(),
+        reduce: asyncGeneratorReducer,
+      },
+      {
+        ...validInput(),
         cancelledMaintenanceWorkIds: 1,
       },
       {
@@ -551,6 +792,56 @@ describe("Source Adapter server SDK", () => {
       );
     }
   });
+
+  it.effect("snapshots application-state capabilities at registration", () =>
+    Effect.gen(function* () {
+      let originalReductions = 0;
+      let replacementReductions = 0;
+      const input = {
+        sweepIntervalNanos: 1_000n,
+        initialState: () => 0,
+        reduce: (state: number, command: { readonly delta: number }) => {
+          originalReductions += 1;
+          return state + command.delta;
+        },
+        metrics: (state: number) => state,
+        runDueSweep: () => Effect.void,
+      };
+      const registration = SourceAdapterServer.applicationState(input);
+      Reflect.set(input, "reduce", (state: number) => {
+        replacementReductions += 1;
+        return state + 100;
+      });
+      const lifetimeScope = yield* Scope.make();
+      const registrationInternal = Option.getOrThrow(
+        Option.fromUndefinedOr(resolveSourceApplicationStateRegistration(registration)),
+      );
+      registrationInternal.bind({
+        topic: "orders",
+        definition: undefined,
+        lifetimeScope,
+        target: { _tag: "Materialized" },
+      });
+      const module = registration.forLifetime(lifetimeScope, "orders");
+      const prepared = yield* module
+        .prepare({ delta: 2 })
+        .pipe(Effect.provideService(Scope.Scope, lifetimeScope));
+      Option.getOrThrow(
+        Option.fromUndefinedOr(resolveSourceApplicationTransition(prepared.transition)),
+      ).apply();
+
+      expect({
+        metrics: module.metrics(),
+        originalReductions,
+        replacementReductions,
+      }).toStrictEqual({
+        metrics: 2,
+        originalReductions: 1,
+        replacementReductions: 0,
+      });
+      yield* Scope.close(lifetimeScope, Exit.void);
+    }),
+  );
 
   it("rejects mutable initial state and asynchronous metrics at lifetime binding", () => {
     const registrations = [

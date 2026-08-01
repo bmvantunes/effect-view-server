@@ -1,4 +1,4 @@
-import { Effect, Layer, Option, Result, Schedule, Scope, Stream } from "effect";
+import { Duration, Effect, Layer, Option, Result, Schedule, Scope, Stream } from "effect";
 import type {
   SourceApplicationExit,
   SourceExecutionFailure,
@@ -997,7 +997,15 @@ export const makeKafkaServerLayer = (
                 regions: [firstMetrics, ...remainingMetrics],
               };
             }),
-          retry: Schedule.min([Schedule.exponential("500 millis"), Schedule.spaced("30 seconds")]),
+          retry: Schedule.min([
+            Schedule.exponential("500 millis").pipe(
+              Schedule.jittered,
+              Schedule.modifyDelay(({ duration }) =>
+                Effect.succeed(Duration.millis(Math.ceil(Duration.toMillis(duration)))),
+              ),
+            ),
+            Schedule.spaced("30 seconds"),
+          ]),
         },
       });
     }),

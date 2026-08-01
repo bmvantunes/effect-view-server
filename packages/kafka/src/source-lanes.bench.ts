@@ -135,6 +135,7 @@ type BenchmarkClock = {
 
 type BenchmarkState = {
   readonly clock: BenchmarkClock;
+  readonly maintenanceSupervisorCount: number;
   readonly regions: ReadonlyMap<string, BenchmarkRegion>;
   readonly retainedRowIds: Effect.Effect<
     {
@@ -523,6 +524,7 @@ beforeAll(async () => {
       );
       state = {
         clock: benchmarkTime,
+        maintenanceSupervisorCount: Object.keys(config.topics).length,
         regions,
         retainedRowIds: Effect.gen(function* () {
           const accepted = yield* runtime.client.snapshot("accepted", {
@@ -865,14 +867,14 @@ describe("Kafka Source Adapter lanes", () => {
       retentionRevision += 1;
       await Effect.runPromise(
         Effect.gen(function* () {
-          yield* current.clock.awaitSleepers(5);
+          yield* current.clock.awaitSleepers(current.maintenanceSupervisorCount);
           yield* requireRegion(current, "single").offerBatch(
             "retained",
             "retained-source",
             validBatch("retained", retentionRevision, retentionCohortSize),
           );
           yield* current.clock.advanceEpochMillis(172_800_000);
-          yield* current.clock.awaitSleepers(5);
+          yield* current.clock.awaitSleepers(current.maintenanceSupervisorCount);
           const snapshot = yield* current.retainedRowIds;
           if (snapshot.retained.length !== 0) {
             return yield* Effect.die(

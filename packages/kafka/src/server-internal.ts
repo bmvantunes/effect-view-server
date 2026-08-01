@@ -1,4 +1,15 @@
-import { Cause, Clock, Deferred, Effect, Exit, HashMap, HashSet, Option, Scope } from "effect";
+import {
+  Cause,
+  Clock,
+  Deferred,
+  Effect,
+  Exit,
+  HashMap,
+  HashSet,
+  Option,
+  Result,
+  Scope,
+} from "effect";
 import type {
   SourceApplicationStateModule,
   SourceApplicationStateSweepInput,
@@ -100,12 +111,8 @@ export type KafkaKeyLease = {
 };
 
 export type KafkaKeyLeaseRegistry = {
-  readonly acquire: (id: string, live?: Set<KafkaKeyLease>) => Effect.Effect<KafkaKeyLease>;
-  readonly users: (id: string) => number;
-};
-
-export type KafkaAttemptLeaseRegistry = {
   readonly acquire: (id: string) => Effect.Effect<KafkaKeyLease>;
+  readonly users: (id: string) => number;
 };
 
 type KafkaKeyLeaseEntry = {
@@ -180,8 +187,8 @@ export const makeKafkaKeyLeaseRegistry = (
   afterOwnershipTransferred: () => void = () => undefined,
 ): KafkaKeyLeaseRegistry => {
   const entries = new Map<string, KafkaKeyLeaseEntry>();
-  const acquire: KafkaKeyLeaseRegistry["acquire"] = (id, live) =>
-    Effect.uninterruptibleMask((restore) =>
+  const acquire: KafkaKeyLeaseRegistry["acquire"] = (id) =>
+    Effect.uninterruptibleMask(() =>
       Effect.gen(function* () {
         const entry = entries.get(id) ?? {
           held: false,
@@ -199,7 +206,7 @@ export const makeKafkaKeyLeaseRegistry = (
             queued: false,
           };
           appendKafkaKeyLeaseWaiter(entry, waiter);
-          const awaited = yield* Effect.exit(restore(Deferred.await(waiter.deferred)));
+          const awaited = yield* Effect.exit(Effect.interruptible(Deferred.await(waiter.deferred)));
           if (Exit.isFailure(awaited)) {
             if (waiter.queued) {
               removeKafkaKeyLeaseWaiter(entry, waiter);
@@ -209,7 +216,7 @@ export const makeKafkaKeyLeaseRegistry = (
             }
             return yield* Effect.failCause(awaited.cause);
           }
-          const granted = yield* Effect.exit(restore(afterWaiterGranted));
+          const granted = yield* Effect.exit(Effect.interruptible(afterWaiterGranted));
           if (Exit.isFailure(granted)) {
             releaseKafkaKeyLeaseOwnership(entries, id, entry, afterOwnershipTransferred);
             return yield* Effect.failCause(granted.cause);
@@ -224,71 +231,18 @@ export const makeKafkaKeyLeaseRegistry = (
             return;
           }
           released = true;
-          live?.delete(lease);
           releaseKafkaKeyLeaseOwnership(entries, id, entry, afterOwnershipTransferred);
         };
         lease = {
           release: Effect.sync(releaseNow),
           releaseNow,
         };
-        live?.add(lease);
         return lease;
       }),
     );
   return {
     acquire,
     users: (id) => entries.get(id)?.users ?? 0,
-  };
-};
-
-export type KafkaAttemptLeaseRegistryOwner = {
-  readonly forScope: (scope: Scope.Scope) => Effect.Effect<KafkaAttemptLeaseRegistry>;
-};
-
-const makeKafkaAttemptLeaseRegistryForScope = Effect.fn(
-  "KafkaSourceAdapter.keyedLease.attemptRegistry.forScope",
-)(function* (registry: KafkaKeyLeaseRegistry, scope: Scope.Scope) {
-  const live = new Set<KafkaKeyLease>();
-  yield* Scope.addFinalizer(
-    scope,
-    Effect.forEach(live, (lease) => lease.release, {
-      concurrency: "unbounded",
-      discard: true,
-    }),
-  );
-  return {
-    acquire: (id: string) => registry.acquire(id, live),
-  } satisfies KafkaAttemptLeaseRegistry;
-});
-
-export const makeKafkaAttemptLeaseRegistry = Effect.fn(
-  "KafkaSourceAdapter.keyedLease.attemptRegistry",
-)(function* (registry: KafkaKeyLeaseRegistry) {
-  const scope = yield* Effect.scope;
-  return yield* makeKafkaAttemptLeaseRegistryForScope(registry, scope);
-});
-
-export const makeKafkaAttemptLeaseRegistryOwner = (
-  registry: KafkaKeyLeaseRegistry,
-  afterOwnerSelected: Effect.Effect<void> = Effect.void,
-): KafkaAttemptLeaseRegistryOwner => {
-  const slots = new WeakMap<Scope.Scope, Deferred.Deferred<KafkaAttemptLeaseRegistry>>();
-  return {
-    forScope: (scope) =>
-      Effect.uninterruptibleMask((restore) =>
-        Effect.gen(function* () {
-          const existing = slots.get(scope);
-          if (existing !== undefined) {
-            return yield* restore(Deferred.await(existing));
-          }
-          const slot = Deferred.makeUnsafe<KafkaAttemptLeaseRegistry>();
-          slots.set(scope, slot);
-          yield* afterOwnerSelected;
-          const attemptRegistry = yield* makeKafkaAttemptLeaseRegistryForScope(registry, scope);
-          Deferred.doneUnsafe(slot, Effect.succeed(attemptRegistry));
-          return attemptRegistry;
-        }),
-      ),
   };
 };
 
@@ -374,7 +328,7 @@ type KafkaRetentionRegionState = {
   readonly latestExpirationFailure: KafkaExpirationFailure | null;
   readonly lastSweepAtNanos: bigint | null;
   readonly lastSweepDurationNanos: bigint | null;
-  readonly dueBacklog: number;
+  readonly lastSweepRetryableFailures: number;
 };
 
 export type KafkaRetentionState = {
@@ -387,7 +341,6 @@ export type KafkaRetentionState = {
 
 type KafkaRetentionRuntime = {
   readonly keyLeases: KafkaKeyLeaseRegistry;
-  readonly attemptLeases: KafkaAttemptLeaseRegistryOwner;
   nextGeneration: bigint;
 };
 
@@ -439,7 +392,7 @@ export type KafkaRetentionCommand =
       readonly _tag: "SweepCompleted";
       readonly completedAtNanos: bigint;
       readonly durationNanos: bigint;
-      readonly dueByRegion: ReadonlyMap<string, number>;
+      readonly retryableFailuresByRegion: ReadonlyMap<string, number>;
     };
 
 export const retentionWorkId = (deadline: KafkaRetentionDeadline): string =>
@@ -553,7 +506,7 @@ export const reduceKafkaRetentionState = (
           ...regionState,
           lastSweepAtNanos: command.completedAtNanos,
           lastSweepDurationNanos: command.durationNanos,
-          dueBacklog: command.dueByRegion.get(region) ?? 0,
+          lastSweepRetryableFailures: command.retryableFailuresByRegion.get(region) ?? 0,
         }),
       );
     }
@@ -597,7 +550,7 @@ export const retentionMetrics = (
     configuredRetention: regionState.contract.retentionPolicy,
     resolvedRetention: regionState.contract.resolvedRetention,
     trackedRows: regionState.trackedRows,
-    dueBacklog: regionState.dueBacklog,
+    lastSweepRetryableFailures: regionState.lastSweepRetryableFailures,
     expiredRows: regionState.expiredRows,
     authoritativeExpiredDeletes: regionState.authoritativeExpiredDeletes,
     failedWorkBacklog: regionState.failedWork.size,
@@ -610,16 +563,46 @@ export const retentionMetrics = (
 };
 
 export type KafkaSweepOutcome = {
-  readonly dueByRegion: ReadonlyMap<string, number>;
+  readonly retryableFailuresByRegion: ReadonlyMap<string, number>;
 };
 
 export const isKafkaRuntimeDefinition = (value: unknown): value is KafkaRuntimeDefinition =>
-  typeof value === "object" &&
-  value !== null &&
-  (Reflect.get(value, "cleanupPolicy") === "delete" ||
-    Reflect.get(value, "cleanupPolicy") === "compact" ||
-    Reflect.get(value, "cleanupPolicy") === "compact-and-delete") &&
-  Array.isArray(Reflect.get(value, "regions"));
+  Result.try(() => {
+    if (typeof value !== "object" || value === null) {
+      return false;
+    }
+    const cleanupPolicy = Reflect.get(value, "cleanupPolicy");
+    const topic = Reflect.get(value, "topic");
+    const regions = Reflect.get(value, "regions");
+    const retentionPolicy = Reflect.get(value, "retentionPolicy");
+    if (
+      (cleanupPolicy !== "delete" &&
+        cleanupPolicy !== "compact" &&
+        cleanupPolicy !== "compact-and-delete") ||
+      typeof topic !== "string" ||
+      topic.length === 0 ||
+      !Array.isArray(regions) ||
+      regions.length === 0 ||
+      regions.some((region) => typeof region !== "string" || region.length === 0) ||
+      typeof retentionPolicy !== "object" ||
+      retentionPolicy === null
+    ) {
+      return false;
+    }
+    const retentionTag = Reflect.get(retentionPolicy, "_tag");
+    return (
+      retentionTag === "MatchKafkaRetention" ||
+      retentionTag === "Forever" ||
+      (retentionTag === "Finite" &&
+        typeof Reflect.get(retentionPolicy, "durationNanos") === "bigint" &&
+        Reflect.get(retentionPolicy, "durationNanos") > 0n)
+    );
+  }).pipe(
+    Result.match({
+      onFailure: () => false,
+      onSuccess: (valid) => valid,
+    }),
+  );
 
 export const makeKafkaRetentionState = (
   topic: string,
@@ -644,20 +627,16 @@ export const makeKafkaRetentionState = (
             latestExpirationFailure: null,
             lastSweepAtNanos: null,
             lastSweepDurationNanos: null,
-            dueBacklog: 0,
+            lastSweepRetryableFailures: 0,
           }),
         );
       }, new PersistentHashMap<string, KafkaRetentionRegionState>()),
       nextGeneration: 0n,
     },
-    (() => {
-      const keyLeases = makeKafkaKeyLeaseRegistry();
-      return {
-        keyLeases,
-        attemptLeases: makeKafkaAttemptLeaseRegistryOwner(keyLeases),
-        nextGeneration: 0n,
-      };
-    })(),
+    {
+      keyLeases: makeKafkaKeyLeaseRegistry(),
+      nextGeneration: 0n,
+    },
   );
 
 export const acquireKafkaRetentionKeyLease = (
@@ -698,16 +677,14 @@ export const acquireKafkaTransitionLease = Effect.fn(
       ),
     );
   }
-  const attemptScope = yield* Effect.scope;
-  const registry = yield* runtime.attemptLeases.forScope(attemptScope);
-  return yield* registry.acquire(id);
+  return yield* runtime.keyLeases.acquire(id);
 });
 
 export const runKafkaDueSweep = <Topic extends string>(
   input: SourceApplicationStateSweepInput<Topic, KafkaRetentionState, KafkaRetentionCommand>,
 ): Effect.Effect<KafkaSweepOutcome> =>
   Effect.gen(function* () {
-    const startedAtNanos = yield* Clock.currentTimeNanos;
+    const sweepStartedMonotonicNanos = yield* Clock.currentTimeNanos;
     const runtime = retentionRuntimes.get(input.state);
     if (runtime === undefined) {
       return yield* Effect.die(
@@ -716,7 +693,7 @@ export const runKafkaDueSweep = <Topic extends string>(
         ),
       );
     }
-    const dueByRegion = new Map<string, number>();
+    const retryableFailuresByRegion = new Map<string, number>();
     const remaining = input.state.deadlineIndex.values();
     return yield* Effect.gen(function* () {
       let next = remaining.next();
@@ -773,7 +750,7 @@ export const runKafkaDueSweep = <Topic extends string>(
           );
           if (result._tag === "Inactive") {
             return {
-              dueByRegion,
+              retryableFailuresByRegion,
             };
           }
           if (
@@ -781,20 +758,25 @@ export const runKafkaDueSweep = <Topic extends string>(
             Exit.isFailure(result.exit) &&
             !Cause.hasInterruptsOnly(result.exit.cause)
           ) {
-            dueByRegion.set(candidate.region, (dueByRegion.get(candidate.region) ?? 0) + 1);
+            retryableFailuresByRegion.set(
+              candidate.region,
+              (retryableFailuresByRegion.get(candidate.region) ?? 0) + 1,
+            );
           }
         }
         yield* Effect.yieldNow;
       }
-      const finishedAtNanos = yield* Clock.currentTimeNanos;
+      const sweepFinishedMonotonicNanos = yield* Clock.currentTimeNanos;
       input.update({
         _tag: "SweepCompleted",
         completedAtNanos: input.epochNowNanos,
-        durationNanos: finishedAtNanos - startedAtNanos,
-        dueByRegion,
+        // Duration is elapsed monotonic time; completedAtNanos is the distinct
+        // public epoch-wall timestamp and must never be arithmetically combined with it.
+        durationNanos: sweepFinishedMonotonicNanos - sweepStartedMonotonicNanos,
+        retryableFailuresByRegion,
       });
       return {
-        dueByRegion,
+        retryableFailuresByRegion,
       };
     });
   });
@@ -806,12 +788,7 @@ export const makeKafkaApplicationStateRegistration = (
   ) => ReadonlyArray<KafkaResolvedBrokerContract>,
   sweepIntervalNanos: bigint,
 ) =>
-  SourceAdapterServer.applicationState<
-    KafkaRetentionState,
-    KafkaRetentionCommand,
-    ReadonlyMap<string, KafkaRetentionMetrics>,
-    KafkaSweepOutcome
-  >({
+  SourceAdapterServer.applicationState({
     sweepIntervalNanos,
     initialState: (binding) => {
       if (!isKafkaRuntimeDefinition(binding.definition)) {
@@ -851,13 +828,16 @@ export const resolveKafkaContracts = (
   viewServerTopic: string,
   definition: KafkaRuntimeDefinition,
   brokerContracts: ReadonlyMap<string, KafkaResolvedBrokerContract>,
-): ReadonlyArray<KafkaResolvedBrokerContract> =>
-  definition.regions.map((region) => {
+): ReadonlyArray<KafkaResolvedBrokerContract> => {
+  const resolved: Array<KafkaResolvedBrokerContract> = [];
+  const failures: Array<string> = [];
+  for (const region of definition.regions) {
     const configured = brokerContracts.get(kafkaBrokerContractKey(viewServerTopic, region));
     if (configured === undefined) {
-      throw new KafkaSourceConfigurationError(
+      failures.push(
         `Kafka broker contract for Topic ${viewServerTopic} Region ${region} is unavailable.`,
       );
+      continue;
     }
     const declaredRetentionMatches =
       configured.retentionPolicy._tag === definition.retentionPolicy._tag &&
@@ -883,9 +863,15 @@ export const resolveKafkaContracts = (
       !declaredRetentionMatches ||
       !resolvedRetentionMatches
     ) {
-      throw new KafkaSourceConfigurationError(
+      failures.push(
         `Kafka broker contract for Topic ${viewServerTopic} Region ${region} does not match its Source Definition.`,
       );
+      continue;
     }
-    return configured;
-  });
+    resolved.push(configured);
+  }
+  if (failures.length > 0) {
+    throw new KafkaSourceConfigurationError(failures.join(" "));
+  }
+  return resolved;
+};

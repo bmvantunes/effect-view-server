@@ -580,15 +580,11 @@ const makeControllableSourceFixtureEffect = Effect.fn("SourceAdapterTesting.fixt
       | ((row: unknown) => Effect.Effect<void, SourceFixtureFailure>)
       | undefined;
     let emitNonPausable: ((row: unknown) => Effect.Effect<void, SourceFixtureFailure>) | undefined;
-    const applicationState = SourceAdapterServer.applicationState<
-      FixtureApplicationState,
-      FixtureApplicationCommand,
-      FixtureApplicationState,
-      void
-    >({
+    const applicationState = SourceAdapterServer.applicationState({
       sweepIntervalNanos: 86_400_000_000_000n,
       initialState: () => Object.freeze({ applied: 0n }),
-      reduce: () => {
+      reduce: (_state: FixtureApplicationState, _command: FixtureApplicationCommand) => {
+        // This fixture issues only TransitionDefect commands through Application State.
         throw new Error("conformance transition defect");
       },
       metrics: (state) => state,

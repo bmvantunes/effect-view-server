@@ -40,7 +40,7 @@ const kafkaRegionMetrics = (region: string): KafkaMaterializedRegionMetrics => (
     configuredRetention: { _tag: "Forever" },
     resolvedRetention: { _tag: "Forever" },
     trackedRows: 0,
-    dueBacklog: 0,
+    lastSweepRetryableFailures: 0,
     expiredRows: 0n,
     authoritativeExpiredDeletes: 0n,
     failedWorkBacklog: 0,

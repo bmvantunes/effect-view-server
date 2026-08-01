@@ -935,7 +935,9 @@ describe("Source Adapter public type contracts", () => {
           readonly id: string;
           readonly value: number;
         },
-        typeof Failure.Type
+        typeof Failure.Type,
+        never,
+        "orders"
       >
     >();
 
@@ -1013,27 +1015,42 @@ describe("Source Adapter public type contracts", () => {
       metrics: (state: ApplicationState): ApplicationMetrics => ({ count: state.count }),
       runDueSweep: () => Effect.succeed({ attempted: 0 }),
     });
-    // @ts-expect-error Source Application State initialization cannot be async.
-    const _asyncInitial = SourceAdapterServer.applicationState({
+    const _asyncInitial: SourceApplicationStateRegistration<
+      ApplicationState,
+      ApplicationCommand,
+      ApplicationMetrics,
+      ApplicationSweepOutcome
+    > = SourceAdapterServer.applicationState({
       sweepIntervalNanos: 1n,
+      // @ts-expect-error Source Application State initialization cannot be async.
       initialState: async () => ({ count: 0 }),
-      reduce: (state: Promise<ApplicationState>) => state,
+      reduce: (state: ApplicationState): ApplicationState => state,
       metrics: () => ({ count: 0 }),
       runDueSweep: () => Effect.succeed({ attempted: 0 }),
     });
-    // @ts-expect-error Source Application State initialization cannot return a Promise.
-    const _promiseInitial = SourceAdapterServer.applicationState({
+    const _promiseInitial: SourceApplicationStateRegistration<
+      ApplicationState,
+      ApplicationCommand,
+      ApplicationMetrics,
+      ApplicationSweepOutcome
+    > = SourceAdapterServer.applicationState({
       sweepIntervalNanos: 1n,
+      // @ts-expect-error Source Application State initialization cannot return a Promise.
       initialState: () => Promise.resolve({ count: 0 }),
-      reduce: (state: Promise<ApplicationState>) => state,
+      reduce: (state: ApplicationState): ApplicationState => state,
       metrics: () => ({ count: 0 }),
       runDueSweep: () => Effect.succeed({ attempted: 0 }),
     });
-    // @ts-expect-error Source Application State initialization cannot return an Effect.
-    const _effectInitial = SourceAdapterServer.applicationState({
+    const _effectInitial: SourceApplicationStateRegistration<
+      ApplicationState,
+      ApplicationCommand,
+      ApplicationMetrics,
+      ApplicationSweepOutcome
+    > = SourceAdapterServer.applicationState({
       sweepIntervalNanos: 1n,
+      // @ts-expect-error Source Application State initialization cannot return an Effect.
       initialState: () => Effect.succeed({ count: 0 }),
-      reduce: (state: Effect.Effect<ApplicationState>) => state,
+      reduce: (state: ApplicationState): ApplicationState => state,
       metrics: () => ({ count: 0 }),
       runDueSweep: () => Effect.succeed({ attempted: 0 }),
     });
@@ -1157,6 +1174,20 @@ describe("Source Adapter public type contracts", () => {
       // @ts-expect-error Source Application State descriptors reject unknown capabilities.
       unknownCapability: () => undefined,
     });
+    const validApplicationStateOptions = {
+      sweepIntervalNanos: 1n,
+      initialState: (): ApplicationState => ({ count: 0 }),
+      reduce: (state: ApplicationState): ApplicationState => state,
+      metrics: (state: ApplicationState): ApplicationMetrics => ({ count: state.count }),
+      runDueSweep: (): Effect.Effect<ApplicationSweepOutcome> => Effect.succeed({ attempted: 0 }),
+    };
+    SourceAdapterServer.applicationState(validApplicationStateOptions);
+    const applicationStateOptionsWithExtra = {
+      ...validApplicationStateOptions,
+      unknownCapability: () => undefined,
+    };
+    // @ts-expect-error Source Application State descriptor variables reject unknown capabilities.
+    SourceAdapterServer.applicationState(applicationStateOptionsWithExtra);
     SourceAdapterServer.applicationState({
       sweepIntervalNanos: 1n,
       initialState: (): ApplicationState => ({ count: 0 }),
@@ -1458,7 +1489,7 @@ describe("Source Adapter public type contracts", () => {
         Effect.flatMap((mutation) => settlementToolkit.delivery(Chunk.of(mutation), settlement)),
       );
     expectTypeOf<Effect.Success<typeof delivery>>().toEqualTypeOf<
-      SourceDelivery<Row, typeof Failure.Type, AdapterDependency>
+      SourceDelivery<Row, typeof Failure.Type, AdapterDependency, "orders">
     >();
     expectTypeOf<Effect.Error<typeof delivery>>().toEqualTypeOf<
       SourceExecutionFailure<typeof Failure.Type>

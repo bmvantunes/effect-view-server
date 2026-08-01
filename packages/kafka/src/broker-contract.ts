@@ -49,11 +49,16 @@ export type KafkaBrokerContractDeclaration = {
   readonly retentionPolicy: KafkaCapturedRetentionPolicy;
 };
 
-export type KafkaBrokerConfigResource = {
-  readonly resourceName: string;
-  readonly cleanupPolicy: string;
-  readonly retentionMs: string;
-};
+export type KafkaBrokerConfigResource =
+  | {
+      readonly resourceName: string;
+      readonly cleanupPolicy: string;
+      readonly retentionMs: string;
+    }
+  | {
+      readonly resourceName: string;
+      readonly malformedConfiguration: "cleanup.policy" | "retention.ms";
+    };
 
 export type KafkaResolvedBrokerContract = KafkaBrokerContractDeclaration & {
   readonly observedCleanupPolicy: KafkaCleanupPolicy;
@@ -241,6 +246,10 @@ export const resolveKafkaBrokerContracts = (
     }
     if (resourceCount !== 1 || resource === undefined) {
       issues.push(malformedIssue(declaration, "response"));
+      continue;
+    }
+    if ("malformedConfiguration" in resource) {
+      issues.push(malformedIssue(declaration, resource.malformedConfiguration));
       continue;
     }
     const observedCleanupPolicy = normalizeKafkaCleanupPolicy(resource.cleanupPolicy);

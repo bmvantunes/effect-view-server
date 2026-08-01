@@ -232,9 +232,10 @@ the contract safely.
 Source Health stream. Kafka metrics include exact per-region assignment and
 offset state plus counts for decode, mapping, rejection, commit, reconnect,
 rebalance, and close outcomes. Retention metrics expose declared/observed
-cleanup, configured/resolved retention, tracked and due rows, expired and
-authoritative-expired Deletes, unique failed work, cumulative retry failures,
-latest safe failure, last sweep epoch/duration, and interval. Metrics are
+cleanup, configured/resolved retention, tracked rows, retryable expiration
+failures from the last completed sweep, expired and authoritative-expired
+Deletes, unique failed work, cumulative retry failures, latest safe failure,
+last sweep epoch/duration, and interval. Metrics are
 sampled at the Source Adapter SDK's bounded cadence; lifecycle, rejection, and
 maintenance-ledger transitions publish immediately.
 

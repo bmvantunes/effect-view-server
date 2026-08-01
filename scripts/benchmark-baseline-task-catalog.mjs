@@ -491,6 +491,7 @@ export const kafkaSourceAdapterTask = (rowCount, partitionCount, env = {}) => {
     artifactKind: "runtime-benchmark-summary",
     benchmarkScope: "kafka-source-adapter",
     env: {
+      VIEW_SERVER_KAFKA_RETENTION_BENCH_ROWS: String(retentionRowCount),
       VIEW_SERVER_KAFKA_SOURCE_BENCH_OUTPUT_JSON: outputJsonPath,
       VIEW_SERVER_KAFKA_SOURCE_BENCH_PARTITIONS: String(partitionCount),
       VIEW_SERVER_KAFKA_SOURCE_BENCH_ROWS: String(rowCount),

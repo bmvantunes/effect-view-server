@@ -1,4 +1,6 @@
 import { env } from "node:process";
+import { Effect } from "effect";
+import { closeRemoteTestResources } from "./resource-cleanup";
 
 type Project = {
   readonly provide: (
@@ -24,7 +26,7 @@ export const setup = async (project: Project) => {
   const { makeViewServerWebSocketServer } = await import("@effect-view-server/server");
   const { SourceAdapter } = await import("@effect-view-server/source-adapter");
   const { SourceAdapterServer } = await import("@effect-view-server/source-adapter/server");
-  const { Effect, Schedule, Schema, Stream } = await import("effect");
+  const { Schedule, Schema, Stream } = await import("effect");
 
   const Order = Schema.Struct({
     id: ViewServerId,
@@ -90,7 +92,7 @@ export const setup = async (project: Project) => {
       durationNanos: Schema.Literal(5_000_000_000n),
     }),
     trackedRows: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
-    dueBacklog: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+    lastSweepRetryableFailures: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
     expiredRows: DiagnosticNonNegativeBigInt,
     authoritativeExpiredDeletes: DiagnosticNonNegativeBigInt,
     failedWorkBacklog: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
@@ -257,7 +259,7 @@ export const setup = async (project: Project) => {
             durationNanos: 5_000_000_000n,
           },
           trackedRows: 3,
-          dueBacklog: 1,
+          lastSweepRetryableFailures: 1,
           expiredRows: 4n,
           authoritativeExpiredDeletes: 1n,
           failedWorkBacklog: 1,
@@ -444,13 +446,14 @@ export const setup = async (project: Project) => {
 
   return async () => {
     await Effect.runPromise(
-      server.close.pipe(
-        Effect.andThen(runtimeCore.close),
-        Effect.andThen(sourceServer.close),
-        Effect.andThen(sourceRuntimeCore.close),
-        Effect.andThen(diagnosticServer.close),
-        Effect.andThen(diagnosticRuntimeCore.close),
-      ),
+      closeRemoteTestResources([
+        server.close,
+        runtimeCore.close,
+        sourceServer.close,
+        sourceRuntimeCore.close,
+        diagnosticServer.close,
+        diagnosticRuntimeCore.close,
+      ]),
     );
   };
 };

@@ -798,22 +798,23 @@ const makeSourceApplicationStateModule = <State, Command, Metrics, SweepOutcome>
       execute: (
         operation: SourceMaintenanceOperation<Topic>,
       ) => Effect.Effect<SourceMaintenanceResult>,
-    ) => {
-      const sweep = input.runDueSweep({
-        epochNowNanos,
-        state,
-        update: dispatch,
-        operation: (maintenance) => operation(topic, maintenance),
-        execute,
-      });
-      if (Effect.isEffect(sweep)) {
-        return sweep;
-      }
-      discardSourceAsynchronousValue(sweep);
-      return Effect.die(
-        new TypeError("Source Application State retention sweep must return an Effect."),
-      );
-    },
+    ) =>
+      Effect.suspend(() => {
+        const sweep = input.runDueSweep({
+          epochNowNanos,
+          state,
+          update: dispatch,
+          operation: (maintenance) => operation(topic, maintenance),
+          execute,
+        });
+        if (Effect.isEffect(sweep)) {
+          return sweep;
+        }
+        discardSourceAsynchronousValue(sweep);
+        return Effect.die(
+          new TypeError("Source Application State retention sweep must return an Effect."),
+        );
+      }),
   });
 };
 

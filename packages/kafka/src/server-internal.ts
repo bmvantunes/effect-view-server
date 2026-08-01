@@ -680,107 +680,108 @@ export const acquireKafkaTransitionLease = Effect.fn(
   return yield* runtime.keyLeases.acquire(id);
 });
 
-export const runKafkaDueSweep = <Topic extends string>(
+export const runKafkaDueSweep = Effect.fn("KafkaSourceAdapter.retention.runDueSweep")(function* <
+  Topic extends string,
+>(
   input: SourceApplicationStateSweepInput<Topic, KafkaRetentionState, KafkaRetentionCommand>,
-): Effect.Effect<KafkaSweepOutcome> =>
-  Effect.gen(function* () {
-    const sweepStartedMonotonicNanos = yield* Clock.currentTimeNanos;
-    const runtime = retentionRuntimes.get(input.state);
-    if (runtime === undefined) {
-      return yield* Effect.die(
-        new KafkaSourceConfigurationError(
-          "Kafka retention state lost its lifetime generation sequence.",
-        ),
-      );
-    }
-    const retryableFailuresByRegion = new Map<string, number>();
-    const remaining = input.state.deadlineIndex.values();
-    return yield* Effect.gen(function* () {
-      let next = remaining.next();
-      while (true) {
-        const batch: Array<KafkaRetentionDeadline> = [];
-        while (batch.length < 256) {
-          if (next.done || next.value.deadlineNanos > input.epochNowNanos) {
-            break;
-          }
-          const candidate = next.value;
-          next = remaining.next();
-          batch.push(candidate);
-        }
-        if (batch.length === 0) {
+): Effect.fn.Return<KafkaSweepOutcome> {
+  const sweepStartedMonotonicNanos = yield* Clock.currentTimeNanos;
+  const runtime = retentionRuntimes.get(input.state);
+  if (runtime === undefined) {
+    return yield* Effect.die(
+      new KafkaSourceConfigurationError(
+        "Kafka retention state lost its lifetime generation sequence.",
+      ),
+    );
+  }
+  const retryableFailuresByRegion = new Map<string, number>();
+  const remaining = input.state.deadlineIndex.values();
+  return yield* Effect.gen(function* () {
+    let next = remaining.next();
+    while (true) {
+      const batch: Array<KafkaRetentionDeadline> = [];
+      while (batch.length < 256) {
+        if (next.done || next.value.deadlineNanos > input.epochNowNanos) {
           break;
         }
-        for (const candidate of batch) {
-          const workId = retentionWorkId(candidate);
-          const result = yield* Effect.acquireUseRelease(
-            Effect.interruptible(runtime.keyLeases.acquire(candidate.id)),
-            () =>
-              input.execute(
-                input.operation({
-                  id: candidate.id,
+        const candidate = next.value;
+        next = remaining.next();
+        batch.push(candidate);
+      }
+      if (batch.length === 0) {
+        break;
+      }
+      for (const candidate of batch) {
+        const workId = retentionWorkId(candidate);
+        const result = yield* Effect.acquireUseRelease(
+          Effect.interruptible(runtime.keyLeases.acquire(candidate.id)),
+          () =>
+            input.execute(
+              input.operation({
+                id: candidate.id,
+                workId,
+                isCurrent: (state) =>
+                  state.deadlines.get(candidate.id)?.generation === candidate.generation,
+                onSuccess: {
+                  _tag: "ExpirationSucceeded",
+                  candidate,
                   workId,
-                  isCurrent: (state) =>
-                    state.deadlines.get(candidate.id)?.generation === candidate.generation,
-                  onSuccess: {
-                    _tag: "ExpirationSucceeded",
-                    candidate,
-                    workId,
-                  },
-                  onFailure: () => ({
-                    _tag: "ExpirationFailed",
-                    candidate,
-                    workId,
-                    failure: {
-                      region: candidate.region,
-                      topic: input.state.topic,
-                      id: candidate.id,
-                      generation: candidate.generation,
-                      failedAtNanos: input.epochNowNanos,
-                      message: "Kafka retention expiration Delete failed.",
-                    },
-                  }),
-                  onStale: {
-                    _tag: "ExpirationStale",
-                    candidate,
-                    workId,
+                },
+                onFailure: () => ({
+                  _tag: "ExpirationFailed",
+                  candidate,
+                  workId,
+                  failure: {
+                    region: candidate.region,
+                    topic: input.state.topic,
+                    id: candidate.id,
+                    generation: candidate.generation,
+                    failedAtNanos: input.epochNowNanos,
+                    message: "Kafka retention expiration Delete failed.",
                   },
                 }),
-              ),
-            (lease) => lease.release,
-          );
-          if (result._tag === "Inactive") {
-            return {
-              retryableFailuresByRegion,
-            };
-          }
-          if (
-            result._tag === "Applied" &&
-            Exit.isFailure(result.exit) &&
-            !Cause.hasInterruptsOnly(result.exit.cause)
-          ) {
-            retryableFailuresByRegion.set(
-              candidate.region,
-              (retryableFailuresByRegion.get(candidate.region) ?? 0) + 1,
-            );
-          }
+                onStale: {
+                  _tag: "ExpirationStale",
+                  candidate,
+                  workId,
+                },
+              }),
+            ),
+          (lease) => lease.release,
+        );
+        if (result._tag === "Inactive") {
+          return {
+            retryableFailuresByRegion,
+          };
         }
-        yield* Effect.yieldNow;
+        if (
+          result._tag === "Applied" &&
+          Exit.isFailure(result.exit) &&
+          !Cause.hasInterruptsOnly(result.exit.cause)
+        ) {
+          retryableFailuresByRegion.set(
+            candidate.region,
+            (retryableFailuresByRegion.get(candidate.region) ?? 0) + 1,
+          );
+        }
       }
-      const sweepFinishedMonotonicNanos = yield* Clock.currentTimeNanos;
-      const sweepFinishedEpochNanos = yield* currentEpochNanos().pipe(Effect.orDie);
-      input.update({
-        _tag: "SweepCompleted",
-        completedAtNanos: sweepFinishedEpochNanos,
-        // Duration is elapsed monotonic time; completedAtNanos is the distinct
-        // public epoch-wall timestamp and must never be arithmetically combined with it.
-        durationNanos: sweepFinishedMonotonicNanos - sweepStartedMonotonicNanos,
-        retryableFailuresByRegion,
-      });
-      return {
-        retryableFailuresByRegion,
-      };
+      yield* Effect.yieldNow;
+    }
+    const sweepFinishedMonotonicNanos = yield* Clock.currentTimeNanos;
+    const sweepFinishedEpochNanos = yield* currentEpochNanos().pipe(Effect.orDie);
+    input.update({
+      _tag: "SweepCompleted",
+      completedAtNanos: sweepFinishedEpochNanos,
+      // Duration is elapsed monotonic time; completedAtNanos is the distinct
+      // public epoch-wall timestamp and must never be arithmetically combined with it.
+      durationNanos: sweepFinishedMonotonicNanos - sweepStartedMonotonicNanos,
+      retryableFailuresByRegion,
     });
+    return {
+      retryableFailuresByRegion,
+    };
   });
+});
 
 export const makeKafkaApplicationStateRegistration = (
   resolveContracts: (

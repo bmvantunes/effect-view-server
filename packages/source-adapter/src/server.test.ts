@@ -843,6 +843,47 @@ describe("Source Adapter server SDK", () => {
     }),
   );
 
+  it.effect("reads application state when a retention sweep Effect executes", () =>
+    Effect.gen(function* () {
+      let sweepInvocations = 0;
+      const registration = SourceAdapterServer.applicationState({
+        sweepIntervalNanos: 1_000n,
+        initialState: () => 0,
+        reduce: (state: number, increment: number) => state + increment,
+        metrics: (state: number) => state,
+        runDueSweep: (input) => {
+          sweepInvocations += 1;
+          return Effect.succeed(input.state);
+        },
+      });
+      const lifetimeScope = yield* Scope.make();
+      const attemptScope = yield* Scope.make();
+      const internal = Option.getOrThrow(
+        Option.fromUndefinedOr(resolveSourceApplicationStateRegistration(registration)),
+      );
+      internal.bind({
+        topic: "orders",
+        definition: undefined,
+        lifetimeScope,
+        target: { _tag: "Materialized" },
+      });
+      const module = registration.forLifetime(lifetimeScope, "orders");
+      const sweep = module.runDueSweep(1_000n, () => Effect.succeed({ _tag: "Inactive" }));
+      const prepared = yield* module
+        .prepare(1)
+        .pipe(Effect.provideService(Scope.Scope, attemptScope));
+      Option.getOrThrow(
+        Option.fromUndefinedOr(resolveSourceApplicationTransition(prepared.transition)),
+      ).apply();
+
+      expect(sweepInvocations).toBe(0);
+      expect(yield* sweep).toBe(1);
+      expect(sweepInvocations).toBe(1);
+      yield* Scope.close(attemptScope, Exit.void);
+      yield* Scope.close(lifetimeScope, Exit.void);
+    }),
+  );
+
   it.effect("accepts distinct frozen function-valued application states", () =>
     Effect.gen(function* () {
       type FunctionState = () => number;

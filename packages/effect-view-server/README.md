@@ -73,8 +73,10 @@ Field-keyed `where` objects and shorthand operators are invalid. Leased topics
 also require their exact, independently typed `routeBy` object.
 
 Virtualized grids use `react.useLiveQueryViewport(topic)`. Its `replace`
-operation binds a typed query and sparse row sink to an inclusive absolute
-window, while the returned generation's `setWindow` operation handles
+operation binds a typed query and sparse row/key sink to an inclusive absolute
+window. Each `setRowData(rowsByIndex, rowKeysByIndex)` delivery contains
+authoritative public raw keys or complete canonical grouped keys at the same
+absolute indexes. The returned generation's `setWindow` operation handles
 scroll-only changes. Each replacement is switch-latest: obsolete snapshots,
 deltas, statuses, failures, and sink writes are ignored. See the Public API
 guide for the complete adapter contract.

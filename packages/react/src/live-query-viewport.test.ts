@@ -205,15 +205,17 @@ const deltaMany = (
 const makeSink = <Row>() => {
   const rowCounts: Array<readonly [number, boolean | undefined]> = [];
   const rowData: Array<{ readonly [index: number]: Row }> = [];
+  const rowKeys: Array<{ readonly [index: number]: string }> = [];
   const sink: LiveQueryViewportSink<Row> = {
     setRowCount: (count, keepRenderedRows) => {
       rowCounts.push([count, keepRenderedRows]);
     },
-    setRowData: (rows) => {
+    setRowData: (rows, keys) => {
       rowData.push(rows);
+      rowKeys.push(keys);
     },
   };
-  return { rowCounts, rowData, sink };
+  return { rowCounts, rowData, rowKeys, sink };
 };
 
 const flush = Effect.yieldNow;
@@ -418,6 +420,7 @@ describe("Live Query Viewport Module", () => {
         { 20: { id: "a", price: 1 } },
         { 20: { id: "a", price: 2 } },
       ]);
+      expect(projected.rowKeys).toStrictEqual([{ 20: "a" }, { 20: "a" }]);
       expect(projected.rowCounts).toStrictEqual([
         [0, false],
         [1, true],
@@ -1427,6 +1430,12 @@ describe("Live Query Viewport Module", () => {
           3: { id: "b", price: 2 },
         },
         { 2: { id: "b", price: 2 } },
+      ]);
+      expect(projected.rowKeys).toStrictEqual([
+        { 0: "a", 1: "b", 2: "c" },
+        { 1: "x", 2: "b", 3: "c" },
+        { 0: "c", 1: "a", 2: "x", 3: "b" },
+        { 2: "b" },
       ]);
 
       yield* Fiber.interrupt(fiber);

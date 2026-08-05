@@ -161,8 +161,30 @@ const regional = useLiveQuery("regionalOrders", {
 ```
 
 `useLiveQueryViewport(topic)` is the transport-neutral virtual-grid seam. It
-pushes sparse rows into a caller-owned sink while React retains only chrome
-such as status, version, and total rows.
+pushes sparse rows and their authoritative keys into a caller-owned sink while
+React retains only chrome such as status, version, and total rows.
+
+```tsx
+const generation = useLiveQueryViewport("manualOrders").viewport.replace({
+  window: { firstRow: 100, lastRow: 149 },
+  query: {
+    select: ["id", "price"],
+    where: [],
+    orderBy: [{ field: "price", direction: "desc" }],
+  },
+  sink: {
+    setRowCount: (count, keepRenderedRows) => grid.setRowCount(count, keepRenderedRows),
+    setRowData: (rowsByIndex, rowKeysByIndex) => grid.setRows(rowsByIndex, rowKeysByIndex),
+  },
+});
+```
+
+Every `setRowData` call contains rows and keys at exactly the same absolute
+indexes. Raw queries receive the authoritative public row key; grouped queries
+receive the complete canonical group key. Both maps describe the same
+`ClientStateChange` and are delivered atomically, so keys remain stable when
+rows move or aggregates change. Keys are never derived from viewport position.
+Existing sinks that only accept the first `rowsByIndex` argument remain valid.
 
 ### Source Diagnostics
 

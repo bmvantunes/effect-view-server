@@ -105,21 +105,25 @@ type SelectedOrder = {
 const makeGridModel = <Row,>() => {
   let rowCount = 0;
   let rows: { readonly [index: number]: Row } = {};
+  let rowKeys: { readonly [index: number]: string } = {};
   const sink: LiveQueryViewportSink<Row> = {
     setRowCount: (count, keepRenderedRows) => {
       rowCount = count;
       if (keepRenderedRows !== true) {
         rows = {};
+        rowKeys = {};
       }
     },
-    setRowData: (changedRows) => {
+    setRowData: (changedRows, changedRowKeys) => {
       rows = { ...rows, ...changedRows };
+      rowKeys = { ...rowKeys, ...changedRowKeys };
     },
   };
   return {
     sink,
     rowCount: () => rowCount,
     rows: () => rows,
+    rowKeys: () => rowKeys,
   };
 };
 
@@ -199,6 +203,7 @@ describe("useLiveQueryViewport", () => {
       }),
     );
     await expect.poll(grid.rows).toStrictEqual({ 0: { id: "connected" } });
+    expect(grid.rowKeys()).toStrictEqual({ 0: "connected" });
 
     await view.unmount();
     await Effect.runPromise(runtime.close);
@@ -269,6 +274,13 @@ describe("useLiveQueryViewport", () => {
       13: { id: "order-13", price: 13 },
       14: { id: "order-14", price: 14 },
     });
+    expect(grid.rowKeys()).toStrictEqual({
+      10: "order-10",
+      11: "order-11",
+      12: "order-12",
+      13: "order-13",
+      14: "order-14",
+    });
     expect(grid.rowCount()).toBe(30);
     await expect.element(view.getByText(/^ready:30:\d+$/)).toBeVisible();
 
@@ -279,6 +291,13 @@ describe("useLiveQueryViewport", () => {
       22: { id: "order-22", price: 22 },
       23: { id: "order-23", price: 23 },
       24: { id: "order-24", price: 24 },
+    });
+    expect(grid.rowKeys()).toStrictEqual({
+      20: "order-20",
+      21: "order-21",
+      22: "order-22",
+      23: "order-23",
+      24: "order-24",
     });
     expect(grid.rowCount()).toBe(30);
     await expect
@@ -1134,6 +1153,11 @@ describe("useLiveQueryViewport", () => {
     await expect.poll(() => grid.rows()[0]?.status).toBe("open");
     expect(grid.rows()[0]?.rowCount).toBe(2n);
     expect(BigDecimal.equals(grid.rows()[0]!.totalPrice, BigDecimal.make(30n, 0))).toBe(true);
+    const openKey = grid.rowKeys()[0];
+    const closedKey = grid.rowKeys()[1];
+    expect(openKey).toBeTypeOf("string");
+    expect(closedKey).toBeTypeOf("string");
+    expect(openKey).not.toBe(closedKey);
 
     await Effect.runPromise(
       runtime.client.publish("orders", {
@@ -1144,6 +1168,18 @@ describe("useLiveQueryViewport", () => {
     );
     await expect.poll(() => grid.rows()[0]?.rowCount).toBe(3n);
     expect(BigDecimal.equals(grid.rows()[0]!.totalPrice, BigDecimal.make(40n, 0))).toBe(true);
+    expect(grid.rowKeys()[0]).toBe(openKey);
+
+    await Effect.runPromise(
+      runtime.client.publishMany("orders", [
+        { id: "closed-2", status: "closed", price: 5 },
+        { id: "closed-3", status: "closed", price: 5 },
+        { id: "closed-4", status: "closed", price: 5 },
+      ]),
+    );
+    await expect.poll(() => grid.rows()[0]?.status).toBe("closed");
+    expect(grid.rows()[0]?.rowCount).toBe(4n);
+    expect(grid.rowKeys()).toStrictEqual({ 0: closedKey, 1: openKey });
 
     await view.unmount();
     await Effect.runPromise(runtime.close);

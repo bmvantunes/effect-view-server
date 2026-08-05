@@ -36,7 +36,10 @@ export type LiveQueryViewportWindow = {
 
 export type LiveQueryViewportSink<Row> = {
   readonly setRowCount: (count: number, keepRenderedRows?: boolean) => void;
-  readonly setRowData: (rows: { readonly [index: number]: Row }) => void;
+  readonly setRowData: (
+    rowsByIndex: { readonly [index: number]: Row },
+    rowKeysByIndex: { readonly [index: number]: string },
+  ) => void;
 };
 
 type LiveQueryViewportSinkRow<Row, Sink> = Sink extends {
@@ -294,18 +297,27 @@ const chromeFromClientState = <Row>(state: ClientState<Row>): LiveQueryViewportC
   message: state.message,
 });
 
-const rowDataForRange = <Row>(
+type LiveQueryViewportData<Row> = {
+  readonly rowsByIndex: { readonly [index: number]: Row };
+  readonly rowKeysByIndex: { readonly [index: number]: string };
+};
+
+const viewportDataForRange = <Row>(
   firstRow: number,
   rows: ReadonlyArray<Row>,
+  rowKeys: ReadonlyArray<string>,
   range: Exclude<ClientStateChange, { readonly _tag: "None" }>,
-): { readonly [index: number]: Row } => {
-  const rowData: { [index: number]: Row } = {};
+): LiveQueryViewportData<Row> => {
+  const rowsByIndex: { [index: number]: Row } = {};
+  const rowKeysByIndex: { [index: number]: string } = {};
   const start = range._tag === "All" ? 0 : range.start;
   const end = range._tag === "All" ? rows.length - 1 : range.end;
   for (let index = start; index <= end; index += 1) {
-    rowData[firstRow + index] = rows[index]!;
+    const absoluteIndex = firstRow + index;
+    rowsByIndex[absoluteIndex] = rows[index]!;
+    rowKeysByIndex[absoluteIndex] = rowKeys[index]!;
   }
-  return rowData;
+  return { rowsByIndex, rowKeysByIndex };
 };
 
 type LiveQueryViewportControllerInput<
@@ -571,10 +583,15 @@ export const makeLiveQueryViewport = <
             const state = projection.apply(event);
             return {
               current: state.current,
-              rowData:
+              viewportData:
                 state.change._tag === "None"
                   ? undefined
-                  : rowDataForRange(window.firstRow, state.current.rows, state.change),
+                  : viewportDataForRange(
+                      window.firstRow,
+                      state.current.rows,
+                      state.current.keys,
+                      state.change,
+                    ),
             };
           }),
           Stream.tap((state) =>
@@ -589,13 +606,13 @@ export const makeLiveQueryViewport = <
                 return;
               }
               sink.setRowCount(state.current.totalRows, true);
-              if (state.rowData === undefined) {
+              if (state.viewportData === undefined) {
                 return;
               }
               if (!isCurrent(request)) {
                 return;
               }
-              sink.setRowData(state.rowData);
+              sink.setRowData(state.viewportData.rowsByIndex, state.viewportData.rowKeysByIndex);
             }),
           ),
           Stream.filter(() => isCurrent(request)),

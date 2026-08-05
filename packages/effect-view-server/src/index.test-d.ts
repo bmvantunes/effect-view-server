@@ -227,10 +227,11 @@ describe("public effect-view-server subpath type contracts", () => {
         setRowCount: (count) => {
           expectTypeOf(count).toBeNumber();
         },
-        setRowData: (rows) => {
+        setRowData: (rows, rowKeys) => {
           expectTypeOf(rows[0]).toEqualTypeOf<
             { readonly id: string; readonly price: number } | undefined
           >();
+          expectTypeOf(rowKeys[0]).toEqualTypeOf<string | undefined>();
         },
       },
     });

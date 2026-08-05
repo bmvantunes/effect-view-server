@@ -70,10 +70,11 @@ describe("Live Query Viewport type contracts", () => {
           expectTypeOf(count).toBeNumber();
           expectTypeOf(keepRenderedRows).toEqualTypeOf<boolean | undefined>();
         },
-        setRowData: (rows) => {
+        setRowData: (rows, rowKeys) => {
           expectTypeOf(rows[20]).toEqualTypeOf<
             { readonly id: string; readonly price: number } | undefined
           >();
+          expectTypeOf(rowKeys[20]).toEqualTypeOf<string | undefined>();
         },
       },
     });
@@ -96,7 +97,7 @@ describe("Live Query Viewport type contracts", () => {
       },
       sink: {
         setRowCount: () => undefined,
-        setRowData: (rows) => {
+        setRowData: (rows, rowKeys) => {
           expectTypeOf(rows[0]).toEqualTypeOf<
             | {
                 readonly status: "open" | "closed";
@@ -105,6 +106,20 @@ describe("Live Query Viewport type contracts", () => {
               }
             | undefined
           >();
+          expectTypeOf(rowKeys[0]).toEqualTypeOf<string | undefined>();
+        },
+      },
+    });
+  });
+
+  it("keeps one-argument row callbacks source-compatible", () => {
+    react.useLiveQueryViewport("orders").viewport.replace({
+      window: { firstRow: 0, lastRow: 9 },
+      query: { select: ["id"], where: [], orderBy: [] },
+      sink: {
+        setRowCount: () => undefined,
+        setRowData: (rows) => {
+          expectTypeOf(rows[0]).toEqualTypeOf<{ readonly id: string } | undefined>();
         },
       },
     });
@@ -334,6 +349,15 @@ describe("Live Query Viewport type contracts", () => {
         // @ts-expect-error sink rows cannot require unselected fields.
         setRowData: (_rows: { readonly [index: number]: { readonly id: string; price: number } }) =>
           undefined,
+      },
+    });
+    viewport.replace({
+      window: { firstRow: 0, lastRow: 9 },
+      query: { select: ["id"], where: [], orderBy: [] },
+      sink: {
+        setRowCount: () => undefined,
+        // @ts-expect-error viewport row keys are always sparse string maps.
+        setRowData: (_rows, _rowKeys: { readonly [index: number]: number }) => undefined,
       },
     });
     viewport.replace({

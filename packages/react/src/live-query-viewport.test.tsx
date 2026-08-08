@@ -352,8 +352,9 @@ describe("useLiveQueryViewport", () => {
     );
     await expect.element(view.getByRole("meter", { name: "store-updates" })).toBeVisible();
     await expect.poll(() => oldRequests.length).toBe(1);
+    const oldRequest = Option.getOrThrow(Option.fromUndefinedOr(oldRequests[0]));
     await Effect.runPromise(
-      Queue.offer(oldRequests[0]!, {
+      Queue.offer(oldRequest, {
         type: "snapshot",
         topic: "orders",
         queryId: "old-client",
@@ -384,8 +385,9 @@ describe("useLiveQueryViewport", () => {
       sink,
     });
     await expect.poll(() => currentRequests.length).toBe(1);
+    const currentRequest = Option.getOrThrow(Option.fromUndefinedOr(currentRequests[0]));
     await Effect.runPromise(
-      Queue.offer(currentRequests[0]!, {
+      Queue.offer(currentRequest, {
         type: "snapshot",
         topic: "orders",
         queryId: "current-client",
@@ -397,7 +399,7 @@ describe("useLiveQueryViewport", () => {
     );
     await expect.poll(grid.rows).toStrictEqual({ 0: { id: "current-client" } });
     await Effect.runPromise(
-      Queue.offer(oldRequests[0]!, {
+      Queue.offer(oldRequest, {
         type: "snapshot",
         topic: "orders",
         queryId: "old-client",

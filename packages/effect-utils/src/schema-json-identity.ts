@@ -410,6 +410,37 @@ const makeStrictJsonObjectKeywordGuard = (root: SchemaAST.AST) => {
   return (value: unknown): void => guard(value, "$");
 };
 
+const schemaAstContainsObjectKeyword = (root: SchemaAST.AST): boolean => {
+  const visited = new Set<SchemaAST.AST>();
+  const visit = (ast: SchemaAST.AST): boolean => {
+    if (visited.has(ast)) {
+      return false;
+    }
+    visited.add(ast);
+    if (SchemaAST.isObjectKeyword(ast)) {
+      return true;
+    }
+    if (SchemaAST.isSuspend(ast) && visit(ast.thunk())) {
+      return true;
+    }
+    if (
+      SchemaAST.isObjects(ast) &&
+      (ast.propertySignatures.some((property) => visit(property.type)) ||
+        ast.indexSignatures.some((index) => visit(index.parameter) || visit(index.type)))
+    ) {
+      return true;
+    }
+    if (SchemaAST.isArrays(ast) && (ast.elements.some(visit) || ast.rest.some(visit))) {
+      return true;
+    }
+    if (SchemaAST.isUnion(ast) && ast.types.some(visit)) {
+      return true;
+    }
+    return ast.encoding?.some((link) => visit(link.to)) ?? false;
+  };
+  return visit(root);
+};
+
 export type StrictJsonSchemaGuard = (
   value: unknown,
 ) => Result.Result<void, StrictJsonMaterializationError>;
@@ -439,18 +470,27 @@ export const makeSchemaJsonIdentity = <Type>(
   const decode = Schema.decodeUnknownSync(codec);
   const encode = Schema.encodeUnknownSync(codec);
   const encodeRaw = Schema.encodeUnknownSync(schema);
+  const encodedSchema = Schema.make<Schema.Codec<unknown, unknown, never, never>>(
+    SchemaAST.toEncoded(schema.ast),
+  );
+  const encodeJson = Schema.encodeUnknownSync(Schema.toCodecJson(encodedSchema));
   const normalize = makeSchemaJsonNormalizer(codec.ast);
+  const containsObjectKeyword = schemaAstContainsObjectKeyword(codec.ast);
   const strictObjectKeywordGuard = makeStrictJsonSchemaGuard(codec.ast);
   const strictEncoded = (value: unknown): Schema.Json => {
+    if (!containsObjectKeyword) {
+      return strictJson(encode(value));
+    }
     const guardResult = strictObjectKeywordGuard(value);
     if (Result.isFailure(guardResult)) {
       throw guardResult.failure;
     }
-    const encodedGuardResult = strictObjectKeywordGuard(encodeRaw(value));
+    const encodedValue = encodeRaw(value);
+    const encodedGuardResult = strictObjectKeywordGuard(encodedValue);
     if (Result.isFailure(encodedGuardResult)) {
       throw encodedGuardResult.failure;
     }
-    return strictJson(encode(value));
+    return strictJson(encodeJson(encodedValue));
   };
   const canonicalJson = (value: unknown): Schema.Json => normalize(strictEncoded(value));
   const canonicalKey =

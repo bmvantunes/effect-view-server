@@ -251,6 +251,23 @@ describe("Schema JSON identity", () => {
     expect(() => transformedObjectKeywordIdentity.canonicalKey("input")).toThrow(
       /^Expected a plain data record or dense array at \$\.payload\.$/,
     );
+
+    let transformedEncodeCalls = 0;
+    const validTransformedObjectKeywordIdentity = makeSchemaJsonIdentity(
+      Schema.String.pipe(
+        Schema.encodeTo(Schema.Struct({ payload: Schema.ObjectKeyword }), {
+          decode: SchemaGetter.transform(() => "decoded"),
+          encode: SchemaGetter.transform(() => {
+            transformedEncodeCalls += 1;
+            return { payload: { venue: "xnys" } };
+          }),
+        }),
+      ),
+    );
+    expect(validTransformedObjectKeywordIdentity.canonicalKey("input")).toBe(
+      '{"payload":{"venue":"xnys"}}',
+    );
+    expect(transformedEncodeCalls).toBe(1);
   });
 
   it("keeps the encoded normalizer total for non-matching JSON shapes", () => {

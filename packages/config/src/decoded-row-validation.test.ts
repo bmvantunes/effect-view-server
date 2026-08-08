@@ -89,7 +89,8 @@ describe("decoded row validation", () => {
         nested: { amount: 1n, extra: true },
       }).pipe(Effect.flip);
 
-      expect(error instanceof Error ? error.toString() : "").toBe(
+      expect(error).toBeInstanceOf(Error);
+      expect(String(error)).toBe(
         'SchemaError(Expected no excess property\n  at ["nested"]["extra"])',
       );
     }),

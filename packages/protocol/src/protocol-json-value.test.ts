@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Schema, SchemaGetter } from "effect";
+import { Effect, Schema, SchemaAST, SchemaGetter } from "effect";
 import { encodeJsonFieldValue } from "./protocol-json-field-codec";
 import {
   isProtocolJson,
@@ -105,10 +105,7 @@ describe("protocol JSON values", () => {
       expect(encodingFailure).toBe("encoding forbidden");
 
       const hostileDiagnosticSchema = Schema.String.pipe(Schema.annotate({ title: "hostile" }));
-      const annotations = hostileDiagnosticSchema.ast.annotations;
-      if (annotations === undefined) {
-        return yield* Effect.die("Expected annotated schema metadata.");
-      }
+      const annotations = SchemaAST.resolve(hostileDiagnosticSchema.ast)!;
       Object.defineProperty(annotations, "message", {
         configurable: true,
         get: () => {

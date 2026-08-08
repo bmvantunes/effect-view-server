@@ -438,12 +438,17 @@ export const makeSchemaJsonIdentity = <Type>(
   const codec = Schema.toCodecJson(schema);
   const decode = Schema.decodeUnknownSync(codec);
   const encode = Schema.encodeUnknownSync(codec);
+  const encodeRaw = Schema.encodeUnknownSync(schema);
   const normalize = makeSchemaJsonNormalizer(codec.ast);
   const strictObjectKeywordGuard = makeStrictJsonSchemaGuard(codec.ast);
   const strictEncoded = (value: unknown): Schema.Json => {
     const guardResult = strictObjectKeywordGuard(value);
     if (Result.isFailure(guardResult)) {
       throw guardResult.failure;
+    }
+    const encodedGuardResult = strictObjectKeywordGuard(encodeRaw(value));
+    if (Result.isFailure(encodedGuardResult)) {
+      throw encodedGuardResult.failure;
     }
     return strictJson(encode(value));
   };

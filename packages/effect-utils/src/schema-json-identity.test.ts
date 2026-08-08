@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Chunk, HashMap, HashSet, Option, Result, Schema } from "effect";
+import { Chunk, HashMap, HashSet, Option, Result, Schema, SchemaGetter } from "effect";
 import {
   makeSchemaJsonIdentity,
   makeSchemaJsonNormalizer,
@@ -237,6 +237,20 @@ describe("Schema JSON identity", () => {
       "Accessor properties are not valid JSON data at $.payload",
     );
     expect(unionAccessorReads).toBe(0);
+
+    const transformedObjectKeywordIdentity = makeSchemaJsonIdentity(
+      Schema.String.pipe(
+        Schema.encodeTo(Schema.Struct({ payload: Schema.ObjectKeyword }), {
+          decode: SchemaGetter.transform(() => "decoded"),
+          encode: SchemaGetter.transform(() => ({
+            payload: new Map([["venue", "xnys"]]),
+          })),
+        }),
+      ),
+    );
+    expect(() => transformedObjectKeywordIdentity.canonicalKey("input")).toThrow(
+      /^Expected a plain data record or dense array at \$\.payload\.$/,
+    );
   });
 
   it("keeps the encoded normalizer total for non-matching JSON shapes", () => {

@@ -1,11 +1,12 @@
 import { execFileSync } from "node:child_process";
 import {
+  cpSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
-  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -196,6 +197,7 @@ describe("published value semantics consumer", () => {
       const packedPaths = packResult.files.map((file) => file.path);
       expect(packedPaths).toContain("dist/value-semantics.js");
       expect(packedPaths).toContain("dist/value-semantics.d.ts");
+      expect(packedPaths).toContain("dist/effect-schemaast-compat.d.ts");
 
       extract({
         cwd: installedPackageDirectory,
@@ -203,11 +205,38 @@ describe("published value semantics consumer", () => {
         strip: 1,
         sync: true,
       });
-      symlinkSync(
-        realpathSync(join(repositoryRoot, "node_modules", "effect")),
-        join(consumerDirectory, "node_modules", "effect"),
-        "junction",
+      const effectDirectory = realpathSync(join(repositoryRoot, "node_modules", "effect"));
+      const consumerEffectDirectory = join(consumerDirectory, "node_modules", "effect");
+      cpSync(effectDirectory, consumerEffectDirectory, { dereference: true, recursive: true });
+      mkdirSync(join(consumerEffectDirectory, "node_modules"), { recursive: true });
+      for (const entry of readdirSync(dirname(effectDirectory), { withFileTypes: true })) {
+        if (entry.name === "effect") {
+          continue;
+        }
+        cpSync(
+          join(dirname(effectDirectory), entry.name),
+          join(consumerEffectDirectory, "node_modules", entry.name),
+          { dereference: true, recursive: true },
+        );
+      }
+      const fastCheckDirectory = realpathSync(join(dirname(effectDirectory), "fast-check"));
+      cpSync(
+        realpathSync(join(dirname(fastCheckDirectory), "pure-rand")),
+        join(consumerEffectDirectory, "node_modules", "pure-rand"),
+        { dereference: true, recursive: true },
       );
+      const schemaAstDeclarationPath = join(consumerEffectDirectory, "dist", "SchemaAST.d.ts");
+      const schemaAstDeclaration = readFileSync(schemaAstDeclarationPath, "utf8");
+      const unpatchedSchemaAstDeclaration = schemaAstDeclaration.replace(
+        /\n\/\*\* @internal \*\/\nexport type Sentinel = \{\n    readonly key: PropertyKey;\n    readonly literal: LiteralValue \| symbol;\n\};\n/,
+        "\n",
+      );
+      if (unpatchedSchemaAstDeclaration === schemaAstDeclaration) {
+        throw new Error(
+          "The beta106 Effect fixture no longer contains its patched Sentinel declaration.",
+        );
+      }
+      writeFileSync(schemaAstDeclarationPath, unpatchedSchemaAstDeclaration);
 
       const installedManifest = decodePackageManifest(
         readFileSync(join(installedPackageDirectory, "package.json"), "utf8"),
@@ -232,6 +261,9 @@ describe("published value semantics consumer", () => {
       const declarationSource = readFileSync(
         join(installedPackageDirectory, declarationTarget.replace(/^\.\//, "")),
         "utf8",
+      );
+      expect(declarationSource).toContain(
+        '/// <reference path="./effect-schemaast-compat.d.ts" />',
       );
       expect(declarationSource).not.toContain("@effect-view-server/");
 

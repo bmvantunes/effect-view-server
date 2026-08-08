@@ -2,6 +2,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { readFileSync } from "node:fs";
 import {
   compareReleaseTags,
+  effectSchemaAstCompatibilityDeclaration,
   incrementReleaseVersion,
   internalPublishViolations,
   oidcPublishEnvironmentViolations,
@@ -65,6 +66,13 @@ const publicPackageJson = {
 };
 
 describe("release publish policy", () => {
+  it("keeps the beta106 SchemaAST declaration compatibility source explicit", () => {
+    expect(effectSchemaAstCompatibilityDeclaration).toContain(
+      'declare module "effect/SchemaAST"',
+    );
+    expect(effectSchemaAstCompatibilityDeclaration).toContain("export type Sentinel");
+  });
+
   it("refuses the placeholder version before trusted publishing", () => {
     expect(
       publishDecision({

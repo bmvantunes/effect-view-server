@@ -269,7 +269,8 @@ describe("release publish orchestration", () => {
       version: "0.0.7",
     });
     expect(scenario.publishedArtifact()).toStrictEqual({
-      declaration: "export declare const ready: true;\n",
+      declaration:
+        '/// <reference path="./effect-schemaast-compat.d.ts" />\nexport declare const ready: true;\n',
       files: ["README.md", "dist", "package.json"],
       manifest: {
         name: "effect-view-server",

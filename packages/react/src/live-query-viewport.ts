@@ -338,6 +338,10 @@ type LiveQueryViewportBindingEntry<
   readonly deactivate: () => void;
 };
 
+type LiveQueryViewportBindingOptions = {
+  readonly deferDeactivation?: boolean;
+};
+
 export type LiveQueryViewportBinding<
   Topics extends TopicDefinitions,
   Topic extends Extract<keyof Topics, string>,
@@ -345,14 +349,26 @@ export type LiveQueryViewportBinding<
   readonly viewport: LiveQueryViewport<Topics, Topic>;
   readonly install: (entry: LiveQueryViewportBindingEntry<Topics, Topic>) => void;
   readonly uninstall: (entry: LiveQueryViewportBindingEntry<Topics, Topic>) => void;
+  readonly flush: () => void;
 };
 
 export const makeLiveQueryViewportBinding = <
   Topics extends TopicDefinitions,
   Topic extends Extract<keyof Topics, string>,
->(): LiveQueryViewportBinding<Topics, Topic> => {
+>(
+  options: LiveQueryViewportBindingOptions = {},
+): LiveQueryViewportBinding<Topics, Topic> => {
   let current: LiveQueryViewportBindingEntry<Topics, Topic> | undefined;
+  let pendingDeactivations = new Set<LiveQueryViewportBindingEntry<Topics, Topic>>();
   let terminal = false;
+  const deactivate = (entry: LiveQueryViewportBindingEntry<Topics, Topic>): void => {
+    // React's insertion effect cannot synchronously notify a consumer sink.
+    if (options.deferDeactivation === true) {
+      pendingDeactivations.add(entry);
+      return;
+    }
+    entry.deactivate();
+  };
   const viewport: LiveQueryViewport<Topics, Topic> = {
     replace: (request) =>
       terminal
@@ -378,22 +394,32 @@ export const makeLiveQueryViewportBinding = <
     viewport,
     install: (entry) => {
       if (terminal) {
-        entry.deactivate();
+        deactivate(entry);
         return;
       }
+      pendingDeactivations.delete(entry);
       if (current === entry) {
         return;
       }
       const previous = current;
       current = entry;
-      previous?.deactivate();
+      if (previous !== undefined) {
+        deactivate(previous);
+      }
     },
     uninstall: (entry) => {
       if (current !== entry) {
         return;
       }
       current = undefined;
-      entry.deactivate();
+      deactivate(entry);
+    },
+    flush: () => {
+      const deactivations = pendingDeactivations;
+      pendingDeactivations = new Set();
+      for (const entry of deactivations) {
+        entry.deactivate();
+      }
     },
   };
 };

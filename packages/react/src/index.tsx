@@ -416,7 +416,12 @@ export const createViewServerReact = <const Topics extends TopicDefinitions>(
     const client = useClient();
     // Topic identity owns the public facade. Client changes replace the installed
     // controller below without invalidating viewport references held by the grid.
-    const binding = useMemo(() => makeLiveQueryViewportBinding<Topics, Topic>(), [topic]);
+    // Installation stays in insertion effect so descendant layout effects can connect
+    // immediately; controller deactivation is flushed from layout effects instead.
+    const binding = useMemo(
+      () => makeLiveQueryViewportBinding<Topics, Topic>({ deferDeactivation: true }),
+      [topic],
+    );
     const viewportState = useMemo(() => makeLiveQueryViewportAtom(), [client, topic]);
     const [result, publish] = AtomReact.useAtom(viewportState.atom);
     const entry = useMemo(() => {
@@ -435,6 +440,10 @@ export const createViewServerReact = <const Topics extends TopicDefinitions>(
       return () => {
         binding.uninstall(entry);
       };
+    }, [binding, entry]);
+    useLayoutEffect(() => {
+      binding.flush();
+      return binding.flush;
     }, [binding, entry]);
     const chrome = viewportState.read(result);
     return {

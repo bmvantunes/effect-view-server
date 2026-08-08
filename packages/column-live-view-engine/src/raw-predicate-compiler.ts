@@ -13,6 +13,16 @@ import { scalarEqualityKey } from "./row-values";
 
 type RowObject = object;
 
+const constantPredicateValues = {
+  false: false,
+  true: true,
+} as const;
+
+const negatedConstantValues = {
+  false: "true",
+  true: "false",
+} as const;
+
 export type CompiledRawPredicate<Row extends RowObject> = {
   readonly plan: TopicRawPredicatePlan;
   readonly matches: (row: Row, storageKey?: string) => boolean;
@@ -67,6 +77,64 @@ type DagEvaluationScratch = {
   readonly nodeStack: Uint32Array;
   readonly childPositions: Uint32Array;
   visitedCount: number;
+};
+
+type RuntimeFilterConstant = "true" | "false" | undefined;
+
+const runtimeFilterConstant = (root: RuntimeFilterExpression): RuntimeFilterConstant => {
+  const values = new WeakMap<object, RuntimeFilterConstant>();
+  const frames: Array<readonly [RuntimeFilterExpression, boolean]> = [[root, false]];
+  while (frames.length > 0) {
+    const [expression, exiting] = frames.pop()!;
+    if (!exiting) {
+      if (values.has(expression)) {
+        continue;
+      }
+      values.set(expression, undefined);
+      frames.push([expression, true]);
+      if (expression._tag === "NOT") {
+        frames.push([expression.condition, false]);
+      } else if (expression._tag === "group") {
+        for (let index = expression.conditions.length - 1; index >= 0; index -= 1) {
+          frames.push([expression.conditions[index]!, false]);
+        }
+      }
+      continue;
+    }
+    if (expression._tag === "true" || expression._tag === "false") {
+      values.set(expression, expression._tag);
+      continue;
+    }
+    if (expression._tag === "NOT") {
+      const child = values.get(expression.condition);
+      values.set(expression, child === undefined ? undefined : negatedConstantValues[child]);
+      continue;
+    }
+    if (expression._tag !== "group") {
+      continue;
+    }
+    let hasUnknown = false;
+    let hasTrue = false;
+    let hasFalse = false;
+    for (const child of expression.conditions) {
+      const value = values.get(child);
+      hasUnknown ||= value === undefined;
+      hasTrue ||= value === "true";
+      hasFalse ||= value === "false";
+    }
+    if (expression.type === "AND") {
+      values.set(
+        expression,
+        hasFalse ? "false" : hasUnknown || expression.conditions.length === 0 ? undefined : "true",
+      );
+    } else {
+      values.set(
+        expression,
+        hasTrue ? "true" : hasUnknown || expression.conditions.length === 0 ? undefined : "false",
+      );
+    }
+  }
+  return values.get(root);
 };
 
 const isScalarArray = (
@@ -225,6 +293,20 @@ const compileInstructions = <Row extends RowObject>(
       continue;
     }
     const expression = task.expression;
+    if (expression._tag === "false" || expression._tag === "true") {
+      const value = constantPredicateValues[expression._tag];
+      const continuation = {
+        false: task.whenFalse,
+        true: task.whenTrue,
+      }[expression._tag];
+      instructions.push({
+        _tag: "condition",
+        matches: () => value,
+        whenFalse: continuation,
+        whenTrue: continuation,
+      });
+      continue;
+    }
     if (expression._tag === "condition") {
       instructions.push({
         _tag: "condition",
@@ -332,17 +414,19 @@ const compileDagMatcher = <Row extends RowObject>(
     }
 
     const instruction: DagPredicateInstruction<Row> =
-      expression._tag === "condition"
-        ? { _tag: "condition", matches: compileCondition(expression, metadata, trustedRows) }
-        : expression._tag === "NOT"
-          ? { _tag: "NOT", condition: instructionByExpression.get(expression.condition)! }
-          : {
-              _tag: "group",
-              type: expression.type,
-              conditions: Object.freeze(
-                expression.conditions.map((condition) => instructionByExpression.get(condition)!),
-              ),
-            };
+      expression._tag === "false" || expression._tag === "true"
+        ? { _tag: "condition", matches: () => constantPredicateValues[expression._tag] }
+        : expression._tag === "condition"
+          ? { _tag: "condition", matches: compileCondition(expression, metadata, trustedRows) }
+          : expression._tag === "NOT"
+            ? { _tag: "NOT", condition: instructionByExpression.get(expression.condition)! }
+            : {
+                _tag: "group",
+                type: expression.type,
+                conditions: Object.freeze(
+                  expression.conditions.map((condition) => instructionByExpression.get(condition)!),
+                ),
+              };
     instructionByExpression.set(expression, instructions.length);
     instructions.push(Object.freeze(instruction));
   }
@@ -463,6 +547,28 @@ export const compileRawPredicate = <Row extends RowObject>(
   options: { readonly trustedRows?: boolean } = {},
 ): CompiledRawPredicate<Row> => {
   if (where === undefined) {
+    return Object.freeze({
+      plan: Object.freeze({
+        filters: Object.freeze([]),
+        callbackRequired: false,
+        callbackSkippable: true,
+      }),
+      matches: () => true,
+    });
+  }
+  const constant = runtimeFilterConstant(where);
+  if (constant === "false") {
+    return Object.freeze({
+      plan: Object.freeze({
+        filters: Object.freeze([]),
+        callbackRequired: false,
+        callbackSkippable: true,
+        alwaysFalse: true,
+      }),
+      matches: () => false,
+    });
+  }
+  if (constant === "true") {
     return Object.freeze({
       plan: Object.freeze({
         filters: Object.freeze([]),

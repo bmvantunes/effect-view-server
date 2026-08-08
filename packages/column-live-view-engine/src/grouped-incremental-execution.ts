@@ -40,6 +40,7 @@ type CountOnlyIncrementalGroupState = {
 export type IncrementalGroupedQueryExecution = {
   readonly diagnostics: () => GroupedIncrementalExecutionDiagnosticCounts;
   readonly incremental: boolean;
+  readonly retainsChanges: boolean;
   readonly latest: () => QueryEvaluation<RowObject>;
 };
 
@@ -278,10 +279,23 @@ const buildIncrementalGroupedQueryState = <Row extends RowObject>(
   matches: GroupedRowMatcher<Row>,
   limits: GroupedIncrementalAdmissionLimits,
   ownedStorageKeys?: () => Iterable<string>,
-): IncrementalGroupedQueryBuildState =>
-  plan.zeroLimit
+): IncrementalGroupedQueryBuildState => {
+  if (plan.alwaysFalse === true) {
+    const version = store.version();
+    return {
+      admitted: true,
+      state: {
+        mode: "countOnly",
+        groups: new Map(),
+        evaluation: emptyGroupedEvaluation(0, version),
+        version,
+      },
+    };
+  }
+  return plan.zeroLimit
     ? buildCountOnlyIncrementalGroupedQueryState(store, plan, matches, limits, ownedStorageKeys)
     : buildMaterializedIncrementalGroupedQueryState(store, plan, matches, limits, ownedStorageKeys);
+};
 
 const removeMaterializedIncrementalGroupedMember = <Row extends RowObject>(
   dirtyAggregateRecomputes: DirtyAggregateRecomputes,
@@ -772,6 +786,7 @@ const makeFallbackGroupedQueryExecution = <Row extends RowObject, ResultRow exte
   return {
     diagnostics: counts,
     incremental: false,
+    retainsChanges: false,
     latest: () => {
       const storeVersion = store.version();
       if (snapshot.version !== storeVersion) {
@@ -835,12 +850,21 @@ export const makeIncrementalGroupedQueryExecution = <
     get incremental() {
       return fallback === undefined;
     },
+    get retainsChanges() {
+      return fallback === undefined && compiled.plan.alwaysFalse !== true;
+    },
     latest: () => {
       if (fallback !== undefined) {
         return fallback.latest();
       }
       const storeVersion = store.version();
       if (state.version === storeVersion) {
+        return state.evaluation;
+      }
+      if (compiled.plan.alwaysFalse === true) {
+        state.version = storeVersion;
+        state.evaluation = emptyGroupedEvaluation(0, storeVersion);
+        combinedDiagnostics.onPatchedEvaluation();
         return state.evaluation;
       }
       const batches = store.changesSince(state.version, compiled.partitionKey);
@@ -857,6 +881,14 @@ export const makeIncrementalGroupedQueryExecution = <
         }
         combinedDiagnostics.onFullEvaluation();
         state = build.state;
+        return state.evaluation;
+      }
+      if (batches.length === 0) {
+        state.version = storeVersion;
+        state.evaluation = {
+          ...state.evaluation,
+          version: storeVersion,
+        };
         return state.evaluation;
       }
       if (

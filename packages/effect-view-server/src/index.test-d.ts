@@ -1,6 +1,6 @@
 import { describe, expectTypeOf, it } from "@effect/vitest";
 import { ViewServerId, defineViewServerConfig, viewSchema } from "effect-view-server/config";
-import type { LiveQueryResult, RowFromSchema } from "effect-view-server/config";
+import type { FalseExpression, LiveQueryResult, RowFromSchema } from "effect-view-server/config";
 import { createViewServerReact } from "effect-view-server/react";
 import { createInMemoryViewServerReact } from "effect-view-server/react/testing";
 import { runViewServerRuntime } from "effect-view-server/runtime";
@@ -179,6 +179,7 @@ describe("public effect-view-server subpath type contracts", () => {
     expectTypeOf(createInMemoryViewServer).not.toBeAny();
     expectTypeOf(decodeKafkaCodec).not.toBeAny();
     expectTypeOf(viewSchema).not.toBeAny();
+    expectTypeOf<FalseExpression>().toEqualTypeOf<{ readonly type: "FALSE" }>();
     expectTypeOf<typeof PublicProfile.Type>().toEqualTypeOf<PublicProfile>();
     expectTypeOf<typeof PublicProfile.Encoded>().toEqualTypeOf<{
       readonly id: string;
@@ -320,6 +321,60 @@ describe("public effect-view-server subpath type contracts", () => {
         readonly score: number;
       }>
     >();
+  });
+
+  it("preserves source-native match-none predicates through public subpaths", () => {
+    const rawResult = react.useLiveQuery("orders", {
+      select: ["id"],
+      where: [{ type: "FALSE" }],
+      orderBy: [{ field: "id", direction: "asc" }],
+    });
+    expectTypeOf(rawResult).toEqualTypeOf<
+      LiveQueryResult<{
+        readonly id: string;
+      }>
+    >();
+
+    const groupedResult = react.useLiveQuery("orders", {
+      groupBy: ["status"],
+      aggregates: { rowCount: { aggFunc: "count" } },
+      where: [{ type: "FALSE" }],
+      orderBy: [{ aggregate: "rowCount", direction: "desc" }],
+    });
+    expectTypeOf(groupedResult).toEqualTypeOf<
+      LiveQueryResult<{
+        readonly status: "open" | "closed";
+        readonly rowCount: bigint;
+      }>
+    >();
+
+    const viewport = react.useLiveQueryViewport("orders");
+    viewport.viewport.replace({
+      window: { firstRow: 0, lastRow: 9 },
+      query: {
+        select: ["id"],
+        where: [{ type: "FALSE" }],
+        orderBy: [],
+      },
+      sink: { setRowCount: () => undefined, setRowData: () => undefined },
+    });
+    viewport.viewport.replace({
+      window: { firstRow: 0, lastRow: 9 },
+      query: {
+        groupBy: ["status"],
+        aggregates: { rowCount: { aggFunc: "count" } },
+        where: [{ type: "FALSE" }],
+        orderBy: [{ aggregate: "rowCount", direction: "desc" }],
+      },
+      sink: { setRowCount: () => undefined, setRowData: () => undefined },
+    });
+
+    // @ts-expect-error source-native FALSE expressions reject extra keys.
+    react.useLiveQuery("orders", {
+      select: ["id"],
+      where: [{ type: "FALSE", conditions: [] }],
+      orderBy: [],
+    });
   });
 
   it("rejects invalid query and config contracts through public subpaths", () => {

@@ -62,6 +62,7 @@ export const prepareGroupedQuery = Effect.fn("ColumnLiveViewEngine.groupedQuery.
       metadata.valueSemantics,
       rawFilter.plan.queryCacheKey,
       () => groupedQueryResultSemantics<Row, Query>(metadata.valueSemantics, decoded),
+      rawFilter.plan.predicate.plan.alwaysFalse,
     );
     return Object.freeze({
       plan,
@@ -127,6 +128,7 @@ export const compilePreparedRuntimeGroupedQuery = (
     query,
     metadata.valueSemantics,
     prepared.rawFilterIdentity.queryCacheKey,
+    rawFilter.plan.predicate.plan.alwaysFalse,
   );
   return Object.freeze({
     plan,

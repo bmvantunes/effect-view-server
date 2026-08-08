@@ -167,6 +167,16 @@ const updateBaseEvaluationFromRetainedChanges = (
   queryWindow: RawQueryPlanWindow,
 ): ActiveQueryBaseEvaluation<object> | undefined => {
   const currentVersion = store.version();
+  if (compiled.plan.predicate.plan.alwaysFalse === true) {
+    return {
+      keyIndex: new Map(),
+      keys: [],
+      retainedWindowFilled: true,
+      totalRows: 0,
+      version: currentVersion,
+      window: [],
+    };
+  }
   const batches = store.changesSince(evaluation.version, compiled.plan.partitionKey);
   if (batches === undefined) {
     return undefined;
@@ -625,12 +635,19 @@ const registerRawQueryExecution = Effect.fn("ColumnLiveViewEngine.activeQuery.ra
     const execution = yield* makeRawQueryExecution(store, compiled, windows);
     const cacheKey = compiled.plan.queryCacheKey;
     return yield* Effect.sync(() => {
-      store.retainChanges(compiled.plan.partitionKey);
+      const retainsChanges = compiled.plan.predicate.plan.alwaysFalse !== true;
+      if (retainsChanges) {
+        store.retainChanges(compiled.plan.partitionKey);
+      }
       const entry: RawQueryExecutionSlot = {
         cacheKey,
         canonicalPlan: compiled.plan,
         execution,
-        releaseRetainedChanges: () => store.releaseChanges(compiled.plan.partitionKey),
+        releaseRetainedChanges: () => {
+          if (retainsChanges) {
+            store.releaseChanges(compiled.plan.partitionKey);
+          }
+        },
         windows,
         refs: 1,
       };

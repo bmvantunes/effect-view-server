@@ -31,6 +31,9 @@ export const evaluateGroupedRows = <Row extends RowObject, ResultRow extends Row
   matches: (row: Row, storageKey?: string) => boolean,
   ownedStorageKeys?: () => Iterable<string>,
 ): QueryEvaluation<RowObject> => {
+  if (plan.alwaysFalse === true) {
+    return emptyGroupedEvaluation(0, store.version());
+  }
   if (plan.zeroLimit) {
     return evaluateZeroLimitGroupedRows(store, plan, matches, ownedStorageKeys);
   }

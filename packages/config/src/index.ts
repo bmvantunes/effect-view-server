@@ -33,6 +33,7 @@ export type {
   CountAggregate,
   CountDistinctAggregate,
   EqualsCondition,
+  FalseExpression,
   ExactGroupedQuery,
   ExactLiveQuery,
   ExactLiveQueryInput,

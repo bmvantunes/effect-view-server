@@ -18,6 +18,7 @@ export type {
   BlankCondition,
   ExactWhere,
   EqualsCondition,
+  FalseExpression,
   FieldCondition,
   FieldConditionForPath,
   FilterableFieldPath,

@@ -249,12 +249,21 @@ export type FilterGroup<Row> = {
   readonly conditions: ReadonlyArray<FilterExpression<Row>>;
 };
 
+/** A source-native predicate that never matches a row. */
+export type FalseExpression = {
+  readonly type: "FALSE";
+};
+
 export type NegationExpression<Row> = {
   readonly type: "NOT";
   readonly condition: FilterExpression<Row>;
 };
 
-type FilterExpressionMember<Row> = FieldCondition<Row> | FilterGroup<Row> | NegationExpression<Row>;
+type FilterExpressionMember<Row> =
+  | FieldCondition<Row>
+  | FilterGroup<Row>
+  | NegationExpression<Row>
+  | FalseExpression;
 
 declare const filterExpressionType: unique symbol;
 
@@ -300,6 +309,10 @@ type FilterGroupCandidateShape = StrictFilterExpressionShape<{
   readonly conditions: ReadonlyArray<unknown>;
 }>;
 
+type FalseCandidateShape = {
+  readonly type: "FALSE";
+};
+
 type NegationCandidateShape = StrictFilterExpressionShape<{
   readonly type: "NOT";
   readonly condition: unknown;
@@ -343,7 +356,9 @@ type ExactShallowFilterExpression<Row, Candidate> = Candidate extends FilterGrou
     : never
   : Candidate extends NegationCandidateShape
     ? Candidate & RejectExpressionExtraKeys<Candidate, NegationCandidateShape>
-    : ExactFieldCondition<Row, Candidate>;
+    : Candidate extends FalseCandidateShape
+      ? Candidate & RejectExpressionExtraKeys<Candidate, FalseCandidateShape>
+      : ExactFieldCondition<Row, Candidate>;
 
 type FilterExpressionChildren<Candidate> = Candidate extends FilterGroupCandidateShape
   ? Candidate["conditions"] extends ReadonlyArray<unknown>

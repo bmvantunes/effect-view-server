@@ -1,6 +1,6 @@
 # Adopt canonical recursive filter expressions
 
-Live Query filtering uses one schema-derived language: `where` is an implicit-AND array of exact Field Conditions and recursive `AND`, `OR`, or `NOT` expressions, with semantic normalization for query identity. We reject both the former field-keyed filter map and direct adoption of an external grid model because a single expressive core language gives raw and grouped queries strong field/operator typing while allowing Adapters such as AG Grid to translate their own models without owning the View Server contract.
+Live Query filtering uses one schema-derived language: `where` is an implicit-AND array of exact Field Conditions, the source-native match-none expression `{ type: "FALSE" }`, and recursive `AND`, `OR`, or `NOT` expressions, with semantic normalization for query identity. We reject both the former field-keyed filter map and direct adoption of an external grid model because a single expressive core language gives raw and grouped queries strong field/operator typing while allowing Adapters such as AG Grid to translate their own models without owning the View Server contract.
 
 ## Considered options
 
@@ -12,6 +12,8 @@ Live Query filtering uses one schema-derived language: `where` is an implicit-AN
 
 - This is an intentional breaking public and wire-contract change with no compatibility form for field-keyed filters.
 - Empty generated predicates normalize to no filter, while malformed conditions remain invalid.
+- `{ type: "FALSE" }` is an explicit durable match-none predicate; unlike an empty
+  `in` list, it remains false for future values and composes under Boolean groups.
 - Query validation, normalization, identity, and execution must agree on schema-derived scalar paths, exact complements, and wire-safe values.
 - BigDecimal semantic keys come from one shared injective representation; operands that Effect's JSON codec cannot round-trip without scale loss are invalid.
 - Subscription APIs take an owned query snapshot at call time; caller mutation after `subscribe` cannot alter validation, routing, identity, or execution.

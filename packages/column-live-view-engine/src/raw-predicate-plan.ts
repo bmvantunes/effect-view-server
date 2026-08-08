@@ -36,6 +36,7 @@ export type TopicRawPredicatePlan = {
   readonly filters: ReadonlyArray<TopicRawPredicateFilterPlan>;
   readonly callbackRequired: boolean;
   readonly callbackSkippable?: boolean;
+  readonly alwaysFalse?: true;
 };
 
 export type PredicateFieldPlan = {

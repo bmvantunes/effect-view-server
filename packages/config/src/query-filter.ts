@@ -254,9 +254,6 @@ export type FalseExpression = {
   readonly type: "FALSE";
 };
 
-/** Alias for the explicit match-none predicate. */
-export type MatchNoneExpression = FalseExpression;
-
 export type NegationExpression<Row> = {
   readonly type: "NOT";
   readonly condition: FilterExpression<Row>;

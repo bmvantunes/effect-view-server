@@ -36,7 +36,6 @@ export type {
   TextMatchingOptions,
   TextSearchCondition,
   Where,
-  MatchNoneExpression,
 } from "./query-filter";
 export type {
   AggregateOrderByField,

@@ -1,5 +1,5 @@
 import { describe, expectTypeOf, it } from "@effect/vitest";
-import type { FalseExpression, MatchNoneExpression } from "./index";
+import type { FalseExpression } from "./index";
 import type { ExactWhere, Where } from "./query-filter";
 import type { GroupedQuery, RawQuery } from "./index";
 
@@ -11,7 +11,6 @@ type Row = {
 describe("explicit match-none filter types", () => {
   it("accepts FALSE in raw and grouped where expressions", () => {
     const falseExpression = { type: "FALSE" } satisfies FalseExpression;
-    const matchNoneExpression = { type: "FALSE" } satisfies MatchNoneExpression;
     const where = [falseExpression] satisfies Where<Row>;
     const directWhere = [{ type: "FALSE" }] satisfies Where<Row>;
     const composed = [
@@ -34,9 +33,7 @@ describe("explicit match-none filter types", () => {
     } satisfies GroupedQuery<Row>;
 
     expectTypeOf<FalseExpression>().toEqualTypeOf<{ readonly type: "FALSE" }>();
-    expectTypeOf<MatchNoneExpression>().toEqualTypeOf<FalseExpression>();
     expectTypeOf(falseExpression).toExtend<FalseExpression>();
-    expectTypeOf(matchNoneExpression).toExtend<MatchNoneExpression>();
     expectTypeOf(raw.where).toExtend<Where<Row>>();
     expectTypeOf(directRaw.where).toExtend<Where<Row>>();
     expectTypeOf(grouped.where).toExtend<Where<Row> | undefined>();

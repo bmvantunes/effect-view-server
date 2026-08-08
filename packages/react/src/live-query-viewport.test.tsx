@@ -1,4 +1,4 @@
-import { describe, expect, it } from "@effect/vitest";
+import { describe, expect, it, vi } from "@effect/vitest";
 import type {
   ViewServerLiveClient,
   ViewServerLiveEvent,
@@ -17,9 +17,16 @@ import {
   type ViewServerTransportError,
 } from "@effect-view-server/config";
 import { createInMemoryViewServer } from "@effect-view-server/in-memory";
-import { Deferred, Effect, Queue, Schema, Stream } from "effect";
+import { Deferred, Effect, Option, Queue, Schema, Stream } from "effect";
 import * as BigDecimal from "effect/BigDecimal";
-import { StrictMode, useLayoutEffect } from "react";
+import {
+  StrictMode,
+  useEffect,
+  useInsertionEffect,
+  useLayoutEffect,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { renderToString } from "react-dom/server";
 import { render } from "vitest-browser-react";
 import { createViewServerReact } from "./index";
@@ -127,6 +134,31 @@ const makeGridModel = <Row,>() => {
   };
 };
 
+const makeExternalStore = () => {
+  let snapshot = 0;
+  let onSnapshot: (() => void) | undefined;
+  const listeners = new Set<() => void>();
+  return {
+    getSnapshot: () => snapshot,
+    subscribe: (listener: () => void) => {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+    setSnapshot: (next: number) => {
+      snapshot = next;
+      onSnapshot?.();
+      for (const listener of listeners) {
+        listener();
+      }
+    },
+    setOnSnapshot: (listener: () => void) => {
+      onSnapshot = listener;
+    },
+  };
+};
+
 describe("useLiveQueryViewport", () => {
   it("renders loading chrome during SSR without starting a subscription", async () => {
     const runtime = createInMemoryViewServer(viewServer);
@@ -205,6 +237,192 @@ describe("useLiveQueryViewport", () => {
     await expect.poll(grid.rows).toStrictEqual({ 0: { id: "connected" } });
     expect(grid.rowKeys()).toStrictEqual({ 0: "connected" });
 
+    await view.unmount();
+    await Effect.runPromise(runtime.close);
+  });
+
+  it("does not notify a useSyncExternalStore sink during insertion cleanup", async ({
+    onTestFinished,
+  }) => {
+    const runtime = createInMemoryViewServer(viewServer);
+    const oldRequests: Array<Queue.Queue<ViewServerLiveEvent<object>>> = [];
+    const currentRequests: Array<Queue.Queue<ViewServerLiveEvent<object>>> = [];
+    let oldSubscriptionCloseCount = 0;
+    let currentSubscriptionCloseCount = 0;
+    const makeClient = (
+      requests: Array<Queue.Queue<ViewServerLiveEvent<object>>>,
+      onClose: () => void,
+    ): ViewServerLiveClient<typeof viewServer.topics> => ({
+      ...runtime.liveClient,
+      subscribe: adaptQuerySubstrate(() =>
+        Effect.gen(function* () {
+          const events = yield* Queue.unbounded<ViewServerLiveEvent<object>>();
+          requests.push(events);
+          return {
+            events: Stream.fromQueue(events),
+            close: () => Effect.sync(onClose),
+          };
+        }),
+      ),
+    });
+    const oldClient = makeClient(oldRequests, () => {
+      oldSubscriptionCloseCount += 1;
+    });
+    const currentClient = makeClient(currentRequests, () => {
+      currentSubscriptionCloseCount += 1;
+    });
+    const store = makeExternalStore();
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    onTestFinished(() => {
+      consoleError.mockRestore();
+    });
+    let insertionCleanupActive = false;
+    let callbacksDuringInsertionCleanup = 0;
+    let retainedViewport: LiveQueryViewport<typeof viewServer.topics, "orders"> | undefined;
+    let observedViewport: LiveQueryViewport<typeof viewServer.topics, "orders"> | undefined;
+    const grid = makeGridModel<{ readonly id: string }>();
+    const sink: LiveQueryViewportSink<{ readonly id: string }> = {
+      setRowCount: (count, keepRenderedRows) => {
+        if (insertionCleanupActive) {
+          callbacksDuringInsertionCleanup += 1;
+        }
+        grid.sink.setRowCount(count, keepRenderedRows);
+        store.setSnapshot(count);
+      },
+      setRowData: (rows, keys) => {
+        grid.sink.setRowData(rows, keys);
+      },
+    };
+
+    function StoreReader() {
+      const snapshot = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
+      return <output role="status">{snapshot}</output>;
+    }
+
+    function ViewportOwner(props: { readonly clientVersion: number }) {
+      useInsertionEffect(() => {
+        return () => {
+          insertionCleanupActive = true;
+        };
+      }, [props.clientVersion]);
+      useLayoutEffect(() => {
+        return () => {
+          insertionCleanupActive = false;
+        };
+      }, [props.clientVersion]);
+      const result = useLiveQueryViewport("orders");
+      observedViewport = result.viewport;
+      if (retainedViewport === undefined) {
+        retainedViewport = result.viewport;
+      }
+      useEffect(() => {
+        const generation = result.viewport.replace({
+          window: { firstRow: 0, lastRow: 9 },
+          query: { select: ["id"], where: [], orderBy: [] },
+          sink,
+        });
+        return generation.release;
+      }, [result.viewport]);
+      return null;
+    }
+
+    function ViewportRoot(props: {
+      readonly clientVersion: number;
+      readonly showViewport: boolean;
+    }) {
+      const [updates, setUpdates] = useState(0);
+      store.setOnSnapshot(() => {
+        setUpdates((current) => current + 1);
+      });
+      return (
+        <>
+          <div aria-label="store-updates" role="meter">
+            {updates}
+          </div>
+          <StoreReader />
+          {props.showViewport ? <ViewportOwner clientVersion={props.clientVersion} /> : null}
+        </>
+      );
+    }
+
+    const view = await render(
+      <ViewServerClientProvider client={oldClient}>
+        <ViewportRoot clientVersion={0} showViewport />
+      </ViewServerClientProvider>,
+    );
+    await expect.element(view.getByRole("meter", { name: "store-updates" })).toBeVisible();
+    await expect.poll(() => oldRequests.length).toBe(1);
+    const oldRequest = Option.getOrThrow(Option.fromUndefinedOr(oldRequests[0]));
+    await Effect.runPromise(
+      Queue.offer(oldRequest, {
+        type: "snapshot",
+        topic: "orders",
+        queryId: "old-client",
+        rows: [{ id: "old-client" }],
+        keys: ["old-client"],
+        totalRows: 1,
+        version: 1,
+      }),
+    );
+    await expect.poll(grid.rows).toStrictEqual({ 0: { id: "old-client" } });
+    expect(retainedViewport).toBeDefined();
+    expect(observedViewport).toBe(retainedViewport);
+
+    await view.rerender(
+      <ViewServerClientProvider client={currentClient}>
+        <ViewportRoot clientVersion={1} showViewport />
+      </ViewServerClientProvider>,
+    );
+    await expect.poll(() => oldSubscriptionCloseCount).toBe(1);
+    expect(retainedViewport).toBeDefined();
+    expect(observedViewport).toBe(retainedViewport);
+    expect(consoleError.mock.calls).toStrictEqual([]);
+    expect(callbacksDuringInsertionCleanup).toBe(0);
+    const currentViewport = Option.getOrThrow(Option.fromUndefinedOr(retainedViewport));
+    const currentGeneration = currentViewport.replace({
+      window: { firstRow: 0, lastRow: 9 },
+      query: { select: ["id"], where: [], orderBy: [] },
+      sink,
+    });
+    await expect.poll(() => currentRequests.length).toBe(1);
+    const currentRequest = Option.getOrThrow(Option.fromUndefinedOr(currentRequests[0]));
+    await Effect.runPromise(
+      Queue.offer(currentRequest, {
+        type: "snapshot",
+        topic: "orders",
+        queryId: "current-client",
+        rows: [{ id: "current-client" }],
+        keys: ["current-client"],
+        totalRows: 1,
+        version: 2,
+      }),
+    );
+    await expect.poll(grid.rows).toStrictEqual({ 0: { id: "current-client" } });
+    await Effect.runPromise(
+      Queue.offer(oldRequest, {
+        type: "snapshot",
+        topic: "orders",
+        queryId: "old-client",
+        rows: [{ id: "obsolete-client-late" }],
+        keys: ["obsolete-client-late"],
+        totalRows: 1,
+        version: 3,
+      }),
+    );
+    await expect.poll(grid.rows).toStrictEqual({ 0: { id: "current-client" } });
+    expect(currentGeneration).toBeDefined();
+    expect(retainedViewport).toBeDefined();
+    expect(consoleError.mock.calls).toStrictEqual([]);
+    expect(callbacksDuringInsertionCleanup).toBe(0);
+
+    await view.rerender(
+      <ViewServerClientProvider client={currentClient}>
+        <ViewportRoot clientVersion={1} showViewport={false} />
+      </ViewServerClientProvider>,
+    );
+    await expect.poll(() => currentSubscriptionCloseCount).toBe(1);
+    expect(consoleError.mock.calls).toStrictEqual([]);
+    expect(callbacksDuringInsertionCleanup).toBe(0);
     await view.unmount();
     await Effect.runPromise(runtime.close);
   });

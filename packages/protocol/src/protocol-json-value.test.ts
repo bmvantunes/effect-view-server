@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Schema, SchemaAST, SchemaGetter } from "effect";
+import { Effect, Option, Schema, SchemaAST, SchemaGetter } from "effect";
 import { encodeJsonFieldValue } from "./protocol-json-field-codec";
 import {
   isProtocolJson,
@@ -159,6 +159,25 @@ describe("protocol JSON values", () => {
       );
 
       expect(unionError).toBe("Expected a plain data record or dense array at $.payload.");
+    }),
+  );
+
+  it.effect("guards ObjectKeyword values inside declaration schemas", () =>
+    Effect.gen(function* () {
+      const errors = {
+        invalid: (message: string) => message,
+        notJsonSafe: (message: string) => message,
+      };
+
+      const error = yield* Effect.flip(
+        encodeJsonFieldValue(
+          Schema.Option(Schema.ObjectKeyword),
+          Option.some(new Map([["venue", "xnys"]])),
+          errors,
+        ),
+      );
+
+      expect(error).toBe("Expected a plain data record or dense array at $.value.");
     }),
   );
 

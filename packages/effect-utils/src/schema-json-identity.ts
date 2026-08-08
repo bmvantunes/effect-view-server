@@ -1,4 +1,15 @@
-import { Result, Schema, SchemaAST } from "effect";
+import {
+  Cause,
+  Chunk,
+  Exit,
+  HashMap,
+  HashSet,
+  Option,
+  Redacted,
+  Result,
+  Schema,
+  SchemaAST,
+} from "effect";
 import {
   materializeStrictJson,
   StrictJsonMaterializationError,
@@ -341,6 +352,12 @@ const assertNoAccessorProperties = (
   }
 };
 
+const guardDeclarationValue = (
+  guard: StrictJsonObjectKeywordGuard,
+  value: unknown,
+  path: string,
+): unknown => guard(value, path);
+
 const makeStrictJsonObjectKeywordGuard = (
   root: SchemaAST.AST,
   side: StrictJsonGuardSide,
@@ -372,6 +389,281 @@ const makeStrictJsonObjectKeywordGuard = (
     if (SchemaAST.isSuspend(ast)) {
       implementation = (value, path) => compile(ast.thunk())(value, path);
       return guard;
+    }
+
+    if (SchemaAST.isDeclaration(ast)) {
+      // Declaration ASTs retain type parameters but erase their runtime shape. Inspect the
+      // built-in Effect representations explicitly so ObjectKeyword values cannot hide inside
+      // collections, causes, or result wrappers.
+      const typeParameters = ast.typeParameters.map(compile);
+      const typeParameter = (index: number): StrictJsonObjectKeywordGuard => typeParameters[index]!;
+      const tag = typeConstructorTag(ast);
+      const guardKnownCauseReason = (
+        reason: Cause.Reason<unknown>,
+        path: string,
+        errorGuard: StrictJsonObjectKeywordGuard,
+        defectGuard: StrictJsonObjectKeywordGuard,
+      ): Cause.Reason<unknown> => {
+        if (Cause.isFailReason(reason)) {
+          const error = reason.error;
+          const snapshot = guardDeclarationValue(errorGuard, error, `${path}.error`);
+          return mode === "snapshot" && snapshot !== error
+            ? Cause.makeFailReason(snapshot)
+            : reason;
+        }
+        if (Cause.isDieReason(reason)) {
+          const defect = reason.defect;
+          const snapshot = guardDeclarationValue(defectGuard, defect, `${path}.defect`);
+          return mode === "snapshot" && snapshot !== defect
+            ? Cause.makeDieReason(snapshot)
+            : reason;
+        }
+        return reason;
+      };
+      const guardCauseReason = (
+        reason: unknown,
+        path: string,
+        errorGuard: StrictJsonObjectKeywordGuard,
+        defectGuard: StrictJsonObjectKeywordGuard,
+      ): unknown =>
+        Cause.isReason(reason)
+          ? guardKnownCauseReason(reason, path, errorGuard, defectGuard)
+          : reason;
+      const guardCause = (
+        value: unknown,
+        path: string,
+        errorGuard: StrictJsonObjectKeywordGuard,
+        defectGuard: StrictJsonObjectKeywordGuard,
+      ): { readonly value: unknown; readonly changed: boolean } => {
+        if (!Cause.isCause(value)) {
+          return { value, changed: false };
+        }
+        const snapshots: Array<Cause.Reason<unknown>> = [];
+        let changed = false;
+        for (const [index, reason] of value.reasons.entries()) {
+          const snapshot = guardKnownCauseReason(
+            reason,
+            `${path}.reasons[${index}]`,
+            errorGuard,
+            defectGuard,
+          );
+          snapshots.push(snapshot);
+          changed ||= snapshot !== reason;
+        }
+        return {
+          value: mode === "snapshot" && changed ? Cause.fromReasons(snapshots) : value,
+          changed,
+        };
+      };
+
+      if (tag === "effect/CauseReason") {
+        implementation = (value, path) =>
+          guardCauseReason(value, path, typeParameter(0), typeParameter(1));
+        return guard;
+      }
+
+      if (tag === "effect/Cause") {
+        implementation = (value, path) =>
+          guardCause(value, path, typeParameter(0), typeParameter(1)).value;
+        return guard;
+      }
+
+      if (tag === "effect/Option") {
+        implementation = (value, path) => {
+          if (!Option.isOption(value) || Option.isNone(value)) {
+            return value;
+          }
+          const optionValue = value.value;
+          const snapshot = guardDeclarationValue(typeParameter(0), optionValue, `${path}.value`);
+          if (mode !== "snapshot" || snapshot === optionValue) {
+            return value;
+          }
+          return cloneWithReplacements(value, new Map([["value", snapshot]]));
+        };
+        return guard;
+      }
+
+      if (tag === "effect/Result") {
+        implementation = (value, path) => {
+          if (!Result.isResult(value)) {
+            return value;
+          }
+          if (Result.isSuccess(value)) {
+            const success = value.success;
+            const snapshot = guardDeclarationValue(typeParameter(0), success, `${path}.success`);
+            if (mode !== "snapshot" || snapshot === success) {
+              return value;
+            }
+            return cloneWithReplacements(value, new Map([["success", snapshot]]));
+          }
+          const failure = value.failure;
+          const snapshot = guardDeclarationValue(typeParameter(1), failure, `${path}.failure`);
+          if (mode !== "snapshot" || snapshot === failure) {
+            return value;
+          }
+          return cloneWithReplacements(value, new Map([["failure", snapshot]]));
+        };
+        return guard;
+      }
+
+      if (tag === "effect/Redacted") {
+        implementation = (value, path) => {
+          if (!Redacted.isRedacted(value)) {
+            return value;
+          }
+          const redactedValue = Redacted.value(value);
+          const snapshot = guardDeclarationValue(typeParameter(0), redactedValue, `${path}.value`);
+          if (mode !== "snapshot" || snapshot === redactedValue) {
+            return value;
+          }
+          return Redacted.make(
+            snapshot,
+            value.label === undefined ? undefined : { label: value.label },
+          );
+        };
+        return guard;
+      }
+
+      if (tag === "effect/Exit") {
+        implementation = (value, path) => {
+          if (!Exit.isExit(value)) {
+            return value;
+          }
+          if (Exit.isSuccess(value)) {
+            const success = value.value;
+            const snapshot = guardDeclarationValue(typeParameter(0), success, `${path}.value`);
+            if (mode !== "snapshot" || snapshot === success) {
+              return value;
+            }
+            return cloneWithReplacements(value, new Map([["value", snapshot]]));
+          }
+          const cause = guardCause(
+            value.cause,
+            `${path}.cause`,
+            typeParameter(1),
+            typeParameter(2),
+          );
+          if (mode !== "snapshot" || !cause.changed) {
+            return value;
+          }
+          return cloneWithReplacements(value, new Map([["cause", cause.value]]));
+        };
+        return guard;
+      }
+
+      if (tag === "effect/ReadonlyMap") {
+        implementation = (value, path) => {
+          if (!(value instanceof globalThis.Map)) {
+            return value;
+          }
+          const snapshots: Array<readonly [unknown, unknown]> = [];
+          let changed = false;
+          let index = 0;
+          for (const [key, entryValue] of value) {
+            const entryPath = `${path}.entries[${index}]`;
+            const keySnapshot = guardDeclarationValue(typeParameter(0), key, `${entryPath}[0]`);
+            const valueSnapshot = guardDeclarationValue(
+              typeParameter(1),
+              entryValue,
+              `${entryPath}[1]`,
+            );
+            snapshots.push([keySnapshot, valueSnapshot]);
+            changed ||= keySnapshot !== key || valueSnapshot !== entryValue;
+            index += 1;
+          }
+          return mode === "snapshot" && changed ? new Map(snapshots) : value;
+        };
+        return guard;
+      }
+
+      if (tag === "effect/ReadonlySet") {
+        implementation = (value, path) => {
+          if (!(value instanceof globalThis.Set)) {
+            return value;
+          }
+          const entries = Array.from(value);
+          const snapshots: Array<unknown> = [];
+          let changed = false;
+          let index = 0;
+          for (const entry of entries) {
+            const snapshot = guardDeclarationValue(
+              typeParameter(0),
+              entry,
+              `${path}.values[${index}]`,
+            );
+            snapshots.push(snapshot);
+            changed ||= snapshot !== entry;
+            index += 1;
+          }
+          return mode === "snapshot" && changed ? new Set(snapshots) : value;
+        };
+        return guard;
+      }
+
+      if (tag === "effect/HashMap") {
+        implementation = (value, path) => {
+          if (!HashMap.isHashMap(value)) {
+            return value;
+          }
+          const snapshots: Array<readonly [unknown, unknown]> = [];
+          let changed = false;
+          for (const [index, [key, entryValue]] of HashMap.toEntries(value).entries()) {
+            const entryPath = `${path}.entries[${index}]`;
+            const keySnapshot = guardDeclarationValue(typeParameter(0), key, `${entryPath}[0]`);
+            const valueSnapshot = guardDeclarationValue(
+              typeParameter(1),
+              entryValue,
+              `${entryPath}[1]`,
+            );
+            snapshots.push([keySnapshot, valueSnapshot]);
+            changed ||= keySnapshot !== key || valueSnapshot !== entryValue;
+          }
+          return mode === "snapshot" && changed ? HashMap.fromIterable(snapshots) : value;
+        };
+        return guard;
+      }
+
+      if (tag === "effect/HashSet") {
+        implementation = (value, path) => {
+          if (!HashSet.isHashSet(value)) {
+            return value;
+          }
+          const snapshots: Array<unknown> = [];
+          let changed = false;
+          for (const [index, entry] of Array.from(value).entries()) {
+            const snapshot = guardDeclarationValue(
+              typeParameter(0),
+              entry,
+              `${path}.values[${index}]`,
+            );
+            snapshots.push(snapshot);
+            changed ||= snapshot !== entry;
+          }
+          return mode === "snapshot" && changed ? HashSet.fromIterable(snapshots) : value;
+        };
+        return guard;
+      }
+
+      if (tag === "effect/Chunk") {
+        implementation = (value, path) => {
+          if (!Chunk.isChunk(value)) {
+            return value;
+          }
+          const snapshots: Array<unknown> = [];
+          let changed = false;
+          for (const [index, entry] of Chunk.toReadonlyArray(value).entries()) {
+            const snapshot = guardDeclarationValue(
+              typeParameter(0),
+              entry,
+              `${path}.values[${index}]`,
+            );
+            snapshots.push(snapshot);
+            changed ||= snapshot !== entry;
+          }
+          return mode === "snapshot" && changed ? Chunk.fromIterable(snapshots) : value;
+        };
+        return guard;
+      }
     }
 
     if (ast.encoding !== undefined && ast.encoding.length > 0) {
@@ -520,6 +812,9 @@ export const schemaAstContainsObjectKeyword = (root: SchemaAST.AST): boolean => 
       return true;
     }
     if (SchemaAST.isSuspend(ast) && visit(ast.thunk())) {
+      return true;
+    }
+    if (SchemaAST.isDeclaration(ast) && ast.typeParameters.some(visit)) {
       return true;
     }
     if (

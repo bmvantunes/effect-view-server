@@ -1,9 +1,12 @@
 import { describe, expect, it } from "@effect/vitest";
 import {
+  Cause,
   Chunk,
+  Exit,
   HashMap,
   HashSet,
   Option,
+  Redacted,
   Result,
   Schema,
   SchemaGetter,
@@ -212,6 +215,220 @@ describe("Schema JSON identity", () => {
     expect(() => dottedKeyIdentity.canonicalKey({ "foo.bar": nonJson })).toThrow(
       /^Expected a plain data record or dense array at \$\["foo\.bar"\]\.$/,
     );
+
+    const declarationIdentities = [
+      ["Option", makeSchemaJsonIdentity(Schema.Option(Schema.ObjectKeyword)), Option.some(nonJson)],
+      [
+        "HashMap",
+        makeSchemaJsonIdentity(Schema.HashMap(Schema.String, Schema.ObjectKeyword)),
+        HashMap.make(["key", nonJson]),
+      ],
+      [
+        "HashSet",
+        makeSchemaJsonIdentity(Schema.HashSet(Schema.ObjectKeyword)),
+        HashSet.make(nonJson),
+      ],
+      ["Chunk", makeSchemaJsonIdentity(Schema.Chunk(Schema.ObjectKeyword)), Chunk.make(nonJson)],
+    ] as const;
+    for (const [name, declarationIdentity, value] of declarationIdentities) {
+      expect(() => declarationIdentity.canonicalKey(value), name).toThrow(
+        /^Expected a plain data record or dense array at \$\.(?:value|entries\[0\]\[1\]|values\[0\])\.$/,
+      );
+    }
+
+    const resultIdentity = makeSchemaJsonIdentity(
+      Schema.Result(Schema.ObjectKeyword, Schema.ObjectKeyword),
+    );
+    expect(() => resultIdentity.canonicalKey(Result.succeed(nonJson))).toThrow(
+      /^Expected a plain data record or dense array at \$\.success\.$/,
+    );
+    expect(() => resultIdentity.canonicalKey(Result.fail(nonJson))).toThrow(
+      /^Expected a plain data record or dense array at \$\.failure\.$/,
+    );
+
+    const readonlyMapIdentity = makeSchemaJsonIdentity(
+      Schema.ReadonlyMap(Schema.String, Schema.ObjectKeyword),
+    );
+    expect(() => readonlyMapIdentity.canonicalKey(new Map([["key", nonJson]]))).toThrow(
+      /^Expected a plain data record or dense array at \$\.entries\[0\]\[1\]\.$/,
+    );
+    const readonlySetIdentity = makeSchemaJsonIdentity(Schema.ReadonlySet(Schema.ObjectKeyword));
+    expect(() => readonlySetIdentity.canonicalKey(new Set([nonJson]))).toThrow(
+      /^Expected a plain data record or dense array at \$\.values\[0\]\.$/,
+    );
+    expect(
+      makeStrictJsonSchemaGuard(Schema.toCodecJson(Schema.ReadonlySet(Schema.ObjectKeyword)).ast)(
+        "not-a-set",
+      ),
+    ).toStrictEqual(Result.succeed(undefined));
+
+    const causeReasonIdentity = makeSchemaJsonIdentity(
+      Schema.CauseReason(Schema.ObjectKeyword, Schema.ObjectKeyword),
+    );
+    expect(() => causeReasonIdentity.canonicalKey(Cause.fail(nonJson).reasons[0]!)).toThrow(
+      /^Expected a plain data record or dense array at \$\.error\.$/,
+    );
+    expect(() => causeReasonIdentity.canonicalKey(Cause.die(nonJson).reasons[0]!)).toThrow(
+      /^Expected a plain data record or dense array at \$\.defect\.$/,
+    );
+
+    const causeIdentity = makeSchemaJsonIdentity(
+      Schema.Cause(Schema.ObjectKeyword, Schema.ObjectKeyword),
+    );
+    expect(() => causeIdentity.canonicalKey(Cause.fail(nonJson))).toThrow(
+      /^Expected a plain data record or dense array at \$\.reasons\[0\]\.error\.$/,
+    );
+
+    const exitIdentity = makeSchemaJsonIdentity(
+      Schema.Exit(Schema.ObjectKeyword, Schema.ObjectKeyword, Schema.ObjectKeyword),
+    );
+    expect(() => exitIdentity.canonicalKey(Exit.succeed(nonJson))).toThrow(
+      /^Expected a plain data record or dense array at \$\.value\.$/,
+    );
+    expect(() => exitIdentity.canonicalKey(Exit.failCause(Cause.fail(nonJson)))).toThrow(
+      /^Expected a plain data record or dense array at \$\.cause\.reasons\[0\]\.error\.$/,
+    );
+
+    expect(
+      makeStrictJsonSchemaGuard(
+        Schema.toCodecJson(Schema.HashMap(Schema.String, Schema.ObjectKeyword)).ast,
+      )("not-a-hash-map"),
+    ).toStrictEqual(Result.succeed(undefined));
+    expect(
+      makeStrictJsonSchemaGuard(Schema.toCodecJson(Schema.HashSet(Schema.ObjectKeyword)).ast)(
+        "not-a-hash-set",
+      ),
+    ).toStrictEqual(Result.succeed(undefined));
+    expect(
+      makeStrictJsonSchemaGuard(Schema.toCodecJson(Schema.Chunk(Schema.ObjectKeyword)).ast)(
+        "not-a-chunk",
+      ),
+    ).toStrictEqual(Result.succeed(undefined));
+    expect(
+      makeStrictJsonSchemaGuard(Schema.toCodecJson(Schema.Redacted(Schema.ObjectKeyword)).ast)(
+        "not-redacted",
+      ),
+    ).toStrictEqual(Result.succeed(undefined));
+    expect(
+      makeStrictJsonSchemaGuard(
+        Schema.toCodecJson(Schema.Exit(Schema.ObjectKeyword, Schema.String, Schema.String)).ast,
+      )("not-an-exit"),
+    ).toStrictEqual(Result.succeed(undefined));
+    expect(
+      makeStrictJsonSchemaGuard(
+        Schema.toCodecJson(Schema.ReadonlyMap(Schema.String, Schema.ObjectKeyword)).ast,
+      )("not-a-map"),
+    ).toStrictEqual(Result.succeed(undefined));
+    expect(
+      makeStrictJsonSchemaGuard(
+        Schema.toCodecJson(Schema.Cause(Schema.ObjectKeyword, Schema.ObjectKeyword)).ast,
+      )("not-a-cause"),
+    ).toStrictEqual(Result.succeed(undefined));
+    expect(
+      makeStrictJsonSchemaGuard(Schema.toCodecJson(Schema.Option(Schema.ObjectKeyword)).ast)(
+        Option.none(),
+      ),
+    ).toStrictEqual(Result.succeed(undefined));
+    expect(
+      makeStrictJsonSchemaGuard(Schema.toCodecJson(Schema.Option(Schema.ObjectKeyword)).ast)(
+        "not-an-option",
+      ),
+    ).toStrictEqual(Result.succeed(undefined));
+    expect(
+      makeStrictJsonSchemaGuard(
+        Schema.toCodecJson(Schema.Result(Schema.ObjectKeyword, Schema.ObjectKeyword)).ast,
+      )("not-a-result"),
+    ).toStrictEqual(Result.succeed(undefined));
+    expect(
+      makeStrictJsonSchemaGuard(
+        Schema.toCodecJson(Schema.CauseReason(Schema.ObjectKeyword, Schema.ObjectKeyword)).ast,
+      )("not-a-reason"),
+    ).toStrictEqual(Result.succeed(undefined));
+
+    const redactedIdentity = makeSchemaJsonIdentity(Schema.Redacted(Schema.ObjectKeyword));
+    expect(() => redactedIdentity.canonicalKey(Redacted.make(nonJson))).toThrow(
+      /^Expected a plain data record or dense array at \$\.value\.$/,
+    );
+
+    const validObject = { venue: "xnys" };
+    expect(
+      makeSchemaJsonIdentity(Schema.Option(Schema.ObjectKeyword)).canonicalJson(
+        Option.some(validObject),
+      ),
+    ).toStrictEqual({ _tag: "Some", value: validObject });
+    expect(
+      makeSchemaJsonIdentity(
+        Schema.Result(Schema.ObjectKeyword, Schema.ObjectKeyword),
+      ).canonicalJson(Result.succeed(validObject)),
+    ).toStrictEqual({ _tag: "Success", success: validObject });
+    expect(
+      makeSchemaJsonIdentity(
+        Schema.Result(Schema.ObjectKeyword, Schema.ObjectKeyword),
+      ).canonicalJson(Result.fail(validObject)),
+    ).toStrictEqual({ _tag: "Failure", failure: validObject });
+    expect(
+      makeSchemaJsonIdentity(Schema.ReadonlyMap(Schema.String, Schema.ObjectKeyword)).canonicalJson(
+        new Map([["key", validObject]]),
+      ),
+    ).toStrictEqual([["key", validObject]]);
+    expect(
+      makeSchemaJsonIdentity(Schema.ReadonlySet(Schema.ObjectKeyword)).canonicalJson(
+        new Set([validObject]),
+      ),
+    ).toStrictEqual([validObject]);
+    expect(
+      makeSchemaJsonIdentity(Schema.HashMap(Schema.String, Schema.ObjectKeyword)).canonicalJson(
+        HashMap.make(["key", validObject]),
+      ),
+    ).toStrictEqual([["key", validObject]]);
+    expect(
+      makeSchemaJsonIdentity(Schema.HashSet(Schema.ObjectKeyword)).canonicalJson(
+        HashSet.make(validObject),
+      ),
+    ).toStrictEqual([validObject]);
+    expect(
+      makeSchemaJsonIdentity(Schema.Chunk(Schema.ObjectKeyword)).canonicalJson(
+        Chunk.make(validObject),
+      ),
+    ).toStrictEqual([validObject]);
+    expect(
+      makeSchemaJsonIdentity(
+        Schema.CauseReason(Schema.ObjectKeyword, Schema.ObjectKeyword),
+      ).canonicalJson(Cause.fail(validObject).reasons[0]!),
+    ).toStrictEqual({ _tag: "Fail", error: validObject });
+    expect(
+      makeSchemaJsonIdentity(
+        Schema.CauseReason(Schema.ObjectKeyword, Schema.ObjectKeyword),
+      ).canonicalJson(Cause.die(validObject).reasons[0]!),
+    ).toStrictEqual({ _tag: "Die", defect: validObject });
+    makeSchemaJsonIdentity(
+      Schema.CauseReason(Schema.ObjectKeyword, Schema.ObjectKeyword),
+    ).canonicalJson(Cause.interrupt().reasons[0]!);
+    expect(
+      makeSchemaJsonIdentity(
+        Schema.Cause(Schema.ObjectKeyword, Schema.ObjectKeyword),
+      ).canonicalJson(Cause.fail(validObject)),
+    ).toStrictEqual([{ _tag: "Fail", error: validObject }]);
+    expect(
+      makeSchemaJsonIdentity(
+        Schema.Exit(Schema.ObjectKeyword, Schema.ObjectKeyword, Schema.ObjectKeyword),
+      ).canonicalJson(Exit.succeed(validObject)),
+    ).toStrictEqual({ _tag: "Success", value: validObject });
+    expect(
+      makeSchemaJsonIdentity(
+        Schema.Exit(Schema.ObjectKeyword, Schema.ObjectKeyword, Schema.ObjectKeyword),
+      ).canonicalJson(Exit.failCause(Cause.fail(validObject))),
+    ).toStrictEqual({ _tag: "Failure", cause: [{ _tag: "Fail", error: validObject }] });
+    expect(
+      makeSchemaJsonIdentity(Schema.Redacted(Schema.ObjectKeyword)).canonicalJson(
+        Redacted.make(validObject),
+      ),
+    ).toStrictEqual(validObject);
+    expect(
+      makeSchemaJsonIdentity(Schema.Redacted(Schema.ObjectKeyword)).canonicalJson(
+        Redacted.make(validObject, { label: "profile" }),
+      ),
+    ).toStrictEqual(validObject);
 
     let nestedAccessorReads = 0;
     const nestedAccessorValue = {};

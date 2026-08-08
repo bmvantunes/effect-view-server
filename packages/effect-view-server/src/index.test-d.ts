@@ -17,12 +17,16 @@ import type * as EffectOption from "effect/Option";
 import type { BigDecimal } from "effect/BigDecimal";
 import type { ViewServerLiveClient } from "effect-view-server/client";
 import {
+  compareWireSafeBigDecimalComparisonMetadata,
   compareTrustedWireSafeBigDecimal,
   compareWireSafeBigDecimal,
   inspectWireSafeBigDecimal,
   isWireSafeBigDecimal,
+  trustedWireSafeBigDecimalComparisonMetadata,
   type WireSafeBigDecimal,
+  type WireSafeBigDecimalComparisonMetadata,
   type WireSafeBigDecimalInspection,
+  wireSafeBigDecimalComparisonMetadata,
   wireSafeBigDecimalSemanticKey,
 } from "effect-view-server/value-semantics";
 import * as PublicValueSemantics from "effect-view-server/value-semantics";
@@ -44,6 +48,7 @@ const Order = Schema.Struct({
 });
 
 declare const publicBigDecimal: BigDecimal;
+declare const publicBigDecimalComparisonMetadata: WireSafeBigDecimalComparisonMetadata;
 
 const viewServer = defineViewServerConfig({
   topics: {
@@ -238,6 +243,18 @@ describe("public effect-view-server subpath type contracts", () => {
     expectTypeOf(compareTrustedWireSafeBigDecimal).toEqualTypeOf<
       (left: BigDecimal, right: BigDecimal) => number | undefined
     >();
+    expectTypeOf(wireSafeBigDecimalComparisonMetadata).toEqualTypeOf<
+      (value: unknown) => WireSafeBigDecimalComparisonMetadata | undefined
+    >();
+    expectTypeOf(trustedWireSafeBigDecimalComparisonMetadata).toEqualTypeOf<
+      (value: BigDecimal) => WireSafeBigDecimalComparisonMetadata | undefined
+    >();
+    expectTypeOf(compareWireSafeBigDecimalComparisonMetadata).toEqualTypeOf<
+      (
+        left: WireSafeBigDecimalComparisonMetadata,
+        right: WireSafeBigDecimalComparisonMetadata,
+      ) => number | undefined
+    >();
     expectTypeOf(wireSafeBigDecimalSemanticKey).toEqualTypeOf<
       (value: unknown) => string | undefined
     >();
@@ -247,6 +264,13 @@ describe("public effect-view-server subpath type contracts", () => {
     compareTrustedWireSafeBigDecimal({}, publicBigDecimal);
     // @ts-expect-error trusted comparison requires admitted BigDecimal operands.
     compareTrustedWireSafeBigDecimal(publicBigDecimal, 1n);
+    compareWireSafeBigDecimalComparisonMetadata(
+      // @ts-expect-error reusable comparison accepts only opaque View Server metadata.
+      publicBigDecimal,
+      publicBigDecimalComparisonMetadata,
+    );
+    // @ts-expect-error opaque comparison metadata cannot be constructed structurally.
+    compareWireSafeBigDecimalComparisonMetadata({}, publicBigDecimalComparisonMetadata);
   });
 
   it("preserves query result inference through public subpaths", () => {

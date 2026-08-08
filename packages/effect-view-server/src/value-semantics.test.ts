@@ -7,8 +7,11 @@ describe("public value semantics", () => {
     expect(Object.keys(ValueSemantics).sort()).toStrictEqual([
       "compareTrustedWireSafeBigDecimal",
       "compareWireSafeBigDecimal",
+      "compareWireSafeBigDecimalComparisonMetadata",
       "inspectWireSafeBigDecimal",
       "isWireSafeBigDecimal",
+      "trustedWireSafeBigDecimalComparisonMetadata",
+      "wireSafeBigDecimalComparisonMetadata",
       "wireSafeBigDecimalSemanticKey",
     ]);
   });
@@ -24,6 +27,12 @@ describe("public value semantics", () => {
       ValueSemantics.wireSafeBigDecimalSemanticKey(canonical),
     );
     expect(ValueSemantics.compareTrustedWireSafeBigDecimal(tiny, lessTiny)).toBe(-1);
+    expect(
+      Reflect.apply(ValueSemantics.compareWireSafeBigDecimalComparisonMetadata, undefined, [
+        ValueSemantics.trustedWireSafeBigDecimalComparisonMetadata(scaled),
+        ValueSemantics.wireSafeBigDecimalComparisonMetadata(canonical),
+      ]),
+    ).toBe(0);
   });
 
   it("rejects invalid and hostile values at the public boundary", () => {

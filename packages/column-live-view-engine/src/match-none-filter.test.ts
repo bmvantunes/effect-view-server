@@ -26,13 +26,9 @@ const Row = Schema.Struct({
 const metadata = rawQueryCompilerMetadata(Row);
 
 describe("explicit match-none filter", () => {
-  it("normalizes to one stable source expression and composes Boolean operators", () => {
+  it("normalizes source-native FALSE and composes Boolean operators", () => {
     const falseWhere = normalizeWhere([{ type: "FALSE" }], metadata.filterFields);
     const secondFalseWhere = normalizeWhere([{ type: "FALSE" }], metadata.filterFields);
-    const notFalse = normalizeWhere(
-      [{ type: "NOT", condition: { type: "FALSE" } }],
-      metadata.filterFields,
-    );
     const doubleNotFalse = normalizeWhere(
       [{ type: "NOT", condition: { type: "NOT", condition: { type: "FALSE" } } }],
       metadata.filterFields,
@@ -41,15 +37,6 @@ describe("explicit match-none filter", () => {
       [
         {
           type: "AND",
-          conditions: [{ field: "status", type: "equals", filter: "open" }, { type: "FALSE" }],
-        },
-      ],
-      metadata.filterFields,
-    );
-    const orFalse = normalizeWhere(
-      [
-        {
-          type: "OR",
           conditions: [{ field: "status", type: "equals", filter: "open" }, { type: "FALSE" }],
         },
       ],
@@ -101,12 +88,7 @@ describe("explicit match-none filter", () => {
       metadata.filterFields,
     );
     const allFalse = normalizeWhere(
-      [
-        {
-          type: "OR",
-          conditions: [{ type: "FALSE" }, { type: "FALSE" }],
-        },
-      ],
+      [{ type: "OR", conditions: [{ type: "FALSE" }, { type: "FALSE" }] }],
       metadata.filterFields,
     );
 
@@ -123,18 +105,54 @@ describe("explicit match-none filter", () => {
     expect(emptyInOrFalse?._tag).toBe("false");
     expect(allTrue).toBeUndefined();
     expect(allFalse?._tag).toBe("false");
-    expect(
-      compareRuntimeFilterExpressionStructure(
-        { _tag: "false", key: "expression:FALSE" },
-        { _tag: "false", key: "expression:FALSE" },
-      ),
-    ).toBe(0);
-    expect(
-      compareRuntimeFilterExpressionStructure(
-        { _tag: "true", key: "expression:TRUE" },
-        { _tag: "true", key: "expression:TRUE" },
-      ),
-    ).toBe(0);
+  });
+
+  it("compiles source constants and short-circuits Boolean siblings", () => {
+    const falseWhere = normalizeWhere([{ type: "FALSE" }], metadata.filterFields);
+    const notFalse = normalizeWhere(
+      [{ type: "NOT", condition: { type: "FALSE" } }],
+      metadata.filterFields,
+    );
+    const andFalse = normalizeWhere(
+      [
+        {
+          type: "AND",
+          conditions: [{ field: "status", type: "equals", filter: "open" }, { type: "FALSE" }],
+        },
+      ],
+      metadata.filterFields,
+    );
+    const orFalse = normalizeWhere(
+      [
+        {
+          type: "OR",
+          conditions: [{ field: "status", type: "equals", filter: "open" }, { type: "FALSE" }],
+        },
+      ],
+      metadata.filterFields,
+    );
+    const unknownCondition: RuntimeFilterExpression = {
+      _tag: "condition",
+      key: "unknown-condition",
+      field: "status",
+      type: "equals",
+      caseSensitive: false,
+      accentSensitive: false,
+      filter: "open",
+    };
+    const falseWithUnknown: RuntimeFilterExpression = {
+      _tag: "group",
+      key: "false-with-unknown",
+      type: "OR",
+      conditions: [{ _tag: "false", key: "expression:FALSE" }, unknownCondition],
+    };
+    const trueWithUnknown: RuntimeFilterExpression = {
+      _tag: "group",
+      key: "true-with-unknown",
+      type: "AND",
+      conditions: [{ _tag: "true", key: "expression:TRUE" }, unknownCondition],
+    };
+
     expect(
       compileRawPredicate<typeof Row.Type>(metadata, falseWhere).matches({
         id: "a",
@@ -201,28 +219,6 @@ describe("explicit match-none filter", () => {
         value: 1,
       }),
     ).toBe(false);
-
-    const unknownCondition: RuntimeFilterExpression = {
-      _tag: "condition",
-      key: "unknown-condition",
-      field: "status",
-      type: "equals",
-      caseSensitive: false,
-      accentSensitive: false,
-      filter: "open",
-    };
-    const falseWithUnknown: RuntimeFilterExpression = {
-      _tag: "group",
-      key: "false-with-unknown",
-      type: "OR",
-      conditions: [{ _tag: "false", key: "expression:FALSE" }, unknownCondition],
-    };
-    const trueWithUnknown: RuntimeFilterExpression = {
-      _tag: "group",
-      key: "true-with-unknown",
-      type: "AND",
-      conditions: [{ _tag: "true", key: "expression:TRUE" }, unknownCondition],
-    };
     expect(
       compileRawPredicate<typeof Row.Type>(metadata, falseWithUnknown).matches({
         id: "a",
@@ -237,6 +233,18 @@ describe("explicit match-none filter", () => {
         value: 1,
       }),
     ).toBe(true);
+  });
+
+  it("handles shared source constants in recursive expression graphs", () => {
+    const unknownCondition: RuntimeFilterExpression = {
+      _tag: "condition",
+      key: "unknown-condition",
+      field: "status",
+      type: "equals",
+      caseSensitive: false,
+      accentSensitive: false,
+      filter: "open",
+    };
     const sharedTrue: RuntimeFilterExpression = { _tag: "true", key: "expression:TRUE" };
     const sharedFalse: RuntimeFilterExpression = {
       _tag: "false",
@@ -272,6 +280,25 @@ describe("explicit match-none filter", () => {
       type: "OR",
       conditions: [sharedTrue, sharedTrue],
     };
+    const sharedDag: RuntimeFilterExpression = {
+      _tag: "group",
+      key: "expression:OR:2",
+      type: "OR",
+      conditions: [sharedFalse, sharedFalse],
+    };
+
+    expect(
+      compareRuntimeFilterExpressionStructure(
+        { _tag: "false", key: "expression:FALSE" },
+        { _tag: "false", key: "expression:FALSE" },
+      ),
+    ).toBe(0);
+    expect(
+      compareRuntimeFilterExpressionStructure(
+        { _tag: "true", key: "expression:TRUE" },
+        { _tag: "true", key: "expression:TRUE" },
+      ),
+    ).toBe(0);
     expect(
       compileRawPredicate<typeof Row.Type>(metadata, allTrueGroup).matches({
         id: "a",
@@ -307,13 +334,6 @@ describe("explicit match-none filter", () => {
         value: 1,
       }),
     ).toBe(true);
-
-    const sharedDag: RuntimeFilterExpression = {
-      _tag: "group",
-      key: "expression:OR:2",
-      type: "OR",
-      conditions: [sharedFalse, sharedFalse],
-    };
     expect(
       compileRawPredicate<typeof Row.Type>(metadata, sharedDag).matches({
         id: "a",
@@ -323,11 +343,12 @@ describe("explicit match-none filter", () => {
     ).toBe(false);
   });
 
-  it.effect("keeps raw, grouped, and live snapshots empty as rows arrive", () =>
+  it.live("keeps raw, grouped, and live snapshots empty as rows arrive", () =>
     Effect.gen(function* () {
       const engine = yield* makeEngine();
       yield* engine.publishMany("orders", []);
-      // The shared test engine has an orders topic; its row domain is equivalent for this query.
+      // The compiler metadata above uses a minimal row, while the shared engine harness exposes
+      // only its orders topic. FALSE is field-independent, so the harness row shape is sufficient.
       const raw = yield* engine.snapshot("orders", {
         select: ["id"],
         where: [{ type: "FALSE" }],

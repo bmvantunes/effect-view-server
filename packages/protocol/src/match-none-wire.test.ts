@@ -33,6 +33,9 @@ describe("explicit match-none wire codec", () => {
 
       expect(encoded).toStrictEqual(where);
       expect(decoded).toStrictEqual(where);
+      expect(decoded).toBeDefined();
+      expect(decoded).toHaveLength(3);
+      expect(decoded?.[0]).toStrictEqual({ type: "FALSE" });
       expect(Object.isFrozen(decoded?.[0])).toBe(true);
     }),
   );
@@ -60,12 +63,16 @@ describe("explicit match-none wire codec", () => {
     }),
   );
 
-  it.effect("rejects FALSE expressions with extra keys", () =>
+  it.effect("rejects FALSE expressions with extra keys on encode and decode", () =>
     Effect.gen(function* () {
-      const error = yield* Effect.flip(decodeWhere("rows", Row, [{ type: "FALSE", extra: true }]));
+      const malformed = [{ type: "FALSE", extra: true }];
+      const encodeError = yield* Effect.flip(encodeWhere(config, "rows", malformed));
+      const decodeError = yield* Effect.flip(decodeWhere("rows", Row, malformed));
 
-      expect(error.code).toBe("InvalidQuery");
-      expect(error.message).toBe("Filter FALSE has invalid keys");
+      expect(encodeError.code).toBe("InvalidQuery");
+      expect(encodeError.message).toBe("Filter FALSE has invalid keys");
+      expect(decodeError.code).toBe("InvalidQuery");
+      expect(decodeError.message).toBe("Filter FALSE has invalid keys");
     }),
   );
 });

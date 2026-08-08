@@ -33,6 +33,8 @@ describe("explicit match-none filter types", () => {
       where: [{ type: "FALSE" }],
     } satisfies GroupedQuery<Row>;
 
+    expectTypeOf<FalseExpression>().toEqualTypeOf<{ readonly type: "FALSE" }>();
+    expectTypeOf<MatchNoneExpression>().toEqualTypeOf<FalseExpression>();
     expectTypeOf(falseExpression).toExtend<FalseExpression>();
     expectTypeOf(matchNoneExpression).toExtend<MatchNoneExpression>();
     expectTypeOf(raw.where).toExtend<Where<Row>>();
@@ -41,7 +43,9 @@ describe("explicit match-none filter types", () => {
     expectTypeOf(directGrouped.where).toExtend<Where<Row> | undefined>();
     expectTypeOf(directWhere).toExtend<Where<Row>>();
     expectTypeOf(composed).toExtend<Where<Row>>();
-    expectTypeOf<ExactWhere<Row, { readonly where: typeof where }>>().not.toBeNever();
+    expectTypeOf<ExactWhere<Row, { readonly where: typeof where }>>().toEqualTypeOf<{
+      readonly where: typeof where;
+    }>();
   });
 
   it("rejects operands and extra keys on FALSE", () => {

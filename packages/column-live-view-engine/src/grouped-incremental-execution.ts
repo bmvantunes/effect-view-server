@@ -751,6 +751,9 @@ const applyIncrementalGroupedQueryBatches = <Row extends RowObject>(
   limits: GroupedIncrementalAdmissionLimits,
   diagnostics: GroupedIncrementalExecutionDiagnostics,
 ): boolean => {
+  if (batches.length === 0) {
+    return true;
+  }
   if (plan.alwaysFalse === true) {
     for (const batch of batches) {
       state.version = batch.version;

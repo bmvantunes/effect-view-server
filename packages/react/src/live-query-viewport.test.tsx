@@ -16,7 +16,10 @@ import {
   type ViewServerRuntimeError,
   type ViewServerTransportError,
 } from "@effect-view-server/config";
-import { createInMemoryViewServer } from "@effect-view-server/in-memory";
+import {
+  createInMemoryViewServer,
+  type ViewServerInMemoryInstance,
+} from "@effect-view-server/in-memory";
 import { Deferred, Effect, Queue, Schema, Stream } from "effect";
 import * as BigDecimal from "effect/BigDecimal";
 import { StrictMode, useLayoutEffect } from "react";
@@ -127,6 +130,19 @@ const makeGridModel = <Row,>() => {
   };
 };
 
+const withScopedRuntime = <Result,>(
+  operation: (runtime: ViewServerInMemoryInstance<typeof viewServer.topics>) => PromiseLike<Result>,
+): Promise<Result> =>
+  Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const runtime = createInMemoryViewServer(viewServer);
+        yield* Effect.addFinalizer(() => runtime.close);
+        return yield* Effect.tryPromise(() => operation(runtime));
+      }),
+    ),
+  );
+
 describe("useLiveQueryViewport", () => {
   it("renders loading chrome during SSR without starting a subscription", async () => {
     const runtime = createInMemoryViewServer(viewServer);
@@ -210,115 +226,113 @@ describe("useLiveQueryViewport", () => {
   });
 
   it("keeps a FALSE viewport empty when later rows arrive", async () => {
-    const runtime = createInMemoryViewServer(viewServer);
-    const grid = makeGridModel<{ readonly id: string }>();
+    await withScopedRuntime(async (runtime) => {
+      const grid = makeGridModel<{ readonly id: string }>();
 
-    function ViewportOwner() {
-      const result = useLiveQueryViewport("orders");
-      useLayoutEffect(() => {
-        const generation = result.viewport.replace({
-          window: { firstRow: 0, lastRow: 9 },
-          query: { select: ["id"], where: [{ type: "FALSE" }], orderBy: [] },
-          sink: grid.sink,
-        });
-        return generation.release;
-      }, [result.viewport]);
-      return <output role="status">{`${result.status}:${result.totalRows}`}</output>;
-    }
+      function ViewportOwner() {
+        const result = useLiveQueryViewport("orders");
+        useLayoutEffect(() => {
+          const generation = result.viewport.replace({
+            window: { firstRow: 0, lastRow: 9 },
+            query: { select: ["id"], where: [{ type: "FALSE" }], orderBy: [] },
+            sink: grid.sink,
+          });
+          return generation.release;
+        }, [result.viewport]);
+        return <output role="status">{`${result.status}:${result.totalRows}`}</output>;
+      }
 
-    const view = await render(
-      <ViewServerClientProvider client={runtime.liveClient}>
-        <ViewportOwner />
-      </ViewServerClientProvider>,
-    );
-    await expect.poll(grid.rowCount).toBe(0);
-    await expect
-      .poll(async () => {
-        const health = await Effect.runPromise(runtime.client.health());
-        return health.engine.topics.orders.activeSubscriptions;
-      })
-      .toBe(1);
-    await expect.element(view.getByRole("status")).toHaveTextContent(/^ready:0$/);
+      const view = await render(
+        <ViewServerClientProvider client={runtime.liveClient}>
+          <ViewportOwner />
+        </ViewServerClientProvider>,
+      );
+      await expect
+        .poll(async () => {
+          const health = await Effect.runPromise(runtime.client.health());
+          return health.engine.topics.orders.activeSubscriptions;
+        })
+        .toBe(1);
+      await expect.element(view.getByRole("status")).toHaveTextContent(/^ready:0$/);
 
-    await Effect.runPromise(
-      runtime.client.publish("orders", { id: "future", status: "open", price: 1 }),
-    );
-    await expect.poll(grid.rowCount).toBe(0);
-    await expect
-      .poll(async () => {
-        const health = await Effect.runPromise(runtime.client.health());
-        return health.engine.topics.orders.rowCount;
-      })
-      .toBe(1);
+      await Effect.runPromise(
+        runtime.client.publish("orders", { id: "future", status: "open", price: 1 }),
+      );
+      await expect
+        .poll(async () => {
+          const health = await Effect.runPromise(runtime.client.health());
+          return health.engine.topics.orders.rowCount;
+        })
+        .toBe(1);
+      await expect.poll(grid.rowCount).toBe(0);
 
-    await view.unmount();
-    await expect
-      .poll(async () => {
-        const health = await Effect.runPromise(runtime.client.health());
-        return health.engine.topics.orders.activeSubscriptions;
-      })
-      .toBe(0);
-    await Effect.runPromise(runtime.close);
+      await view.unmount();
+      await expect
+        .poll(async () => {
+          const health = await Effect.runPromise(runtime.client.health());
+          return health.engine.topics.orders.activeSubscriptions;
+        })
+        .toBe(0);
+    });
   });
 
   it("keeps a grouped FALSE viewport empty when later rows arrive", async () => {
-    const runtime = createInMemoryViewServer(viewServer);
-    const grid = makeGridModel<{
-      readonly status: "open" | "closed";
-      readonly rowCount: bigint;
-    }>();
+    await withScopedRuntime(async (runtime) => {
+      const grid = makeGridModel<{
+        readonly status: "open" | "closed";
+        readonly rowCount: bigint;
+      }>();
 
-    function GroupedViewportOwner() {
-      const result = useLiveQueryViewport("orders");
-      useLayoutEffect(() => {
-        const generation = result.viewport.replace({
-          window: { firstRow: 0, lastRow: 9 },
-          query: {
-            groupBy: ["status"],
-            aggregates: { rowCount: { aggFunc: "count" } },
-            where: [{ type: "FALSE" }],
-            orderBy: [{ aggregate: "rowCount", direction: "desc" }],
-          },
-          sink: grid.sink,
-        });
-        return generation.release;
-      }, [result.viewport]);
-      return <output role="status">{`${result.status}:${result.totalRows}`}</output>;
-    }
+      function GroupedViewportOwner() {
+        const result = useLiveQueryViewport("orders");
+        useLayoutEffect(() => {
+          const generation = result.viewport.replace({
+            window: { firstRow: 0, lastRow: 9 },
+            query: {
+              groupBy: ["status"],
+              aggregates: { rowCount: { aggFunc: "count" } },
+              where: [{ type: "FALSE" }],
+              orderBy: [{ aggregate: "rowCount", direction: "desc" }],
+            },
+            sink: grid.sink,
+          });
+          return generation.release;
+        }, [result.viewport]);
+        return <output role="status">{`${result.status}:${result.totalRows}`}</output>;
+      }
 
-    const view = await render(
-      <ViewServerClientProvider client={runtime.liveClient}>
-        <GroupedViewportOwner />
-      </ViewServerClientProvider>,
-    );
-    await expect.poll(grid.rowCount).toBe(0);
-    await expect
-      .poll(async () => {
-        const health = await Effect.runPromise(runtime.client.health());
-        return health.engine.topics.orders.activeSubscriptions;
-      })
-      .toBe(1);
-    await expect.element(view.getByRole("status")).toHaveTextContent(/^ready:0$/);
+      const view = await render(
+        <ViewServerClientProvider client={runtime.liveClient}>
+          <GroupedViewportOwner />
+        </ViewServerClientProvider>,
+      );
+      await expect
+        .poll(async () => {
+          const health = await Effect.runPromise(runtime.client.health());
+          return health.engine.topics.orders.activeSubscriptions;
+        })
+        .toBe(1);
+      await expect.element(view.getByRole("status")).toHaveTextContent(/^ready:0$/);
 
-    await Effect.runPromise(
-      runtime.client.publish("orders", { id: "future-group", status: "open", price: 1 }),
-    );
-    await expect.poll(grid.rowCount).toBe(0);
-    await expect
-      .poll(async () => {
-        const health = await Effect.runPromise(runtime.client.health());
-        return health.engine.topics.orders.rowCount;
-      })
-      .toBe(1);
+      await Effect.runPromise(
+        runtime.client.publish("orders", { id: "future-group", status: "open", price: 1 }),
+      );
+      await expect
+        .poll(async () => {
+          const health = await Effect.runPromise(runtime.client.health());
+          return health.engine.topics.orders.rowCount;
+        })
+        .toBe(1);
+      await expect.poll(grid.rowCount).toBe(0);
 
-    await view.unmount();
-    await expect
-      .poll(async () => {
-        const health = await Effect.runPromise(runtime.client.health());
-        return health.engine.topics.orders.activeSubscriptions;
-      })
-      .toBe(0);
-    await Effect.runPromise(runtime.close);
+      await view.unmount();
+      await expect
+        .poll(async () => {
+          const health = await Effect.runPromise(runtime.client.health());
+          return health.engine.topics.orders.activeSubscriptions;
+        })
+        .toBe(0);
+    });
   });
 
   it("loads absolute rows, scrolls through setWindow, and releases on unmount", async () => {

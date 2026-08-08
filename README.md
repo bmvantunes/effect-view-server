@@ -138,6 +138,7 @@ The package has no root export. Use explicit subpaths:
 - `effect-view-server/source-adapter`, `/server`, `/testing`
 - `effect-view-server/kafka/contract`, `/server`, `/node`
 - `effect-view-server/grpc/contract`, `/server`, `/node`
+- `effect-view-server/value-semantics`
 
 Contract imports are browser-safe. Server and Node implementations remain on
 their explicit platform subpaths.

@@ -6,6 +6,7 @@ import {
   inspectPlainRecordShape,
   isWireSafeBigDecimal,
   type PlainRecordShapeSnapshot,
+  type WireSafeBigDecimal,
 } from "@effect-view-server/effect-utils";
 import {
   isBigDecimal,
@@ -182,7 +183,7 @@ const denseArraySnapshot = (value: unknown, label: string): ReadonlyArray<unknow
     : fail(`${label} contains unsupported property: ${inspection.key}.`);
 };
 
-const immutableBigDecimal = (value: BigDecimal): BigDecimal => {
+const immutableBigDecimal = (value: WireSafeBigDecimal): BigDecimal => {
   const owned = makeBigDecimal(value.value, value.scale);
   const normalized = normalizeBigDecimal(makeBigDecimal(value.value, value.scale));
   const normalizedOwned = makeBigDecimal(normalized.value, normalized.scale);

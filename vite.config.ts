@@ -221,6 +221,7 @@ const allDiagnosticsTasks = diagnosticsProjects.map(({ name }) => diagnosticsTas
 
 export default defineConfig({
   test: {
+    globalSetup: ["./scripts/repository-test-global-setup.ts"],
     include: ["scripts/**/*.test.ts"],
     coverage: {
       provider: "istanbul",

@@ -14,7 +14,18 @@ import {
 } from "effect-view-server/kafka/contract";
 import { Schema } from "effect";
 import type * as EffectOption from "effect/Option";
+import type { BigDecimal } from "effect/BigDecimal";
 import type { ViewServerLiveClient } from "effect-view-server/client";
+import {
+  compareTrustedWireSafeBigDecimal,
+  compareWireSafeBigDecimal,
+  inspectWireSafeBigDecimal,
+  isWireSafeBigDecimal,
+  type WireSafeBigDecimal,
+  type WireSafeBigDecimalInspection,
+  wireSafeBigDecimalSemanticKey,
+} from "effect-view-server/value-semantics";
+import * as PublicValueSemantics from "effect-view-server/value-semantics";
 import {
   SourceFixture,
   registerSourceAdapterConformance,
@@ -31,6 +42,8 @@ const Order = Schema.Struct({
   price: Schema.Number,
   region: Schema.String,
 });
+
+declare const publicBigDecimal: BigDecimal;
 
 const viewServer = defineViewServerConfig({
   topics: {
@@ -199,6 +212,41 @@ describe("public effect-view-server subpath type contracts", () => {
     expectTypeOf(sourceAdapterConformanceDefinitionIsLinked).not.toBeAny();
     expectTypeOf<SourceAdapterConformanceOptions>().not.toBeAny();
     expectTypeOf<SourceAdapterPackageConformanceOptions>().not.toBeAny();
+    expectTypeOf(inspectWireSafeBigDecimal).toEqualTypeOf<
+      (value: unknown) => WireSafeBigDecimalInspection
+    >();
+    expectTypeOf<WireSafeBigDecimalInspection>().toEqualTypeOf<
+      | { readonly _tag: "NotBigDecimal" }
+      | { readonly _tag: "UnsafeBigDecimal" }
+      | { readonly _tag: "ReflectionFailure" }
+      | {
+          readonly _tag: "Success";
+          readonly source: WireSafeBigDecimal;
+          readonly coefficient: bigint;
+          readonly scale: number;
+          readonly semanticKey: string;
+        }
+    >();
+    expectTypeOf(isWireSafeBigDecimal).toEqualTypeOf<
+      (value: unknown) => value is WireSafeBigDecimal
+    >();
+    expectTypeOf<BigDecimal>().toMatchTypeOf<WireSafeBigDecimal>();
+    expectTypeOf<WireSafeBigDecimal>().not.toMatchTypeOf<BigDecimal>();
+    expectTypeOf(compareWireSafeBigDecimal).toEqualTypeOf<
+      (left: unknown, right: unknown) => number | undefined
+    >();
+    expectTypeOf(compareTrustedWireSafeBigDecimal).toEqualTypeOf<
+      (left: BigDecimal, right: BigDecimal) => number | undefined
+    >();
+    expectTypeOf(wireSafeBigDecimalSemanticKey).toEqualTypeOf<
+      (value: unknown) => string | undefined
+    >();
+    expectTypeOf(PublicValueSemantics).not.toHaveProperty("isTrustedWireSafeBigDecimal");
+    expectTypeOf(PublicValueSemantics).not.toHaveProperty("trustedWireSafeBigDecimalSemanticKey");
+    // @ts-expect-error trusted comparison requires admitted BigDecimal operands.
+    compareTrustedWireSafeBigDecimal({}, publicBigDecimal);
+    // @ts-expect-error trusted comparison requires admitted BigDecimal operands.
+    compareTrustedWireSafeBigDecimal(publicBigDecimal, 1n);
   });
 
   it("preserves query result inference through public subpaths", () => {

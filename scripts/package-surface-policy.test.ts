@@ -17,16 +17,16 @@ import {
 describe("Package Surface Policy", () => {
   it("owns one unique inventory of private and consumer package specifiers", () => {
     expect(packageSurfacePolicy.packages).toHaveLength(15);
-    expect(workspacePackageSpecifiers).toHaveLength(32);
-    expect(new Set(workspacePackageSpecifiers).size).toBe(32);
-    expect(consumerPackageSpecifiers).toHaveLength(23);
-    expect(new Set(consumerPackageSpecifiers).size).toBe(23);
+    expect(workspacePackageSpecifiers).toHaveLength(33);
+    expect(new Set(workspacePackageSpecifiers).size).toBe(33);
+    expect(consumerPackageSpecifiers).toHaveLength(24);
+    expect(new Set(consumerPackageSpecifiers).size).toBe(24);
     expect(consumerPackageSpecifiers).not.toContain("effect-view-server");
     expect(
       expectedPackageSurfaces
         .filter((surface) => surface.directory !== "effect-view-server")
         .flatMap((surface) => surface.packEntrypoints),
-    ).toHaveLength(32);
+    ).toHaveLength(33);
     expect(packageSurfacePolicy.runtimeSymbols.map((policy) => policy.workspaceSpecifier).sort()).toStrictEqual(
       [...workspacePackageSpecifiers].sort(),
     );
@@ -67,6 +67,9 @@ describe("Package Surface Policy", () => {
     );
     const sourceAdapterTestingProjection = facadeProjectionFor(
       "effect-view-server/source-adapter/testing",
+    );
+    const valueSemanticsProjection = facadeProjectionFor(
+      "effect-view-server/value-semantics",
     );
 
     expect(configSurface).toStrictEqual({
@@ -109,8 +112,8 @@ describe("Package Surface Policy", () => {
         "src/internal.ts",
       ],
     });
-    expect(facadeSurface?.manifestExports).toHaveLength(23);
-    expect(facadeSurface?.packEntrypoints).toHaveLength(23);
+    expect(facadeSurface?.manifestExports).toHaveLength(24);
+    expect(facadeSurface?.packEntrypoints).toHaveLength(24);
     expect(kafkaContractProjection.workspaceSpecifier).toBe(
       "@effect-view-server/kafka/contract",
     );
@@ -118,6 +121,11 @@ describe("Package Surface Policy", () => {
       "@effect-view-server/source-adapter-conformance-host",
       "@effect-view-server/source-adapter-testing",
     ]);
+    expect(valueSemanticsProjection).toMatchObject({
+      consumerExportKey: "./value-semantics",
+      consumerSourceEntrypoint: "src/value-semantics.ts",
+      workspaceSpecifier: "@effect-view-server/effect-utils/value-semantics",
+    });
     expect(() => packageDistStemForSourceEntrypoint("index.js")).toThrowError(
       "Unsupported package source entrypoint: index.js",
     );

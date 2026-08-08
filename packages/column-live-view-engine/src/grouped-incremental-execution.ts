@@ -867,6 +867,12 @@ export const makeIncrementalGroupedQueryExecution = <
       if (state.version === storeVersion) {
         return state.evaluation;
       }
+      if (compiled.plan.alwaysFalse === true) {
+        state.version = storeVersion;
+        state.evaluation = emptyGroupedEvaluation(0, storeVersion);
+        combinedDiagnostics.onPatchedEvaluation();
+        return state.evaluation;
+      }
       const batches = store.changesSince(state.version, compiled.partitionKey);
       if (batches === undefined) {
         build = buildIncrementalGroupedQueryState(

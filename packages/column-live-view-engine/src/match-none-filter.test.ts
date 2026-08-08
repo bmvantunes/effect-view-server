@@ -592,6 +592,7 @@ describe("explicit match-none filter", () => {
     Effect.gen(function* () {
       let version = 0;
       const batches: ReadonlyArray<TopicRowChangeBatch<object>> = [{ version: 1, changes: [] }];
+      let changesSinceCalls = 0;
       let scanCalls = 0;
       const compiled = yield* prepareRuntimeGroupedQuery("rows", metadata, {
         groupBy: ["status"],
@@ -600,7 +601,10 @@ describe("explicit match-none filter", () => {
       });
       const execution = makeIncrementalGroupedQueryExecution(
         {
-          changesSince: () => batches,
+          changesSince: () => {
+            changesSinceCalls += 1;
+            return batches;
+          },
           scanRows: () => {
             scanCalls += 1;
           },
@@ -625,6 +629,7 @@ describe("explicit match-none filter", () => {
         version: 1,
         window: [],
       });
+      expect(changesSinceCalls).toBe(0);
       expect(scanCalls).toBe(0);
     }),
   );

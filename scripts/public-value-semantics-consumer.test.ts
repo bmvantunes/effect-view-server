@@ -12,58 +12,61 @@ import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "@effect/vitest";
-import { preparePublicPackage } from "./release-publish-orchestration.mjs";
-
-type PackedFile = {
-  readonly path: string;
-};
-
-type PackResult = {
-  readonly filename: string;
-  readonly files: ReadonlyArray<PackedFile>;
-};
+import { Schema } from "effect";
+import { extract } from "tar";
+import { runReleasePublish } from "./release-publish-orchestration.mjs";
+import { inspectTypeScriptModule } from "./typescript-module-inspection";
 
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
-const publicPackageDirectory = join(repositoryRoot, "packages", "effect-view-server");
 
-const readJson = (path: string): unknown => JSON.parse(readFileSync(path, "utf8"));
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
-
-const objectProperty = (value: unknown, key: string): Record<string, unknown> => {
-  if (!isRecord(value)) {
-    throw new Error(`${key} must be an object.`);
-  }
-  return value;
+type CommandResult = {
+  readonly status: number;
+  readonly stderr: string;
+  readonly stdout: string;
 };
 
-const stringProperty = (value: unknown, key: string): string => {
-  if (typeof value !== "string") {
-    throw new Error(`${key} must be a string.`);
-  }
-  return value;
+const trustedEnvironment = {
+  ACTIONS_ID_TOKEN_REQUEST_TOKEN: "token",
+  ACTIONS_ID_TOKEN_REQUEST_URL: "https://token.actions.githubusercontent.com",
+  GITHUB_ACTIONS: "true",
+  GITHUB_EVENT_NAME: "push",
+  GITHUB_REF: "refs/heads/main",
+  GITHUB_REPOSITORY: "bmvantunes/effect-view-server",
 };
 
-const parsePackResult = (output: string): PackResult => {
-  const parsed: unknown = JSON.parse(output);
-  if (!Array.isArray(parsed) || parsed.length !== 1) {
-    throw new Error("npm pack must return exactly one package result.");
-  }
-  const result = objectProperty(parsed[0], "npm pack result");
-  if (!Array.isArray(result.files)) {
-    throw new Error("npm pack result files must be an array.");
-  }
-  return {
-    filename: stringProperty(result.filename, "npm pack result filename"),
-    files: result.files.map((file, index) => ({
-      path: stringProperty(
-        objectProperty(file, `npm pack result files[${index}]`).path,
-        `npm pack result files[${index}].path`,
-      ),
-    })),
-  };
-};
+const commandResult = ({
+  status = 0,
+  stderr = "",
+  stdout = "",
+}: Partial<CommandResult> = {}): CommandResult => ({ status, stderr, stdout });
+
+const PackageExport = Schema.Struct({
+  import: Schema.String,
+  types: Schema.String,
+});
+const PackageExports = Schema.StructWithRest(
+  Schema.Struct({ "./value-semantics": PackageExport }),
+  [Schema.Record(Schema.String, Schema.Unknown)],
+);
+const PackagePeerDependencies = Schema.StructWithRest(
+  Schema.Struct({ effect: Schema.String }),
+  [Schema.Record(Schema.String, Schema.String)],
+);
+const PackageManifest = Schema.StructWithRest(
+  Schema.Struct({
+    exports: PackageExports,
+    peerDependencies: PackagePeerDependencies,
+  }),
+  [Schema.Record(Schema.String, Schema.Unknown)],
+);
+const NpmPackResult = Schema.Struct({
+  filename: Schema.String,
+  files: Schema.Array(Schema.Struct({ path: Schema.String })),
+});
+const decodePackageManifest = Schema.decodeUnknownSync(Schema.fromJsonString(PackageManifest));
+const decodeNpmPackResult = Schema.decodeUnknownSync(
+  Schema.fromJsonString(Schema.Tuple([NpmPackResult])),
+);
 
 const collectStaticModuleGraph = (
   entryPath: string,
@@ -76,7 +79,6 @@ const collectStaticModuleGraph = (
   const visited = new Set<string>();
   const bareSpecifiers = new Set<string>();
   const sources: Array<string> = [];
-  const importPattern = /(?:\bfrom\s+|\bimport\s+(?:\(\s*)?)(["'])([^"']+)\1/g;
 
   while (pending.length > 0) {
     const path = pending.pop();
@@ -86,12 +88,14 @@ const collectStaticModuleGraph = (
     visited.add(path);
     const source = readFileSync(path, "utf8");
     sources.push(source);
+    const inspection = inspectTypeScriptModule({ fileName: path, source });
+    if (inspection.violations.length > 0) {
+      throw new Error(
+        `Focused module graph contains unsupported module loading: ${JSON.stringify(inspection.violations)}`,
+      );
+    }
 
-    for (const match of source.matchAll(importPattern)) {
-      const specifier = match[2];
-      if (specifier === undefined) {
-        continue;
-      }
+    for (const specifier of inspection.moduleSpecifiers) {
       if (!specifier.startsWith(".")) {
         bareSpecifiers.add(specifier);
         continue;
@@ -120,73 +124,98 @@ describe("published value semantics consumer", () => {
     onTestFinished(() => rmSync(temporaryRoot, { force: true, recursive: true }));
 
     {
-      const publishDirectory = join(temporaryRoot, "publish");
       const consumerDirectory = join(temporaryRoot, "consumer");
       const installedPackageDirectory = join(
         consumerDirectory,
         "node_modules",
         "effect-view-server",
       );
-      mkdirSync(publishDirectory, { recursive: true });
       mkdirSync(installedPackageDirectory, { recursive: true });
 
-      const packageJson = objectProperty(
-        readJson(join(publicPackageDirectory, "package.json")),
-        "public package manifest",
-      );
-      preparePublicPackage({
-        packageJson,
-        publicPackageDirectory,
-        publishDirectory,
-        releaseVersion: "9.9.9",
-      });
+      let packOutput: string | undefined;
+      const command = (executable: string, args: ReadonlyArray<string>): CommandResult => {
+        if (executable === "npm" && args[0] === "view" && args[1] === "effect-view-server") {
+          return commandResult({ stdout: '"0.0.6"' });
+        }
+        if (executable === "git" && args[0] === "fetch") {
+          return commandResult();
+        }
+        if (executable === "git" && args[0] === "tag" && args[1] === "--list") {
+          return commandResult({ stdout: "effect-view-server@0.0.6-staged\n" });
+        }
+        if (executable === "git" && args[0] === "diff") {
+          return commandResult({ stdout: ".changeset/public-value-semantics.md\n" });
+        }
+        if (
+          executable === "npm" &&
+          args[0] === "view" &&
+          args[1]?.startsWith("effect-view-server@") === true
+        ) {
+          return commandResult({ status: 1 });
+        }
+        if (executable === "git" && args[0] === "rev-parse" && args.at(-1) === "HEAD^{}") {
+          return commandResult({ stdout: "head-object\n" });
+        }
+        if (executable === "git" && args[0] === "rev-parse") {
+          return commandResult({ status: 1 });
+        }
+        if (executable === "git" && (args[0] === "tag" || args[0] === "push")) {
+          return commandResult();
+        }
+        if (executable === "npm" && args[0] === "publish") {
+          const publishDirectory = args[1];
+          if (publishDirectory === undefined) {
+            throw new Error("Release Publish Orchestration omitted its staged package directory.");
+          }
+          packOutput = execFileSync(
+            "npm",
+            ["pack", publishDirectory, "--json", "--pack-destination", temporaryRoot],
+            { cwd: repositoryRoot, encoding: "utf8" },
+          );
+          return commandResult({ stdout: "published\n" });
+        }
+        throw new Error(`Unexpected release command: ${executable} ${args.join(" ")}`);
+      };
 
-      const packOutput = execFileSync(
-        "npm",
-        ["pack", publishDirectory, "--json", "--pack-destination", temporaryRoot],
-        { cwd: repositoryRoot, encoding: "utf8" },
-      );
-      const packResult = parsePackResult(packOutput);
+      expect(
+        runReleasePublish({
+          command,
+          env: trustedEnvironment,
+          rootDirectory: repositoryRoot,
+          stderr: () => undefined,
+          stdout: () => undefined,
+          temporaryDirectory: temporaryRoot,
+        }),
+      ).toMatchObject({ _tag: "Published" });
+
+      if (packOutput === undefined) {
+        throw new Error("Release Publish Orchestration did not publish its staged artifact.");
+      }
+
+      const [packResult] = decodeNpmPackResult(packOutput);
       const packedPaths = packResult.files.map((file) => file.path);
       expect(packedPaths).toContain("dist/value-semantics.js");
       expect(packedPaths).toContain("dist/value-semantics.d.ts");
 
-      execFileSync(
-        "tar",
-        [
-          "-xzf",
-          join(temporaryRoot, packResult.filename),
-          "-C",
-          installedPackageDirectory,
-          "--strip-components=1",
-        ],
-        { cwd: repositoryRoot },
-      );
+      extract({
+        cwd: installedPackageDirectory,
+        file: join(temporaryRoot, packResult.filename),
+        strip: 1,
+        sync: true,
+      });
       symlinkSync(
         realpathSync(join(repositoryRoot, "node_modules", "effect")),
         join(consumerDirectory, "node_modules", "effect"),
         "junction",
       );
 
-      const installedManifest = objectProperty(
-        readJson(join(installedPackageDirectory, "package.json")),
-        "installed package manifest",
+      const installedManifest = decodePackageManifest(
+        readFileSync(join(installedPackageDirectory, "package.json"), "utf8"),
       );
-      const exportsMap = objectProperty(installedManifest.exports, "exports");
-      const valueSemanticsExport = objectProperty(
-        exportsMap["./value-semantics"],
-        "exports['./value-semantics']",
-      );
-      const entryTarget = stringProperty(
-        valueSemanticsExport.import,
-        "exports['./value-semantics'].import",
-      );
-      const declarationTarget = stringProperty(
-        valueSemanticsExport.types,
-        "exports['./value-semantics'].types",
-      );
-      const peers = objectProperty(installedManifest.peerDependencies, "peerDependencies");
-      expect(peers.effect).toBe("4.0.0-beta.100");
+      const valueSemanticsExport = installedManifest.exports["./value-semantics"];
+      const entryTarget = valueSemanticsExport.import;
+      const declarationTarget = valueSemanticsExport.types;
+      expect(installedManifest.peerDependencies.effect).toBe("4.0.0-beta.100");
 
       const graph = collectStaticModuleGraph(
         join(installedPackageDirectory, entryTarget.replace(/^\.\//, "")),

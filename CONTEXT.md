@@ -621,7 +621,7 @@ _Avoid_: Browser write, send, emit
 - A statically named scalar leaf present in any fixed-shape object union branch forms a **Filterable Field Path**; branches without that leaf resolve the path as blank.
 - A **Filterable Field Path** may resolve to a Filterable Scalar in one union branch and a structured value in another; positive **Domain-Selective Conditions** do not match the structured value, their negations remain exact complements, and no structured value is compared deeply.
 - A **Field Condition** is a leaf of a **Filter Expression**; AND and OR groups and **Negation Expressions** may recursively contain Filter Expressions.
-- **Filter Expressions** accept only exact discriminators: uppercase `AND`, `OR`, and `NOT` for logical nodes and the defined camelCase names for Field Conditions; differently cased aliases are invalid.
+- **Filter Expressions** accept only exact discriminators: uppercase `AND`, `OR`, `NOT`, and `FALSE` for logical or Match-None nodes and the defined camelCase names for Field Conditions; differently cased aliases are invalid.
 - A **Filter Expression** has no language-defined limit on depth, node count, membership candidates, or text-operand length; size changes its execution cost rather than its validity.
 - Reusing one acyclic **Filter Expression** value in multiple branches is valid and follows ordinary **Filter Normalization**, while a cyclic object graph fails query validation.
 - An **Equality Condition** uses **Text Matching** for string values and **Topic Row Value Semantics** otherwise; `notEqual` matches every value that its corresponding `equals` does not.

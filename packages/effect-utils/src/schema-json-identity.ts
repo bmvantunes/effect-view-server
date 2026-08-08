@@ -200,6 +200,90 @@ const rebaseStrictJsonMaterializationError = (
   });
 };
 
+const strictJsonPropertyPath = (path: string, key: string | symbol): string =>
+  typeof key === "string" ? appendStrictJsonPropertyPath(path, key) : `${path}[${String(key)}]`;
+
+const strictJsonReflectionFailure = (path: string): StrictJsonMaterializationError =>
+  StrictJsonMaterializationError.make({
+    path,
+    reason: "reflection-failure",
+    message: `Could not inspect JSON value at ${path}.`,
+  });
+
+const strictJsonNonEnumerableProperty = (path: string): StrictJsonMaterializationError =>
+  StrictJsonMaterializationError.make({
+    path,
+    reason: "non-enumerable-property",
+    message: `Expected an enumerable data property at ${path}.`,
+  });
+
+const strictJsonAccessorProperty = (path: string): StrictJsonMaterializationError =>
+  StrictJsonMaterializationError.make({
+    path,
+    reason: "accessor-property",
+    message: `Accessor properties are not valid JSON data at ${path}.`,
+  });
+
+type OwnDataProperty =
+  | { readonly present: false }
+  | { readonly present: true; readonly value: unknown };
+
+const readOwnDataProperty = (value: object, key: string, path: string): OwnDataProperty => {
+  let descriptor: PropertyDescriptor | undefined;
+  try {
+    descriptor = Object.getOwnPropertyDescriptor(value, key);
+  } catch {
+    throw strictJsonReflectionFailure(path);
+  }
+  if (descriptor === undefined) {
+    return { present: false };
+  }
+  if (descriptor.enumerable !== true) {
+    throw strictJsonNonEnumerableProperty(path);
+  }
+  if (!("value" in descriptor)) {
+    throw strictJsonAccessorProperty(path);
+  }
+  return { present: true, value: descriptor.value };
+};
+
+const assertNoAccessorProperties = (
+  value: unknown,
+  path: string,
+  active: WeakSet<object> = new WeakSet(),
+): void => {
+  if (value === null || (typeof value !== "object" && typeof value !== "function")) {
+    return;
+  }
+  if (active.has(value)) {
+    return;
+  }
+  active.add(value);
+
+  let keys: ReadonlyArray<string | symbol>;
+  try {
+    keys = Reflect.ownKeys(value);
+  } catch {
+    throw strictJsonReflectionFailure(path);
+  }
+  for (const key of keys) {
+    const propertyPath = strictJsonPropertyPath(path, key);
+    let descriptor: PropertyDescriptor | undefined;
+    try {
+      descriptor = Object.getOwnPropertyDescriptor(value, key);
+    } catch {
+      throw strictJsonReflectionFailure(propertyPath);
+    }
+    if (descriptor === undefined) {
+      continue;
+    }
+    if (!("value" in descriptor)) {
+      throw strictJsonAccessorProperty(propertyPath);
+    }
+    assertNoAccessorProperties(descriptor.value, propertyPath, active);
+  }
+};
+
 const makeStrictJsonObjectKeywordGuard = (root: SchemaAST.AST) => {
   const compiled = new Map<SchemaAST.AST, StrictJsonObjectKeywordGuard>();
 
@@ -239,6 +323,7 @@ const makeStrictJsonObjectKeywordGuard = (root: SchemaAST.AST) => {
         guard: compile(member),
       }));
       implementation = (value, path) => {
+        assertNoAccessorProperties(value, path);
         members.find((member) => member.is(value))?.guard(value, path);
       };
       return guard;
@@ -265,16 +350,21 @@ const makeStrictJsonObjectKeywordGuard = (root: SchemaAST.AST) => {
           return;
         }
         for (const property of properties) {
-          if (Object.hasOwn(value, property.name)) {
-            property.guard(
-              Reflect.get(value, property.name),
-              appendStrictJsonPropertyPath(path, property.name),
-            );
+          const propertyPath = appendStrictJsonPropertyPath(path, property.name);
+          const propertyValue = readOwnDataProperty(value, property.name, propertyPath);
+          if (propertyValue.present) {
+            property.guard(propertyValue.value, propertyPath);
           }
         }
         for (const key of Object.keys(value)) {
           const index = indexes.find((candidate) => candidate.accepts(key));
-          index?.guard(Reflect.get(value, key), appendStrictJsonPropertyPath(path, key));
+          if (index !== undefined) {
+            const propertyPath = appendStrictJsonPropertyPath(path, key);
+            const propertyValue = readOwnDataProperty(value, key, propertyPath);
+            if (propertyValue.present) {
+              index.guard(propertyValue.value, propertyPath);
+            }
+          }
         }
       };
       return guard;
@@ -289,15 +379,19 @@ const makeStrictJsonObjectKeywordGuard = (root: SchemaAST.AST) => {
         }
         const [head, ...tail] = rest;
         const tailThreshold = value.length - tail.length;
-        value.forEach((entry, index) => {
+        for (let index = 0; index < tailThreshold + tail.length; index += 1) {
           const item =
             index < elements.length
               ? elements[index]
               : index >= tailThreshold
                 ? tail[index - tailThreshold]
                 : head;
-          item?.(entry, `${path}[${index}]`);
-        });
+          const itemPath = `${path}[${index}]`;
+          const entry = readOwnDataProperty(value, String(index), itemPath);
+          if (entry.present) {
+            item?.(entry.value, itemPath);
+          }
+        }
       };
     }
 

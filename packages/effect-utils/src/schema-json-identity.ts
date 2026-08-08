@@ -182,6 +182,7 @@ const strictJson = (value: unknown): Schema.Json => {
 };
 
 type StrictJsonObjectKeywordGuard = (value: unknown, path: string) => void;
+type StrictJsonGuardSide = "decoded" | "encoded";
 
 const simplePathKey = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 
@@ -292,7 +293,7 @@ const assertNoAccessorProperties = (
   }
 };
 
-const makeStrictJsonObjectKeywordGuard = (root: SchemaAST.AST) => {
+const makeStrictJsonObjectKeywordGuard = (root: SchemaAST.AST, side: StrictJsonGuardSide) => {
   const compiled = new Map<SchemaAST.AST, StrictJsonObjectKeywordGuard>();
 
   const compile = (ast: SchemaAST.AST): StrictJsonObjectKeywordGuard => {
@@ -328,7 +329,9 @@ const makeStrictJsonObjectKeywordGuard = (root: SchemaAST.AST) => {
     if (SchemaAST.isUnion(ast)) {
       const members = ast.types.map((member) => ({
         is: Schema.is(
-          Schema.make<Schema.Codec<unknown, unknown, never, never>>(SchemaAST.toEncoded(member)),
+          Schema.make<Schema.Codec<unknown, unknown, never, never>>(
+            side === "encoded" ? SchemaAST.toEncoded(member) : member,
+          ),
         ),
         guard: compile(member),
       }));
@@ -412,7 +415,7 @@ const makeStrictJsonObjectKeywordGuard = (root: SchemaAST.AST) => {
   return (value: unknown): void => guard(value, "$");
 };
 
-const schemaAstContainsObjectKeyword = (root: SchemaAST.AST): boolean => {
+export const schemaAstContainsObjectKeyword = (root: SchemaAST.AST): boolean => {
   const visited = new Set<SchemaAST.AST>();
   const visit = (ast: SchemaAST.AST): boolean => {
     if (visited.has(ast)) {
@@ -447,8 +450,11 @@ export type StrictJsonSchemaGuard = (
   value: unknown,
 ) => Result.Result<void, StrictJsonMaterializationError>;
 
-export const makeStrictJsonSchemaGuard = (root: SchemaAST.AST): StrictJsonSchemaGuard => {
-  const guard = makeStrictJsonObjectKeywordGuard(root);
+export const makeStrictJsonSchemaGuard = (
+  root: SchemaAST.AST,
+  side: StrictJsonGuardSide = "decoded",
+): StrictJsonSchemaGuard => {
+  const guard = makeStrictJsonObjectKeywordGuard(root, side);
   return (value) =>
     Result.try({
       try: () => {
@@ -478,17 +484,18 @@ export const makeSchemaJsonIdentity = <Type>(
   const encodeJson = Schema.encodeUnknownSync(Schema.toCodecJson(encodedSchema));
   const normalize = makeSchemaJsonNormalizer(codec.ast);
   const containsObjectKeyword = schemaAstContainsObjectKeyword(codec.ast);
-  const strictObjectKeywordGuard = makeStrictJsonSchemaGuard(codec.ast);
+  const strictDecodedObjectKeywordGuard = makeStrictJsonSchemaGuard(codec.ast);
+  const strictEncodedObjectKeywordGuard = makeStrictJsonSchemaGuard(codec.ast, "encoded");
   const strictEncoded = (value: unknown): Schema.Json => {
     if (!containsObjectKeyword) {
       return strictJson(encode(value));
     }
-    const guardResult = strictObjectKeywordGuard(value);
+    const guardResult = strictDecodedObjectKeywordGuard(value);
     if (Result.isFailure(guardResult)) {
       throw guardResult.failure;
     }
     const encodedValue = encodeRaw(value);
-    const encodedGuardResult = strictObjectKeywordGuard(encodedValue);
+    const encodedGuardResult = strictEncodedObjectKeywordGuard(encodedValue);
     if (Result.isFailure(encodedGuardResult)) {
       throw encodedGuardResult.failure;
     }

@@ -142,6 +142,23 @@ describe("protocol JSON values", () => {
 
       expect(error).toBe("Expected a plain data record or dense array at $.payload.");
       expect(encodeCalls).toBe(1);
+
+      const transformedUnionSchema = Schema.Union([
+        Schema.String.pipe(
+          Schema.encodeTo(Schema.Struct({ payload: Schema.ObjectKeyword }), {
+            decode: SchemaGetter.transform(() => "decoded"),
+            encode: SchemaGetter.transform(() => ({
+              payload: new Map([["venue", "xnys"]]),
+            })),
+          }),
+        ),
+        Schema.Number,
+      ]);
+      const unionError = yield* Effect.flip(
+        encodeJsonFieldValue(transformedUnionSchema, "input", errors),
+      );
+
+      expect(unionError).toBe("Expected a plain data record or dense array at $.payload.");
     }),
   );
 
@@ -153,10 +170,14 @@ describe("protocol JSON values", () => {
       };
 
       const error = yield* Effect.flip(
-        encodeJsonFieldValue(Schema.Symbol, Symbol("not-registered"), errors),
+        encodeJsonFieldValue(
+          Schema.Struct({ payload: Schema.ObjectKeyword, symbol: Schema.Symbol }),
+          { payload: { venue: "xnys" }, symbol: Symbol("not-registered") },
+          errors,
+        ),
       );
 
-      expect(error).toBe('Unsupported JSON value type "symbol" at $.');
+      expect(error).toBe('Unsupported JSON value type "symbol" at $.symbol.');
     }),
   );
 });

@@ -1,6 +1,7 @@
 import {
   makeStrictJsonSchemaGuard,
   materializeStrictJson,
+  schemaAstContainsObjectKeyword,
   type StrictJsonSchemaGuard,
 } from "@effect-view-server/effect-utils";
 import { Effect, Result, Schema, SchemaAST } from "effect";
@@ -43,8 +44,11 @@ type TopicNamedJsonFieldEncodeContext<E> = TopicNamedJsonFieldCodecContext<E> & 
 
 type CompiledJsonFieldCodec<Row> = {
   readonly accepts: (value: unknown) => boolean;
+  readonly hasObjectKeyword: boolean;
   readonly strictJson: StrictJsonSchemaGuard;
+  readonly strictEncodedJson: StrictJsonSchemaGuard;
   readonly decode: (value: unknown) => Effect.Effect<Row, Schema.SchemaError>;
+  readonly encode: (value: unknown) => Effect.Effect<Schema.Json, Schema.SchemaError>;
   readonly encodeRaw: (value: unknown) => Effect.Effect<unknown, Schema.SchemaError>;
   readonly encodeJson: (
     value: unknown,
@@ -77,8 +81,11 @@ function compiledJsonFieldCodec(schema: JsonFieldSchema): CompiledJsonFieldCodec
   );
   const compiled: CompiledJsonFieldCodec<unknown> = {
     accepts: Schema.is(schema),
+    hasObjectKeyword: schemaAstContainsObjectKeyword(codec.ast),
     strictJson: makeStrictJsonSchemaGuard(codec.ast),
+    strictEncodedJson: makeStrictJsonSchemaGuard(codec.ast, "encoded"),
     decode: Schema.decodeUnknownEffect(codec),
+    encode: Schema.encodeUnknownEffect(codec),
     encodeRaw: Schema.encodeUnknownEffect(schema),
     encodeJson: Schema.encodeUnknownEffect(Schema.toCodecJson(encodedSchema)),
   };
@@ -105,18 +112,21 @@ export const encodeJsonFieldValue = Effect.fn("ViewServerProtocol.jsonField.enco
   if (Result.isFailure(strictJson)) {
     return yield* Effect.fail(errors.notJsonSafe(strictJson.failure.message));
   }
-  const encoded = yield* compiled.encodeRaw(value).pipe(
-    Effect.catch((error) => {
-      const message = schemaErrorMessage(error);
-      if (!compiled.accepts(value)) {
-        return Effect.fail(errors.invalid(message));
-      }
-      return materializeJsonFieldValue(value, errors.notJsonSafe).pipe(
-        Effect.andThen(Effect.fail(errors.invalid(message))),
-      );
-    }),
-  );
-  const encodedStrictJson = compiled.strictJson(encoded);
+  const encodeFailure = (error: Schema.SchemaError) => {
+    const message = schemaErrorMessage(error);
+    if (!compiled.accepts(value)) {
+      return Effect.fail(errors.invalid(message));
+    }
+    return materializeJsonFieldValue(value, errors.notJsonSafe).pipe(
+      Effect.andThen(Effect.fail(errors.invalid(message))),
+    );
+  };
+  if (!compiled.hasObjectKeyword) {
+    const encoded = yield* compiled.encode(value).pipe(Effect.catch(encodeFailure));
+    return yield* materializeJsonFieldValue(encoded, errors.notJsonSafe);
+  }
+  const encoded = yield* compiled.encodeRaw(value).pipe(Effect.catch(encodeFailure));
+  const encodedStrictJson = compiled.strictEncodedJson(encoded);
   if (Result.isFailure(encodedStrictJson)) {
     return yield* Effect.fail(errors.notJsonSafe(encodedStrictJson.failure.message));
   }

@@ -8,6 +8,7 @@ export {
 export {
   makeSchemaJsonIdentity,
   makeStrictJsonSchemaGuard,
+  schemaAstContainsObjectKeyword,
   type SchemaJsonIdentity,
   type StrictJsonSchemaGuard,
 } from "./schema-json-identity";

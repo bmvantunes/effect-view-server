@@ -7,10 +7,12 @@ export {
 } from "./strict-json-materialization";
 export {
   makeSchemaJsonIdentity,
+  makeStrictJsonSchemaCodec,
   makeStrictJsonSchemaGuard,
   makeStrictJsonSchemaSnapshot,
   schemaAstContainsObjectKeyword,
   type SchemaJsonIdentity,
+  type StrictJsonSchemaCodec,
   type StrictJsonSchemaGuard,
   type StrictJsonSchemaSnapshot,
 } from "./schema-json-identity";

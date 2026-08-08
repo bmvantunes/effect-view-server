@@ -7,6 +7,20 @@ import {
 type ValueSchema<Type = unknown> = Schema.Codec<Type, unknown, never, never>;
 type JsonNormalizer = (value: Schema.Json) => Schema.Json;
 
+export type StrictJsonSchemaCodec<Type = unknown> = {
+  readonly codec: Schema.Codec<Type, Schema.Json, never, never>;
+  readonly encodedCodec: Schema.Codec<unknown, Schema.Json, never, never>;
+  readonly hasObjectKeyword: boolean;
+  readonly strictJson: StrictJsonSchemaGuard;
+  readonly strictEncodedJson: StrictJsonSchemaSnapshot;
+  readonly strictEncoded: (
+    value: unknown,
+  ) => Result.Result<
+    (encodedValue: unknown) => Result.Result<unknown, StrictJsonMaterializationError>,
+    StrictJsonMaterializationError
+  >;
+};
+
 export type SchemaJsonIdentity<Type = unknown> = {
   readonly canonicalJson: (value: unknown) => Schema.Json;
   readonly canonicalKey: (value: unknown) => string;
@@ -464,7 +478,7 @@ const makeStrictJsonObjectKeywordGuard = (
           return value;
         }
         const [head, ...tail] = rest;
-        const tailThreshold = readArrayLength(value, path) - tail.length;
+        const tailThreshold = Math.max(readArrayLength(value, path) - tail.length, elements.length);
         const replacements = mode === "snapshot" ? new Map<string, unknown>() : undefined;
         for (let index = 0; index < tailThreshold + tail.length; index += 1) {
           const item =
@@ -574,41 +588,60 @@ export const makeStrictJsonSchemaGuard = (
     });
 };
 
+export const makeStrictJsonSchemaCodec = <Type>(
+  schema: ValueSchema<Type>,
+): StrictJsonSchemaCodec<Type> => {
+  const codec = Schema.toCodecJson(schema);
+  const encodedCodec = Schema.make<Schema.Codec<unknown, unknown, never, never>>(
+    SchemaAST.toEncoded(schema.ast),
+  );
+  const strictJson = makeStrictJsonSchemaGuard(codec.ast);
+  const strictEncodedJson = makeStrictJsonSchemaSnapshot(schema.ast, "encoded");
+  return {
+    codec,
+    encodedCodec: Schema.toCodecJson(encodedCodec),
+    hasObjectKeyword: schemaAstContainsObjectKeyword(codec.ast),
+    strictJson,
+    strictEncodedJson,
+    strictEncoded: (value) => {
+      const guardResult = strictJson(value);
+      if (Result.isFailure(guardResult)) {
+        return Result.fail(guardResult.failure);
+      }
+      return Result.succeed((encodedValue: unknown) => strictEncodedJson(encodedValue));
+    },
+  };
+};
+
 export const makeSchemaJsonIdentity = <Type>(
   schema: ValueSchema<Type>,
 ): SchemaJsonIdentity<Type> => {
-  const codec = Schema.toCodecJson(schema);
-  const decode = Schema.decodeUnknownSync(codec);
-  const encode = Schema.encodeUnknownSync(codec);
+  const compiled = makeStrictJsonSchemaCodec(schema);
+  const decode = Schema.decodeUnknownSync(compiled.codec);
+  const encode = Schema.encodeUnknownSync(compiled.codec);
   const encodeRaw = Schema.encodeUnknownSync(schema);
-  const encodedSchema = Schema.make<Schema.Codec<unknown, unknown, never, never>>(
-    SchemaAST.toEncoded(schema.ast),
-  );
-  const encodeJson = Schema.encodeUnknownSync(Schema.toCodecJson(encodedSchema));
-  const normalize = makeSchemaJsonNormalizer(codec.ast);
-  const containsObjectKeyword = schemaAstContainsObjectKeyword(codec.ast);
-  const strictDecodedObjectKeywordGuard = makeStrictJsonSchemaGuard(codec.ast);
-  const strictEncodedObjectKeywordSnapshot = makeStrictJsonSchemaSnapshot(codec.ast, "encoded");
+  const encodeJson = Schema.encodeUnknownSync(compiled.encodedCodec);
   const strictEncoded = (value: unknown): Schema.Json => {
-    if (!containsObjectKeyword) {
+    if (!compiled.hasObjectKeyword) {
       return strictJson(encode(value));
     }
-    const guardResult = strictDecodedObjectKeywordGuard(value);
-    if (Result.isFailure(guardResult)) {
-      throw guardResult.failure;
+    const strictEncodedResult = compiled.strictEncoded(value);
+    if (Result.isFailure(strictEncodedResult)) {
+      throw strictEncodedResult.failure;
     }
     const encodedValue = encodeRaw(value);
-    const encodedSnapshotResult = strictEncodedObjectKeywordSnapshot(encodedValue);
+    const encodedSnapshotResult = strictEncodedResult.success(encodedValue);
     if (Result.isFailure(encodedSnapshotResult)) {
       throw encodedSnapshotResult.failure;
     }
     return strictJson(encodeJson(encodedSnapshotResult.success));
   };
+  const normalize = makeSchemaJsonNormalizer(compiled.codec.ast);
   const canonicalJson = (value: unknown): Schema.Json => normalize(strictEncoded(value));
   const canonicalKey =
-    SchemaAST.isString(codec.ast) &&
-    codec.ast.encoding === undefined &&
-    (codec.ast.checks?.length ?? 0) === 0
+    SchemaAST.isString(compiled.codec.ast) &&
+    compiled.codec.ast.encoding === undefined &&
+    (compiled.codec.ast.checks?.length ?? 0) === 0
       ? (value: unknown): string =>
           typeof value === "string"
             ? canonicalJsonString(value)

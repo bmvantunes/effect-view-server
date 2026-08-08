@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import {
   cpSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -19,6 +20,78 @@ import { runReleasePublish } from "./release-publish-orchestration.mjs";
 import { inspectTypeScriptModule } from "./typescript-module-inspection";
 
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
+
+const copyConsumerPackage = (sourceDirectory: string, targetDirectory: string): void => {
+  mkdirSync(targetDirectory, { recursive: true });
+  cpSync(
+    join(sourceDirectory, "package.json"),
+    join(targetDirectory, "package.json"),
+    { dereference: true },
+  );
+  const packageJson = JSON.parse(readFileSync(join(sourceDirectory, "package.json"), "utf8"));
+  const targets = new Set<string>();
+  const collectTargets = (value: unknown): void => {
+    if (typeof value === "string") {
+      targets.add(value);
+      return;
+    }
+    if (Array.isArray(value)) {
+      value.forEach(collectTargets);
+      return;
+    }
+    if (value !== null && typeof value === "object") {
+      Object.values(value).forEach(collectTargets);
+    }
+  };
+  collectTargets(packageJson.exports);
+  collectTargets(packageJson.main);
+  collectTargets(packageJson.module);
+  collectTargets(packageJson.types);
+  const copiedTopLevelEntries = new Set<string>();
+  for (const target of targets) {
+    if (!target.startsWith("./")) {
+      continue;
+    }
+    const relativeTarget = target.slice(2).split("*")[0];
+    const topLevelEntry = relativeTarget.split("/")[0];
+    if (topLevelEntry === "" || copiedTopLevelEntries.has(topLevelEntry)) {
+      continue;
+    }
+    const sourcePath = join(sourceDirectory, topLevelEntry);
+    if (!existsSync(sourcePath)) {
+      continue;
+    }
+    cpSync(sourcePath, join(targetDirectory, topLevelEntry), {
+      dereference: true,
+      recursive: true,
+    });
+    copiedTopLevelEntries.add(topLevelEntry);
+  }
+};
+
+const copyConsumerDependencyTree = (sourceDirectory: string, targetDirectory: string): void => {
+  for (const entry of readdirSync(sourceDirectory, { withFileTypes: true })) {
+    if (entry.name === "effect") {
+      continue;
+    }
+    const sourcePath = join(sourceDirectory, entry.name);
+    if ((entry.isDirectory() || entry.isSymbolicLink()) && entry.name.startsWith("@")) {
+      for (const scopedEntry of readdirSync(sourcePath, { withFileTypes: true })) {
+        if (!scopedEntry.isDirectory() && !scopedEntry.isSymbolicLink()) {
+          continue;
+        }
+        copyConsumerPackage(
+          join(sourcePath, scopedEntry.name),
+          join(targetDirectory, entry.name, scopedEntry.name),
+        );
+      }
+      continue;
+    }
+    if (entry.isDirectory() || entry.isSymbolicLink()) {
+      copyConsumerPackage(sourcePath, join(targetDirectory, entry.name));
+    }
+  }
+};
 
 type CommandResult = {
   readonly status: number;
@@ -207,35 +280,27 @@ describe("published value semantics consumer", () => {
       });
       const effectDirectory = realpathSync(join(repositoryRoot, "node_modules", "effect"));
       const consumerEffectDirectory = join(consumerDirectory, "node_modules", "effect");
-      cpSync(effectDirectory, consumerEffectDirectory, { dereference: true, recursive: true });
+      copyConsumerPackage(effectDirectory, consumerEffectDirectory);
       mkdirSync(join(consumerEffectDirectory, "node_modules"), { recursive: true });
-      for (const entry of readdirSync(dirname(effectDirectory), { withFileTypes: true })) {
-        if (entry.name === "effect") {
-          continue;
-        }
-        cpSync(
-          join(dirname(effectDirectory), entry.name),
-          join(consumerEffectDirectory, "node_modules", entry.name),
-          { dereference: true, recursive: true },
-        );
-      }
+      copyConsumerDependencyTree(
+        dirname(effectDirectory),
+        join(consumerEffectDirectory, "node_modules"),
+      );
       const fastCheckDirectory = realpathSync(join(dirname(effectDirectory), "fast-check"));
-      cpSync(
+      copyConsumerPackage(
         realpathSync(join(dirname(fastCheckDirectory), "pure-rand")),
         join(consumerEffectDirectory, "node_modules", "pure-rand"),
-        { dereference: true, recursive: true },
       );
       const schemaAstDeclarationPath = join(consumerEffectDirectory, "dist", "SchemaAST.d.ts");
       const schemaAstDeclaration = readFileSync(schemaAstDeclarationPath, "utf8");
       const unpatchedSchemaAstDeclaration = schemaAstDeclaration.replace(
-        /\n\/\*\* @internal \*\/\nexport type Sentinel = \{\n    readonly key: PropertyKey;\n    readonly literal: LiteralValue \| symbol;\n\};\n/,
+        /\n\/\*\* @internal \*\/\nexport interface Sentinel \{\n    readonly key: PropertyKey;\n    readonly literal: LiteralValue \| symbol;\n\}\n/,
         "\n",
       );
-      if (unpatchedSchemaAstDeclaration === schemaAstDeclaration) {
-        throw new Error(
-          "The beta106 Effect fixture no longer contains its patched Sentinel declaration.",
-        );
-      }
+      expect(
+        unpatchedSchemaAstDeclaration,
+        `Expected the beta106 Effect fixture to contain its patched Sentinel declaration.\nOriginal: ${schemaAstDeclaration}\nResult: ${unpatchedSchemaAstDeclaration}`,
+      ).not.toBe(schemaAstDeclaration);
       writeFileSync(schemaAstDeclarationPath, unpatchedSchemaAstDeclaration);
 
       const installedManifest = decodePackageManifest(
@@ -332,6 +397,21 @@ describe("published value semantics consumer", () => {
           2,
         )}\n`,
       );
+      execFileSync(
+        process.execPath,
+        [
+          join(repositoryRoot, "node_modules", "typescript", "bin", "tsc"),
+          "-p",
+          join(consumerDirectory, "tsconfig.json"),
+        ],
+        { cwd: consumerDirectory, stdio: "inherit" },
+      );
+
+      writeFileSync(schemaAstDeclarationPath, schemaAstDeclaration);
+      expect(readFileSync(schemaAstDeclarationPath, "utf8")).toBe(schemaAstDeclaration);
+      execFileSync(process.execPath, [join(consumerDirectory, "runtime.mjs")], {
+        cwd: consumerDirectory,
+      });
       execFileSync(
         process.execPath,
         [

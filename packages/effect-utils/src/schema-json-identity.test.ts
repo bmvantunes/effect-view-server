@@ -156,15 +156,18 @@ describe("Schema JSON identity", () => {
     const tupleRestObjectKeywordIdentity = makeSchemaJsonIdentity(
       Schema.TupleWithRest(Schema.Tuple([Schema.String]), [Schema.String, Schema.ObjectKeyword]),
     );
+    const shortTupleRestObjectKeywordIdentity = makeSchemaJsonIdentity(
+      Schema.TupleWithRest(Schema.Tuple([]), [Schema.ObjectKeyword, Schema.ObjectKeyword]),
+    );
 
     const nonJson = new Map([["key", "value"]]);
 
-    expect(() => identity.canonicalKey(nonJson)).toThrow("Expected JSON value");
+    expect(() => identity.canonicalKey(nonJson)).toThrow(/^Expected JSON value$/);
     expect(() => identity.decodeEncoded(nonJson)).toThrow(
-      "Expected a plain data record or dense array",
+      /^Expected a plain data record or dense array at \$\.$/,
     );
     expect(() => objectKeywordIdentity.canonicalKey({ payload: nonJson })).toThrow(
-      "Expected a plain data record or dense array at $.payload",
+      /^Expected a plain data record or dense array at \$\.payload\.$/,
     );
     expect(objectKeywordIdentity.canonicalKey({ payload: { venue: "xnys" } })).toBe(
       '{"payload":{"venue":"xnys"}}',
@@ -181,16 +184,19 @@ describe("Schema JSON identity", () => {
       arrayObjectKeywordIdentity.canonicalJson(Object.seal([{ venue: "xnys" }])),
     ).toStrictEqual([{ venue: "xnys" }]);
     expect(() => suspendedObjectKeywordIdentity.canonicalKey({ payload: nonJson })).toThrow(
-      "Expected a plain data record or dense array at $.payload",
+      /^Expected a plain data record or dense array at \$\.payload\.$/,
     );
     expect(() => arrayObjectKeywordIdentity.canonicalKey([nonJson])).toThrow(
-      "Expected a plain data record or dense array at $[0]",
+      /^Expected a plain data record or dense array at \$\[0\]\.$/,
     );
     expect(() => tupleObjectKeywordIdentity.canonicalKey([nonJson])).toThrow(
-      "Expected a plain data record or dense array at $[0]",
+      /^Expected a plain data record or dense array at \$\[0\]\.$/,
     );
     expect(() => tupleRestObjectKeywordIdentity.canonicalKey(["head", "middle", nonJson])).toThrow(
-      "Expected a plain data record or dense array at $[2]",
+      /^Expected a plain data record or dense array at \$\[2\]\.$/,
+    );
+    expect(() => shortTupleRestObjectKeywordIdentity.canonicalKey([nonJson])).toThrow(
+      /^Expected a plain data record or dense array at \$\[0\]\.$/,
     );
 
     const nestedObjectKeywordIdentity = makeSchemaJsonIdentity(
@@ -198,13 +204,13 @@ describe("Schema JSON identity", () => {
     );
     expect(() =>
       nestedObjectKeywordIdentity.canonicalKey({ nested: { payload: nonJson } }),
-    ).toThrow("Expected a plain data record or dense array at $.nested.payload");
+    ).toThrow(/^Expected a plain data record or dense array at \$\.nested\.payload\.$/);
 
     const dottedKeyIdentity = makeSchemaJsonIdentity(
       Schema.Record(Schema.String, Schema.ObjectKeyword),
     );
     expect(() => dottedKeyIdentity.canonicalKey({ "foo.bar": nonJson })).toThrow(
-      'Expected a plain data record or dense array at $["foo.bar"]',
+      /^Expected a plain data record or dense array at \$\["foo\.bar"\]\.$/,
     );
 
     let nestedAccessorReads = 0;

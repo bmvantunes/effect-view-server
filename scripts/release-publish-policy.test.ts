@@ -67,10 +67,17 @@ const publicPackageJson = {
 
 describe("release publish policy", () => {
   it("keeps the beta106 SchemaAST declaration compatibility source explicit", () => {
-    expect(effectSchemaAstCompatibilityDeclaration).toContain(
-      'declare module "effect/SchemaAST"',
+    expect(effectSchemaAstCompatibilityDeclaration).toBe(
+      `export {};
+
+declare module "effect/SchemaAST" {
+  export interface Sentinel {
+    readonly key: PropertyKey;
+    readonly literal: LiteralValue | symbol;
+  }
+}
+`,
     );
-    expect(effectSchemaAstCompatibilityDeclaration).toContain("export type Sentinel");
   });
 
   it("refuses the placeholder version before trusted publishing", () => {

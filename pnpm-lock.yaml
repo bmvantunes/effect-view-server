@@ -108,7 +108,7 @@ overrides:
   vite: npm:@voidzero-dev/vite-plus-core@0.2.1
 
 patchedDependencies:
-  effect@4.0.0-beta.106: 5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c
+  effect@4.0.0-beta.106: f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d
 
 importers:
 
@@ -170,7 +170,7 @@ importers:
         version: 0.86.2
       '@effect/vitest':
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c))(vitest@4.1.9)
+        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d))(vitest@4.1.9)
       '@types/markdown-it':
         specifier: 'catalog:'
         version: 14.1.2
@@ -179,7 +179,7 @@ importers:
         version: 4.1.9(vitest@4.1.9)
       effect:
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c)
+        version: 4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d)
       effect-view-server:
         specifier: workspace:*
         version: link:packages/effect-view-server
@@ -206,7 +206,7 @@ importers:
     dependencies:
       effect:
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c)
+        version: 4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d)
       effect-view-server:
         specifier: workspace:*
         version: link:../../packages/effect-view-server
@@ -219,7 +219,7 @@ importers:
     devDependencies:
       '@effect/vitest':
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c))(vitest@4.1.9)
+        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d))(vitest@4.1.9)
       '@types/react':
         specifier: 19.2.15
         version: 19.2.15
@@ -261,7 +261,7 @@ importers:
         version: 2.1.2(@bufbuild/protobuf@2.12.0)
       '@effect/platform-node':
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c))(ioredis@5.10.1)
+        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d))(ioredis@5.10.1)
       '@platformatic/kafka':
         specifier: 'catalog:'
         version: 2.2.3
@@ -276,7 +276,7 @@ importers:
         version: 1.168.18(@tanstack/react-router@1.170.16(react-dom@19.2.7(react@19.2.7))(react@19.2.7))(@voidzero-dev/vite-plus-core@0.2.1(@types/node@25.9.1)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4)(typescript@6.0.3)(yaml@2.9.0))(esbuild@0.28.1)(rolldown@1.1.3)
       effect:
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c)
+        version: 4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d)
       effect-view-server:
         specifier: workspace:*
         version: link:../../packages/effect-view-server
@@ -292,7 +292,7 @@ importers:
     devDependencies:
       '@effect/vitest':
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c))(vitest@4.1.9)
+        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d))(vitest@4.1.9)
       '@tailwindcss/vite':
         specifier: 'catalog:'
         version: 4.3.1(@voidzero-dev/vite-plus-core@0.2.1(@types/node@25.9.1)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4)(typescript@6.0.3)(yaml@2.9.0))
@@ -349,7 +349,7 @@ importers:
         version: 2.1.2(@bufbuild/protobuf@2.12.0)
       '@effect/platform-node':
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c))(ioredis@5.10.1)
+        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d))(ioredis@5.10.1)
       '@tanstack/react-router':
         specifier: 'catalog:'
         version: 1.170.16(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
@@ -361,7 +361,7 @@ importers:
         version: 1.168.18(@tanstack/react-router@1.170.16(react-dom@19.2.7(react@19.2.7))(react@19.2.7))(@voidzero-dev/vite-plus-core@0.2.1(@types/node@25.9.1)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4)(typescript@6.0.3)(yaml@2.9.0))(esbuild@0.28.1)(rolldown@1.1.3)
       effect:
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c)
+        version: 4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d)
       effect-view-server:
         specifier: workspace:*
         version: link:../../packages/effect-view-server
@@ -377,7 +377,7 @@ importers:
     devDependencies:
       '@effect/vitest':
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c))(vitest@4.1.9)
+        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d))(vitest@4.1.9)
       '@tailwindcss/vite':
         specifier: 'catalog:'
         version: 4.3.1(@voidzero-dev/vite-plus-core@0.2.1(@types/node@25.9.1)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4)(typescript@6.0.3)(yaml@2.9.0))
@@ -434,7 +434,7 @@ importers:
         version: 2.1.2(@bufbuild/protobuf@2.12.0)
       '@effect/platform-node':
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c))(ioredis@5.10.1)
+        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d))(ioredis@5.10.1)
       '@tanstack/react-router':
         specifier: 'catalog:'
         version: 1.170.16(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
@@ -446,7 +446,7 @@ importers:
         version: 1.168.18(@tanstack/react-router@1.170.16(react-dom@19.2.7(react@19.2.7))(react@19.2.7))(@voidzero-dev/vite-plus-core@0.2.1(@types/node@25.9.1)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4)(typescript@6.0.3)(yaml@2.9.0))(esbuild@0.28.1)(rolldown@1.1.3)
       effect:
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c)
+        version: 4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d)
       effect-view-server:
         specifier: workspace:*
         version: link:../../packages/effect-view-server
@@ -462,7 +462,7 @@ importers:
     devDependencies:
       '@effect/vitest':
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c))(vitest@4.1.9)
+        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d))(vitest@4.1.9)
       '@tailwindcss/vite':
         specifier: 'catalog:'
         version: 4.3.1(@voidzero-dev/vite-plus-core@0.2.1(@types/node@25.9.1)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4)(typescript@6.0.3)(yaml@2.9.0))
@@ -522,7 +522,7 @@ importers:
         version: 1.168.18(@tanstack/react-router@1.170.16(react-dom@19.2.7(react@19.2.7))(react@19.2.7))(@voidzero-dev/vite-plus-core@0.2.1(@types/node@25.9.1)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4)(typescript@6.0.3)(yaml@2.9.0))(esbuild@0.28.1)(rolldown@1.1.3)
       effect:
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c)
+        version: 4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d)
       effect-view-server:
         specifier: workspace:*
         version: link:../../packages/effect-view-server
@@ -538,7 +538,7 @@ importers:
     devDependencies:
       '@effect/vitest':
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c))(vitest@4.1.9)
+        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d))(vitest@4.1.9)
       '@tailwindcss/vite':
         specifier: 'catalog:'
         version: 4.3.1(@voidzero-dev/vite-plus-core@0.2.1(@types/node@25.9.1)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4)(typescript@6.0.3)(yaml@2.9.0))
@@ -589,7 +589,7 @@ importers:
     dependencies:
       '@effect/platform-node':
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c))(ioredis@5.10.1)
+        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d))(ioredis@5.10.1)
       '@platformatic/kafka':
         specifier: 'catalog:'
         version: 2.2.3
@@ -604,7 +604,7 @@ importers:
         version: 1.168.18(@tanstack/react-router@1.170.16(react-dom@19.2.7(react@19.2.7))(react@19.2.7))(@voidzero-dev/vite-plus-core@0.2.1(@types/node@25.9.1)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4)(typescript@6.0.3)(yaml@2.9.0))(esbuild@0.28.1)(rolldown@1.1.3)
       effect:
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c)
+        version: 4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d)
       effect-view-server:
         specifier: workspace:*
         version: link:../../packages/effect-view-server
@@ -620,7 +620,7 @@ importers:
     devDependencies:
       '@effect/vitest':
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c))(vitest@4.1.9)
+        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d))(vitest@4.1.9)
       '@tailwindcss/vite':
         specifier: 'catalog:'
         version: 4.3.1(@voidzero-dev/vite-plus-core@0.2.1(@types/node@25.9.1)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4)(typescript@6.0.3)(yaml@2.9.0))
@@ -680,7 +680,7 @@ importers:
         version: 1.168.18(@tanstack/react-router@1.170.16(react-dom@19.2.7(react@19.2.7))(react@19.2.7))(@voidzero-dev/vite-plus-core@0.2.1(@types/node@25.9.1)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4)(typescript@6.0.3)(yaml@2.9.0))(esbuild@0.28.1)(rolldown@1.1.3)
       effect:
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c)
+        version: 4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d)
       effect-view-server:
         specifier: workspace:*
         version: link:../../packages/effect-view-server
@@ -696,7 +696,7 @@ importers:
     devDependencies:
       '@effect/vitest':
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c))(vitest@4.1.9)
+        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d))(vitest@4.1.9)
       '@tailwindcss/vite':
         specifier: 'catalog:'
         version: 4.3.1(@voidzero-dev/vite-plus-core@0.2.1(@types/node@25.9.1)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4)(typescript@6.0.3)(yaml@2.9.0))
@@ -744,7 +744,7 @@ importers:
     dependencies:
       '@effect/platform-node':
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c))(ioredis@5.10.1)
+        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d))(ioredis@5.10.1)
       '@tanstack/react-router':
         specifier: 'catalog:'
         version: 1.170.16(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
@@ -756,7 +756,7 @@ importers:
         version: 1.168.18(@tanstack/react-router@1.170.16(react-dom@19.2.7(react@19.2.7))(react@19.2.7))(@voidzero-dev/vite-plus-core@0.2.1(@types/node@25.9.1)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4)(typescript@6.0.3)(yaml@2.9.0))(esbuild@0.28.1)(rolldown@1.1.3)
       effect:
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c)
+        version: 4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d)
       effect-view-server:
         specifier: workspace:*
         version: link:../../packages/effect-view-server
@@ -772,7 +772,7 @@ importers:
     devDependencies:
       '@effect/vitest':
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c))(vitest@4.1.9)
+        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d))(vitest@4.1.9)
       '@tailwindcss/vite':
         specifier: 'catalog:'
         version: 4.3.1(@voidzero-dev/vite-plus-core@0.2.1(@types/node@25.9.1)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4)(typescript@6.0.3)(yaml@2.9.0))
@@ -835,17 +835,17 @@ importers:
         version: link:../source-adapter
       '@effect/platform-browser':
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c))
+        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d))
       effect:
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c)
+        version: 4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d)
     devDependencies:
       '@effect/platform-node':
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c))(ioredis@5.10.1)
+        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d))(ioredis@5.10.1)
       '@effect/vitest':
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c))(vitest@4.1.9)
+        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d))(vitest@4.1.9)
       '@vitest/coverage-istanbul':
         specifier: 'catalog:'
         version: 4.1.9(vitest@4.1.9)
@@ -869,11 +869,11 @@ importers:
         version: link:../effect-utils
       effect:
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c)
+        version: 4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d)
     devDependencies:
       '@effect/vitest':
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c))(vitest@4.1.9)
+        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d))(vitest@4.1.9)
       '@vitest/coverage-istanbul':
         specifier: 'catalog:'
         version: 4.1.9(vitest@4.1.9)
@@ -894,11 +894,11 @@ importers:
         version: link:../source-adapter
       effect:
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c)
+        version: 4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d)
     devDependencies:
       '@effect/vitest':
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c))(vitest@4.1.9)
+        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d))(vitest@4.1.9)
       '@vitest/coverage-istanbul':
         specifier: 'catalog:'
         version: 4.1.9(vitest@4.1.9)
@@ -916,11 +916,11 @@ importers:
     dependencies:
       effect:
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c)
+        version: 4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d)
     devDependencies:
       '@effect/vitest':
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c))(vitest@4.1.9)
+        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d))(vitest@4.1.9)
       '@vitest/coverage-istanbul':
         specifier: 'catalog:'
         version: 4.1.9(vitest@4.1.9)
@@ -947,10 +947,10 @@ importers:
         version: 2.1.2(@bufbuild/protobuf@2.12.0)(@connectrpc/connect@2.1.2(@bufbuild/protobuf@2.12.0))
       '@effect/platform-browser':
         specifier: 4.0.0-beta.106
-        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c))
+        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d))
       '@effect/platform-node':
         specifier: 4.0.0-beta.106
-        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c))(ioredis@5.10.1)
+        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d))(ioredis@5.10.1)
       '@platformatic/kafka':
         specifier: 2.2.3
         version: 2.2.3
@@ -1005,10 +1005,10 @@ importers:
         version: link:../source-adapter-testing
       '@effect/atom-react':
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c))(react@19.2.7)(scheduler@0.27.0)
+        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d))(react@19.2.7)(scheduler@0.27.0)
       '@effect/vitest':
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c))(vitest@4.1.9)
+        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d))(vitest@4.1.9)
       '@types/react':
         specifier: 19.2.15
         version: 19.2.15
@@ -1023,7 +1023,7 @@ importers:
         version: 4.1.9
       effect:
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c)
+        version: 4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d)
       typescript:
         specifier: 'catalog:'
         version: 6.0.3
@@ -1066,7 +1066,7 @@ importers:
         version: link:../source-adapter-testing
       '@effect/vitest':
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c))(vitest@4.1.9)
+        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d))(vitest@4.1.9)
       '@types/node':
         specifier: 'catalog:'
         version: 25.9.1
@@ -1078,7 +1078,7 @@ importers:
         version: 4.1.9
       effect:
         specifier: 4.0.0-beta.106
-        version: 4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c)
+        version: 4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d)
       effect-view-server:
         specifier: workspace:0.0.6
         version: link:../effect-view-server
@@ -1102,11 +1102,11 @@ importers:
         version: link:../runtime-core
       effect:
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c)
+        version: 4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d)
     devDependencies:
       '@effect/vitest':
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c))(vitest@4.1.9)
+        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d))(vitest@4.1.9)
       '@vitest/coverage-istanbul':
         specifier: 'catalog:'
         version: 4.1.9(vitest@4.1.9)
@@ -1143,7 +1143,7 @@ importers:
         version: link:../source-adapter-conformance-host
       '@effect/vitest':
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c))(vitest@4.1.9)
+        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d))(vitest@4.1.9)
       '@types/node':
         specifier: 'catalog:'
         version: 25.9.1
@@ -1155,7 +1155,7 @@ importers:
         version: 4.1.9
       effect:
         specifier: 4.0.0-beta.106
-        version: 4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c)
+        version: 4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d)
       effect-view-server:
         specifier: workspace:0.0.6
         version: link:../effect-view-server
@@ -1179,11 +1179,11 @@ importers:
         version: link:../source-adapter
       effect:
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c)
+        version: 4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d)
     devDependencies:
       '@effect/vitest':
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c))(vitest@4.1.9)
+        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d))(vitest@4.1.9)
       '@vitest/coverage-istanbul':
         specifier: 'catalog:'
         version: 4.1.9(vitest@4.1.9)
@@ -1210,10 +1210,10 @@ importers:
         version: link:../effect-utils
       '@effect/atom-react':
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c))(react@19.2.7)(scheduler@0.27.0)
+        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d))(react@19.2.7)(scheduler@0.27.0)
       effect:
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c)
+        version: 4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d)
       scheduler:
         specifier: 'catalog:'
         version: 0.27.0
@@ -1232,7 +1232,7 @@ importers:
         version: link:../source-adapter
       '@effect/vitest':
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c))(vitest@4.1.9)
+        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d))(vitest@4.1.9)
       '@types/react':
         specifier: 19.2.15
         version: 19.2.15
@@ -1289,7 +1289,7 @@ importers:
         version: link:../server
       effect:
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c)
+        version: 4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d)
     devDependencies:
       '@effect-view-server/source-adapter':
         specifier: workspace:*
@@ -1299,10 +1299,10 @@ importers:
         version: link:../source-adapter-testing
       '@effect/platform-node':
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c))(ioredis@5.10.1)
+        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d))(ioredis@5.10.1)
       '@effect/vitest':
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c))(vitest@4.1.9)
+        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d))(vitest@4.1.9)
       '@types/node':
         specifier: 'catalog:'
         version: 25.9.1
@@ -1338,14 +1338,14 @@ importers:
         version: link:../source-adapter
       effect:
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c)
+        version: 4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d)
     devDependencies:
       '@effect-view-server/source-adapter-testing':
         specifier: workspace:*
         version: link:../source-adapter-testing
       '@effect/vitest':
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c))(vitest@4.1.9)
+        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d))(vitest@4.1.9)
       '@vitest/coverage-istanbul':
         specifier: 'catalog:'
         version: 4.1.9(vitest@4.1.9)
@@ -1375,10 +1375,10 @@ importers:
         version: link:../protocol
       '@effect/platform-node':
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c))(ioredis@5.10.1)
+        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d))(ioredis@5.10.1)
       effect:
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c)
+        version: 4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d)
     devDependencies:
       '@effect-view-server/runtime-core':
         specifier: workspace:*
@@ -1391,7 +1391,7 @@ importers:
         version: link:../source-adapter-testing
       '@effect/vitest':
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c))(vitest@4.1.9)
+        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d))(vitest@4.1.9)
       '@types/node':
         specifier: 'catalog:'
         version: 25.9.1
@@ -1412,11 +1412,11 @@ importers:
     dependencies:
       effect:
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c)
+        version: 4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d)
     devDependencies:
       '@effect/vitest':
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c))(vitest@4.1.9)
+        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d))(vitest@4.1.9)
       '@vitest/coverage-istanbul':
         specifier: 'catalog:'
         version: 4.1.9(vitest@4.1.9)
@@ -1446,10 +1446,10 @@ importers:
         version: link:../source-adapter-testing
       '@effect/vitest':
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c))(vitest@4.1.9)
+        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d))(vitest@4.1.9)
       effect:
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c)
+        version: 4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d)
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
@@ -1474,10 +1474,10 @@ importers:
         version: link:../source-adapter
       '@effect/vitest':
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c))(vitest@4.1.9)
+        version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d))(vitest@4.1.9)
       effect:
         specifier: 'catalog:'
-        version: 4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c)
+        version: 4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d)
       typescript:
         specifier: 'catalog:'
         version: 6.0.3
@@ -4386,31 +4386,31 @@ snapshots:
     dependencies:
       '@bufbuild/protobuf': 2.12.0
 
-  '@effect/atom-react@4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c))(react@19.2.7)(scheduler@0.27.0)':
+  '@effect/atom-react@4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d))(react@19.2.7)(scheduler@0.27.0)':
     dependencies:
-      effect: 4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c)
+      effect: 4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d)
       react: 19.2.7
       scheduler: 0.27.0
 
   '@effect/language-service@0.86.2': {}
 
-  '@effect/platform-browser@4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c))':
+  '@effect/platform-browser@4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d))':
     dependencies:
-      effect: 4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c)
+      effect: 4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d)
 
-  '@effect/platform-node-shared@4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c))':
+  '@effect/platform-node-shared@4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d))':
     dependencies:
       '@types/ws': 8.18.1
-      effect: 4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c)
+      effect: 4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d)
       ws: 8.21.1
     transitivePeerDependencies:
       - bufferutil
       - utf-8-validate
 
-  '@effect/platform-node@4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c))(ioredis@5.10.1)':
+  '@effect/platform-node@4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d))(ioredis@5.10.1)':
     dependencies:
-      '@effect/platform-node-shared': 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c))
-      effect: 4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c)
+      '@effect/platform-node-shared': 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d))
+      effect: 4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d)
       ioredis: 5.10.1
       mime: 4.1.0
       undici: 8.5.0
@@ -4418,9 +4418,9 @@ snapshots:
       - bufferutil
       - utf-8-validate
 
-  '@effect/vitest@4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c))(vitest@4.1.9)':
+  '@effect/vitest@4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d))(vitest@4.1.9)':
     dependencies:
-      effect: 4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c)
+      effect: 4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d)
       vitest: 4.1.9(@types/node@25.9.1)(@vitest/browser-playwright@4.1.9)(@vitest/browser-preview@4.1.9)(@vitest/coverage-istanbul@4.1.9)(@voidzero-dev/vite-plus-core@0.2.1(@types/node@25.9.1)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4)(typescript@6.0.3)(yaml@2.9.0))
 
   '@emnapi/core@1.10.0':
@@ -5542,7 +5542,7 @@ snapshots:
 
   dom-accessibility-api@0.5.16: {}
 
-  effect@4.0.0-beta.106(patch_hash=5147785f9df25b4e9e79d2f215dd89125660d20175698a86f6529d40875a809c):
+  effect@4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d):
     dependencies:
       '@standard-schema/spec': 1.1.0
       fast-check: 4.9.0

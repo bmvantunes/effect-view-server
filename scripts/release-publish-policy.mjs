@@ -5,10 +5,10 @@ export const publicPackageName = "effect-view-server";
 export const effectSchemaAstCompatibilityDeclaration = `export {};
 
 declare module "effect/SchemaAST" {
-  export type Sentinel = {
+  export interface Sentinel {
     readonly key: PropertyKey;
-    readonly literal: string | number | boolean | bigint | symbol;
-  };
+    readonly literal: LiteralValue | symbol;
+  }
 }
 `;
 

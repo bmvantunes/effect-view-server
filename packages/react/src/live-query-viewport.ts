@@ -81,6 +81,54 @@ export type LiveQueryViewportGeneration = {
   readonly release: () => void;
 };
 
+type LiveQueryViewportRequest<
+  Topics extends TopicDefinitions,
+  Topic extends Extract<keyof Topics, string>,
+  Query extends LiveQueryViewportQuery<TopicRow<Topics, Topic>>,
+  Sink extends LiveQueryViewportSink<LiveQueryRow<TopicRow<Topics, Topic>, NoInfer<Query>>>,
+> = {
+  readonly window: LiveQueryViewportWindow;
+  readonly query: ExactLiveQueryInputForTopic<Topics, NoInfer<Topic>, Query>;
+  readonly sink: Sink &
+    ExactLiveQueryViewportSink<
+      LiveQueryRow<TopicRow<Topics, Topic>, NoInfer<Query>>,
+      NoInfer<Sink>
+    >;
+};
+
+type LiveQueryViewportCapturedInput<
+  Topics extends TopicDefinitions,
+  Topic extends Extract<keyof Topics, string>,
+  Query extends LiveQueryViewportQuery<TopicRow<Topics, Topic>>,
+  Sink extends LiveQueryViewportSink<LiveQueryRow<TopicRow<Topics, Topic>, NoInfer<Query>>>,
+> =
+  | {
+      readonly _tag: "Success";
+      readonly request: LiveQueryViewportRequest<Topics, Topic, Query, Sink>;
+    }
+  | {
+      readonly _tag: "Failure";
+      readonly request: {
+        readonly window: LiveQueryViewportWindow;
+        readonly sink: Sink &
+          ExactLiveQueryViewportSink<
+            LiveQueryRow<TopicRow<Topics, Topic>, NoInfer<Query>>,
+            NoInfer<Sink>
+          >;
+      };
+      readonly failure: unknown;
+    };
+
+export type LiveQueryViewportCapturedReplace<
+  Topics extends TopicDefinitions,
+  Topic extends Extract<keyof Topics, string>,
+> = <
+  const Query extends LiveQueryViewportQuery<TopicRow<Topics, NoInfer<Topic>>>,
+  const Sink extends LiveQueryViewportSink<LiveQueryRow<TopicRow<Topics, Topic>, NoInfer<Query>>>,
+>(
+  input: LiveQueryViewportCapturedInput<Topics, Topic, Query, Sink>,
+) => LiveQueryViewportGeneration;
+
 export type LiveQueryViewport<
   Topics extends TopicDefinitions,
   Topic extends Extract<keyof Topics, string>,
@@ -88,15 +136,9 @@ export type LiveQueryViewport<
   readonly replace: <
     const Query extends LiveQueryViewportQuery<TopicRow<Topics, NoInfer<Topic>>>,
     const Sink extends LiveQueryViewportSink<LiveQueryRow<TopicRow<Topics, Topic>, NoInfer<Query>>>,
-  >(request: {
-    readonly window: LiveQueryViewportWindow;
-    readonly query: ExactLiveQueryInputForTopic<Topics, NoInfer<Topic>, Query>;
-    readonly sink: Sink &
-      ExactLiveQueryViewportSink<
-        LiveQueryRow<TopicRow<Topics, Topic>, NoInfer<Query>>,
-        NoInfer<Sink>
-      >;
-  }) => LiveQueryViewportGeneration;
+  >(
+    request: LiveQueryViewportRequest<Topics, Topic, Query, Sink>,
+  ) => LiveQueryViewportGeneration;
   readonly destroy: () => void;
 };
 
@@ -335,12 +377,47 @@ type LiveQueryViewportBindingEntry<
   Topic extends Extract<keyof Topics, string>,
 > = {
   readonly viewport: LiveQueryViewport<Topics, Topic>;
+  readonly replaceCaptured: LiveQueryViewportCapturedReplace<Topics, Topic>;
   readonly deactivate: () => void;
 };
 
 type LiveQueryViewportBindingOptions = {
   readonly deferDeactivation?: boolean;
 };
+
+type LiveQueryViewportBindingGeneration<
+  Topics extends TopicDefinitions,
+  Topic extends Extract<keyof Topics, string>,
+> = {
+  readonly generation: LiveQueryViewportGeneration;
+  readonly queueInstall: (entry: LiveQueryViewportBindingEntry<Topics, Topic>) => void;
+  readonly cancelInstall: (entry: LiveQueryViewportBindingEntry<Topics, Topic>) => void;
+  readonly flushInstall: () => void;
+  readonly supersede: () => void;
+};
+
+const inactiveLiveQueryViewportGeneration: LiveQueryViewportGeneration = {
+  setWindow: () => undefined,
+  release: () => undefined,
+};
+
+const capturedInputFrom = <
+  Topics extends TopicDefinitions,
+  Topic extends Extract<keyof Topics, string>,
+  const Query extends LiveQueryViewportQuery<TopicRow<Topics, Topic>>,
+  const Sink extends LiveQueryViewportSink<LiveQueryRow<TopicRow<Topics, Topic>, NoInfer<Query>>>,
+>(
+  captured: Result.Result<ExactLiveQueryInputForTopic<Topics, Topic, Query>, unknown>,
+  window: LiveQueryViewportWindow,
+  sink: Sink &
+    ExactLiveQueryViewportSink<
+      LiveQueryRow<TopicRow<Topics, Topic>, NoInfer<Query>>,
+      NoInfer<Sink>
+    >,
+): LiveQueryViewportCapturedInput<Topics, Topic, Query, Sink> =>
+  Result.isSuccess(captured)
+    ? { _tag: "Success", request: { window, query: captured.success, sink } }
+    : { _tag: "Failure", request: { window, sink }, failure: captured.failure };
 
 export type LiveQueryViewportBinding<
   Topics extends TopicDefinitions,
@@ -359,6 +436,8 @@ export const makeLiveQueryViewportBinding = <
   options: LiveQueryViewportBindingOptions = {},
 ): LiveQueryViewportBinding<Topics, Topic> => {
   let current: LiveQueryViewportBindingEntry<Topics, Topic> | undefined;
+  let activeGeneration: LiveQueryViewportBindingGeneration<Topics, Topic> | undefined;
+  let replaceInvocation = 0;
   let pendingDeactivations = new Set<LiveQueryViewportBindingEntry<Topics, Topic>>();
   let terminal = false;
   const deactivate = (entry: LiveQueryViewportBindingEntry<Topics, Topic>): void => {
@@ -369,22 +448,99 @@ export const makeLiveQueryViewportBinding = <
     }
     entry.deactivate();
   };
-  const viewport: LiveQueryViewport<Topics, Topic> = {
-    replace: (request) =>
-      terminal
-        ? {
-            setWindow: () => undefined,
-            release: () => undefined,
+  const replace = <
+    const Query extends LiveQueryViewportQuery<TopicRow<Topics, NoInfer<Topic>>>,
+    const Sink extends LiveQueryViewportSink<LiveQueryRow<TopicRow<Topics, Topic>, NoInfer<Query>>>,
+  >(
+    request: LiveQueryViewportRequest<Topics, Topic, Query, Sink>,
+  ): LiveQueryViewportGeneration => {
+    const invocation = ++replaceInvocation;
+    const entry = current;
+    if (terminal || entry === undefined) {
+      return inactiveLiveQueryViewportGeneration;
+    }
+    const ownsReplacement = (): boolean =>
+      invocation === replaceInvocation && !terminal && current === entry;
+    const capturedQuery = Result.try(() => snapshotViewServerQuery(request.query));
+    if (!ownsReplacement()) {
+      return inactiveLiveQueryViewportGeneration;
+    }
+    const sink = request.sink;
+    let window = { ...request.window };
+    if (!ownsReplacement()) {
+      return inactiveLiveQueryViewportGeneration;
+    }
+    activeGeneration?.supersede();
+    let installedEntry = entry;
+    const install = (nextEntry: LiveQueryViewportBindingEntry<Topics, Topic>) =>
+      nextEntry.replaceCaptured<Query, Sink>(
+        capturedInputFrom<Topics, Topic, Query, Sink>(capturedQuery, window, sink),
+      );
+    let installedGeneration = install(entry);
+    if (!ownsReplacement()) {
+      return inactiveLiveQueryViewportGeneration;
+    }
+    let pendingEntry: LiveQueryViewportBindingEntry<Topics, Topic> | undefined;
+    let active = true;
+    const bindingGeneration: LiveQueryViewportBindingGeneration<Topics, Topic> = {
+      generation: {
+        setWindow: (nextWindow) => {
+          if (!active) {
+            return;
           }
-        : (current?.viewport.replace(request) ?? {
-            setWindow: () => undefined,
-            release: () => undefined,
-          }),
+          window = { ...nextWindow };
+          installedGeneration.setWindow(window);
+        },
+        release: () => {
+          if (!active) {
+            return;
+          }
+          active = false;
+          pendingEntry = undefined;
+          activeGeneration = undefined;
+          installedGeneration.release();
+        },
+      },
+      queueInstall: (nextEntry) => {
+        pendingEntry = installedEntry === nextEntry ? undefined : nextEntry;
+      },
+      cancelInstall: (removedEntry) => {
+        if (pendingEntry === removedEntry) {
+          pendingEntry = undefined;
+        }
+      },
+      flushInstall: () => {
+        if (pendingEntry === undefined) {
+          return;
+        }
+        const nextEntry = pendingEntry;
+        pendingEntry = undefined;
+        const nextGeneration = install(nextEntry);
+        if (!active) {
+          nextGeneration.release();
+          return;
+        }
+        installedEntry = nextEntry;
+        installedGeneration = nextGeneration;
+      },
+      supersede: () => {
+        active = false;
+        pendingEntry = undefined;
+      },
+    };
+    activeGeneration = bindingGeneration;
+    return bindingGeneration.generation;
+  };
+  const viewport: LiveQueryViewport<Topics, Topic> = {
+    replace,
     destroy: () => {
       if (terminal) {
         return;
       }
       terminal = true;
+      replaceInvocation += 1;
+      activeGeneration?.supersede();
+      activeGeneration = undefined;
       const previous = current;
       current = undefined;
       previous?.viewport.destroy();
@@ -403,6 +559,7 @@ export const makeLiveQueryViewportBinding = <
       }
       const previous = current;
       current = entry;
+      activeGeneration?.queueInstall(entry);
       if (previous !== undefined) {
         deactivate(previous);
       }
@@ -412,9 +569,11 @@ export const makeLiveQueryViewportBinding = <
         return;
       }
       current = undefined;
+      activeGeneration?.cancelInstall(entry);
       deactivate(entry);
     },
     flush: () => {
+      activeGeneration?.flushInstall();
       const deactivations = pendingDeactivations;
       pendingDeactivations = new Set();
       for (const entry of deactivations) {
@@ -468,7 +627,10 @@ export const makeLiveQueryViewport = <
   Topic extends Extract<keyof Topics, string>,
 >(
   input: LiveQueryViewportControllerInput<Topics, Topic>,
-): LiveQueryViewport<Topics, Topic> & { readonly deactivate: () => void } => {
+): LiveQueryViewport<Topics, Topic> & {
+  readonly replaceCaptured: LiveQueryViewportCapturedReplace<Topics, Topic>;
+  readonly deactivate: () => void;
+} => {
   type Row = TopicRow<Topics, Topic>;
   let ownerCounter = 0;
   let requestCounter = 0;
@@ -714,23 +876,19 @@ export const makeLiveQueryViewport = <
     });
   };
 
-  const replace: LiveQueryViewport<Topics, Topic>["replace"] = (request) => {
-    if (terminal) {
-      return {
-        setWindow: () => undefined,
-        release: () => undefined,
-      };
-    }
-    const invocation = ++replaceInvocation;
-    const epoch = ++mutationEpoch;
-    const captured = Result.try(() => snapshotViewServerQuery(request.query));
+  const installCaptured = <
+    const Query extends LiveQueryViewportQuery<Row>,
+    const Sink extends LiveQueryViewportSink<LiveQueryRow<Row, NoInfer<Query>>>,
+  >(
+    input_: LiveQueryViewportCapturedInput<Topics, Topic, Query, Sink>,
+    invocation: number,
+    epoch: number,
+  ): LiveQueryViewportGeneration => {
     if (invocation !== replaceInvocation || epoch !== mutationEpoch || terminal) {
-      return {
-        setWindow: () => undefined,
-        release: () => undefined,
-      };
+      return inactiveLiveQueryViewportGeneration;
     }
-    if (Result.isFailure(captured)) {
+    if (input_._tag === "Failure") {
+      const { request } = input_;
       const owner = ++ownerCounter;
       const installed = installActive({
         owner,
@@ -745,7 +903,7 @@ export const makeLiveQueryViewport = <
         stream: Stream.unwrap(
           Effect.sync(() =>
             installed.activate()
-              ? holdChrome(invalidQueryChrome(liveQueryViewportFailureMessage(captured.failure)))
+              ? holdChrome(invalidQueryChrome(liveQueryViewportFailureMessage(input_.failure)))
               : Stream.empty,
           ),
         ),
@@ -767,15 +925,13 @@ export const makeLiveQueryViewport = <
       };
     }
 
-    const query = captured.success;
+    const { request } = input_;
+    const query = request.query;
     const topicDefinition = input.config.topics[input.topic]!;
     const criteriaKey = stableQueryKeyForRowSchema(query, topicDefinition.schema);
     const window = validateLiveQueryViewportWindow(request.window);
     if (epoch !== mutationEpoch || terminal) {
-      return {
-        setWindow: () => undefined,
-        release: () => undefined,
-      };
+      return inactiveLiveQueryViewportGeneration;
     }
     const current = active;
     if (
@@ -803,6 +959,34 @@ export const makeLiveQueryViewport = <
       latestTotalRows,
     });
     return makeGeneration(owner, criteriaKey, query, request.sink, latestTotalRows);
+  };
+
+  const replaceCaptured: LiveQueryViewportCapturedReplace<Topics, Topic> = (capturedInput) => {
+    if (terminal) {
+      return inactiveLiveQueryViewportGeneration;
+    }
+    const invocation = ++replaceInvocation;
+    const epoch = ++mutationEpoch;
+    return installCaptured(capturedInput, invocation, epoch);
+  };
+
+  const replace = <
+    const Query extends LiveQueryViewportQuery<TopicRow<Topics, NoInfer<Topic>>>,
+    const Sink extends LiveQueryViewportSink<LiveQueryRow<TopicRow<Topics, Topic>, NoInfer<Query>>>,
+  >(
+    request: LiveQueryViewportRequest<Topics, Topic, Query, Sink>,
+  ): LiveQueryViewportGeneration => {
+    if (terminal) {
+      return inactiveLiveQueryViewportGeneration;
+    }
+    const invocation = ++replaceInvocation;
+    const epoch = ++mutationEpoch;
+    const captured = Result.try(() => snapshotViewServerQuery(request.query));
+    return installCaptured<Query, Sink>(
+      capturedInputFrom<Topics, Topic, Query, Sink>(captured, request.window, request.sink),
+      invocation,
+      epoch,
+    );
   };
 
   function makeGeneration<const Query extends LiveQueryViewportQuery<Row>>(
@@ -876,6 +1060,7 @@ export const makeLiveQueryViewport = <
 
   return {
     replace,
+    replaceCaptured,
     destroy: () => {
       if (terminal) {
         return;

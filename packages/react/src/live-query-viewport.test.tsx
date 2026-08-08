@@ -17,7 +17,7 @@ import {
   type ViewServerTransportError,
 } from "@effect-view-server/config";
 import { createInMemoryViewServer } from "@effect-view-server/in-memory";
-import { Deferred, Effect, Queue, Schema, Stream } from "effect";
+import { Deferred, Effect, Option, Queue, Schema, Stream } from "effect";
 import * as BigDecimal from "effect/BigDecimal";
 import {
   StrictMode,
@@ -377,7 +377,8 @@ describe("useLiveQueryViewport", () => {
     expect(observedViewport).toBe(retainedViewport);
     expect(consoleError.mock.calls).toStrictEqual([]);
     expect(callbacksDuringInsertionCleanup).toBe(0);
-    const currentGeneration = retainedViewport!.replace({
+    const currentViewport = Option.getOrThrow(Option.fromUndefinedOr(retainedViewport));
+    const currentGeneration = currentViewport.replace({
       window: { firstRow: 0, lastRow: 9 },
       query: { select: ["id"], where: [], orderBy: [] },
       sink,

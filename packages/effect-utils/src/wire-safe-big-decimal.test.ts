@@ -1,12 +1,15 @@
 import { describe, expect, it } from "@effect/vitest";
 import * as BigDecimal from "effect/BigDecimal";
 import {
+  compareWireSafeBigDecimalComparisonMetadata,
   compareTrustedWireSafeBigDecimal,
   compareWireSafeBigDecimal,
   inspectWireSafeBigDecimal,
   isTrustedWireSafeBigDecimal,
   isWireSafeBigDecimal,
+  trustedWireSafeBigDecimalComparisonMetadata,
   trustedWireSafeBigDecimalSemanticKey,
+  wireSafeBigDecimalComparisonMetadata,
   wireSafeBigDecimalSemanticKey,
 } from "./wire-safe-big-decimal";
 
@@ -274,6 +277,67 @@ describe("wire-safe BigDecimal", () => {
     ]).toStrictEqual([-1, 1, 1, -1, -1, -1]);
   });
 
+  it("reuses opaque comparison metadata without rereading source values", () => {
+    let coefficientReads = 0;
+    let scaleReads = 0;
+    const left = new Proxy(BigDecimal.make(1201n, 3), {
+      get: (target, key, receiver) => {
+        if (key === "value") {
+          coefficientReads += 1;
+        }
+        if (key === "scale") {
+          scaleReads += 1;
+        }
+        return Reflect.get(target, key, receiver);
+      },
+    });
+    const leftMetadata = trustedWireSafeBigDecimalComparisonMetadata(left);
+    const rightMetadata = wireSafeBigDecimalComparisonMetadata(BigDecimal.make(12n, 1));
+    const zeroMetadata = trustedWireSafeBigDecimalComparisonMetadata(BigDecimal.make(0n, 7));
+    const negativeMetadata = trustedWireSafeBigDecimalComparisonMetadata(BigDecimal.make(-1n, 0));
+    const reflectionFailure = new Proxy(BigDecimal.make(1n, 0), {
+      get: () => {
+        throw new Error("metadata reflection failed");
+      },
+    });
+
+    expect(leftMetadata).not.toBeUndefined();
+    expect(rightMetadata).not.toBeUndefined();
+    expect(Object.isFrozen(leftMetadata)).toBe(true);
+    expect([coefficientReads, scaleReads]).toStrictEqual([1, 1]);
+    expect([
+      Reflect.apply(compareWireSafeBigDecimalComparisonMetadata, undefined, [
+        leftMetadata,
+        rightMetadata,
+      ]),
+      Reflect.apply(compareWireSafeBigDecimalComparisonMetadata, undefined, [
+        leftMetadata,
+        rightMetadata,
+      ]),
+      Reflect.apply(compareWireSafeBigDecimalComparisonMetadata, undefined, [
+        zeroMetadata,
+        negativeMetadata,
+      ]),
+      Reflect.apply(compareWireSafeBigDecimalComparisonMetadata, undefined, [
+        negativeMetadata,
+        zeroMetadata,
+      ]),
+    ]).toStrictEqual([1, 1, 1, -1]);
+    expect([coefficientReads, scaleReads]).toStrictEqual([1, 1]);
+    expect(
+      Reflect.apply(compareWireSafeBigDecimalComparisonMetadata, undefined, [
+        Object.freeze({}),
+        rightMetadata,
+      ]),
+    ).toBeUndefined();
+    expect(wireSafeBigDecimalComparisonMetadata({})).toBeUndefined();
+    expect([
+      trustedWireSafeBigDecimalComparisonMetadata(BigDecimal.make(1n, Number.POSITIVE_INFINITY)),
+      trustedWireSafeBigDecimalComparisonMetadata(BigDecimal.make(10n, Number.MIN_SAFE_INTEGER)),
+      trustedWireSafeBigDecimalComparisonMetadata(reflectionFailure),
+    ]).toStrictEqual([undefined, undefined, undefined]);
+  });
+
   it("creates injective semantic keys only for codec-round-trippable decimals", () => {
     const firstCollision = BigDecimal.make(111n, Number.MIN_SAFE_INTEGER);
     const secondCollision = BigDecimal.make(111n, Number.MIN_SAFE_INTEGER + 1);
@@ -346,6 +410,30 @@ describe("wire-safe BigDecimal", () => {
       for (const right of values) {
         expect(compareWireSafeBigDecimal(left, right)).toBe(BigDecimal.Order(left, right));
         expect(compareTrustedWireSafeBigDecimal(left, right)).toBe(BigDecimal.Order(left, right));
+      }
+    }
+  });
+
+  it("keeps reusable metadata comparison aligned with the authoritative comparator", () => {
+    const values = [
+      BigDecimal.make(-1201n, 3),
+      BigDecimal.make(-12n, 1),
+      BigDecimal.make(0n, Number.MAX_SAFE_INTEGER),
+      BigDecimal.make(12n, 1),
+      BigDecimal.make(120n, 2),
+      BigDecimal.make(1201n, 3),
+      BigDecimal.make(1n, Number.MAX_SAFE_INTEGER),
+      BigDecimal.make(1n, Number.MIN_SAFE_INTEGER),
+    ];
+
+    for (const left of values) {
+      for (const right of values) {
+        expect(
+          Reflect.apply(compareWireSafeBigDecimalComparisonMetadata, undefined, [
+            trustedWireSafeBigDecimalComparisonMetadata(left),
+            trustedWireSafeBigDecimalComparisonMetadata(right),
+          ]),
+        ).toBe(compareTrustedWireSafeBigDecimal(left, right));
       }
     }
   });

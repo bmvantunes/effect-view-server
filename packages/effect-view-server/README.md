@@ -57,6 +57,11 @@ without loading the server, transport, or schema runtime surfaces. The functions
 require the package's exact compatible `effect` peer and never coerce a
 BigDecimal through JavaScript `number`.
 
+The reusable comparison-metadata functions return opaque, process-local tokens
+that may be cached beside an owned BigDecimal only for the lifetime of the loaded
+module instance. Do not clone, serialize, transfer, or persist them. Metadata
+comparison returns `undefined` for foreign, forged, or cloned tokens.
+
 Live-query filters use one canonical recursive format. The root `where` value is
 an implicit-`AND` array; cross-field Boolean logic uses explicit nested groups:
 

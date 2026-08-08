@@ -7,14 +7,18 @@ export {
 } from "./strict-json-materialization";
 export { makeSchemaJsonIdentity, type SchemaJsonIdentity } from "./schema-json-identity";
 export {
+  compareWireSafeBigDecimalComparisonMetadata,
   compareWireSafeBigDecimal,
   compareTrustedWireSafeBigDecimal,
   inspectWireSafeBigDecimal,
   isTrustedWireSafeBigDecimal,
   isWireSafeBigDecimal,
   trustedWireSafeBigDecimalSemanticKey,
+  trustedWireSafeBigDecimalComparisonMetadata,
   type WireSafeBigDecimal,
+  type WireSafeBigDecimalComparisonMetadata,
   type WireSafeBigDecimalInspection,
+  wireSafeBigDecimalComparisonMetadata,
   wireSafeBigDecimalSemanticKey,
 } from "./wire-safe-big-decimal";
 export {

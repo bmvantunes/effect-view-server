@@ -120,4 +120,43 @@ describe("protocol JSON values", () => {
       );
     }),
   );
+
+  it.effect("guards the encoded side of transformed JSON fields", () =>
+    Effect.gen(function* () {
+      let encodeCalls = 0;
+      const transformedSchema = Schema.String.pipe(
+        Schema.encodeTo(Schema.Struct({ payload: Schema.ObjectKeyword }), {
+          decode: SchemaGetter.transform(() => "decoded"),
+          encode: SchemaGetter.transform(() => {
+            encodeCalls += 1;
+            return { payload: new Map([["venue", "xnys"]]) };
+          }),
+        }),
+      );
+      const errors = {
+        invalid: (message: string) => message,
+        notJsonSafe: (message: string) => message,
+      };
+
+      const error = yield* Effect.flip(encodeJsonFieldValue(transformedSchema, "input", errors));
+
+      expect(error).toBe("Expected a plain data record or dense array at $.payload.");
+      expect(encodeCalls).toBe(1);
+    }),
+  );
+
+  it.effect("reports JSON codec failures after raw encoding", () =>
+    Effect.gen(function* () {
+      const errors = {
+        invalid: (message: string) => message,
+        notJsonSafe: (message: string) => message,
+      };
+
+      const error = yield* Effect.flip(
+        encodeJsonFieldValue(Schema.Symbol, Symbol("not-registered"), errors),
+      );
+
+      expect(error).toBe('Unsupported JSON value type "symbol" at $.');
+    }),
+  );
 });

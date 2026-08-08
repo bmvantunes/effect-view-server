@@ -183,6 +183,11 @@ const strictJson = (value: unknown): Schema.Json => {
 
 type StrictJsonObjectKeywordGuard = (value: unknown, path: string) => void;
 
+const simplePathKey = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
+
+const appendStrictJsonPropertyPath = (path: string, key: string): string =>
+  simplePathKey.test(key) ? `${path}.${key}` : `${path}[${JSON.stringify(key)}]`;
+
 const rebaseStrictJsonMaterializationError = (
   error: StrictJsonMaterializationError,
   path: string,
@@ -261,12 +266,15 @@ const makeStrictJsonObjectKeywordGuard = (root: SchemaAST.AST) => {
         }
         for (const property of properties) {
           if (Object.hasOwn(value, property.name)) {
-            property.guard(Reflect.get(value, property.name), `${path}.${property.name}`);
+            property.guard(
+              Reflect.get(value, property.name),
+              appendStrictJsonPropertyPath(path, property.name),
+            );
           }
         }
         for (const key of Object.keys(value)) {
           const index = indexes.find((candidate) => candidate.accepts(key));
-          index?.guard(Reflect.get(value, key), `${path}.${key}`);
+          index?.guard(Reflect.get(value, key), appendStrictJsonPropertyPath(path, key));
         }
       };
       return guard;
@@ -329,9 +337,12 @@ export const makeSchemaJsonIdentity = <Type>(
   const decode = Schema.decodeUnknownSync(codec);
   const encode = Schema.encodeUnknownSync(codec);
   const normalize = makeSchemaJsonNormalizer(codec.ast);
-  const strictObjectKeywordGuard = makeStrictJsonObjectKeywordGuard(codec.ast);
+  const strictObjectKeywordGuard = makeStrictJsonSchemaGuard(codec.ast);
   const strictEncoded = (value: unknown): Schema.Json => {
-    strictObjectKeywordGuard(value);
+    const guardResult = strictObjectKeywordGuard(value);
+    if (Result.isFailure(guardResult)) {
+      throw guardResult.failure;
+    }
     return strictJson(encode(value));
   };
   const canonicalJson = (value: unknown): Schema.Json => normalize(strictEncoded(value));

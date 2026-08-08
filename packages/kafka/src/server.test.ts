@@ -2396,12 +2396,8 @@ describe("Kafka Source Adapter Server", () => {
       const clock: Clock.Clock = {
         currentTimeMillisUnsafe: () => wallMillis,
         currentTimeMillis: Effect.sync(() => wallMillis),
-        currentTimeNanosUnsafe: () => monotonicNanos,
-        currentTimeNanos: Effect.sync(() => {
-          const current = monotonicNanos;
-          monotonicNanos += 50n;
-          return current;
-        }),
+        currentTimeNanosUnsafe: () => BigInt(wallMillis) * 1_000_000n,
+        currentTimeNanos: Effect.sync(() => BigInt(wallMillis) * 1_000_000n),
         monotonicTimeNanosUnsafe: () => monotonicNanos,
         monotonicTimeNanos: Effect.sync(() => {
           const current = monotonicNanos;

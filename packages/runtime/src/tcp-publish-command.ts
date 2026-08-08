@@ -45,6 +45,7 @@ type TcpConfiguredTopic<
 
 const TcpJsonObject = Schema.Record(Schema.String, Schema.Json);
 const TcpHeaders = Schema.Record(Schema.String, Schema.String);
+const TcpJsonFromString = Schema.fromJsonString(Schema.Unknown);
 
 const TcpPublishCommandSchema = Schema.Union([
   Schema.Struct({
@@ -98,10 +99,9 @@ const tcpDecodeError = (line: string, cause: unknown): ViewServerTcpPublishIngre
 const parseCommand = Effect.fn("ViewServerRuntime.tcpPublish.command.parse")(function* (
   line: string,
 ) {
-  const value = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(
-    line,
-    strictParseOptions,
-  ).pipe(Effect.mapError((cause) => tcpDecodeError(line, cause)));
+  const value = yield* Schema.decodeUnknownEffect(TcpJsonFromString)(line, strictParseOptions).pipe(
+    Effect.mapError((cause) => tcpDecodeError(line, cause)),
+  );
   return yield* Result.match(
     Schema.decodeUnknownResult(TcpPublishCommandSchema)(value, strictParseOptions),
     {

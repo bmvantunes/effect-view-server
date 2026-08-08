@@ -326,12 +326,13 @@ describe("Runtime Core health", () => {
   it.effect("uses monotonic time for uptime when wall time moves backward", () =>
     Effect.gen(function* () {
       let wallMillis = 10_000;
+      let wallNanos = 10_000_000_000n;
       let monotonicNanos = 5_000_000_000n;
       const clock: Clock.Clock = {
         currentTimeMillisUnsafe: () => wallMillis,
         currentTimeMillis: Effect.sync(() => wallMillis),
-        currentTimeNanosUnsafe: () => monotonicNanos,
-        currentTimeNanos: Effect.sync(() => monotonicNanos),
+        currentTimeNanosUnsafe: () => wallNanos,
+        currentTimeNanos: Effect.sync(() => wallNanos),
         monotonicTimeNanosUnsafe: () => monotonicNanos,
         monotonicTimeNanos: Effect.sync(() => monotonicNanos),
         sleep: () => Effect.void,
@@ -345,6 +346,7 @@ describe("Runtime Core health", () => {
       }).pipe(Effect.provideService(Clock.Clock, clock));
 
       wallMillis = 9_000;
+      wallNanos = 9_000_000_000n;
       monotonicNanos = 7_500_000_000n;
       const refreshedHealth = yield* runtimeCore.refreshHealth.pipe(
         Effect.provideService(Clock.Clock, clock),

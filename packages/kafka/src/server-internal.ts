@@ -685,7 +685,7 @@ export const runKafkaDueSweep = Effect.fn("KafkaSourceAdapter.retention.runDueSw
 >(
   input: SourceApplicationStateSweepInput<Topic, KafkaRetentionState, KafkaRetentionCommand>,
 ): Effect.fn.Return<KafkaSweepOutcome> {
-  const sweepStartedMonotonicNanos = yield* Clock.currentTimeNanos;
+  const sweepStartedMonotonicNanos = yield* Clock.monotonicTimeNanos;
   const runtime = retentionRuntimes.get(input.state);
   if (runtime === undefined) {
     return yield* Effect.die(
@@ -767,7 +767,7 @@ export const runKafkaDueSweep = Effect.fn("KafkaSourceAdapter.retention.runDueSw
       }
       yield* Effect.yieldNow;
     }
-    const sweepFinishedMonotonicNanos = yield* Clock.currentTimeNanos;
+    const sweepFinishedMonotonicNanos = yield* Clock.monotonicTimeNanos;
     const sweepFinishedEpochNanos = yield* currentEpochNanos().pipe(Effect.orDie);
     input.update({
       _tag: "SweepCompleted",

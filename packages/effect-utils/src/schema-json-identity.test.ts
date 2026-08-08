@@ -175,8 +175,16 @@ describe("Schema JSON identity", () => {
     const nestedObjectKeywordIdentity = makeSchemaJsonIdentity(
       Schema.Struct({ nested: Schema.Struct({ payload: Schema.ObjectKeyword }) }),
     );
-    expect(() => nestedObjectKeywordIdentity.canonicalKey({ nested: "invalid" })).toThrow();
-    expect(() => nestedObjectKeywordIdentity.canonicalKey({ nested: {} })).toThrow();
+    expect(() =>
+      nestedObjectKeywordIdentity.canonicalKey({ nested: { payload: nonJson } }),
+    ).toThrow("Expected a plain data record or dense array at $.nested.payload");
+
+    const dottedKeyIdentity = makeSchemaJsonIdentity(
+      Schema.Record(Schema.String, Schema.ObjectKeyword),
+    );
+    expect(() => dottedKeyIdentity.canonicalKey({ "foo.bar": nonJson })).toThrow(
+      'Expected a plain data record or dense array at $["foo.bar"]',
+    );
   });
 
   it("keeps the encoded normalizer total for non-matching JSON shapes", () => {
@@ -233,6 +241,8 @@ describe("Schema JSON identity", () => {
     const guard = makeStrictJsonSchemaGuard(
       Schema.toCodecJson(Schema.Struct({ payload: Schema.ObjectKeyword })).ast,
     );
+    expect(guard("not-an-object")).toStrictEqual(Result.succeed(undefined));
+    expect(guard({})).toStrictEqual(Result.succeed(undefined));
     expect(guard({ payload: { venue: "xnys" } })).toStrictEqual(Result.succeed(undefined));
     expect(guard({ payload: new Map([["venue", "xnys"]]) })).toStrictEqual(
       Result.fail(

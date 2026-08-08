@@ -765,9 +765,9 @@ const scanColumnDurationMs = Metric.histogram("engine.scanColumn.ms", {
 const scanColumnRows = Metric.counter("engine.scanColumn.rows", { incremental: true });
 
 const scanColumn = Effect.fn("engine.scanColumn")(function* (topic, column, predicate) {
-  const startedAt = yield* Clock.currentTimeNanos;
+  const startedAt = yield* Clock.monotonicTimeNanos;
   const result = scanColumnUnsafe(column, predicate);
-  const finishedAt = yield* Clock.currentTimeNanos;
+  const finishedAt = yield* Clock.monotonicTimeNanos;
   const elapsedMillis = Number(finishedAt - startedAt) / 1_000_000;
   yield* Metric.update(scanColumnDurationMs, elapsedMillis);
   yield* Metric.update(scanColumnRows, column.length);

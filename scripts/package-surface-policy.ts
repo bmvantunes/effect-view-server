@@ -648,10 +648,13 @@ export const packageSurfacePolicy = {
     {
       forbidden: [],
       required: [
+        "compareWireSafeBigDecimalComparisonMetadata",
         "compareTrustedWireSafeBigDecimal",
         "compareWireSafeBigDecimal",
         "inspectWireSafeBigDecimal",
         "isWireSafeBigDecimal",
+        "trustedWireSafeBigDecimalComparisonMetadata",
+        "wireSafeBigDecimalComparisonMetadata",
         "wireSafeBigDecimalSemanticKey",
       ],
       workspaceSpecifier: "@effect-view-server/effect-utils/value-semantics",

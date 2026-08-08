@@ -18,6 +18,35 @@ export type WireSafeBigDecimalInspection =
       readonly semanticKey: string;
     };
 
+const wireSafeBigDecimalComparisonMetadataTypeId: unique symbol = Symbol(
+  "effect-view-server/WireSafeBigDecimalComparisonMetadata",
+);
+
+/**
+ * Opaque, reusable comparison evidence for one admitted wire-safe BigDecimal.
+ *
+ * Consumers may cache this token beside an owned value for the lifetime of the loaded module
+ * instance. Tokens are process-local capabilities: do not clone, serialize, transfer, or persist
+ * them. A token from another module instance is foreign. Its private representation remains the
+ * View Server's responsibility so comparison semantics cannot drift into downstream packages.
+ */
+export type WireSafeBigDecimalComparisonMetadata = {
+  readonly [wireSafeBigDecimalComparisonMetadataTypeId]: true;
+};
+
+type WireSafeBigDecimalComparisonParts = {
+  readonly coefficient: bigint;
+  readonly scale: number;
+  readonly negative: boolean;
+  readonly unsignedDigits: string;
+  readonly magnitude: bigint;
+};
+
+const comparisonPartsByMetadata = new WeakMap<
+  WireSafeBigDecimalComparisonMetadata,
+  WireSafeBigDecimalComparisonParts
+>();
+
 const notBigDecimal: WireSafeBigDecimalInspection = { _tag: "NotBigDecimal" };
 const unsafeBigDecimal: WireSafeBigDecimalInspection = { _tag: "UnsafeBigDecimal" };
 const reflectionFailure: WireSafeBigDecimalInspection = { _tag: "ReflectionFailure" };
@@ -164,6 +193,68 @@ const compareUnsignedDecimalDigits = (left: string, right: string): number => {
   return 0;
 };
 
+const makeWireSafeBigDecimalComparisonParts = (
+  coefficient: bigint,
+  scale: number,
+): WireSafeBigDecimalComparisonParts => {
+  const negative = coefficient < 0n;
+  const unsignedDigits = (negative ? -coefficient : coefficient).toString();
+  return {
+    coefficient,
+    scale,
+    negative,
+    unsignedDigits,
+    magnitude: BigInt(unsignedDigits.length) - BigInt(scale),
+  };
+};
+
+const makeComparisonMetadata = (
+  parts: WireSafeBigDecimalComparisonParts,
+): WireSafeBigDecimalComparisonMetadata => {
+  const metadata: WireSafeBigDecimalComparisonMetadata = Object.freeze({
+    [wireSafeBigDecimalComparisonMetadataTypeId]: true,
+  });
+  comparisonPartsByMetadata.set(metadata, parts);
+  return metadata;
+};
+
+/** Builds opaque, cacheable comparison evidence after hostile-input admission. */
+export const wireSafeBigDecimalComparisonMetadata = (
+  value: unknown,
+): WireSafeBigDecimalComparisonMetadata | undefined => {
+  const inspection = inspectWireSafeBigDecimal(value);
+  if (inspection._tag !== "Success") {
+    return undefined;
+  }
+  const parts = makeWireSafeBigDecimalComparisonParts(inspection.coefficient, inspection.scale);
+  return makeComparisonMetadata(parts);
+};
+
+/** Builds opaque, cacheable comparison evidence for an already-owned Effect BigDecimal. */
+export const trustedWireSafeBigDecimalComparisonMetadata = (
+  value: BigDecimal,
+): WireSafeBigDecimalComparisonMetadata | undefined => {
+  let coefficient: unknown;
+  let scale: unknown;
+
+  try {
+    coefficient = value.value;
+    scale = value.scale;
+  } catch {
+    return undefined;
+  }
+
+  if (
+    typeof coefficient !== "bigint" ||
+    typeof scale !== "number" ||
+    canonicalWireSafeBigDecimalParts(coefficient, scale) === undefined
+  ) {
+    return undefined;
+  }
+
+  return makeComparisonMetadata(makeWireSafeBigDecimalComparisonParts(coefficient, scale));
+};
+
 /**
  * Compares valid wire BigDecimals without materializing a power of ten.
  *
@@ -177,25 +268,39 @@ const compareWireSafeBigDecimalParts = (
   rightValue: bigint,
   rightScale: number,
 ): number => {
-  if (leftValue === rightValue && Object.is(leftScale, rightScale)) {
+  return compareWireSafeBigDecimalScalars(leftValue, leftScale, rightValue, rightScale);
+};
+
+const compareWireSafeBigDecimalScalars = (
+  leftCoefficient: bigint,
+  leftScale: number,
+  rightCoefficient: bigint,
+  rightScale: number,
+  preparedLeftDigits?: string,
+  preparedLeftMagnitude?: bigint,
+  preparedRightDigits?: string,
+  preparedRightMagnitude?: bigint,
+): number => {
+  if (leftCoefficient === rightCoefficient && Object.is(leftScale, rightScale)) {
     return 0;
   }
-  if (leftValue === 0n) {
-    return rightValue === 0n ? 0 : rightValue < 0n ? 1 : -1;
+  if (leftCoefficient === 0n) {
+    return rightCoefficient === 0n ? 0 : rightCoefficient < 0n ? 1 : -1;
   }
-  if (rightValue === 0n) {
-    return leftValue < 0n ? -1 : 1;
+  if (rightCoefficient === 0n) {
+    return leftCoefficient < 0n ? -1 : 1;
   }
-  const leftNegative = leftValue < 0n;
-  const rightNegative = rightValue < 0n;
+  const leftNegative = leftCoefficient < 0n;
+  const rightNegative = rightCoefficient < 0n;
   if (leftNegative !== rightNegative) {
     return leftNegative ? -1 : 1;
   }
-
-  const leftDigits = (leftNegative ? -leftValue : leftValue).toString();
-  const rightDigits = (rightNegative ? -rightValue : rightValue).toString();
-  const leftMagnitude = BigInt(leftDigits.length) - BigInt(leftScale);
-  const rightMagnitude = BigInt(rightDigits.length) - BigInt(rightScale);
+  const leftDigits =
+    preparedLeftDigits ?? (leftNegative ? -leftCoefficient : leftCoefficient).toString();
+  const rightDigits =
+    preparedRightDigits ?? (rightNegative ? -rightCoefficient : rightCoefficient).toString();
+  const leftMagnitude = preparedLeftMagnitude ?? BigInt(leftDigits.length) - BigInt(leftScale);
+  const rightMagnitude = preparedRightMagnitude ?? BigInt(rightDigits.length) - BigInt(rightScale);
   const unsignedComparison =
     leftMagnitude === rightMagnitude
       ? compareUnsignedDecimalDigits(leftDigits, rightDigits)
@@ -203,6 +308,31 @@ const compareWireSafeBigDecimalParts = (
         ? -1
         : 1;
   return leftNegative ? -unsignedComparison : unsignedComparison;
+};
+
+/**
+ * Compares two reusable metadata tokens without rereading or re-stringifying either value.
+ * Returns `undefined` when either token is foreign, forged, cloned, or otherwise not owned by this
+ * loaded module instance.
+ */
+export const compareWireSafeBigDecimalComparisonMetadata = (
+  left: WireSafeBigDecimalComparisonMetadata,
+  right: WireSafeBigDecimalComparisonMetadata,
+): number | undefined => {
+  const leftParts = comparisonPartsByMetadata.get(left);
+  const rightParts = comparisonPartsByMetadata.get(right);
+  return leftParts === undefined || rightParts === undefined
+    ? undefined
+    : compareWireSafeBigDecimalScalars(
+        leftParts.coefficient,
+        leftParts.scale,
+        rightParts.coefficient,
+        rightParts.scale,
+        leftParts.unsignedDigits,
+        leftParts.magnitude,
+        rightParts.unsignedDigits,
+        rightParts.magnitude,
+      );
 };
 
 /**

@@ -30,7 +30,9 @@ import {
   validateLiveQueryViewportWindow,
   type LiveQueryViewport,
   type LiveQueryViewportChrome,
+  type LiveQueryViewportCapturedReplace,
   type LiveQueryViewportGeneration,
+  type LiveQueryViewportRawQuery,
   type LiveQueryViewportSink,
 } from "./live-query-viewport";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
@@ -50,6 +52,17 @@ const viewServer = defineViewServerConfig({
 });
 
 type Topics = typeof viewServer.topics;
+
+const makeBindingEntry = (
+  viewport: LiveQueryViewport<Topics, "orders">,
+  deactivate: () => void = viewport.destroy,
+) => {
+  const replaceCaptured: LiveQueryViewportCapturedReplace<Topics, "orders"> = (input) =>
+    input._tag === "Success"
+      ? viewport.replace(input.request)
+      : { setWindow: () => undefined, release: () => undefined };
+  return { viewport, replaceCaptured, deactivate };
+};
 
 type ViewportChromeStream = Stream.Stream<
   LiveQueryViewportChrome,
@@ -324,8 +337,8 @@ describe("Live Query Viewport Module", () => {
         });
       },
     } satisfies LiveQueryViewport<Topics, "orders">;
-    const oldEntry = { viewport: oldViewport, deactivate: oldViewport.destroy };
-    const currentEntry = { viewport: currentViewport, deactivate: currentViewport.destroy };
+    const oldEntry = makeBindingEntry(oldViewport);
+    const currentEntry = makeBindingEntry(currentViewport);
     const facade = binding.viewport;
     const uninstalledGeneration = facade.replace({
       window: { firstRow: 0, lastRow: 9 },
@@ -362,6 +375,795 @@ describe("Live Query Viewport Module", () => {
     detachedGeneration.release();
     binding.viewport.destroy();
     expect(currentDestroys).toBe(2);
+  });
+
+  it("replays failed query snapshots on the replacement controller", () => {
+    const replacements: Array<string> = [];
+    const generation = { setWindow: () => undefined, release: () => undefined };
+    const makeEntry = (label: string) => {
+      const viewport = {
+        replace: () => {
+          replacements.push(`${label}:public`);
+          return generation;
+        },
+        destroy: () => undefined,
+      } satisfies LiveQueryViewport<Topics, "orders">;
+      const replaceCaptured: LiveQueryViewportCapturedReplace<Topics, "orders"> = (input) => {
+        replacements.push(label);
+        expect(input._tag).toBe("Failure");
+        return generation;
+      };
+      return {
+        viewport,
+        replaceCaptured,
+        deactivate: viewport.destroy,
+      };
+    };
+    const binding = makeLiveQueryViewportBinding<Topics, "orders">({
+      deferDeactivation: true,
+    });
+    binding.install(makeEntry("old"));
+    const queryTarget = {
+      select: ["id"],
+      where: [],
+      orderBy: [],
+    } satisfies {
+      readonly select: readonly ["id"];
+      readonly where: readonly [];
+      readonly orderBy: readonly [];
+    };
+    let failSnapshot = true;
+    const query = new Proxy(queryTarget, {
+      ownKeys: (target) => {
+        if (failSnapshot) {
+          failSnapshot = false;
+          throw new Error("query snapshot failed");
+        }
+        return Reflect.ownKeys(target);
+      },
+    });
+
+    binding.viewport.replace({
+      window: { firstRow: 0, lastRow: 9 },
+      query,
+      sink: { setRowCount: () => undefined, setRowData: () => undefined },
+    });
+    binding.install(makeEntry("current"));
+    binding.flush();
+    expect(replacements).toStrictEqual(["old", "current"]);
+  });
+
+  it.effect("installs captured query failures without rereading caller input", () =>
+    Effect.gen(function* () {
+      const base = createInMemoryViewServer(viewServer);
+      let published: ViewportChromeStream = Stream.never;
+      const viewport = makeLiveQueryViewport({
+        client: base.liveClient,
+        config: viewServer,
+        topic: "orders",
+        publish: (command) => {
+          published = command.stream;
+        },
+      });
+      type CapturedQuery = {
+        readonly select: readonly ["id"];
+        readonly where: readonly [];
+        readonly orderBy: readonly [];
+      };
+      const sink = { setRowCount: () => undefined, setRowData: () => undefined };
+      viewport.replaceCaptured<CapturedQuery, typeof sink>({
+        _tag: "Failure",
+        request: {
+          window: { firstRow: 0, lastRow: 9 },
+          sink,
+        },
+        failure: new Error("captured query failure"),
+      });
+
+      expect(yield* published.pipe(Stream.runHead)).toStrictEqual(
+        Option.some({
+          totalRows: 0,
+          version: 0,
+          status: "error",
+          statusCode: "InvalidQuery",
+          message: "captured query failure",
+        }),
+      );
+      viewport.destroy();
+      const publishedAfterDestroy = published;
+      let terminalRequestReads = 0;
+      const terminalRequest = {
+        window: { firstRow: 0, lastRow: 9 },
+        get sink() {
+          terminalRequestReads += 1;
+          return sink;
+        },
+      };
+      const terminalGeneration = viewport.replaceCaptured<CapturedQuery, typeof sink>({
+        _tag: "Failure",
+        request: terminalRequest,
+        failure: new Error("terminal captured failure"),
+      });
+      terminalGeneration.setWindow({ firstRow: 10, lastRow: 19 });
+      terminalGeneration.release();
+      expect(terminalRequestReads).toBe(0);
+      expect(published).toBe(publishedAfterDestroy);
+      yield* base.close;
+    }),
+  );
+
+  it.effect("passes captured queries through the production binding seam without rereading", () =>
+    Effect.gen(function* () {
+      const base = createInMemoryViewServer(viewServer);
+      const viewport = makeLiveQueryViewport({
+        client: base.liveClient,
+        config: viewServer,
+        topic: "orders",
+        publish: () => undefined,
+      });
+      const binding = makeLiveQueryViewportBinding<Topics, "orders">();
+      binding.install({
+        viewport,
+        replaceCaptured: viewport.replaceCaptured,
+        deactivate: viewport.deactivate,
+      });
+      let queryReads = 0;
+      const queryTarget = {
+        select: ["id"],
+        where: [],
+        orderBy: [],
+      } satisfies {
+        readonly select: readonly ["id"];
+        readonly where: readonly [];
+        readonly orderBy: readonly [];
+      };
+      const query = new Proxy(queryTarget, {
+        ownKeys: (target) => {
+          queryReads += 1;
+          return Reflect.ownKeys(target);
+        },
+      });
+
+      const generation = binding.viewport.replace({
+        window: { firstRow: 0, lastRow: 9 },
+        query,
+        sink: { setRowCount: () => undefined, setRowData: () => undefined },
+      });
+
+      expect(queryReads).toBe(1);
+      generation.release();
+      binding.viewport.destroy();
+      yield* base.close;
+    }),
+  );
+
+  it("preserves request snapshots across a deferred controller replacement", () => {
+    let replayedRequest: unknown;
+    const generation = { setWindow: () => undefined, release: () => undefined };
+    const oldViewport = {
+      replace: () => generation,
+      destroy: () => undefined,
+    } satisfies LiveQueryViewport<Topics, "orders">;
+    const currentViewport = {
+      replace: (request) => {
+        replayedRequest = request;
+        return generation;
+      },
+      destroy: () => undefined,
+    } satisfies LiveQueryViewport<Topics, "orders">;
+    const binding = makeLiveQueryViewportBinding<Topics, "orders">({
+      deferDeactivation: true,
+    });
+    const where: Array<{
+      readonly field: "status";
+      readonly type: "equals";
+      readonly filter: "closed";
+    }> = [];
+    const select: ["id"] = ["id"];
+    const orderBy: [] = [];
+    const query = {
+      select,
+      where,
+      orderBy,
+    } satisfies LiveQueryViewportRawQuery<TopicRow<Topics, "orders">>;
+    const window = { firstRow: 0, lastRow: 9 };
+    const sink = { setRowCount: () => undefined, setRowData: () => undefined };
+    binding.install(makeBindingEntry(oldViewport));
+    const active = binding.viewport.replace({
+      window,
+      query,
+      sink,
+    });
+    window.firstRow = 90;
+    where.push({ field: "status", type: "equals", filter: "closed" });
+    const latestWindow = { firstRow: 10, lastRow: 19 };
+    active.setWindow(latestWindow);
+    latestWindow.firstRow = 80;
+    binding.install(makeBindingEntry(currentViewport));
+    binding.flush();
+
+    expect(replayedRequest).toStrictEqual({
+      window: { firstRow: 10, lastRow: 19 },
+      query: {
+        select: ["id"],
+        where: [],
+        orderBy: [],
+      },
+      sink,
+    });
+  });
+
+  it("reads the caller query property once before owning its captured outcome", () => {
+    const events: Array<string> = [];
+    const binding = makeLiveQueryViewportBinding<Topics, "orders">({
+      deferDeactivation: true,
+    });
+    const makeEntry = (label: string) => {
+      const viewport: LiveQueryViewport<Topics, "orders"> = {
+        replace: (request) => {
+          events.push(`${label}:${request.window.firstRow}`);
+          return { setWindow: () => undefined, release: () => undefined };
+        },
+        destroy: () => undefined,
+      };
+      return makeBindingEntry(viewport);
+    };
+    const query = {
+      select: ["id"],
+      where: [],
+      orderBy: [],
+    } satisfies {
+      readonly select: readonly ["id"];
+      readonly where: readonly [];
+      readonly orderBy: readonly [];
+    };
+    let queryReads = 0;
+    const request = {
+      window: { firstRow: 0, lastRow: 9 },
+      query,
+      sink: { setRowCount: () => undefined, setRowData: () => undefined },
+    };
+    Object.defineProperty(request, "query", {
+      enumerable: true,
+      get: () => {
+        queryReads += 1;
+        if (queryReads === 2) {
+          binding.viewport.replace({
+            window: { firstRow: 20, lastRow: 29 },
+            query,
+            sink: request.sink,
+          });
+        }
+        return query;
+      },
+    });
+    binding.install(makeEntry("old"));
+    binding.viewport.replace(request);
+    binding.install(makeEntry("current"));
+    binding.flush();
+
+    expect(queryReads).toBe(1);
+    expect(events).toStrictEqual(["old:0", "current:0"]);
+  });
+
+  it("keeps the active generation owned when caller field capture throws", () => {
+    const events: Array<string> = [];
+    const viewport: LiveQueryViewport<Topics, "orders"> = {
+      replace: () => ({
+        setWindow: (window) => {
+          events.push(`window:${window.firstRow}`);
+        },
+        release: () => {
+          events.push("release");
+        },
+      }),
+      destroy: () => undefined,
+    };
+    const binding = makeLiveQueryViewportBinding<Topics, "orders">();
+    binding.install(makeBindingEntry(viewport));
+    const active = binding.viewport.replace({
+      window: { firstRow: 0, lastRow: 9 },
+      query: { select: ["id"], where: [], orderBy: [] },
+      sink: { setRowCount: () => undefined, setRowData: () => undefined },
+    });
+    const sinkRequest = {
+      window: { firstRow: 10, lastRow: 19 },
+      query: { select: ["id"], where: [], orderBy: [] },
+      sink: { setRowCount: () => undefined, setRowData: () => undefined },
+    } satisfies {
+      readonly window: { readonly firstRow: number; readonly lastRow: number };
+      readonly query: {
+        readonly select: readonly ["id"];
+        readonly where: readonly [];
+        readonly orderBy: readonly [];
+      };
+      readonly sink: LiveQueryViewportSink<{ readonly id: string }>;
+    };
+    Object.defineProperty(sinkRequest, "sink", {
+      enumerable: true,
+      get: () => {
+        throw new Error("sink capture failed");
+      },
+    });
+    expect(() => binding.viewport.replace(sinkRequest)).toThrowError("sink capture failed");
+    active.setWindow({ firstRow: 20, lastRow: 29 });
+
+    const window = new Proxy(
+      { firstRow: 30, lastRow: 39 },
+      {
+        get: () => {
+          throw new Error("window capture failed");
+        },
+      },
+    );
+    expect(() =>
+      binding.viewport.replace({
+        window,
+        query: { select: ["id"], where: [], orderBy: [] },
+        sink: { setRowCount: () => undefined, setRowData: () => undefined },
+      }),
+    ).toThrowError("window capture failed");
+    active.release();
+    expect(events).toStrictEqual(["window:20", "release"]);
+  });
+
+  it("keeps switch-latest ownership through a reentrant release", () => {
+    const events: Array<string> = [];
+    const binding = makeLiveQueryViewportBinding<Topics, "orders">({
+      deferDeactivation: true,
+    });
+    let reenterRelease = true;
+    const makeEntry = (label: string) => {
+      const viewport: LiveQueryViewport<Topics, "orders"> = {
+        replace: (request) => {
+          events.push(`${label}:replace:${request.window.firstRow}`);
+          return {
+            setWindow: () => undefined,
+            release: () => {
+              if (reenterRelease) {
+                reenterRelease = false;
+                binding.viewport.replace({
+                  window: { firstRow: 20, lastRow: 29 },
+                  query: { select: ["id"], where: [], orderBy: [] },
+                  sink: { setRowCount: () => undefined, setRowData: () => undefined },
+                });
+              }
+            },
+          };
+        },
+        destroy: () => undefined,
+      };
+      return makeBindingEntry(viewport);
+    };
+    const oldEntry = makeEntry("old");
+    const currentEntry = makeEntry("current");
+    binding.install(oldEntry);
+    const released = binding.viewport.replace({
+      window: { firstRow: 0, lastRow: 9 },
+      query: { select: ["id"], where: [], orderBy: [] },
+      sink: { setRowCount: () => undefined, setRowData: () => undefined },
+    });
+    released.release();
+    binding.install(currentEntry);
+    binding.flush();
+    expect(events).toStrictEqual(["old:replace:0", "old:replace:20", "current:replace:20"]);
+  });
+
+  it("keeps switch-latest ownership through a reentrant query snapshot", () => {
+    const events: Array<string> = [];
+    const binding = makeLiveQueryViewportBinding<Topics, "orders">({
+      deferDeactivation: true,
+    });
+    const makeEntry = (label: string) => {
+      const viewport: LiveQueryViewport<Topics, "orders"> = {
+        replace: (request) => {
+          events.push(`${label}:replace:${request.window.firstRow}`);
+          return { setWindow: () => undefined, release: () => undefined };
+        },
+        destroy: () => undefined,
+      };
+      return makeBindingEntry(viewport);
+    };
+    binding.install(makeEntry("current"));
+    let reenterSnapshot = true;
+    const queryTarget = {
+      select: ["id"],
+      where: [],
+      orderBy: [],
+    } satisfies {
+      readonly select: readonly ["id"];
+      readonly where: readonly [];
+      readonly orderBy: readonly [];
+    };
+    const query = new Proxy(queryTarget, {
+      ownKeys: (target) => {
+        if (reenterSnapshot) {
+          reenterSnapshot = false;
+          binding.viewport.replace({
+            window: { firstRow: 40, lastRow: 49 },
+            query: { select: ["id"], where: [], orderBy: [] },
+            sink: { setRowCount: () => undefined, setRowData: () => undefined },
+          });
+        }
+        return Reflect.ownKeys(target);
+      },
+    });
+    const superseded = binding.viewport.replace({
+      window: { firstRow: 30, lastRow: 39 },
+      query,
+      sink: { setRowCount: () => undefined, setRowData: () => undefined },
+    });
+    superseded.setWindow({ firstRow: 50, lastRow: 59 });
+    superseded.release();
+    const finalEntry = makeEntry("final");
+    binding.install(finalEntry);
+    binding.flush();
+    expect(events).toStrictEqual(["current:replace:40", "final:replace:40"]);
+  });
+
+  it("keeps switch-latest ownership through a reentrant window snapshot", () => {
+    const events: Array<string> = [];
+    const binding = makeLiveQueryViewportBinding<Topics, "orders">({
+      deferDeactivation: true,
+    });
+    const makeEntry = (label: string) => {
+      const viewport: LiveQueryViewport<Topics, "orders"> = {
+        replace: (request) => {
+          events.push(`${label}:replace:${request.window.firstRow}`);
+          return { setWindow: () => undefined, release: () => undefined };
+        },
+        destroy: () => undefined,
+      };
+      return makeBindingEntry(viewport);
+    };
+    binding.install(makeEntry("final"));
+    let reenterWindow = true;
+    const hostileWindow = new Proxy(
+      { firstRow: 50, lastRow: 59 },
+      {
+        get: (target, property, receiver) => {
+          if (property === "firstRow" && reenterWindow) {
+            reenterWindow = false;
+            binding.viewport.replace({
+              window: { firstRow: 60, lastRow: 69 },
+              query: { select: ["id"], where: [], orderBy: [] },
+              sink: { setRowCount: () => undefined, setRowData: () => undefined },
+            });
+          }
+          return Reflect.get(target, property, receiver);
+        },
+      },
+    );
+    const supersededWindow = binding.viewport.replace({
+      window: hostileWindow,
+      query: { select: ["id"], where: [], orderBy: [] },
+      sink: { setRowCount: () => undefined, setRowData: () => undefined },
+    });
+    supersededWindow.setWindow({ firstRow: 70, lastRow: 79 });
+    supersededWindow.release();
+    const windowFinalEntry = makeEntry("window-final");
+    binding.install(windowFinalEntry);
+    binding.flush();
+    expect(events).toStrictEqual(["final:replace:60", "window-final:replace:60"]);
+  });
+
+  it("keeps nested replacements authoritative during controller installation", () => {
+    const events: Array<string> = [];
+    const binding = makeLiveQueryViewportBinding<Topics, "orders">({
+      deferDeactivation: true,
+    });
+    let reenterInitialInstall = true;
+    const initialViewport: LiveQueryViewport<Topics, "orders"> = {
+      replace: (request) => {
+        events.push(`initial:replace:${request.window.firstRow}`);
+        if (reenterInitialInstall) {
+          reenterInitialInstall = false;
+          binding.viewport.replace({
+            window: { firstRow: 10, lastRow: 19 },
+            query: { select: ["id"], where: [], orderBy: [] },
+            sink: { setRowCount: () => undefined, setRowData: () => undefined },
+          });
+        }
+        return {
+          setWindow: () => undefined,
+          release: () => {
+            events.push(`initial:release:${request.window.firstRow}`);
+          },
+        };
+      },
+      destroy: () => undefined,
+    };
+    binding.install(makeBindingEntry(initialViewport));
+    const obsolete = binding.viewport.replace({
+      window: { firstRow: 0, lastRow: 9 },
+      query: { select: ["id"], where: [], orderBy: [] },
+      sink: { setRowCount: () => undefined, setRowData: () => undefined },
+    });
+    obsolete.setWindow({ firstRow: 90, lastRow: 99 });
+    obsolete.release();
+
+    let reenterReplay = true;
+    const replayViewport: LiveQueryViewport<Topics, "orders"> = {
+      replace: (request) => {
+        events.push(`replay:replace:${request.window.firstRow}`);
+        if (reenterReplay) {
+          reenterReplay = false;
+          binding.viewport.replace({
+            window: { firstRow: 20, lastRow: 29 },
+            query: { select: ["id"], where: [], orderBy: [] },
+            sink: { setRowCount: () => undefined, setRowData: () => undefined },
+          });
+        }
+        return {
+          setWindow: () => undefined,
+          release: () => {
+            events.push(`replay:release:${request.window.firstRow}`);
+          },
+        };
+      },
+      destroy: () => undefined,
+    };
+    binding.install(makeBindingEntry(replayViewport));
+    binding.flush();
+    const finalViewport: LiveQueryViewport<Topics, "orders"> = {
+      replace: (request) => {
+        events.push(`final:replace:${request.window.firstRow}`);
+        return { setWindow: () => undefined, release: () => undefined };
+      },
+      destroy: () => undefined,
+    };
+    binding.install(makeBindingEntry(finalViewport));
+    binding.flush();
+
+    expect(events).toStrictEqual([
+      "initial:replace:0",
+      "initial:replace:10",
+      "replay:replace:10",
+      "replay:replace:20",
+      "replay:release:10",
+      "final:replace:20",
+    ]);
+  });
+
+  it("abandons a query snapshot when reentrant destruction loses ownership", () => {
+    const generation = { setWindow: () => undefined, release: () => undefined };
+    const makeViewport = (replace: LiveQueryViewport<Topics, "orders">["replace"]) => ({
+      replace,
+      destroy: () => undefined,
+    });
+    const select: ["id"] = ["id"];
+    const where: [] = [];
+    const orderBy: [] = [];
+    const request = {
+      window: { firstRow: 0, lastRow: 9 },
+      query: { select, where, orderBy },
+      sink: { setRowCount: () => undefined, setRowData: () => undefined },
+    };
+
+    const snapshotDestroyBinding = makeLiveQueryViewportBinding<Topics, "orders">();
+    let snapshotDestroyReplaces = 0;
+    const snapshotDestroyViewport = makeViewport(() => {
+      snapshotDestroyReplaces += 1;
+      return generation;
+    });
+    snapshotDestroyBinding.install(makeBindingEntry(snapshotDestroyViewport));
+    const destroyQuery = new Proxy(request.query, {
+      ownKeys: (target) => {
+        snapshotDestroyBinding.viewport.destroy();
+        return Reflect.ownKeys(target);
+      },
+    });
+    snapshotDestroyBinding.viewport.replace({ ...request, query: destroyQuery });
+    expect(snapshotDestroyReplaces).toBe(0);
+  });
+
+  it("abandons a query snapshot when a reentrant controller switch loses ownership", () => {
+    const generation = { setWindow: () => undefined, release: () => undefined };
+    const makeViewport = (replace: LiveQueryViewport<Topics, "orders">["replace"]) => ({
+      replace,
+      destroy: () => undefined,
+    });
+    const select: ["id"] = ["id"];
+    const where: [] = [];
+    const orderBy: [] = [];
+    const request = {
+      window: { firstRow: 0, lastRow: 9 },
+      query: { select, where, orderBy },
+      sink: { setRowCount: () => undefined, setRowData: () => undefined },
+    };
+    const snapshotSwitchBinding = makeLiveQueryViewportBinding<Topics, "orders">();
+    let snapshotSwitchReplaces = 0;
+    const snapshotOldViewport = makeViewport(() => {
+      snapshotSwitchReplaces += 1;
+      return generation;
+    });
+    const snapshotNewViewport = makeViewport(() => generation);
+    const snapshotNewEntry = makeBindingEntry(snapshotNewViewport);
+    snapshotSwitchBinding.install(makeBindingEntry(snapshotOldViewport));
+    const switchQuery = new Proxy(request.query, {
+      ownKeys: (target) => {
+        snapshotSwitchBinding.install(snapshotNewEntry);
+        return Reflect.ownKeys(target);
+      },
+    });
+    snapshotSwitchBinding.viewport.replace({ ...request, query: switchQuery });
+    expect(snapshotSwitchReplaces).toBe(0);
+  });
+
+  it("abandons an installed generation when reentrant destruction loses ownership", () => {
+    const makeViewport = (replace: LiveQueryViewport<Topics, "orders">["replace"]) => ({
+      replace,
+      destroy: () => undefined,
+    });
+    const select: ["id"] = ["id"];
+    const where: [] = [];
+    const orderBy: [] = [];
+    const request = {
+      window: { firstRow: 0, lastRow: 9 },
+      query: { select, where, orderBy },
+      sink: { setRowCount: () => undefined, setRowData: () => undefined },
+    };
+    const installDestroyBinding = makeLiveQueryViewportBinding<Topics, "orders">();
+    const installDestroyEvents: Array<string> = [];
+    const installDestroyViewport = makeViewport(() => {
+      installDestroyBinding.viewport.destroy();
+      return {
+        setWindow: () => {
+          installDestroyEvents.push("window");
+        },
+        release: () => {
+          installDestroyEvents.push("release");
+        },
+      };
+    });
+    installDestroyBinding.install(makeBindingEntry(installDestroyViewport));
+    const destroyedGeneration = installDestroyBinding.viewport.replace(request);
+    destroyedGeneration.setWindow({ firstRow: 10, lastRow: 19 });
+    destroyedGeneration.release();
+    expect(installDestroyEvents).toStrictEqual([]);
+  });
+
+  it("abandons an installed generation when a reentrant controller switch loses ownership", () => {
+    const generation = { setWindow: () => undefined, release: () => undefined };
+    const makeViewport = (replace: LiveQueryViewport<Topics, "orders">["replace"]) => ({
+      replace,
+      destroy: () => undefined,
+    });
+    const select: ["id"] = ["id"];
+    const where: [] = [];
+    const orderBy: [] = [];
+    const request = {
+      window: { firstRow: 0, lastRow: 9 },
+      query: { select, where, orderBy },
+      sink: { setRowCount: () => undefined, setRowData: () => undefined },
+    };
+    const installSwitchBinding = makeLiveQueryViewportBinding<Topics, "orders">();
+    let installCurrentReplaces = 0;
+    const installCurrentViewport = makeViewport(() => {
+      installCurrentReplaces += 1;
+      return generation;
+    });
+    const installCurrentEntry = makeBindingEntry(installCurrentViewport);
+    const installSwitchEvents: Array<string> = [];
+    const installOldViewport = makeViewport(() => {
+      installSwitchBinding.install(installCurrentEntry);
+      return {
+        setWindow: () => {
+          installSwitchEvents.push("window");
+        },
+        release: () => {
+          installSwitchEvents.push("release");
+        },
+      };
+    });
+    installSwitchBinding.install(makeBindingEntry(installOldViewport));
+    const switchedGeneration = installSwitchBinding.viewport.replace(request);
+    switchedGeneration.setWindow({ firstRow: 10, lastRow: 19 });
+    switchedGeneration.release();
+    installSwitchBinding.viewport.replace(request);
+    expect(installSwitchEvents).toStrictEqual([]);
+    expect(installCurrentReplaces).toBe(1);
+  });
+
+  it("keeps one generation active across deferred controller replacements", () => {
+    const events: Array<string> = [];
+    const makeEntry = (label: string) => {
+      const viewport: LiveQueryViewport<Topics, "orders"> = {
+        replace: (request) => {
+          events.push(`${label}:replace:${request.window.firstRow}-${request.window.lastRow}`);
+          let released = false;
+          return {
+            setWindow: (window) => {
+              if (!released) {
+                events.push(`${label}:window:${window.firstRow}-${window.lastRow}`);
+              }
+            },
+            release: () => {
+              if (!released) {
+                released = true;
+                events.push(`${label}:release`);
+              }
+            },
+          };
+        },
+        destroy: () => {
+          events.push(`${label}:destroy`);
+        },
+      };
+      return makeBindingEntry(viewport, () => {
+        events.push(`${label}:deactivate`);
+      });
+    };
+    const oldEntry = makeEntry("old");
+    const currentEntry = makeEntry("current");
+    const binding = makeLiveQueryViewportBinding<Topics, "orders">({
+      deferDeactivation: true,
+    });
+    binding.install(oldEntry);
+    const generation = binding.viewport.replace({
+      window: { firstRow: 0, lastRow: 9 },
+      query: { select: ["id"], where: [], orderBy: [] },
+      sink: { setRowCount: () => undefined, setRowData: () => undefined },
+    });
+    binding.install(currentEntry);
+    expect(events).toStrictEqual(["old:replace:0-9"]);
+    binding.flush();
+    expect(events).toStrictEqual(["old:replace:0-9", "current:replace:0-9", "old:deactivate"]);
+
+    generation.setWindow({ firstRow: 10, lastRow: 19 });
+    expect(events.at(-1)).toBe("current:window:10-19");
+    const replacement = binding.viewport.replace({
+      window: { firstRow: 20, lastRow: 29 },
+      query: { select: ["id"], where: [], orderBy: [] },
+      sink: { setRowCount: () => undefined, setRowData: () => undefined },
+    });
+    generation.setWindow({ firstRow: 30, lastRow: 39 });
+    generation.release();
+    expect(events.at(-1)).toBe("current:replace:20-29");
+    replacement.release();
+    replacement.release();
+    replacement.setWindow({ firstRow: 40, lastRow: 49 });
+    expect(events.at(-1)).toBe("current:release");
+
+    const canceledBinding = makeLiveQueryViewportBinding<Topics, "orders">({
+      deferDeactivation: true,
+    });
+    const canceledOldEntry = makeEntry("canceled-old");
+    const canceledCurrentEntry = makeEntry("canceled-current");
+    canceledBinding.install(canceledOldEntry);
+    canceledBinding.viewport.replace({
+      window: { firstRow: 0, lastRow: 9 },
+      query: { select: ["id"], where: [], orderBy: [] },
+      sink: { setRowCount: () => undefined, setRowData: () => undefined },
+    });
+    canceledBinding.install(canceledCurrentEntry);
+    canceledBinding.uninstall(canceledCurrentEntry);
+    canceledBinding.flush();
+    expect(events).not.toContain("canceled-current:replace:0-9");
+    expect(events.slice(-2)).toStrictEqual([
+      "canceled-old:deactivate",
+      "canceled-current:deactivate",
+    ]);
+
+    const restoredBinding = makeLiveQueryViewportBinding<Topics, "orders">({
+      deferDeactivation: true,
+    });
+    const restoredOldEntry = makeEntry("restored-old");
+    const restoredCurrentEntry = makeEntry("restored-current");
+    const restoredStart = events.length;
+    restoredBinding.install(restoredOldEntry);
+    restoredBinding.viewport.replace({
+      window: { firstRow: 0, lastRow: 9 },
+      query: { select: ["id"], where: [], orderBy: [] },
+      sink: { setRowCount: () => undefined, setRowData: () => undefined },
+    });
+    restoredBinding.install(restoredCurrentEntry);
+    restoredBinding.install(restoredOldEntry);
+    restoredBinding.flush();
+    expect(events.slice(restoredStart)).toStrictEqual([
+      "restored-old:replace:0-9",
+      "restored-current:deactivate",
+    ]);
   });
 
   it.effect("projects snapshots and Deltas at absolute indexes", () =>
@@ -2511,7 +3313,11 @@ describe("Live Query Viewport Module", () => {
             oldStream = command.stream;
           },
         });
-        const oldEntry = { viewport: oldViewport, deactivate: oldViewport.deactivate };
+        const oldEntry = {
+          viewport: oldViewport,
+          replaceCaptured: oldViewport.replaceCaptured,
+          deactivate: oldViewport.deactivate,
+        };
         binding.install(oldEntry);
         binding.viewport.replace({
           window: { firstRow: 0, lastRow: 9 },
@@ -2531,6 +3337,7 @@ describe("Live Query Viewport Module", () => {
         });
         const currentEntry = {
           viewport: currentViewport,
+          replaceCaptured: currentViewport.replaceCaptured,
           deactivate: currentViewport.deactivate,
         };
         binding.install(currentEntry);

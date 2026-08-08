@@ -405,6 +405,7 @@ describe("useLiveQueryViewport", () => {
     let insertionCleanupActive = false;
     let callbacksDuringInsertionCleanup = 0;
     let retainedViewport: LiveQueryViewport<typeof viewServer.topics, "orders"> | undefined;
+    let retainedGeneration: LiveQueryViewportGeneration | undefined;
     let observedViewport: LiveQueryViewport<typeof viewServer.topics, "orders"> | undefined;
     const grid = makeGridModel<{ readonly id: string }>();
     const sink: LiveQueryViewportSink<{ readonly id: string }> = {
@@ -447,6 +448,7 @@ describe("useLiveQueryViewport", () => {
           query: { select: ["id"], where: [], orderBy: [] },
           sink,
         });
+        retainedGeneration = generation;
         return generation.release;
       }, [result.viewport]);
       return null;
@@ -504,12 +506,6 @@ describe("useLiveQueryViewport", () => {
     expect(observedViewport).toBe(retainedViewport);
     expect(consoleError.mock.calls).toStrictEqual([]);
     expect(callbacksDuringInsertionCleanup).toBe(0);
-    const currentViewport = Option.getOrThrow(Option.fromUndefinedOr(retainedViewport));
-    const currentGeneration = currentViewport.replace({
-      window: { firstRow: 0, lastRow: 9 },
-      query: { select: ["id"], where: [], orderBy: [] },
-      sink,
-    });
     await expect.poll(() => currentRequests.length).toBe(1);
     const currentRequest = Option.getOrThrow(Option.fromUndefinedOr(currentRequests[0]));
     await Effect.runPromise(
@@ -524,6 +520,23 @@ describe("useLiveQueryViewport", () => {
       }),
     );
     await expect.poll(grid.rows).toStrictEqual({ 0: { id: "current-client" } });
+    const currentGeneration = Option.getOrThrow(Option.fromUndefinedOr(retainedGeneration));
+    currentGeneration.setWindow({ firstRow: 10, lastRow: 19 });
+    await expect.poll(() => currentRequests.length).toBe(2);
+    await expect.poll(() => currentSubscriptionCloseCount).toBe(1);
+    const currentWindowRequest = Option.getOrThrow(Option.fromUndefinedOr(currentRequests[1]));
+    await Effect.runPromise(
+      Queue.offer(currentWindowRequest, {
+        type: "snapshot",
+        topic: "orders",
+        queryId: "current-window",
+        rows: [{ id: "current-window" }],
+        keys: ["current-window"],
+        totalRows: 1,
+        version: 3,
+      }),
+    );
+    await expect.poll(grid.rows).toStrictEqual({ 10: { id: "current-window" } });
     await Effect.runPromise(
       Queue.offer(oldRequest, {
         type: "snapshot",
@@ -532,10 +545,10 @@ describe("useLiveQueryViewport", () => {
         rows: [{ id: "obsolete-client-late" }],
         keys: ["obsolete-client-late"],
         totalRows: 1,
-        version: 3,
+        version: 4,
       }),
     );
-    await expect.poll(grid.rows).toStrictEqual({ 0: { id: "current-client" } });
+    await expect.poll(grid.rows).toStrictEqual({ 10: { id: "current-window" } });
     expect(currentGeneration).toBeDefined();
     expect(retainedViewport).toBeDefined();
     expect(consoleError.mock.calls).toStrictEqual([]);
@@ -546,7 +559,7 @@ describe("useLiveQueryViewport", () => {
         <ViewportRoot clientVersion={1} showViewport={false} />
       </ViewServerClientProvider>,
     );
-    await expect.poll(() => currentSubscriptionCloseCount).toBe(1);
+    await expect.poll(() => currentSubscriptionCloseCount).toBe(2);
     expect(consoleError.mock.calls).toStrictEqual([]);
     expect(callbacksDuringInsertionCleanup).toBe(0);
     await view.unmount();
@@ -1408,11 +1421,6 @@ describe("useLiveQueryViewport", () => {
       </ViewServerClientProvider>,
     );
     expect(retainedViewport).toBeDefined();
-    retainedViewport!.replace({
-      window: { firstRow: 0, lastRow: 9 },
-      query: { select: ["id"], where: [], orderBy: [] },
-      sink: grid.sink,
-    });
     await expect.poll(() => currentRequests.length).toBe(1);
     expect(grid.rows()).toStrictEqual({});
     await Effect.runPromise(

@@ -1,9 +1,11 @@
 import { describe, expectTypeOf, it } from "@effect/vitest";
+import type { ViewServerLiveClient } from "@effect-view-server/client";
 import { ViewServerId, defineViewServerConfig } from "@effect-view-server/config";
 import { SourceAdapter } from "@effect-view-server/source-adapter";
 import { Schema } from "effect";
 import type * as BigDecimal from "effect/BigDecimal";
 import { createViewServerReact } from "./index";
+import { makeLiveQueryViewport } from "./live-query-viewport";
 
 const Order = Schema.Struct({
   id: ViewServerId,
@@ -41,6 +43,13 @@ const leasedViewServer = defineViewServerConfig({
 
 const react = createViewServerReact(viewServer);
 const leasedReact = createViewServerReact(leasedViewServer);
+declare const liveClient: ViewServerLiveClient<typeof viewServer.topics>;
+const directViewport = makeLiveQueryViewport({
+  client: liveClient,
+  config: viewServer,
+  topic: "orders",
+  publish: () => undefined,
+});
 
 describe("Live Query Viewport type contracts", () => {
   it("binds the configured topic and exposes chrome without rows", () => {
@@ -122,6 +131,66 @@ describe("Live Query Viewport type contracts", () => {
           expectTypeOf(rows[0]).toEqualTypeOf<{ readonly id: string } | undefined>();
         },
       },
+    });
+  });
+
+  it("types captured viewport replacement inputs end to end", () => {
+    directViewport.replaceCaptured({
+      _tag: "Success",
+      request: {
+        window: { firstRow: 0, lastRow: 9 },
+        query: { select: ["id", "price"], where: [], orderBy: [] },
+        sink: {
+          setRowCount: () => undefined,
+          setRowData: (rows) => {
+            expectTypeOf(rows[0]).toEqualTypeOf<
+              { readonly id: string; readonly price: number } | undefined
+            >();
+          },
+        },
+      },
+    });
+
+    directViewport.replaceCaptured({
+      _tag: "Success",
+      request: {
+        window: { firstRow: 0, lastRow: 9 },
+        // @ts-expect-error captured query selections must name configured fields.
+        query: { select: ["missing"], where: [], orderBy: [] },
+        sink: { setRowCount: () => undefined, setRowData: () => undefined },
+      },
+    });
+    directViewport.replaceCaptured({
+      _tag: "Success",
+      request: {
+        window: { firstRow: 0, lastRow: 9 },
+        query: { select: ["id"], where: [], orderBy: [] },
+        sink: { setRowCount: () => undefined, setRowData: () => undefined },
+        // @ts-expect-error captured requests are exact.
+        extra: true,
+      },
+    });
+    directViewport.replaceCaptured({
+      _tag: "Success",
+      request: {
+        window: { firstRow: 0, lastRow: 9 },
+        query: { select: ["id"], where: [], orderBy: [] },
+        sink: {
+          setRowCount: () => undefined,
+          // @ts-expect-error captured sinks must accept the selected row shape.
+          setRowData: (_rows: { readonly [index: number]: { readonly id: number } }) => undefined,
+        },
+      },
+    });
+    directViewport.replaceCaptured({
+      _tag: "Failure",
+      request: {
+        window: { firstRow: 0, lastRow: 9 },
+        sink: { setRowCount: () => undefined, setRowData: () => undefined },
+        // @ts-expect-error captured failures cannot carry a query.
+        query: { select: ["id"], where: [], orderBy: [] },
+      },
+      failure: new Error("captured failure"),
     });
   });
 

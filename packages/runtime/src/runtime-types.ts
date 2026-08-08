@@ -13,13 +13,27 @@ import type {
   ViewServerRuntimeError,
 } from "@effect-view-server/config";
 import type { ViewServerRuntimeTopicDefinitions } from "@effect-view-server/config/internal";
-import type { GroupedIncrementalAdmissionLimits } from "@effect-view-server/runtime-core";
+import type {
+  GroupedIncrementalAdmissionLimits,
+  RuntimeDependency,
+  RuntimeHeartbeat,
+} from "@effect-view-server/runtime-core";
 import type { ViewServerAuth } from "@effect-view-server/server";
-import type { Effect } from "effect";
+import type { Duration, Effect } from "effect";
 
 export type { ViewServerRuntimeTopicDefinitions } from "@effect-view-server/config/internal";
 
 type RuntimeHttpPath = `/${string}`;
+
+export type ViewServerRuntimeReportingOptions = {
+  readonly heartbeatInterval: Duration.Input;
+  readonly dependenciesInterval: Duration.Input;
+  readonly changeInterval?: Duration.Input;
+  readonly onHeartbeat: (heartbeat: RuntimeHeartbeat) => Effect.Effect<void>;
+  readonly onDependenciesUpdate: (
+    dependencies: ReadonlyArray<RuntimeDependency>,
+  ) => Effect.Effect<void>;
+};
 
 export type ViewServerRuntimeOptions<
   _Topics extends ViewServerRuntimeTopicDefinitions = ViewServerRuntimeTopicDefinitions,
@@ -35,6 +49,7 @@ export type ViewServerRuntimeOptions<
   readonly auth?: ViewServerAuth;
   readonly groupedIncrementalAdmissionLimits?: Partial<GroupedIncrementalAdmissionLimits>;
   readonly subscriptionQueueCapacity?: number;
+  readonly reporting?: ViewServerRuntimeReportingOptions;
 };
 
 type RejectExtraKeys<Candidate, Shape> = {
@@ -50,13 +65,22 @@ type RuntimeGroupedIncrementalAdmissionLimitsExactKeysConstraint<Options> = Opti
     }
   : unknown;
 
+type RuntimeReportingExactKeysConstraint<Options> = Options extends {
+  readonly reporting: infer Candidate;
+}
+  ? {
+      readonly reporting: Candidate & RejectExtraKeys<Candidate, ViewServerRuntimeReportingOptions>;
+    }
+  : unknown;
+
 export type ViewServerRuntimeOptionsInput<
   Topics extends ViewServerRuntimeTopicDefinitions,
   Options extends object = ViewServerRuntimeOptions<Topics>,
 > = Options &
   ViewServerRuntimeOptions<Topics> &
   RejectExtraKeys<Options, ViewServerRuntimeOptions<Topics>> &
-  RuntimeGroupedIncrementalAdmissionLimitsExactKeysConstraint<Options>;
+  RuntimeGroupedIncrementalAdmissionLimitsExactKeysConstraint<Options> &
+  RuntimeReportingExactKeysConstraint<Options>;
 
 export type ViewServerRuntimeOptionsArgs<
   Topics extends ViewServerRuntimeTopicDefinitions,

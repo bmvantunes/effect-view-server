@@ -39,6 +39,7 @@ import {
 import { validateAndSnapshotGrpcRequest } from "./request";
 
 export type GrpcRuntimeClient = {
+  readonly endpoints?: ReadonlyArray<string>;
   readonly service: DescService;
   readonly invoke: (method: string, request: unknown, signal: AbortSignal) => unknown;
 };
@@ -701,6 +702,27 @@ const GrpcSourceServer = SourceAdapterServer.make<
   NonNullable<typeof GrpcSourceAdapter.leased>,
   GrpcRuntimeRegistry
 >(GrpcSourceAdapter, {
+  reporting: {
+    dependencies: (input) =>
+      Effect.gen(function* () {
+        const runtime = yield* GrpcRuntimeRegistry;
+        return [
+          {
+            target: input.definition.client,
+            endpoints: runtime.clients.get(input.definition.client)?.endpoints ?? [],
+          },
+        ];
+      }),
+    classifyFailure: (failure) =>
+      failure._tag === "GrpcConfigurationFailure" ||
+      failure._tag === "GrpcRequestConstructionFailure" ||
+      failure._tag === "GrpcMappingFailure"
+        ? { problem: "self" }
+        : {
+            problem: "dependency",
+            targets: [failure.client],
+          },
+  },
   materialized: materializedLifecycle,
   leased: leasedLifecycle,
 });
@@ -816,6 +838,7 @@ const makeRegistry = Effect.fn("GrpcSourceAdapter.registry.make")(function* (
       const entries = new Map<
         string,
         {
+          readonly endpoints?: ReadonlyArray<string>;
           readonly invoke: (...arguments_: ReadonlyArray<unknown>) => unknown;
           readonly service: unknown;
         }
@@ -836,22 +859,36 @@ const makeRegistry = Effect.fn("GrpcSourceAdapter.registry.make")(function* (
           throw new TypeError("Invalid gRPC aggregate client entry.");
         }
         const runtimeKeys = Reflect.ownKeys(descriptor.value);
+        const endpointsDescriptor = Object.getOwnPropertyDescriptor(descriptor.value, "endpoints");
         const serviceDescriptor = Object.getOwnPropertyDescriptor(descriptor.value, "service");
         const invokeDescriptor = Object.getOwnPropertyDescriptor(descriptor.value, "invoke");
         if (
-          runtimeKeys.length !== 2 ||
-          runtimeKeys.some((runtimeKey) => runtimeKey !== "service" && runtimeKey !== "invoke") ||
+          (runtimeKeys.length !== 2 && runtimeKeys.length !== 3) ||
+          runtimeKeys.some(
+            (runtimeKey) =>
+              runtimeKey !== "service" && runtimeKey !== "invoke" && runtimeKey !== "endpoints",
+          ) ||
           serviceDescriptor === undefined ||
           !serviceDescriptor.enumerable ||
           !("value" in serviceDescriptor) ||
           invokeDescriptor === undefined ||
           !invokeDescriptor.enumerable ||
           !("value" in invokeDescriptor) ||
-          typeof invokeDescriptor.value !== "function"
+          typeof invokeDescriptor.value !== "function" ||
+          (endpointsDescriptor !== undefined &&
+            (!endpointsDescriptor.enumerable ||
+              !("value" in endpointsDescriptor) ||
+              !Array.isArray(endpointsDescriptor.value) ||
+              endpointsDescriptor.value.some(
+                (endpoint: unknown) => typeof endpoint !== "string" || endpoint.length === 0,
+              )))
         ) {
           throw new TypeError("Invalid gRPC aggregate client entry.");
         }
         entries.set(key, {
+          ...(endpointsDescriptor === undefined
+            ? {}
+            : { endpoints: Object.freeze([...endpointsDescriptor.value]) }),
           invoke: (...arguments_) =>
             Reflect.apply(invokeDescriptor.value, descriptor.value, arguments_),
           service: serviceDescriptor.value,
@@ -889,6 +926,7 @@ const makeRegistry = Effect.fn("GrpcSourceAdapter.registry.make")(function* (
     runtimeClients.set(
       client,
       Object.freeze({
+        ...(runtime.endpoints === undefined ? {} : { endpoints: runtime.endpoints }),
         service,
         invoke: (method: string, request: unknown, signal: AbortSignal): unknown =>
           runtime.invoke(method, request, signal),

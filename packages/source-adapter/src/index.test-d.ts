@@ -2,6 +2,7 @@ import { describe, expectTypeOf, it } from "@effect/vitest";
 import {
   SourceAdapter,
   type SourceAdapterDescriptor,
+  type SourceAdapterDependencyInput,
   type SourceApplicationExit,
   type SourceApplicationTransition,
   type SourceAdapterFailure,
@@ -32,6 +33,7 @@ import {
   type BackpressurableSourceBuffer,
   type NonPausableSourceBuffer,
   type SourceAdapterServerDefinitionEntry,
+  type SourceAdapterServerImplementations,
   type SourceAdapterServerLifecycle,
   type SourceApplicationStateModule,
   type SourceApplicationStateRegistration,
@@ -216,6 +218,103 @@ class RetryOnlyDependency extends Context.Service<
   RetryOnlyDependency,
   { readonly enabled: boolean }
 >()("@effect-view-server/source-adapter/type-test/RetryOnlyDependency") {}
+
+const reportingAdapter = SourceAdapter.make({
+  identity: { name: "reporting-type-fixture" },
+  failure: Failure,
+  materialized: {
+    metrics: Metrics,
+    rejectionLocation: Location,
+    definitionOptions: SourceAdapter.definitionOptions<{
+      readonly materializedLabel: string;
+    }>(),
+  },
+  leased: {
+    metrics: Metrics,
+    rejectionLocation: Location,
+    definitionOptions: SourceAdapter.definitionOptions<{
+      readonly leasedBatchSize: number;
+    }>(),
+  },
+});
+
+type ReportingImplementation = NonNullable<
+  SourceAdapterServerImplementations<typeof reportingAdapter, AdapterDependency>["reporting"]
+>;
+
+const reportingImplementation: ReportingImplementation = {
+  dependencies: (input) => {
+    expectTypeOf(input.topic).toEqualTypeOf<string>();
+    if (input.lifecycle === "materialized") {
+      expectTypeOf(input.definition).toEqualTypeOf<{
+        readonly materializedLabel: string;
+      }>();
+    } else {
+      expectTypeOf(input.definition).toEqualTypeOf<{
+        readonly leasedBatchSize: number;
+      }>();
+    }
+    return AdapterDependency.pipe(
+      Effect.map(() => [{ target: "orders", endpoints: ["fixture://orders"] }]),
+    );
+  },
+  classifyFailure: (failure) => {
+    expectTypeOf(failure).toEqualTypeOf<typeof Failure.Type>();
+    return { problem: "dependency", targets: ["orders"] };
+  },
+};
+
+const invalidReportingProblem: ReportingImplementation = {
+  dependencies: reportingImplementation.dependencies,
+  // @ts-expect-error reporting classifications reject unknown problem provenance.
+  classifyFailure: () => ({ problem: "network" }),
+};
+
+const invalidSelfTargets: ReportingImplementation = {
+  dependencies: reportingImplementation.dependencies,
+  // @ts-expect-error self provenance cannot carry dependency targets.
+  classifyFailure: () => ({ problem: "self", targets: ["orders"] }),
+};
+
+const invalidReportingDescriptor: ReportingImplementation = {
+  // @ts-expect-error dependency reporting endpoints must be strings.
+  dependencies: () => Effect.succeed([{ target: "orders", endpoints: [1] }]),
+  classifyFailure: reportingImplementation.classifyFailure,
+};
+
+type ClosedReportingImplementation = NonNullable<
+  SourceAdapterServerImplementations<typeof reportingAdapter, never>["reporting"]
+>;
+
+// This deliberately invalid Effect environment is the contract under test.
+// @effect-diagnostics missingEffectContext:off
+const invalidReportingEnvironment: ClosedReportingImplementation = {
+  dependencies: () =>
+    // @ts-expect-error reporting dependency Effects must use only declared implementation Services.
+    AdapterDependency.pipe(
+      Effect.map(() => [{ target: "orders", endpoints: ["fixture://orders"] }]),
+    ),
+  classifyFailure: reportingImplementation.classifyFailure,
+};
+// @effect-diagnostics missingEffectContext:on
+
+expectTypeOf<SourceAdapterDependencyInput>().toEqualTypeOf<
+  | {
+      readonly topic: string;
+      readonly lifecycle: "materialized";
+      readonly definition: unknown;
+    }
+  | {
+      readonly topic: string;
+      readonly lifecycle: "leased";
+      readonly definition: unknown;
+    }
+>();
+
+expectTypeOf(invalidReportingProblem).not.toBeAny();
+expectTypeOf(invalidSelfTargets).not.toBeAny();
+expectTypeOf(invalidReportingDescriptor).not.toBeAny();
+expectTypeOf(invalidReportingEnvironment).not.toBeAny();
 
 const delegatedDefinition = SourceAdapter.materializedSource(
   adapter,

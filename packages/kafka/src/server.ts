@@ -79,6 +79,7 @@ export type KafkaServerRegionConsumer<Region extends string = string> = {
 };
 
 export type KafkaServerRegion<Region extends string = string> = {
+  readonly endpoints?: ReadonlyArray<string>;
   readonly acquire: (
     input: KafkaServerRegionAcquireInput<Region>,
   ) => Effect.Effect<KafkaServerRegionConsumer<Region>, KafkaAdapterFailure<Region>, Scope.Scope>;
@@ -850,6 +851,22 @@ export const makeKafkaServerLayer = (
           }),
         );
       return SourceAdapterServer.make(KafkaSourceAdapter, {
+        reporting: {
+          dependencies: (input) =>
+            Effect.succeed(
+              input.definition.regions.map((region) => ({
+                target: region,
+                endpoints: regions.get(region)?.endpoints ?? [],
+              })),
+            ),
+          classifyFailure: (failure) =>
+            failure._tag === "KafkaConfigurationFailure" || failure._tag === "KafkaMappingFailure"
+              ? { problem: "self" }
+              : {
+                  problem: "dependency",
+                  targets: [failure.region],
+                },
+        },
         materialized: {
           applicationState: applicationStateRegistration,
           initialLaneIds: (input) => input.definition.regions,

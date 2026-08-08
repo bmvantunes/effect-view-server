@@ -1490,6 +1490,10 @@ describe("Source Adapter server SDK", () => {
   it.effect("keeps attempt resources in the caller attempt Scope", () =>
     Effect.gen(function* () {
       let finalized = 0;
+      class ReportingDependency extends Context.Service<
+        ReportingDependency,
+        { readonly endpoint: string }
+      >()("@effect-view-server/source-adapter/test/ReportingDependency") {}
       const applicationState = SourceAdapterServer.applicationState({
         sweepIntervalNanos: 1_000n,
         initialState: () => 0,
@@ -1498,6 +1502,14 @@ describe("Source Adapter server SDK", () => {
         runDueSweep: () => Effect.void,
       });
       const adapterLayer = SourceAdapterServer.make(StatefulAdapter, {
+        reporting: {
+          dependencies: (input) =>
+            Effect.gen(function* () {
+              const dependency = yield* ReportingDependency;
+              return [{ target: input.definition.label, endpoints: [dependency.endpoint] }];
+            }),
+          classifyFailure: () => ({ problem: "dependency", targets: ["orders"] }),
+        },
         materialized: {
           applicationState,
           initialLaneIds: () => ["materialized", "sibling"],
@@ -1533,14 +1545,34 @@ describe("Source Adapter server SDK", () => {
                 }),
               ]);
             }),
-          metrics: () => Effect.succeed({ active: true }),
+          metrics: () =>
+            ReportingDependency.pipe(
+              Effect.map((dependency) => ({ active: dependency.endpoint.length > 0 })),
+            ),
           retry: Schedule.recurs(0),
         },
-      });
+      }).pipe(
+        Layer.provide(
+          Layer.succeed(ReportingDependency)({
+            endpoint: "fixture://orders",
+          }),
+        ),
+      );
       const runtimeContext = yield* Effect.scoped(Layer.build(adapterLayer));
       const runtimeService = Context.getUnsafe(runtimeContext, StatefulAdapter.runtimeService);
       expect(runtimeService.adapter).toBe(StatefulAdapter);
       expect(Reflect.has(runtimeService.adapter, "materializedSource")).toBe(true);
+      const reporting = Option.getOrThrow(Option.fromNullishOr(runtimeService.reporting));
+      expect(
+        yield* reporting.dependencies({
+          topic: "orders",
+          lifecycle: "materialized",
+          definition: { label: "orders" },
+        }),
+      ).toStrictEqual([{ target: "orders", endpoints: ["fixture://orders"] }]);
+      expect(
+        reporting.classifyFailure({ _tag: "ServerFixtureFailure", message: "down" }),
+      ).toStrictEqual({ problem: "dependency", targets: ["orders"] });
       const materialized = Option.getOrThrow(Option.fromNullishOr(runtimeService.materialized));
       expect(materialized.applicationState).toBe(applicationState);
       const lifetimeScope = yield* Scope.make();

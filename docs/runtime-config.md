@@ -42,6 +42,13 @@ const program = runViewServerRuntime(viewServer, {
   websocketPort: 8080,
   tcpPublishHost: "127.0.0.1",
   tcpPublishPort: 8081,
+  reporting: {
+    heartbeatInterval: "5 seconds",
+    dependenciesInterval: "30 seconds",
+    changeInterval: "300 millis",
+    onHeartbeat: (heartbeat) => Effect.logInfo("runtime heartbeat", heartbeat),
+    onDependenciesUpdate: (dependencies) => Effect.logInfo("runtime dependencies", dependencies),
+  },
 }).pipe(Effect.provide([KafkaLive, GrpcLive]));
 
 NodeRuntime.runMain(program);
@@ -51,6 +58,98 @@ NodeRuntime.runMain(program);
 `Config.ConfigError` in the Layer construction channel. Runtime Effects retain
 the exact unsatisfied Source Adapter services and retry-policy dependencies
 until the application provides them.
+
+## Runtime reporting
+
+The optional `reporting` bag installs two server-local Effect callbacks. Both
+callbacks are required when reporting is enabled. They run periodically at
+independent cadences, outside the live-event hot path. A semantic dependency
+change also requests both callbacks; bursts coalesce to the latest snapshot and
+respect `changeInterval`, which defaults to 300 milliseconds. Callback defects
+are logged and later reports continue. Periodic ticks keep their independently
+configured cadences even when an interval is shorter than `changeInterval`.
+Callback Effects must be closed: provide any services while constructing the
+callback rather than returning an Effect with outstanding requirements.
+
+`onHeartbeat` reports the runtime's existing internal Source status vocabulary
+plus whether the current problem came from View Server code, an upstream
+dependency, or both. It does not invent separate health states.
+
+```json
+{
+  "status": "Ready",
+  "problems": []
+}
+```
+
+If Kafka is unavailable while the runtime is retrying:
+
+```json
+{
+  "status": "WaitingToRetry",
+  "problems": ["dependency"]
+}
+```
+
+If a View Server mapping is broken, Kafka remains in the dependency inventory
+and retains its last operational status:
+
+```json
+{
+  "status": "Degraded",
+  "problems": ["self"]
+}
+```
+
+When independent problems coexist, provenance is stable and ordered:
+
+```json
+{
+  "status": "Exhausted",
+  "problems": ["self", "dependency"]
+}
+```
+
+`onDependenciesUpdate` receives the complete configured inventory every time,
+not only changed entries. Kafka contributes one target per configured Region;
+gRPC contributes one target per logical client. Endpoints are the exact strings
+supplied to their Node Layers. Statuses reuse Source Diagnostics states, with
+the existing `Inactive` state for a configured leased dependency that has no
+active Feed.
+
+```json
+[
+  {
+    "dependency": "grpc",
+    "target": "orders",
+    "endpoints": ["https://orders.grpc-tky.com"],
+    "status": "Ready"
+  },
+  {
+    "dependency": "kafka",
+    "target": "oregon",
+    "endpoints": ["b-1.kafka-oregon.com"],
+    "status": "Ready"
+  },
+  {
+    "dependency": "kafka",
+    "target": "tokyo",
+    "endpoints": ["b-1.kafka-tky.com", "b-2.kafka-tky.com"],
+    "status": "WaitingToRetry"
+  }
+]
+```
+
+When Sources disagree, one heartbeat uses this worst-first precedence:
+`Exhausted`, `WaitingToRetry`, `Reacquiring`, `Starting`, `Degraded`, then
+`Ready`. Source-level `Stopping` does not participate because the Runtime owns
+the single lifecycle `Stopping` heartbeat emitted before shutdown begins.
+
+Reporting uses the existing Source lifecycle evidence; it does not actively
+probe brokers or services. Kafka `Starting` means consumer acquisition is in
+progress, not that the runtime is waiting for the first message. gRPC becomes
+`Ready` when its server stream has been acquired, without waiting for the first
+response item.
 
 ## Kafka
 

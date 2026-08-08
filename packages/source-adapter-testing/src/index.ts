@@ -875,6 +875,16 @@ const makeControllableSourceFixtureEffect = Effect.fn("SourceAdapterTesting.fixt
 
     const materializedLifecycle = makeLifecycle<"materialized">();
     const layer = SourceAdapterServer.make(FixtureAdapter, {
+      reporting: {
+        dependencies: (input) =>
+          Effect.succeed([
+            {
+              target: input.definition.label,
+              endpoints: [`fixture://${input.definition.label}`],
+            },
+          ]),
+        classifyFailure: () => ({ problem: "dependency" }),
+      },
       materialized: {
         ...materializedLifecycle,
         acquire: (input) =>

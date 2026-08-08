@@ -1,12 +1,18 @@
 import { describe, expectTypeOf, it } from "@effect/vitest";
-import { Effect } from "effect";
+import { Context, Effect } from "effect";
 import {
   makeViewServerRuntime,
   type ViewServerRuntime,
   type ViewServerRuntimeOptions,
+  type ViewServerRuntimeReportingOptions,
 } from "./index";
 
 import { viewServer } from "../test-harness/runtime-type-contracts";
+
+class ReportingCallbackDependency extends Context.Service<
+  ReportingCallbackDependency,
+  { readonly report: () => void }
+>()("@effect-view-server/runtime/type-test/ReportingCallbackDependency") {}
 
 describe("Runtime server and TCP option contracts", () => {
   it("accepts valid contracts and rejects invalid contracts", () => {
@@ -88,6 +94,99 @@ describe("Runtime server and TCP option contracts", () => {
       },
     });
 
+    const reportingOptions = makeViewServerRuntime(viewServer, {
+      reporting: {
+        heartbeatInterval: "5 seconds",
+        dependenciesInterval: "30 seconds",
+        onHeartbeat: (heartbeat) => {
+          expectTypeOf(heartbeat).toEqualTypeOf<{
+            readonly status:
+              | "Starting"
+              | "Ready"
+              | "Degraded"
+              | "WaitingToRetry"
+              | "Reacquiring"
+              | "Exhausted"
+              | "Stopping";
+            readonly problems: ReadonlyArray<"self" | "dependency">;
+          }>();
+          return Effect.void;
+        },
+        onDependenciesUpdate: (dependencies) => {
+          expectTypeOf<(typeof dependencies)[number]>().toEqualTypeOf<{
+            readonly dependency: string;
+            readonly target: string;
+            readonly endpoints: ReadonlyArray<string>;
+            readonly status:
+              | "Inactive"
+              | "Starting"
+              | "Ready"
+              | "Degraded"
+              | "WaitingToRetry"
+              | "Reacquiring"
+              | "Exhausted"
+              | "Stopping";
+          }>();
+          return Effect.void;
+        },
+      },
+    });
+
+    expectTypeOf<Effect.Success<typeof reportingOptions>>().toEqualTypeOf<
+      ViewServerRuntime<typeof viewServer.topics>
+    >();
+
+    const missingDependencyCallback = {
+      heartbeatInterval: "5 seconds",
+      dependenciesInterval: "30 seconds",
+      onHeartbeat: () => Effect.void,
+    };
+    // @ts-expect-error reporting requires both callbacks.
+    missingDependencyCallback satisfies ViewServerRuntimeReportingOptions;
+
+    const invalidReportingCallback = {
+      heartbeatInterval: "5 seconds",
+      dependenciesInterval: "30 seconds",
+      onHeartbeat: () => undefined,
+      onDependenciesUpdate: () => Effect.void,
+    };
+    // @ts-expect-error reporting callbacks must return Effects.
+    invalidReportingCallback satisfies ViewServerRuntimeReportingOptions;
+
+    const invalidReportingKey = makeViewServerRuntime(viewServer, {
+      reporting: {
+        heartbeatInterval: "5 seconds",
+        dependenciesInterval: "30 seconds",
+        onHeartbeat: () => Effect.void,
+        onDependenciesUpdate: () => Effect.void,
+        // @ts-expect-error reporting rejects unknown keys.
+        interval: "1 second",
+      },
+    });
+
+    // These deliberately invalid Effect environments are the contracts under test.
+    // @effect-diagnostics missingEffectContext:off
+    const serviceHeartbeatCallback = makeViewServerRuntime(viewServer, {
+      reporting: {
+        heartbeatInterval: "5 seconds",
+        dependenciesInterval: "30 seconds",
+        // @ts-expect-error runtime heartbeat callbacks must be closed Effects.
+        onHeartbeat: () => ReportingCallbackDependency.pipe(Effect.asVoid),
+        onDependenciesUpdate: () => Effect.void,
+      },
+    });
+
+    const serviceDependenciesCallback = makeViewServerRuntime(viewServer, {
+      reporting: {
+        heartbeatInterval: "5 seconds",
+        dependenciesInterval: "30 seconds",
+        onHeartbeat: () => Effect.void,
+        // @ts-expect-error runtime dependency callbacks must be closed Effects.
+        onDependenciesUpdate: () => ReportingCallbackDependency.pipe(Effect.asVoid),
+      },
+    });
+    // @effect-diagnostics missingEffectContext:on
+
     expectTypeOf(invalidOptions).not.toBeAny();
 
     expectTypeOf(invalidPathOptions).not.toBeAny();
@@ -109,6 +208,12 @@ describe("Runtime server and TCP option contracts", () => {
     expectTypeOf(invalidTcpPublishPortOptions).not.toBeAny();
 
     expectTypeOf(invalidTcpPublishMaxConnectionsOptions).not.toBeAny();
+
+    expectTypeOf(invalidReportingKey).not.toBeAny();
+
+    expectTypeOf(serviceHeartbeatCallback).not.toBeAny();
+
+    expectTypeOf(serviceDependenciesCallback).not.toBeAny();
 
     expectTypeOf<ViewServerRuntimeOptions>().not.toHaveProperty("port");
 

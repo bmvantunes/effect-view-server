@@ -5,7 +5,7 @@ import type {
   ViewServerRuntimeCoreOptionsFor,
   ViewServerSourceRequirements,
 } from "@effect-view-server/runtime-core";
-import { Effect, Exit, Fiber, Layer, Option, Scope } from "effect";
+import { Effect, Exit, Fiber, Layer, Option, Ref, Scope } from "effect";
 import type { HttpServerError } from "effect/unstable/http";
 import {
   makeDefaultRuntimeDependencies,
@@ -23,9 +23,11 @@ import type {
   ViewServerRuntimeOptions,
   ViewServerRuntimeOptionsArgs,
   ViewServerRuntimeOptionsInput,
+  ViewServerRuntimeReportingOptions,
   ViewServerRuntimeTopicDefinitions,
 } from "./runtime-types";
 import { makeViewServerRuntimeTransportHealth } from "./transport-health";
+import { makeRuntimeReporting, startingHeartbeat, stoppingHeartbeat } from "./runtime-reporting";
 
 export { makeDefaultRuntimeDependencies };
 export type {
@@ -34,8 +36,10 @@ export type {
   ViewServerRuntimeOptions,
   ViewServerRuntimeOptionsArgs,
   ViewServerRuntimeOptionsInput,
+  ViewServerRuntimeReportingOptions,
   ViewServerRuntimeTopicDefinitions,
 };
+export type { RuntimeDependency, RuntimeHeartbeat } from "./runtime-reporting";
 
 const toPublicLiveClient = <const Topics extends ViewServerRuntimeTopicDefinitions>(
   liveClient: ViewServerRuntimeLiveClient<Topics>,
@@ -137,128 +141,177 @@ const makeViewServerRuntimeFromResolvedOptions = Effect.fn(
   config: ViewServerConfig<Topics>,
   resolvedOptions: ResolvedViewServerRuntimeBaseOptions<Topics>,
 ) {
-  const dependencyConfig: ViewServerRuntimeDependencyConfig<Topics> = {
-    topics: config.topics,
-  };
-  const transportHealth = makeViewServerRuntimeTransportHealth<Topics>();
-  const runtimeCoreInput: RuntimeCoreOptionsBuilder<Topics> = {
-    transportHealth: transportHealth.transportHealth,
-  };
-  if (resolvedOptions.runtimeCoreOptions.groupedIncrementalAdmissionLimits !== undefined) {
-    runtimeCoreInput.groupedIncrementalAdmissionLimits =
-      resolvedOptions.runtimeCoreOptions.groupedIncrementalAdmissionLimits;
-  }
-  if (resolvedOptions.runtimeCoreOptions.subscriptionQueueCapacity !== undefined) {
-    runtimeCoreInput.subscriptionQueueCapacity =
-      resolvedOptions.runtimeCoreOptions.subscriptionQueueCapacity;
-  }
-  const runtimeScope = yield* Scope.make("sequential");
-  const startup = Effect.gen(function* () {
-    const runtimeCore = yield* acquireRuntimeResource(
-      runtimeScope,
-      dependencies.makeRuntimeCore(dependencyConfig, runtimeCoreInput),
-      (resource) => resource.close,
-    );
-    const closeRuntimeScope = Scope.close(runtimeScope, Exit.void).pipe(Effect.uninterruptible);
-    const cachedScopeCloseFiber = yield* Effect.cached(
-      closeRuntimeScope.pipe(
-        Effect.forkDetach({
-          startImmediately: true,
-        }),
-      ),
-    );
-    const awaitRuntimeScopeClose = cachedScopeCloseFiber.pipe(
-      Effect.flatMap(Fiber.join),
-      Effect.asVoid,
-    );
-    const refreshRuntimeHealth = ignoreRuntimeHealthRefreshFailure(runtimeCore.refreshHealth);
-    const transports = yield* Effect.raceFirst(
-      Effect.gen(function* () {
-        const server = yield* acquireRuntimeResource(
+  return yield* Effect.uninterruptibleMask((restore) =>
+    Effect.gen(function* () {
+      const runtimeScope = yield* Scope.make("sequential");
+      const reportingLifecycle =
+        resolvedOptions.reporting === undefined
+          ? undefined
+          : {
+              options: resolvedOptions.reporting,
+              startingFiber: yield* startingHeartbeat(runtimeScope, resolvedOptions.reporting),
+            };
+      const startupStopping = yield* Ref.make(
+        reportingLifecycle === undefined
+          ? Effect.void
+          : stoppingHeartbeat(
+              runtimeScope,
+              reportingLifecycle.options,
+              reportingLifecycle.startingFiber,
+            ),
+      );
+      const dependencyConfig: ViewServerRuntimeDependencyConfig<Topics> = {
+        topics: config.topics,
+      };
+      const transportHealth = makeViewServerRuntimeTransportHealth<Topics>();
+      const runtimeCoreInput: RuntimeCoreOptionsBuilder<Topics> = {
+        transportHealth: transportHealth.transportHealth,
+      };
+      if (resolvedOptions.runtimeCoreOptions.groupedIncrementalAdmissionLimits !== undefined) {
+        runtimeCoreInput.groupedIncrementalAdmissionLimits =
+          resolvedOptions.runtimeCoreOptions.groupedIncrementalAdmissionLimits;
+      }
+      if (resolvedOptions.runtimeCoreOptions.subscriptionQueueCapacity !== undefined) {
+        runtimeCoreInput.subscriptionQueueCapacity =
+          resolvedOptions.runtimeCoreOptions.subscriptionQueueCapacity;
+      }
+      const startup = Effect.gen(function* () {
+        const runtimeCore = yield* acquireRuntimeResource(
           runtimeScope,
-          dependencies.makeServer(
-            dependencyConfig,
-            {
-              ...(resolvedOptions.auth === undefined ? {} : { auth: resolvedOptions.auth }),
-              liveClient: {
-                subscribeHealth: runtimeCore.liveClient.subscribeHealth,
-                subscribeHealthSummary: runtimeCore.liveClient.subscribeHealthSummary,
-                subscribeProtocolSourceHealth:
-                  runtimeCore.serverLiveClient.subscribeProtocolSourceHealth,
-                subscribeProtocolQuery: runtimeCore.protocolQuerySubscriber.subscribeProtocolQuery,
-              },
-              runtime: runtimeCore.client,
-              transport: {
-                clientOpened: transportHealth.clientOpened.pipe(
-                  Effect.andThen(refreshRuntimeHealth),
-                ),
-                clientClosed: transportHealth.clientClosed.pipe(
-                  Effect.andThen(refreshRuntimeHealth),
-                ),
-                streamOpened: transportHealth.streamOpened.pipe(
-                  Effect.andThen(refreshRuntimeHealth),
-                ),
-                streamClosed: transportHealth.streamClosed.pipe(
-                  Effect.andThen(refreshRuntimeHealth),
-                ),
-              },
-            },
-            resolvedOptions.serverOptions,
-          ),
+          dependencies.makeRuntimeCore(dependencyConfig, runtimeCoreInput),
           (resource) => resource.close,
         );
-        const tcpPublishIngress =
-          resolvedOptions.tcpPublishOptions === undefined
-            ? undefined
-            : yield* acquireRuntimeResource(
-                runtimeScope,
-                dependencies.makeTcpPublishIngress(
-                  dependencyConfig,
-                  runtimeCore.decodedMutationClient,
-                  {
-                    ...resolvedOptions.tcpPublishOptions,
-                    ...(resolvedOptions.auth === undefined ? {} : { auth: resolvedOptions.auth }),
+        const closeRuntimeScope = Scope.close(runtimeScope, Exit.void).pipe(Effect.uninterruptible);
+        const cachedScopeCloseFiber = yield* Effect.cached(
+          closeRuntimeScope.pipe(
+            Effect.forkDetach({
+              startImmediately: true,
+            }),
+          ),
+        );
+        const awaitRuntimeScopeClose = cachedScopeCloseFiber.pipe(
+          Effect.flatMap(Fiber.join),
+          Effect.asVoid,
+        );
+        const refreshRuntimeHealth = ignoreRuntimeHealthRefreshFailure(runtimeCore.refreshHealth);
+        const transports = yield* Effect.raceFirst(
+          Effect.gen(function* () {
+            const server = yield* acquireRuntimeResource(
+              runtimeScope,
+              dependencies.makeServer(
+                dependencyConfig,
+                {
+                  ...(resolvedOptions.auth === undefined ? {} : { auth: resolvedOptions.auth }),
+                  liveClient: {
+                    subscribeHealth: runtimeCore.liveClient.subscribeHealth,
+                    subscribeHealthSummary: runtimeCore.liveClient.subscribeHealthSummary,
+                    subscribeProtocolSourceHealth:
+                      runtimeCore.serverLiveClient.subscribeProtocolSourceHealth,
+                    subscribeProtocolQuery:
+                      runtimeCore.protocolQuerySubscriber.subscribeProtocolQuery,
                   },
-                ),
-                (resource) => resource.close,
-              );
-        return {
-          server,
-          tcpPublishIngress,
+                  runtime: runtimeCore.client,
+                  transport: {
+                    clientOpened: transportHealth.clientOpened.pipe(
+                      Effect.andThen(refreshRuntimeHealth),
+                    ),
+                    clientClosed: transportHealth.clientClosed.pipe(
+                      Effect.andThen(refreshRuntimeHealth),
+                    ),
+                    streamOpened: transportHealth.streamOpened.pipe(
+                      Effect.andThen(refreshRuntimeHealth),
+                    ),
+                    streamClosed: transportHealth.streamClosed.pipe(
+                      Effect.andThen(refreshRuntimeHealth),
+                    ),
+                  },
+                },
+                resolvedOptions.serverOptions,
+              ),
+              (resource) => resource.close,
+            );
+            const tcpPublishIngress =
+              resolvedOptions.tcpPublishOptions === undefined
+                ? undefined
+                : yield* acquireRuntimeResource(
+                    runtimeScope,
+                    dependencies.makeTcpPublishIngress(
+                      dependencyConfig,
+                      runtimeCore.decodedMutationClient,
+                      {
+                        ...resolvedOptions.tcpPublishOptions,
+                        ...(resolvedOptions.auth === undefined
+                          ? {}
+                          : { auth: resolvedOptions.auth }),
+                      },
+                    ),
+                    (resource) => resource.close,
+                  );
+            return {
+              server,
+              tcpPublishIngress,
+            };
+          }),
+          runtimeCore.fatal,
+        );
+        const reporting =
+          reportingLifecycle === undefined
+            ? undefined
+            : yield* Effect.gen(function* () {
+                yield* Fiber.interrupt(reportingLifecycle.startingFiber);
+                return yield* makeRuntimeReporting(
+                  runtimeScope,
+                  reportingLifecycle.options,
+                  runtimeCore.reporting,
+                ).pipe(
+                  Effect.tap((reporter) => Ref.set(startupStopping, reporter.stopping)),
+                  Effect.uninterruptible,
+                );
+              });
+        const cachedShutdownFiber = yield* Effect.cached(
+          (reporting === undefined ? Effect.void : reporting.stopping).pipe(
+            Effect.ensuring(awaitRuntimeScopeClose),
+            Effect.forkDetach({ startImmediately: true }),
+          ),
+        );
+        const awaitShutdown = cachedShutdownFiber.pipe(Effect.flatMap(Fiber.join), Effect.asVoid);
+        const fatalWatcher = yield* Effect.forkDetach(
+          runtimeCore.fatal.pipe(Effect.catchCause(() => awaitShutdown)),
+          { startImmediately: true },
+        );
+        const close: Effect.Effect<void> = Fiber.interrupt(fatalWatcher).pipe(
+          Effect.asVoid,
+          Effect.andThen(awaitShutdown),
+        );
+        const publicLiveClient = toPublicLiveClient(runtimeCore.liveClient, close);
+        const runtime: ViewServerRuntime<Topics> = {
+          url: transports.server.url,
+          healthUrl: transports.server.healthUrl,
+          metricsUrl: transports.server.metricsUrl,
+          ...(transports.tcpPublishIngress === undefined
+            ? {}
+            : { tcpPublishUrl: transports.tcpPublishIngress.url }),
+          client: runtimeCore.client,
+          liveClient: publicLiveClient,
+          health: runtimeCore.client.health,
+          close,
         };
-      }),
-      runtimeCore.fatal,
-    );
-    const fatalWatcher = yield* Effect.forkDetach(
-      runtimeCore.fatal.pipe(Effect.catchCause(() => awaitRuntimeScopeClose)),
-      { startImmediately: true },
-    );
-    const close: Effect.Effect<void> = Fiber.interrupt(fatalWatcher).pipe(
-      Effect.asVoid,
-      Effect.andThen(awaitRuntimeScopeClose),
-    );
-    const publicLiveClient = toPublicLiveClient(runtimeCore.liveClient, close);
-    const runtime: ViewServerRuntime<Topics> = {
-      url: transports.server.url,
-      healthUrl: transports.server.healthUrl,
-      metricsUrl: transports.server.metricsUrl,
-      ...(transports.tcpPublishIngress === undefined
-        ? {}
-        : { tcpPublishUrl: transports.tcpPublishIngress.url }),
-      client: runtimeCore.client,
-      liveClient: publicLiveClient,
-      health: runtimeCore.client.health,
-      close,
-    };
-    runtimeFatalSignals.set(runtime, runtimeCore.fatal);
-    return runtime;
-  });
-  return yield* startup.pipe(
-    Effect.onExit((exit) =>
-      Exit.isFailure(exit)
-        ? ignoreRuntimeStartupCleanupFailure(Scope.close(runtimeScope, exit))
-        : Effect.void,
-    ),
+        runtimeFatalSignals.set(runtime, runtimeCore.fatal);
+        return runtime;
+      });
+      return yield* restore(startup).pipe(
+        Effect.onExit((exit) =>
+          Exit.isFailure(exit)
+            ? ignoreRuntimeStartupCleanupFailure(
+                Ref.get(startupStopping).pipe(
+                  Effect.flatMap((reportStopping) => reportStopping),
+                  Effect.ensuring(Scope.close(runtimeScope, exit)),
+                ),
+              )
+            : Effect.void,
+        ),
+      );
+    }),
   );
 });
 

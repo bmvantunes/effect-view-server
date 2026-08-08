@@ -942,25 +942,27 @@ describe("gRPC aggregate Node Layer", () => {
           orders: OrdersService,
           strategies: OrdersService,
         });
+        const ordersSource = multiSources.materialized({
+          client: "orders",
+          method: "stream",
+          request: () => ({ region: "orders" }),
+          map: ({ value }) => ({ id: value.id }),
+        });
+        const strategiesSource = multiSources.materialized({
+          client: "strategies",
+          method: "stream",
+          request: () => ({ region: "strategies" }),
+          map: ({ value }) => ({ id: value.id }),
+        });
         const multiConfig = defineViewServerConfig({
           topics: {
             orders: {
               schema: Row,
-              source: multiSources.materialized({
-                client: "orders",
-                method: "stream",
-                request: () => ({ region: "orders" }),
-                map: ({ value }) => ({ id: value.id }),
-              }),
+              source: ordersSource,
             },
             strategies: {
               schema: Row,
-              source: multiSources.materialized({
-                client: "strategies",
-                method: "stream",
-                request: () => ({ region: "strategies" }),
-                map: ({ value }) => ({ id: value.id }),
-              }),
+              source: strategiesSource,
             },
           },
         });
@@ -996,11 +998,31 @@ describe("gRPC aggregate Node Layer", () => {
         const configured = yield* Effect.scoped(
           Layer.build(grpcNode.layerConfig(multiConfig, Config.succeed(options))),
         );
+        const directReporting = Option.getOrThrow(
+          Option.fromNullishOr(
+            Context.getUnsafe(direct, GrpcSourceAdapter.runtimeService).reporting,
+          ),
+        );
+        const configuredReporting = Option.getOrThrow(
+          Option.fromNullishOr(
+            Context.getUnsafe(configured, GrpcSourceAdapter.runtimeService).reporting,
+          ),
+        );
 
         expect({
           closedAuthorities: closedAuthorities.toSorted(),
           configuredService: Context.getOption(configured, GrpcSourceAdapter.runtimeService)._tag,
+          configuredTargets: yield* configuredReporting.dependencies({
+            topic: "orders",
+            lifecycle: "materialized",
+            definition: ordersSource.options,
+          }),
           directService: Context.getOption(direct, GrpcSourceAdapter.runtimeService)._tag,
+          directTargets: yield* directReporting.dependencies({
+            topic: "strategies",
+            lifecycle: "materialized",
+            definition: strategiesSource.options,
+          }),
         }).toStrictEqual({
           closedAuthorities: [
             "http://orders.example",
@@ -1009,7 +1031,19 @@ describe("gRPC aggregate Node Layer", () => {
             "http://strategies.example",
           ],
           configuredService: "Some",
+          configuredTargets: [
+            {
+              target: "orders",
+              endpoints: ["http://orders.example"],
+            },
+          ],
           directService: "Some",
+          directTargets: [
+            {
+              target: "strategies",
+              endpoints: ["http://strategies.example"],
+            },
+          ],
         });
       }),
     ),

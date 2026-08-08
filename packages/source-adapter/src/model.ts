@@ -630,6 +630,58 @@ export interface SourceAdapterDescriptor<
   readonly [SourceAdapterTypeId]: typeof SourceAdapterTypeId;
 }
 
+export type SourceDependencyTarget = {
+  readonly target: string;
+  readonly endpoints: ReadonlyArray<string>;
+};
+
+export type SourceProblem = "self" | "dependency";
+
+export type SourceFailureClassification =
+  | {
+      readonly problem: "self";
+      readonly targets?: never;
+    }
+  | {
+      readonly problem: "dependency";
+      readonly targets?: ReadonlyArray<string>;
+    };
+
+type SourceAdapterDependencyInputFor<Lifecycle extends SourceLifecycle, Definition> = [
+  Definition,
+] extends [never]
+  ? never
+  : {
+      readonly topic: string;
+      readonly lifecycle: Lifecycle;
+      readonly definition: Definition;
+    };
+
+export type SourceAdapterDependencyInput<
+  MaterializedDefinition = unknown,
+  LeasedDefinition = unknown,
+> =
+  | SourceAdapterDependencyInputFor<"materialized", MaterializedDefinition>
+  | SourceAdapterDependencyInputFor<"leased", LeasedDefinition>;
+
+export type SourceAdapterRuntimeReporting<
+  AdapterFailure,
+  MaterializedDefinition = unknown,
+  LeasedDefinition = unknown,
+> = {
+  readonly dependencies: (
+    input: SourceAdapterDependencyInput<MaterializedDefinition, LeasedDefinition>,
+  ) => Effect.Effect<ReadonlyArray<SourceDependencyTarget>>;
+  readonly classifyFailure: (failure: AdapterFailure) => SourceFailureClassification;
+};
+
+type SourceAdapterRuntimeDefinitionOptions<
+  Declaration extends SourceLifecycleDeclarationAny | undefined,
+> =
+  Exclude<Declaration, undefined> extends SourceLifecycleDeclarationAny
+    ? SourceLifecycleOptions<Exclude<Declaration, undefined>>
+    : never;
+
 export type SourceAdapterRuntimeService<
   AdapterFailure,
   Materialized extends SourceLifecycleDeclarationAny | undefined,
@@ -638,6 +690,13 @@ export type SourceAdapterRuntimeService<
   Version extends string | undefined = string | undefined,
 > = {
   readonly adapter: SourceAdapterDescriptor<Name, Version, AdapterFailure, Materialized, Leased>;
+  readonly reporting:
+    | SourceAdapterRuntimeReporting<
+        AdapterFailure,
+        SourceAdapterRuntimeDefinitionOptions<Materialized>,
+        SourceAdapterRuntimeDefinitionOptions<Leased>
+      >
+    | undefined;
   readonly materialized:
     | SourceRuntimeLifecycle<
         AdapterFailure,

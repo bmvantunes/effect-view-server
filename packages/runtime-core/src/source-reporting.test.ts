@@ -1,0 +1,592 @@
+import { describe, expect, it } from "@effect/vitest";
+import type {
+  SourceExecutionFailure,
+  SourceFailureClassification,
+  SourceStatus,
+} from "@effect-view-server/source-adapter";
+import { Option } from "effect";
+import {
+  makeRuntimeSourceReportingState,
+  runtimeSourceReportingSnapshot,
+  sameRuntimeSourceReportingSnapshot,
+  updateRuntimeSourceReportingState,
+  type RuntimeSourceReportingDefinition,
+} from "./source-reporting";
+
+type Failure = {
+  readonly _tag: "Self" | "Dependency";
+  readonly target?: string;
+};
+
+const kafka: RuntimeSourceReportingDefinition = {
+  dependency: "kafka",
+  lifecycle: "materialized",
+  targets: [
+    { target: "tokyo", endpoints: ["b-1.kafka-tky.com", "b-2.kafka-tky.com"] },
+    { target: "oregon", endpoints: ["b-1.kafka-oregon.com"] },
+  ],
+  classifyFailure: (failure) => {
+    if (
+      typeof failure === "object" &&
+      failure !== null &&
+      Reflect.get(failure, "_tag") === "Dependency"
+    ) {
+      const target = Reflect.get(failure, "target");
+      return typeof target === "string"
+        ? { problem: "dependency", targets: [target] }
+        : { problem: "dependency" };
+    }
+    return { problem: "self" };
+  },
+};
+
+const grpc: RuntimeSourceReportingDefinition = {
+  dependency: "grpc",
+  lifecycle: "leased",
+  targets: [{ target: "orders", endpoints: ["https://orders.grpc-tky.com"] }],
+  classifyFailure: () => ({ problem: "dependency" }),
+};
+
+const adapterFailure = (failure: Failure): SourceExecutionFailure<unknown> => ({
+  _tag: "AdapterFailure",
+  failure,
+});
+
+const waiting = (failure: SourceExecutionFailure<unknown>): SourceStatus<unknown, unknown> => ({
+  _tag: "WaitingToRetry",
+  nextAttempt: 2n,
+  termination: { _tag: "Failed", failure },
+  retryAtNanos: 2n,
+});
+
+const ready: SourceStatus<unknown, unknown> = {
+  _tag: "Ready",
+  attempt: 1n,
+  readyAtNanos: 1n,
+};
+
+const malformedClassification = (value: unknown): SourceFailureClassification =>
+  Reflect.apply((classification: SourceFailureClassification) => classification, undefined, [
+    value,
+  ]);
+
+const throwingClassification = malformedClassification(
+  new Proxy(
+    {},
+    {
+      get: () => {
+        throw new Error("hostile classification getter");
+      },
+    },
+  ),
+);
+
+describe("Runtime Source reporting", () => {
+  it("keeps delimiter-containing dependency identities distinct", () => {
+    const left: RuntimeSourceReportingDefinition = {
+      dependency: "a\u0000b",
+      lifecycle: "materialized",
+      targets: [{ target: "c", endpoints: ["left"] }],
+      classifyFailure: () => ({ problem: "dependency" }),
+    };
+    const right: RuntimeSourceReportingDefinition = {
+      dependency: "a",
+      lifecycle: "materialized",
+      targets: [{ target: "b\u0000c", endpoints: ["right"] }],
+      classifyFailure: () => ({ problem: "dependency" }),
+    };
+
+    expect(runtimeSourceReportingSnapshot([left, right], []).dependencies).toStrictEqual([
+      {
+        dependency: "a",
+        target: "b\u0000c",
+        endpoints: ["right"],
+        status: "Starting",
+      },
+      {
+        dependency: "a\u0000b",
+        target: "c",
+        endpoints: ["left"],
+        status: "Starting",
+      },
+    ]);
+  });
+
+  it("reports full inventory, regional dependency failures, recovery, and self failures", () => {
+    const initial = runtimeSourceReportingSnapshot([kafka, grpc], []);
+
+    expect(initial).toStrictEqual({
+      heartbeat: { status: "Ready", problems: [] },
+      dependencies: [
+        {
+          dependency: "grpc",
+          target: "orders",
+          endpoints: ["https://orders.grpc-tky.com"],
+          status: "Inactive",
+        },
+        {
+          dependency: "kafka",
+          target: "oregon",
+          endpoints: ["b-1.kafka-oregon.com"],
+          status: "Starting",
+        },
+        {
+          dependency: "kafka",
+          target: "tokyo",
+          endpoints: ["b-1.kafka-tky.com", "b-2.kafka-tky.com"],
+          status: "Starting",
+        },
+      ],
+    });
+
+    const state = makeRuntimeSourceReportingState(kafka, ready);
+    const healthy = runtimeSourceReportingSnapshot([kafka, grpc], [state]);
+    expect(healthy.heartbeat).toStrictEqual({ status: "Ready", problems: [] });
+    expect(healthy.dependencies.map(({ target, status }) => ({ target, status }))).toStrictEqual([
+      { target: "orders", status: "Inactive" },
+      { target: "oregon", status: "Ready" },
+      { target: "tokyo", status: "Ready" },
+    ]);
+
+    updateRuntimeSourceReportingState(
+      state,
+      waiting(adapterFailure({ _tag: "Dependency", target: "tokyo" })),
+    );
+    const failed = runtimeSourceReportingSnapshot([kafka, grpc], [state]);
+    expect(failed.heartbeat).toStrictEqual({
+      status: "WaitingToRetry",
+      problems: ["dependency"],
+    });
+    expect(failed.dependencies.map(({ target, status }) => ({ target, status }))).toStrictEqual([
+      { target: "orders", status: "Inactive" },
+      { target: "oregon", status: "Ready" },
+      { target: "tokyo", status: "WaitingToRetry" },
+    ]);
+
+    updateRuntimeSourceReportingState(state, ready);
+    const recovered = runtimeSourceReportingSnapshot([kafka, grpc], [state]);
+    expect(recovered.dependencies.map(({ target, status }) => ({ target, status }))).toStrictEqual([
+      { target: "orders", status: "Inactive" },
+      { target: "oregon", status: "Ready" },
+      { target: "tokyo", status: "Ready" },
+    ]);
+
+    updateRuntimeSourceReportingState(state, waiting(adapterFailure({ _tag: "Self" })));
+    const selfFailure = runtimeSourceReportingSnapshot([kafka, grpc], [state]);
+    expect(selfFailure.heartbeat).toStrictEqual({
+      status: "WaitingToRetry",
+      problems: ["self"],
+    });
+    expect(
+      selfFailure.dependencies.map(({ target, status }) => ({ target, status })),
+    ).toStrictEqual([
+      { target: "orders", status: "Inactive" },
+      { target: "oregon", status: "Ready" },
+      { target: "tokyo", status: "Ready" },
+    ]);
+  });
+
+  it("aggregates canonical status precedence and ordered problem provenance", () => {
+    const selfState = makeRuntimeSourceReportingState(
+      kafka,
+      waiting({
+        _tag: "RuntimeFailure",
+        failure: { _tag: "InvalidSourceMetrics", message: "bad metrics" },
+      }),
+    );
+    const dependencyState = makeRuntimeSourceReportingState(grpc, {
+      _tag: "Exhausted",
+      exhaustion: {
+        _tag: "RetryExhausted",
+        lastTermination: { _tag: "UnexpectedCompletion" },
+      },
+      exhaustedAtNanos: 3n,
+    });
+    const snapshot = runtimeSourceReportingSnapshot([kafka, grpc], [selfState, dependencyState]);
+
+    expect(snapshot.heartbeat).toStrictEqual({
+      status: "Exhausted",
+      problems: ["self", "dependency"],
+    });
+    expect(snapshot.dependencies[0]).toStrictEqual({
+      dependency: "grpc",
+      target: "orders",
+      endpoints: ["https://orders.grpc-tky.com"],
+      status: "Exhausted",
+    });
+  });
+
+  it("applies every heartbeat precedence level and ignores Source-level stopping", () => {
+    const states: Array<ReturnType<typeof makeRuntimeSourceReportingState>> = [];
+    const append = (status: SourceStatus<unknown, unknown>) => {
+      states.push(makeRuntimeSourceReportingState(kafka, status));
+      return runtimeSourceReportingSnapshot([kafka], states).heartbeat.status;
+    };
+
+    expect(append(ready)).toBe("Ready");
+    expect(
+      append({
+        _tag: "Degraded",
+        attempt: 1n,
+        degradedAtNanos: 2n,
+        reasons: [{ _tag: "AdapterMaintenanceFailure" }],
+      }),
+    ).toBe("Degraded");
+    expect(append({ _tag: "Starting", attempt: 1n, startedAtNanos: 3n })).toBe("Starting");
+    expect(
+      append({
+        _tag: "Reacquiring",
+        previousTermination: { _tag: "UnexpectedCompletion" },
+        attempt: 2n,
+        startedAtNanos: 4n,
+      }),
+    ).toBe("Reacquiring");
+    expect(append(waiting(adapterFailure({ _tag: "Dependency" })))).toBe("WaitingToRetry");
+    expect(
+      append({
+        _tag: "Exhausted",
+        exhaustion: {
+          _tag: "RetryExhausted",
+          lastTermination: { _tag: "UnexpectedCompletion" },
+        },
+        exhaustedAtNanos: 5n,
+      }),
+    ).toBe("Exhausted");
+    expect(
+      append({
+        _tag: "Stopping",
+        reason: "runtime-shutdown",
+        stoppingAtNanos: 6n,
+      }),
+    ).toBe("Exhausted");
+  });
+
+  it("projects degraded evidence, reacquisition, stopping, and malformed classifications", () => {
+    const throwing: RuntimeSourceReportingDefinition = {
+      ...kafka,
+      classifyFailure: () => {
+        throw new Error("classifier defect");
+      },
+    };
+    const state = makeRuntimeSourceReportingState(throwing, {
+      _tag: "Degraded",
+      attempt: 1n,
+      degradedAtNanos: 2n,
+      reasons: [
+        {
+          _tag: "SourceItemRejection",
+          latestRejection: {
+            failure: adapterFailure({ _tag: "Dependency" }),
+            location: "record",
+            rejectedAtNanos: 2n,
+          },
+        },
+        { _tag: "AdapterMaintenanceFailure" },
+      ],
+    });
+    expect(runtimeSourceReportingSnapshot([throwing], [state]).heartbeat).toStrictEqual({
+      status: "Degraded",
+      problems: ["self"],
+    });
+
+    updateRuntimeSourceReportingState(state, {
+      _tag: "Reacquiring",
+      previousTermination: { _tag: "UnexpectedCompletion" },
+      attempt: 2n,
+      startedAtNanos: 3n,
+    });
+    expect(runtimeSourceReportingSnapshot([throwing], [state]).heartbeat).toStrictEqual({
+      status: "Reacquiring",
+      problems: ["dependency"],
+    });
+
+    updateRuntimeSourceReportingState(state, {
+      _tag: "Stopping",
+      reason: "runtime-shutdown",
+      stoppingAtNanos: 4n,
+    });
+    expect(runtimeSourceReportingSnapshot([throwing], [state]).heartbeat).toStrictEqual({
+      status: "Ready",
+      problems: [],
+    });
+  });
+
+  it.each([
+    { label: "undefined", value: malformedClassification(undefined) },
+    { label: "a primitive", value: malformedClassification("dependency") },
+    { label: "an invalid problem", value: malformedClassification({ problem: "upstream" }) },
+    {
+      label: "non-array targets",
+      value: malformedClassification({ problem: "dependency", targets: "tokyo" }),
+    },
+    {
+      label: "non-string targets",
+      value: malformedClassification({ problem: "dependency", targets: [1] }),
+    },
+    {
+      label: "empty targets",
+      value: malformedClassification({ problem: "dependency", targets: [""] }),
+    },
+    { label: "a throwing getter", value: throwingClassification },
+  ])("conservatively treats $label classification as self provenance", ({ value }) => {
+    const malformed: RuntimeSourceReportingDefinition = {
+      ...kafka,
+      classifyFailure: () => value,
+    };
+    const state = makeRuntimeSourceReportingState(
+      malformed,
+      waiting(adapterFailure({ _tag: "Dependency", target: "tokyo" })),
+    );
+    const snapshot = runtimeSourceReportingSnapshot([malformed], [state]);
+
+    expect(snapshot.heartbeat).toStrictEqual({
+      status: "WaitingToRetry",
+      problems: ["self"],
+    });
+    expect(snapshot.dependencies.map(({ target, status }) => ({ target, status }))).toStrictEqual([
+      { target: "oregon", status: "Starting" },
+      { target: "tokyo", status: "Starting" },
+    ]);
+  });
+
+  it("deduplicates inventories and compares semantic snapshots", () => {
+    const duplicate: RuntimeSourceReportingDefinition = {
+      ...kafka,
+      lifecycle: "leased",
+      targets: [{ target: "tokyo", endpoints: ["b-2.kafka-tky.com", "b-3.kafka-tky.com"] }],
+    };
+    const first = runtimeSourceReportingSnapshot([kafka, duplicate], []);
+    const second = runtimeSourceReportingSnapshot([kafka, duplicate], []);
+    const changed = runtimeSourceReportingSnapshot([grpc], []);
+
+    expect(first.dependencies[1]).toStrictEqual({
+      dependency: "kafka",
+      target: "tokyo",
+      endpoints: ["b-1.kafka-tky.com", "b-2.kafka-tky.com", "b-3.kafka-tky.com"],
+      status: "Starting",
+    });
+    expect(sameRuntimeSourceReportingSnapshot(first, second)).toBe(true);
+    expect(sameRuntimeSourceReportingSnapshot(first, changed)).toBe(false);
+  });
+
+  it("falls back to every target when dependency evidence omits or misses target identity", () => {
+    const state = makeRuntimeSourceReportingState(kafka, ready);
+    updateRuntimeSourceReportingState(state, waiting(adapterFailure({ _tag: "Dependency" })));
+    expect(runtimeSourceReportingSnapshot([kafka], [state]).dependencies).toStrictEqual([
+      {
+        dependency: "kafka",
+        target: "oregon",
+        endpoints: ["b-1.kafka-oregon.com"],
+        status: "WaitingToRetry",
+      },
+      {
+        dependency: "kafka",
+        target: "tokyo",
+        endpoints: ["b-1.kafka-tky.com", "b-2.kafka-tky.com"],
+        status: "WaitingToRetry",
+      },
+    ]);
+
+    updateRuntimeSourceReportingState(
+      state,
+      waiting(adapterFailure({ _tag: "Dependency", target: "unknown" })),
+    );
+    expect(runtimeSourceReportingSnapshot([kafka], [state]).dependencies).toStrictEqual([
+      {
+        dependency: "kafka",
+        target: "oregon",
+        endpoints: ["b-1.kafka-oregon.com"],
+        status: "WaitingToRetry",
+      },
+      {
+        dependency: "kafka",
+        target: "tokyo",
+        endpoints: ["b-1.kafka-tky.com", "b-2.kafka-tky.com"],
+        status: "WaitingToRetry",
+      },
+    ]);
+
+    const partiallyUnknown: RuntimeSourceReportingDefinition = {
+      ...kafka,
+      classifyFailure: () => ({
+        problem: "dependency",
+        targets: ["tokyo", "orgeon"],
+      }),
+    };
+    const partiallyUnknownState = makeRuntimeSourceReportingState(partiallyUnknown, ready);
+    updateRuntimeSourceReportingState(
+      partiallyUnknownState,
+      waiting(adapterFailure({ _tag: "Dependency" })),
+    );
+    expect(
+      runtimeSourceReportingSnapshot([partiallyUnknown], [partiallyUnknownState]).dependencies,
+    ).toStrictEqual([
+      {
+        dependency: "kafka",
+        target: "oregon",
+        endpoints: ["b-1.kafka-oregon.com"],
+        status: "WaitingToRetry",
+      },
+      {
+        dependency: "kafka",
+        target: "tokyo",
+        endpoints: ["b-1.kafka-tky.com", "b-2.kafka-tky.com"],
+        status: "WaitingToRetry",
+      },
+    ]);
+  });
+
+  it("reports whether a per-source semantic projection actually changed", () => {
+    const state = makeRuntimeSourceReportingState(kafka, ready);
+
+    expect(updateRuntimeSourceReportingState(state, ready)).toBe(false);
+    expect(
+      updateRuntimeSourceReportingState(state, {
+        _tag: "Ready",
+        attempt: 2n,
+        readyAtNanos: 2n,
+      }),
+    ).toBe(false);
+
+    const tokyoDegraded: SourceStatus<unknown, unknown> = {
+      _tag: "Degraded",
+      attempt: 2n,
+      degradedAtNanos: 3n,
+      reasons: [
+        {
+          _tag: "SourceItemRejection",
+          latestRejection: {
+            failure: adapterFailure({ _tag: "Dependency", target: "tokyo" }),
+            location: "record-1",
+            rejectedAtNanos: 3n,
+          },
+        },
+      ],
+    };
+    expect(updateRuntimeSourceReportingState(state, tokyoDegraded)).toBe(true);
+    expect(
+      updateRuntimeSourceReportingState(state, {
+        ...tokyoDegraded,
+        degradedAtNanos: 4n,
+        reasons: [
+          {
+            _tag: "SourceItemRejection",
+            latestRejection: {
+              failure: adapterFailure({ _tag: "Dependency", target: "tokyo" }),
+              location: "record-2",
+              rejectedAtNanos: 4n,
+            },
+          },
+        ],
+      }),
+    ).toBe(false);
+    expect(
+      updateRuntimeSourceReportingState(state, {
+        ...tokyoDegraded,
+        degradedAtNanos: 5n,
+        reasons: [
+          {
+            _tag: "SourceItemRejection",
+            latestRejection: {
+              failure: adapterFailure({ _tag: "Dependency", target: "oregon" }),
+              location: "record-3",
+              rejectedAtNanos: 5n,
+            },
+          },
+        ],
+      }),
+    ).toBe(true);
+  });
+
+  it("classifies degraded runtime and untargeted adapter rejections", () => {
+    const state = makeRuntimeSourceReportingState(kafka, {
+      _tag: "Degraded",
+      attempt: 1n,
+      degradedAtNanos: 1n,
+      reasons: [
+        {
+          _tag: "SourceItemRejection",
+          latestRejection: {
+            failure: {
+              _tag: "RuntimeFailure",
+              failure: { _tag: "InvalidSourceDelivery", message: "invalid" },
+            },
+            location: "record",
+            rejectedAtNanos: 1n,
+          },
+        },
+      ],
+    });
+    expect(runtimeSourceReportingSnapshot([kafka], [state]).heartbeat).toStrictEqual({
+      status: "Degraded",
+      problems: ["self"],
+    });
+
+    updateRuntimeSourceReportingState(state, {
+      _tag: "Degraded",
+      attempt: 1n,
+      degradedAtNanos: 2n,
+      reasons: [
+        {
+          _tag: "SourceItemRejection",
+          latestRejection: {
+            failure: adapterFailure({ _tag: "Dependency" }),
+            location: "record",
+            rejectedAtNanos: 2n,
+          },
+        },
+      ],
+    });
+    expect(runtimeSourceReportingSnapshot([kafka], [state]).heartbeat).toStrictEqual({
+      status: "Degraded",
+      problems: ["dependency"],
+    });
+  });
+
+  it("compares every dependency field semantically", () => {
+    const base = runtimeSourceReportingSnapshot(
+      [kafka],
+      [makeRuntimeSourceReportingState(kafka, ready)],
+    );
+    const dependency = Option.getOrThrow(Option.fromUndefinedOr(base.dependencies[0]));
+    const changedProblem = {
+      ...base,
+      heartbeat: { status: "Ready" as const, problems: ["self" as const] },
+    };
+    const changedDependency = {
+      ...base,
+      dependencies: [{ ...dependency, dependency: "queue" }],
+    };
+    const changedTarget = {
+      ...base,
+      dependencies: [{ ...dependency, target: "another" }],
+    };
+    const changedStatus = {
+      ...base,
+      dependencies: [{ ...dependency, status: "Degraded" as const }],
+    };
+    const changedEndpoints = {
+      ...base,
+      dependencies: [{ ...dependency, endpoints: ["another"] }],
+    };
+    const delimiterCollision = {
+      ...base,
+      dependencies: [{ ...dependency, endpoints: ["a\u0000b"] }],
+    };
+    const splitDelimiterCollision = {
+      ...base,
+      dependencies: [{ ...dependency, endpoints: ["a", "b"] }],
+    };
+    const missingCandidate = { ...base, dependencies: [] };
+
+    expect(sameRuntimeSourceReportingSnapshot(base, changedProblem)).toBe(false);
+    expect(sameRuntimeSourceReportingSnapshot(base, changedDependency)).toBe(false);
+    expect(sameRuntimeSourceReportingSnapshot(base, changedTarget)).toBe(false);
+    expect(sameRuntimeSourceReportingSnapshot(base, changedStatus)).toBe(false);
+    expect(sameRuntimeSourceReportingSnapshot(base, changedEndpoints)).toBe(false);
+    expect(sameRuntimeSourceReportingSnapshot(base, missingCandidate)).toBe(false);
+    expect(sameRuntimeSourceReportingSnapshot(delimiterCollision, splitDelimiterCollision)).toBe(
+      false,
+    );
+  });
+});

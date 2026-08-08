@@ -10,6 +10,7 @@ import {
   type ViewServerRuntimeOptions,
   type ViewServerRuntimeOptionsArgs,
   type ViewServerRuntimeOptionsInput,
+  type ViewServerRuntimeReportingOptions,
   type ViewServerRuntimeTopicDefinitions,
 } from "./internal";
 import type { ViewServerTcpPublishIngressError } from "./tcp-publish-ingress";
@@ -19,7 +20,9 @@ export type {
   ViewServerRuntimeOptions,
   ViewServerRuntimeOptionsArgs,
   ViewServerRuntimeOptionsInput,
+  ViewServerRuntimeReportingOptions,
 };
+export type { RuntimeDependency, RuntimeHeartbeat } from "./runtime-reporting";
 export type { ViewServerTcpPublishIngressError } from "./tcp-publish-ingress";
 
 const makeViewServerRuntimeEffect = Effect.fn("ViewServerRuntime.make")(function* <

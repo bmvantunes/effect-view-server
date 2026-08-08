@@ -4,7 +4,7 @@ import type {
   ViewServerRuntimeCoreOptionsFor,
 } from "@effect-view-server/runtime-core";
 import type { ViewServerWebSocketServerOptions } from "@effect-view-server/server";
-import { Effect } from "effect";
+import { Duration, Effect, Option } from "effect";
 import type { ViewServerRuntimeOptions, ViewServerRuntimeTopicDefinitions } from "./runtime-types";
 
 export type ResolvedViewServerRuntimeBaseOptions<
@@ -18,6 +18,15 @@ export type ResolvedViewServerRuntimeBaseOptions<
     readonly maxConnections?: number;
     readonly port: number;
   };
+  readonly reporting?: {
+    readonly heartbeatInterval: Duration.Duration;
+    readonly dependenciesInterval: Duration.Duration;
+    readonly changeInterval: Duration.Duration;
+    readonly onHeartbeat: NonNullable<ViewServerRuntimeOptions<Topics>["reporting"]>["onHeartbeat"];
+    readonly onDependenciesUpdate: NonNullable<
+      ViewServerRuntimeOptions<Topics>["reporting"]
+    >["onDependenciesUpdate"];
+  };
 };
 
 const runtimeOptionKeyRecord = {
@@ -27,6 +36,7 @@ const runtimeOptionKeyRecord = {
   host: true,
   metricsPath: true,
   rpcPath: true,
+  reporting: true,
   subscriptionQueueCapacity: true,
   tcpPublishHost: true,
   tcpPublishMaxConnections: true,
@@ -48,6 +58,30 @@ const groupedIncrementalAdmissionLimitKeyRecord = {
 const groupedIncrementalAdmissionLimitKeys = new Set<PropertyKey>(
   Reflect.ownKeys(groupedIncrementalAdmissionLimitKeyRecord),
 );
+
+const reportingOptionKeyRecord = {
+  changeInterval: true,
+  dependenciesInterval: true,
+  heartbeatInterval: true,
+  onDependenciesUpdate: true,
+  onHeartbeat: true,
+} satisfies {
+  readonly [Key in keyof NonNullable<
+    ViewServerRuntimeOptions<ViewServerRuntimeTopicDefinitions>["reporting"]
+  >]-?: true;
+};
+
+const reportingOptionKeys = new Set<PropertyKey>(Reflect.ownKeys(reportingOptionKeyRecord));
+
+const positiveDuration = (value: Duration.Input): Duration.Duration | undefined =>
+  Option.getOrUndefined(
+    Option.filter(Duration.fromInput(value), (duration) =>
+      Option.match(Duration.toNanos(duration), {
+        onNone: () => false,
+        onSome: (nanos) => nanos > 0n,
+      }),
+    ),
+  );
 
 const runtimeOptionsError = (message: string): ViewServerRuntimeError => ({
   _tag: "ViewServerRuntimeError",
@@ -105,6 +139,60 @@ export const validateViewServerRuntimeOptions = Effect.fn("ViewServerRuntime.opt
             }
           }
         }
+        const reporting = options.reporting;
+        if (
+          reporting !== undefined &&
+          (typeof reporting !== "object" || reporting === null || Array.isArray(reporting))
+        ) {
+          throw new TypeError("View Server runtime option reporting must be an object.");
+        }
+        const capturedReporting =
+          reporting === undefined
+            ? undefined
+            : (() => {
+                const unsupportedReportingOption = unsupportedOwnProperty(
+                  reporting,
+                  reportingOptionKeys,
+                );
+                if (unsupportedReportingOption !== undefined) {
+                  throw new TypeError(
+                    `View Server runtime option reporting contains unsupported property: ${String(unsupportedReportingOption)}.`,
+                  );
+                }
+                const onHeartbeat = reporting.onHeartbeat;
+                const onDependenciesUpdate = reporting.onDependenciesUpdate;
+                const heartbeatInterval = positiveDuration(reporting.heartbeatInterval);
+                const dependenciesInterval = positiveDuration(reporting.dependenciesInterval);
+                const changeIntervalInput = reporting.changeInterval;
+                const changeInterval =
+                  changeIntervalInput === undefined
+                    ? undefined
+                    : positiveDuration(changeIntervalInput);
+                if (
+                  typeof onHeartbeat !== "function" ||
+                  typeof onDependenciesUpdate !== "function"
+                ) {
+                  throw new TypeError(
+                    "View Server runtime reporting requires onHeartbeat and onDependenciesUpdate Effect callbacks.",
+                  );
+                }
+                if (
+                  heartbeatInterval === undefined ||
+                  dependenciesInterval === undefined ||
+                  (changeIntervalInput !== undefined && changeInterval === undefined)
+                ) {
+                  throw new TypeError(
+                    "View Server runtime reporting intervals must be positive finite Effect Durations.",
+                  );
+                }
+                return {
+                  heartbeatInterval,
+                  dependenciesInterval,
+                  ...(changeInterval === undefined ? {} : { changeInterval }),
+                  onHeartbeat,
+                  onDependenciesUpdate,
+                };
+              })();
         const capturedGroupedLimits =
           groupedLimits === undefined
             ? undefined
@@ -131,6 +219,11 @@ export const validateViewServerRuntimeOptions = Effect.fn("ViewServerRuntime.opt
           ...(options.host === undefined ? {} : { host: options.host }),
           ...(options.metricsPath === undefined ? {} : { metricsPath: options.metricsPath }),
           ...(options.rpcPath === undefined ? {} : { rpcPath: options.rpcPath }),
+          ...(capturedReporting === undefined
+            ? {}
+            : {
+                reporting: capturedReporting,
+              }),
           ...(options.subscriptionQueueCapacity === undefined
             ? {}
             : { subscriptionQueueCapacity: options.subscriptionQueueCapacity }),
@@ -177,6 +270,24 @@ export const resolveViewServerRuntimeBaseOptions = <
     ...(options.healthPath === undefined ? {} : { healthPath: options.healthPath }),
     ...(options.metricsPath === undefined ? {} : { metricsPath: options.metricsPath }),
   },
+  ...(options.reporting === undefined
+    ? {}
+    : {
+        reporting: {
+          heartbeatInterval: Option.getOrThrow(
+            Duration.fromInput(options.reporting.heartbeatInterval),
+          ),
+          dependenciesInterval: Option.getOrThrow(
+            Duration.fromInput(options.reporting.dependenciesInterval),
+          ),
+          changeInterval:
+            options.reporting.changeInterval === undefined
+              ? Duration.millis(300)
+              : Option.getOrThrow(Duration.fromInput(options.reporting.changeInterval)),
+          onHeartbeat: options.reporting.onHeartbeat,
+          onDependenciesUpdate: options.reporting.onDependenciesUpdate,
+        },
+      }),
   ...(options.tcpPublishPort === undefined
     ? {}
     : {

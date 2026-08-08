@@ -34,6 +34,9 @@ import type {
   SourceAdapterFailure,
   SourceAdapterDescriptor,
   SourceAdapterRuntimeService,
+  SourceAdapterDependencyInput,
+  SourceDependencyTarget,
+  SourceFailureClassification,
   SourceApplicationExit,
   SourceApplicationTransition,
   SourceApplicationStateRegistration as SourceApplicationStateRegistrationDescriptor,
@@ -86,6 +89,11 @@ type AdapterLeased<Adapter> = Adapter extends {
 }
   ? Leased
   : never;
+
+type AdapterDefinitionOptions<Declaration> =
+  Exclude<Declaration, undefined> extends SourceLifecycleDeclarationAny
+    ? SourceLifecycleOptions<Exclude<Declaration, undefined>>
+    : never;
 
 const invalidLifecycleOutput = (message: string) =>
   makeRuntimeSourceFailure({
@@ -250,7 +258,19 @@ export type SourceAdapterServerImplementations<Adapter, Services> =
         }
       : {
           readonly leased?: never;
-        });
+        }) & {
+      readonly reporting?: {
+        readonly dependencies: (
+          input: SourceAdapterDependencyInput<
+            AdapterDefinitionOptions<AdapterMaterialized<Adapter>>,
+            AdapterDefinitionOptions<AdapterLeased<Adapter>>
+          >,
+        ) => Effect.Effect<ReadonlyArray<SourceDependencyTarget>, never, Services>;
+        readonly classifyFailure: (
+          failure: SourceAdapterFailure<Adapter>,
+        ) => SourceFailureClassification;
+      };
+    };
 
 const closeLaneEnvironment = <Row extends object, AdapterFailure, RejectionLocation, Services>(
   lane: SourceDeliveryLane<Row, AdapterFailure, RejectionLocation, Services | Scope.Scope>,
@@ -482,6 +502,7 @@ export const makeSourceAdapterServer = <
           "materialized" in implementations ? implementations.materialized : undefined;
         const leasedImplementation =
           "leased" in implementations ? implementations.leased : undefined;
+        const reportingImplementation = implementations.reporting;
         const service: SourceAdapterRuntimeService<
           AdapterFailure,
           Materialized,
@@ -490,6 +511,16 @@ export const makeSourceAdapterServer = <
           Version
         > = {
           adapter,
+          reporting:
+            reportingImplementation === undefined
+              ? undefined
+              : {
+                  dependencies: (input) =>
+                    reportingImplementation
+                      .dependencies(input)
+                      .pipe(Effect.provide(adapterContext)),
+                  classifyFailure: reportingImplementation.classifyFailure,
+                },
           materialized:
             handle.materialized === undefined
               ? undefined

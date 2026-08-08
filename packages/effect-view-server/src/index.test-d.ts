@@ -4,6 +4,11 @@ import type { FalseExpression, LiveQueryResult, RowFromSchema } from "effect-vie
 import { createViewServerReact } from "effect-view-server/react";
 import { createInMemoryViewServerReact } from "effect-view-server/react/testing";
 import { runViewServerRuntime } from "effect-view-server/runtime";
+import type {
+  RuntimeDependency,
+  RuntimeHeartbeat,
+  ViewServerRuntimeReportingOptions,
+} from "effect-view-server/runtime";
 import { createViewServerWebSocketServer } from "effect-view-server/server";
 import { createInMemoryViewServer } from "effect-view-server/in-memory";
 import {
@@ -12,7 +17,7 @@ import {
   type KafkaCodecValue as KafkaSourceCodecValue,
   type KafkaCompactionMappingInput,
 } from "effect-view-server/kafka/contract";
-import { Schema } from "effect";
+import { Context, Effect, Schema } from "effect";
 import type * as EffectOption from "effect/Option";
 import type { BigDecimal } from "effect/BigDecimal";
 import type { ViewServerLiveClient } from "effect-view-server/client";
@@ -57,6 +62,11 @@ const viewServer = defineViewServerConfig({
     },
   },
 });
+
+class PublicReportingCallbackDependency extends Context.Service<
+  PublicReportingCallbackDependency,
+  { readonly report: () => void }
+>()("effect-view-server/type-test/PublicReportingCallbackDependency") {}
 
 const react = createViewServerReact(viewServer);
 const kafkaOrderCodec = kafkaSourceAdapter.json(() => Schema.toCodecJson(Order));
@@ -175,6 +185,100 @@ describe("public effect-view-server subpath type contracts", () => {
     expectTypeOf(createViewServerReact).not.toBeAny();
     expectTypeOf(createInMemoryViewServerReact).not.toBeAny();
     expectTypeOf(runViewServerRuntime).not.toBeAny();
+    expectTypeOf<RuntimeHeartbeat>().toEqualTypeOf<{
+      readonly status:
+        | "Starting"
+        | "Ready"
+        | "Degraded"
+        | "WaitingToRetry"
+        | "Reacquiring"
+        | "Exhausted"
+        | "Stopping";
+      readonly problems: ReadonlyArray<"self" | "dependency">;
+    }>();
+    expectTypeOf<RuntimeDependency>().toEqualTypeOf<{
+      readonly dependency: string;
+      readonly target: string;
+      readonly endpoints: ReadonlyArray<string>;
+      readonly status:
+        | "Starting"
+        | "Ready"
+        | "Degraded"
+        | "WaitingToRetry"
+        | "Reacquiring"
+        | "Exhausted"
+        | "Stopping"
+        | "Inactive";
+    }>();
+    expectTypeOf<
+      Parameters<ViewServerRuntimeReportingOptions["onHeartbeat"]>[0]
+    >().toEqualTypeOf<RuntimeHeartbeat>();
+    expectTypeOf<
+      Parameters<ViewServerRuntimeReportingOptions["onDependenciesUpdate"]>[0]
+    >().toEqualTypeOf<ReadonlyArray<RuntimeDependency>>();
+    const runtimeWithReporting = runViewServerRuntime(viewServer, {
+      reporting: {
+        heartbeatInterval: "5 seconds",
+        dependenciesInterval: "30 seconds",
+        onHeartbeat: () => Effect.void,
+        onDependenciesUpdate: () => Effect.void,
+      },
+    });
+    expectTypeOf<Effect.Services<typeof runtimeWithReporting>>().toEqualTypeOf<never>();
+
+    const missingReportingCallback = runViewServerRuntime(viewServer, {
+      // @ts-expect-error public reporting requires both callbacks.
+      reporting: {
+        heartbeatInterval: "5 seconds",
+        dependenciesInterval: "30 seconds",
+        onHeartbeat: () => Effect.void,
+      },
+    });
+    const invalidReportingCallback = runViewServerRuntime(viewServer, {
+      reporting: {
+        heartbeatInterval: "5 seconds",
+        dependenciesInterval: "30 seconds",
+        // @ts-expect-error public reporting callbacks must return Effects.
+        onHeartbeat: () => undefined,
+        onDependenciesUpdate: () => Effect.void,
+      },
+    });
+    const extraReportingKey = runViewServerRuntime(viewServer, {
+      reporting: {
+        heartbeatInterval: "5 seconds",
+        dependenciesInterval: "30 seconds",
+        onHeartbeat: () => Effect.void,
+        onDependenciesUpdate: () => Effect.void,
+        // @ts-expect-error public reporting rejects extra keys.
+        interval: "1 second",
+      },
+    });
+    // These deliberately invalid Effect environments are the contracts under test.
+    // @effect-diagnostics missingEffectContext:off
+    const serviceHeartbeatCallback = runViewServerRuntime(viewServer, {
+      reporting: {
+        heartbeatInterval: "5 seconds",
+        dependenciesInterval: "30 seconds",
+        // @ts-expect-error public heartbeat callbacks must be closed Effects.
+        onHeartbeat: () => PublicReportingCallbackDependency.pipe(Effect.asVoid),
+        onDependenciesUpdate: () => Effect.void,
+      },
+    });
+    const serviceDependenciesCallback = runViewServerRuntime(viewServer, {
+      reporting: {
+        heartbeatInterval: "5 seconds",
+        dependenciesInterval: "30 seconds",
+        onHeartbeat: () => Effect.void,
+        // @ts-expect-error public dependency callbacks must be closed Effects.
+        onDependenciesUpdate: () => PublicReportingCallbackDependency.pipe(Effect.asVoid),
+      },
+    });
+    // @effect-diagnostics missingEffectContext:on
+    expectTypeOf(missingReportingCallback).not.toBeAny();
+    expectTypeOf(invalidReportingCallback).not.toBeAny();
+    expectTypeOf(extraReportingKey).not.toBeAny();
+    expectTypeOf(serviceHeartbeatCallback).not.toBeAny();
+    expectTypeOf(serviceDependenciesCallback).not.toBeAny();
     expectTypeOf(createViewServerWebSocketServer).not.toBeAny();
     expectTypeOf(createInMemoryViewServer).not.toBeAny();
     expectTypeOf(decodeKafkaCodec).not.toBeAny();

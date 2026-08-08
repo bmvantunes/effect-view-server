@@ -410,6 +410,7 @@ const runtimeClient = (
   });
   const client = createClient(service, transport);
   return Object.freeze({
+    endpoints: Object.freeze([options.baseUrl]),
     service,
     invoke: (method: string, request: unknown, signal: AbortSignal): unknown => {
       const selected = Reflect.get(client, method);

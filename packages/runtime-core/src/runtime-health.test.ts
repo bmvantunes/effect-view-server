@@ -332,6 +332,8 @@ describe("Runtime Core health", () => {
         currentTimeMillis: Effect.sync(() => wallMillis),
         currentTimeNanosUnsafe: () => monotonicNanos,
         currentTimeNanos: Effect.sync(() => monotonicNanos),
+        monotonicTimeNanosUnsafe: () => monotonicNanos,
+        monotonicTimeNanos: Effect.sync(() => monotonicNanos),
         sleep: () => Effect.void,
       };
       const overlayTimes: Array<number> = [];

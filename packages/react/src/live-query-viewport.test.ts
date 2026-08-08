@@ -246,7 +246,7 @@ describe("Live Query Viewport Module", () => {
     });
     expect(validateLiveQueryViewportWindow({ firstRow: -1, lastRow: 1 })).toStrictEqual({
       _tag: "Invalid",
-      message: 'Expected a value greater than or equal to 0, got -1\n  at ["firstRow"]',
+      message: 'Expected a value greater than or equal to 0\n  at ["firstRow"]',
     });
     expect(validateLiveQueryViewportWindow({ firstRow: 2, lastRow: 1 })).toStrictEqual({
       _tag: "Invalid",
@@ -263,7 +263,7 @@ describe("Live Query Viewport Module", () => {
     });
     expect(validateLiveQueryViewportWindow({ firstRow: 0.5, lastRow: 1 })).toStrictEqual({
       _tag: "Invalid",
-      message: 'Expected an integer, got 0.5\n  at ["firstRow"]',
+      message: 'Expected an integer\n  at ["firstRow"]',
     });
   });
 

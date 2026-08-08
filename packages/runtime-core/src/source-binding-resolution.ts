@@ -40,7 +40,10 @@ const hasDefinedOwnProperty = (value: object, key: string): boolean =>
   Object.prototype.hasOwnProperty.call(value, key) && Reflect.get(value, key) !== undefined;
 
 const isRowSchema = (value: unknown): value is RowSchema =>
-  Schema.isSchema(value) && typeof value === "object" && value !== null && "fields" in value;
+  Schema.isSchema(value) &&
+  (typeof value === "object" || typeof value === "function") &&
+  value !== null &&
+  "fields" in value;
 
 const topicCanonicalSourceFromUnknown = (
   topicDefinition: unknown,

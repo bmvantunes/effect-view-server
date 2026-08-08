@@ -1,4 +1,8 @@
-import { materializeStrictJson } from "@effect-view-server/effect-utils";
+import {
+  makeStrictJsonSchemaGuard,
+  materializeStrictJson,
+  type StrictJsonSchemaGuard,
+} from "@effect-view-server/effect-utils";
 import { Effect, Result, Schema } from "effect";
 
 export type JsonFieldSchema = Schema.Codec<unknown, unknown, never, never>;
@@ -39,6 +43,7 @@ type TopicNamedJsonFieldEncodeContext<E> = TopicNamedJsonFieldCodecContext<E> & 
 
 type CompiledJsonFieldCodec<Row> = {
   readonly accepts: (value: unknown) => boolean;
+  readonly strictJson: StrictJsonSchemaGuard;
   readonly decode: (value: unknown) => Effect.Effect<Row, Schema.SchemaError>;
   readonly encode: (value: unknown) => Effect.Effect<Schema.Json, Schema.SchemaError>;
 };
@@ -65,6 +70,7 @@ function compiledJsonFieldCodec(schema: JsonFieldSchema): CompiledJsonFieldCodec
   const codec = Schema.toCodecJson(schema);
   const compiled: CompiledJsonFieldCodec<unknown> = {
     accepts: Schema.is(schema),
+    strictJson: makeStrictJsonSchemaGuard(codec.ast),
     decode: Schema.decodeUnknownEffect(codec),
     encode: Schema.encodeUnknownEffect(codec),
   };
@@ -87,6 +93,10 @@ export const encodeJsonFieldValue = Effect.fn("ViewServerProtocol.jsonField.enco
   errors: JsonFieldCodecErrors<E>,
 ) {
   const compiled = compiledJsonFieldCodec(schema);
+  const strictJson = compiled.strictJson(value);
+  if (Result.isFailure(strictJson)) {
+    return yield* Effect.fail(errors.notJsonSafe(strictJson.failure.message));
+  }
   const encoded = yield* compiled.encode(value).pipe(
     Effect.catch((error) => {
       const message = schemaErrorMessage(error);

@@ -105,7 +105,7 @@ const WireRow = Schema.Struct({
   value: Schema.Number,
 });
 
-class KafkaSourceBrokerBenchmarkError extends Schema.TaggedErrorClass<KafkaSourceBrokerBenchmarkError>()(
+class KafkaSourceBrokerBenchmarkError extends Schema.TaggedError<KafkaSourceBrokerBenchmarkError>()(
   "KafkaSourceBrokerBenchmarkError",
   {
     message: Schema.String,

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect } from "effect";
+import { Effect, Schema, SchemaGetter } from "effect";
+import { encodeJsonFieldValue } from "./protocol-json-field-codec";
 import {
   isProtocolJson,
   requireProtocolJson,
@@ -83,6 +84,43 @@ describe("protocol JSON values", () => {
         message: "Encoded filter is not JSON-safe",
         topic: "values",
       });
+    }),
+  );
+
+  it.effect("keeps schema diagnostics safe when encoding fails", () =>
+    Effect.gen(function* () {
+      const errors = {
+        invalid: (message: string) => message,
+        notJsonSafe: (message: string) => message,
+      };
+      const encodingFailureSchema = Schema.String.pipe(
+        Schema.encodeTo(Schema.Number, {
+          decode: SchemaGetter.transform(() => "decoded"),
+          encode: SchemaGetter.forbidden<number, string>(() => "encoding forbidden"),
+        }),
+      );
+      const encodingFailure = yield* Effect.flip(
+        encodeJsonFieldValue(encodingFailureSchema, "value", errors),
+      );
+      expect(encodingFailure).toBe("encoding forbidden");
+
+      const hostileDiagnosticSchema = Schema.String.pipe(Schema.annotate({ title: "hostile" }));
+      const annotations = hostileDiagnosticSchema.ast.annotations;
+      if (annotations === undefined) {
+        return yield* Effect.die("Expected annotated schema metadata.");
+      }
+      Object.defineProperty(annotations, "message", {
+        configurable: true,
+        get: () => {
+          throw new Error("hostile diagnostic");
+        },
+      });
+      const hostileDiagnostic = yield* Effect.flip(
+        encodeJsonFieldValue(hostileDiagnosticSchema, 1, errors),
+      );
+      expect(hostileDiagnostic).toBe(
+        "Schema validation failed without a safely printable diagnostic.",
+      );
     }),
   );
 });

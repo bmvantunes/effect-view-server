@@ -90,8 +90,8 @@ const dottedStaticPropertyPath = (
 
 const isBigDecimalAst = (ast: SchemaAST.AST): boolean =>
   SchemaAST.isDeclaration(ast) &&
-  isRecord(ast.annotations?.["typeConstructor"]) &&
-  ast.annotations["typeConstructor"]["_tag"] === "effect/BigDecimal";
+  isRecord(ast.annotations?.["representation"]) &&
+  ast.annotations["representation"]["id"] === "effect/schema/BigDecimal";
 
 const declarationLink = (ast: SchemaAST.AST): unknown =>
   Reflect.get(Object(Reflect.get(ast, "annotations")), "toCodecJson") ??
@@ -111,12 +111,18 @@ const unsupportedRuntimeDomainDescriptors = [
   unsupportedRuntimeDomainDescriptor("DateTimeUtc", Schema.DateTimeUtc),
   unsupportedRuntimeDomainDescriptor("DateTimeZoned", Schema.DateTimeZoned),
   unsupportedRuntimeDomainDescriptor("Duration", Schema.Duration),
-  unsupportedRuntimeDomainDescriptor("Error", Schema.Error()),
-  unsupportedRuntimeDomainDescriptor("ErrorWithStack", Schema.Error({ includeStack: true })),
-  unsupportedRuntimeDomainDescriptor("ErrorWithoutCause", Schema.Error({ excludeCause: true })),
+  unsupportedRuntimeDomainDescriptor("Error", Schema.ErrorInstance()),
+  unsupportedRuntimeDomainDescriptor(
+    "ErrorWithStack",
+    Schema.ErrorInstance({ includeStack: true }),
+  ),
+  unsupportedRuntimeDomainDescriptor(
+    "ErrorWithoutCause",
+    Schema.ErrorInstance({ excludeCause: true }),
+  ),
   unsupportedRuntimeDomainDescriptor(
     "ErrorWithStackWithoutCause",
-    Schema.Error({ includeStack: true, excludeCause: true }),
+    Schema.ErrorInstance({ includeStack: true, excludeCause: true }),
   ),
   unsupportedRuntimeDomainDescriptor("File", Schema.File),
   unsupportedRuntimeDomainDescriptor("FormData", Schema.FormData),
@@ -137,12 +143,12 @@ const unsupportedRuntimeDeclarationName = (ast: SchemaAST.AST): string | undefin
   if (!SchemaAST.isDeclaration(ast)) {
     return undefined;
   }
-  const typeConstructor = ast.annotations?.["typeConstructor"];
-  if (isRecord(typeConstructor)) {
-    if (typeConstructor["_tag"] === "ReadonlyMap") {
+  const representation = ast.annotations?.["representation"];
+  if (isRecord(representation)) {
+    if (representation["id"] === "effect/schema/ReadonlyMap") {
       return "ReadonlyMap";
     }
-    if (typeConstructor["_tag"] === "ReadonlySet") {
+    if (representation["id"] === "effect/schema/ReadonlySet") {
       return "ReadonlySet";
     }
   }

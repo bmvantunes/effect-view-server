@@ -1,5 +1,8 @@
 import { Result, Schema, SchemaAST } from "effect";
-import { materializeStrictJson } from "./strict-json-materialization";
+import {
+  materializeStrictJson,
+  StrictJsonMaterializationError,
+} from "./strict-json-materialization";
 
 type ValueSchema<Type = unknown> = Schema.Codec<Type, unknown, never, never>;
 type JsonNormalizer = (value: Schema.Json) => Schema.Json;
@@ -15,10 +18,12 @@ const typeConstructorTag = (ast: SchemaAST.AST): unknown => {
   if (!SchemaAST.isDeclaration(ast)) {
     return undefined;
   }
-  const typeConstructor = ast.annotations?.["typeConstructor"];
-  return typeof typeConstructor === "object" && typeConstructor !== null
-    ? Reflect.get(typeConstructor, "_tag")
-    : undefined;
+  const representation = ast.annotations?.["representation"];
+  if (typeof representation === "object" && representation !== null) {
+    const id = String(Reflect.get(representation, "id"));
+    return `effect/${id.slice("effect/schema/".length)}`;
+  }
+  return undefined;
 };
 
 const compareStrings = (left: string, right: string): number =>
@@ -176,6 +181,147 @@ const strictJson = (value: unknown): Schema.Json => {
   return materialized.success;
 };
 
+type StrictJsonObjectKeywordGuard = (value: unknown, path: string) => void;
+
+const rebaseStrictJsonMaterializationError = (
+  error: StrictJsonMaterializationError,
+  path: string,
+): StrictJsonMaterializationError => {
+  const rebasedPath = `${path}${error.path.slice(1)}`;
+  return StrictJsonMaterializationError.make({
+    path: rebasedPath,
+    reason: error.reason,
+    message: error.message.replace(error.path, rebasedPath),
+  });
+};
+
+const makeStrictJsonObjectKeywordGuard = (root: SchemaAST.AST) => {
+  const compiled = new Map<SchemaAST.AST, StrictJsonObjectKeywordGuard>();
+
+  const compile = (ast: SchemaAST.AST): StrictJsonObjectKeywordGuard => {
+    const cached = compiled.get(ast);
+    if (cached !== undefined) {
+      return cached;
+    }
+
+    let implementation: StrictJsonObjectKeywordGuard = () => undefined;
+    const guard: StrictJsonObjectKeywordGuard = (value, path) => implementation(value, path);
+    compiled.set(ast, guard);
+
+    if (SchemaAST.isObjectKeyword(ast)) {
+      implementation = (value, path) => {
+        const materialized = materializeStrictJson(value);
+        if (Result.isFailure(materialized)) {
+          throw rebaseStrictJsonMaterializationError(materialized.failure, path);
+        }
+      };
+      return guard;
+    }
+
+    if (SchemaAST.isSuspend(ast)) {
+      implementation = (value, path) => compile(ast.thunk())(value, path);
+      return guard;
+    }
+
+    if (ast.encoding !== undefined && ast.encoding.length > 0) {
+      implementation = compile(ast.encoding[ast.encoding.length - 1]!.to);
+      return guard;
+    }
+
+    if (SchemaAST.isUnion(ast)) {
+      const members = ast.types.map((member) => ({
+        is: Schema.is(Schema.make<Schema.Codec<unknown, unknown, never, never>>(member)),
+        guard: compile(member),
+      }));
+      implementation = (value, path) => {
+        members.find((member) => member.is(value))?.guard(value, path);
+      };
+      return guard;
+    }
+
+    if (SchemaAST.isObjects(ast)) {
+      const properties = ast.propertySignatures
+        .filter(
+          (property): property is typeof property & { readonly name: string } =>
+            typeof property.name === "string",
+        )
+        .map((property) => ({
+          name: property.name,
+          guard: compile(property.type),
+        }));
+      const indexes = ast.indexSignatures.map((index) => ({
+        accepts: Schema.is(
+          Schema.make<Schema.Codec<unknown, unknown, never, never>>(index.parameter),
+        ),
+        guard: compile(index.type),
+      }));
+      implementation = (value, path) => {
+        if (value === null || (typeof value !== "object" && typeof value !== "function")) {
+          return;
+        }
+        for (const property of properties) {
+          if (Object.hasOwn(value, property.name)) {
+            property.guard(Reflect.get(value, property.name), `${path}.${property.name}`);
+          }
+        }
+        for (const key of Object.keys(value)) {
+          const index = indexes.find((candidate) => candidate.accepts(key));
+          index?.guard(Reflect.get(value, key), `${path}.${key}`);
+        }
+      };
+      return guard;
+    }
+
+    if (SchemaAST.isArrays(ast)) {
+      const elements = ast.elements.map(compile);
+      const rest = ast.rest.map(compile);
+      implementation = (value, path) => {
+        if (!Array.isArray(value)) {
+          return;
+        }
+        const [head, ...tail] = rest;
+        const tailThreshold = value.length - tail.length;
+        value.forEach((entry, index) => {
+          const item =
+            index < elements.length
+              ? elements[index]
+              : index >= tailThreshold
+                ? tail[index - tailThreshold]
+                : head;
+          item?.(entry, `${path}[${index}]`);
+        });
+      };
+    }
+
+    return guard;
+  };
+
+  const guard = compile(root);
+  return (value: unknown): void => guard(value, "$");
+};
+
+export type StrictJsonSchemaGuard = (
+  value: unknown,
+) => Result.Result<void, StrictJsonMaterializationError>;
+
+export const makeStrictJsonSchemaGuard = (root: SchemaAST.AST): StrictJsonSchemaGuard => {
+  const guard = makeStrictJsonObjectKeywordGuard(root);
+  return (value) =>
+    Result.try({
+      try: () => {
+        guard(value);
+      },
+      catch: (error) =>
+        error instanceof StrictJsonMaterializationError
+          ? error
+          : StrictJsonMaterializationError.make({
+              path: "$",
+              reason: "reflection-failure",
+              message: "Could not inspect JSON value at $.",
+            }),
+    });
+};
+
 export const makeSchemaJsonIdentity = <Type>(
   schema: ValueSchema<Type>,
 ): SchemaJsonIdentity<Type> => {
@@ -183,7 +329,11 @@ export const makeSchemaJsonIdentity = <Type>(
   const decode = Schema.decodeUnknownSync(codec);
   const encode = Schema.encodeUnknownSync(codec);
   const normalize = makeSchemaJsonNormalizer(codec.ast);
-  const strictEncoded = (value: unknown): Schema.Json => strictJson(encode(value));
+  const strictObjectKeywordGuard = makeStrictJsonObjectKeywordGuard(codec.ast);
+  const strictEncoded = (value: unknown): Schema.Json => {
+    strictObjectKeywordGuard(value);
+    return strictJson(encode(value));
+  };
   const canonicalJson = (value: unknown): Schema.Json => normalize(strictEncoded(value));
   const canonicalKey =
     SchemaAST.isString(codec.ast) &&

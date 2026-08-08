@@ -15,7 +15,7 @@ const StrictJsonMaterializationReasonSchema = Schema.Literals([
 
 export type StrictJsonMaterializationReason = typeof StrictJsonMaterializationReasonSchema.Type;
 
-export class StrictJsonMaterializationError extends Schema.TaggedErrorClass<StrictJsonMaterializationError>()(
+export class StrictJsonMaterializationError extends Schema.TaggedError<StrictJsonMaterializationError>()(
   "StrictJsonMaterializationError",
   {
     path: Schema.String,

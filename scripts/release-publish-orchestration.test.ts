@@ -77,7 +77,7 @@ const makeReleaseTree = (version = "0.0.6") => {
     publishConfig: { provenance: true },
     dependencies: {
       "@effect-view-server/client": "workspace:*",
-      effect: "4.0.0-beta.100",
+      effect: "4.0.0-beta.106",
     },
     scripts: { build: "vp pack" },
   });
@@ -281,7 +281,7 @@ describe("release publish orchestration", () => {
         },
         files: ["dist", "README.md"],
         publishConfig: { access: "public", provenance: true },
-        dependencies: { effect: "4.0.0-beta.100" },
+        dependencies: { effect: "4.0.0-beta.106" },
       },
       nestedFile: "ready\n",
       readme: "# Public package\n",

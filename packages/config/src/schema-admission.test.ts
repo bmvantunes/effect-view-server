@@ -21,16 +21,16 @@ describe("Topic schema admission", () => {
       "DateTimeZoned",
     );
     expect(viewServerUnsupportedRuntimeFieldDomain(Schema.Duration)).toBe("Duration");
-    expect(viewServerUnsupportedRuntimeFieldDomain(Schema.Error())).toBe("Error");
-    expect(viewServerUnsupportedRuntimeFieldDomain(Schema.Error({ includeStack: true }))).toBe(
-      "ErrorWithStack",
-    );
-    expect(viewServerUnsupportedRuntimeFieldDomain(Schema.Error({ excludeCause: true }))).toBe(
-      "ErrorWithoutCause",
-    );
+    expect(viewServerUnsupportedRuntimeFieldDomain(Schema.ErrorInstance())).toBe("Error");
+    expect(
+      viewServerUnsupportedRuntimeFieldDomain(Schema.ErrorInstance({ includeStack: true })),
+    ).toBe("ErrorWithStack");
+    expect(
+      viewServerUnsupportedRuntimeFieldDomain(Schema.ErrorInstance({ excludeCause: true })),
+    ).toBe("ErrorWithoutCause");
     expect(
       viewServerUnsupportedRuntimeFieldDomain(
-        Schema.Error({ includeStack: true, excludeCause: true }),
+        Schema.ErrorInstance({ includeStack: true, excludeCause: true }),
       ),
     ).toBe("ErrorWithStackWithoutCause");
     expect(viewServerUnsupportedRuntimeFieldDomain(Schema.Symbol)).toBe("Symbol");
@@ -531,7 +531,7 @@ describe("Topic schema admission", () => {
     ).toBe(undefined);
     expect(
       viewServerUnsupportedRuntimeFieldDomain(Schema.Union([Schema.ObjectKeyword, Schema.String])),
-    ).toBe("ambiguous JSON codec union");
+    ).toBe(undefined);
     expect(
       viewServerUnsupportedRuntimeFieldDomain(Schema.Union([Schema.Unknown, Schema.String])),
     ).toBe("ambiguous JSON codec union");

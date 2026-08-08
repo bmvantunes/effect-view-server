@@ -1,4 +1,4 @@
-import { Effect, Option, Schema, SchemaGetter, SchemaIssue } from "effect";
+import { Effect, Schema, SchemaGetter, SchemaIssue } from "effect";
 import {
   isProtocolPlainRecord,
   protocolDenseArray,
@@ -320,7 +320,7 @@ const QueryGraphFromString = Schema.String.pipe(
       Effect.try({
         try: () => decodeQueryGraph(value),
         catch: () =>
-          new SchemaIssue.InvalidValue(Option.none(), {
+          new SchemaIssue.InvalidValue({
             message: "Invalid query graph.",
           }),
       }),
@@ -329,7 +329,7 @@ const QueryGraphFromString = Schema.String.pipe(
       Effect.try({
         try: () => encodeQueryGraph(value),
         catch: () =>
-          new SchemaIssue.InvalidValue(Option.none(), {
+          new SchemaIssue.InvalidValue({
             message: "Query must be JSON-safe.",
           }),
       }),

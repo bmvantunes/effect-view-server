@@ -215,7 +215,7 @@ describe("published value semantics consumer", () => {
       const valueSemanticsExport = installedManifest.exports["./value-semantics"];
       const entryTarget = valueSemanticsExport.import;
       const declarationTarget = valueSemanticsExport.types;
-      expect(installedManifest.peerDependencies.effect).toBe("4.0.0-beta.100");
+      expect(installedManifest.peerDependencies.effect).toBe("4.0.0-beta.106");
 
       const graph = collectStaticModuleGraph(
         join(installedPackageDirectory, entryTarget.replace(/^\.\//, "")),

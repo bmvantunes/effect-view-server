@@ -5,7 +5,12 @@ export {
   StrictJsonMaterializationError,
   type StrictJsonMaterializationReason,
 } from "./strict-json-materialization";
-export { makeSchemaJsonIdentity, type SchemaJsonIdentity } from "./schema-json-identity";
+export {
+  makeSchemaJsonIdentity,
+  makeStrictJsonSchemaGuard,
+  type SchemaJsonIdentity,
+  type StrictJsonSchemaGuard,
+} from "./schema-json-identity";
 export {
   compareWireSafeBigDecimalComparisonMetadata,
   compareWireSafeBigDecimal,

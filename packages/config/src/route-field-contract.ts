@@ -9,8 +9,8 @@ const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
 const isBigDecimalAst = (ast: SchemaAST.AST): boolean =>
   SchemaAST.isDeclaration(ast) &&
   viewSchemaDeclarationAstIsAdmitted(ast) &&
-  isRecord(ast.annotations?.["typeConstructor"]) &&
-  ast.annotations["typeConstructor"]["_tag"] === "effect/BigDecimal";
+  isRecord(ast.annotations?.["representation"]) &&
+  ast.annotations["representation"]["id"] === "effect/schema/BigDecimal";
 
 const routeFieldDomain = (ast: SchemaAST.AST, active: Set<SchemaAST.AST>): RouteFieldDomain => {
   if (SchemaAST.isUndefined(ast) || SchemaAST.isNever(ast)) {

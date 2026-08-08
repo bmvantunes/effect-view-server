@@ -1,11 +1,23 @@
 import { SchemaAST } from "effect";
 
-const schemaClassTypeId = Reflect.get(SchemaAST, "ClassTypeId");
+const schemaClassConstructorAnnotationKey = "~constructor";
+
+const schemaClassConstructorDescriptorIsPresent = (ast: SchemaAST.Declaration): boolean => {
+  const getDescriptor = Reflect.get(Object(ast.annotations), schemaClassConstructorAnnotationKey);
+  if (typeof getDescriptor !== "function") {
+    return false;
+  }
+  const descriptor = Reflect.apply(getDescriptor, undefined, [ast.typeParameters]);
+  return (
+    typeof descriptor === "object" &&
+    descriptor !== null &&
+    typeof Reflect.get(descriptor, "isConstructed") === "function" &&
+    Reflect.get(descriptor, "link") !== undefined
+  );
+};
 
 export const schemaAstIsClass = (ast: SchemaAST.AST): boolean =>
-  typeof schemaClassTypeId === "string" &&
-  SchemaAST.isDeclaration(ast) &&
-  ast.annotations?.[schemaClassTypeId] !== undefined;
+  SchemaAST.isDeclaration(ast) && schemaClassConstructorDescriptorIsPresent(ast);
 
 export const schemaAstChildren = (ast: SchemaAST.AST): ReadonlyArray<SchemaAST.AST> => {
   const children: Array<SchemaAST.AST> = [];

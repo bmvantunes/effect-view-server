@@ -309,7 +309,7 @@ const invalidSnapshot: SourceAdapterPackageConformanceSnapshot = {
     effect: "bundled",
   },
   peerDependencies: {
-    effect: "^4.0.0-beta.100",
+    effect: "^4.0.0-beta.106",
   },
   devDependencies: {
     effect: "wrong",
@@ -831,19 +831,19 @@ describe("Source Adapter package conformance validation", () => {
         dependencies: {},
         peerDependencies: {
           "effect-view-server": "0.0.6",
-          effect: "4.0.0-beta.100",
-          "@effect/platform-node": "4.0.0-beta.100",
+          effect: "4.0.0-beta.106",
+          "@effect/platform-node": "4.0.0-beta.106",
         },
         devDependencies: {
           "effect-view-server": "0.0.6",
-          effect: "4.0.0-beta.100",
-          "@effect/platform-node": "4.0.0-beta.100",
+          effect: "4.0.0-beta.106",
+          "@effect/platform-node": "4.0.0-beta.106",
         },
         testedPeerMatrix: [
           {
             "effect-view-server": "0.0.6",
-            effect: "4.0.0-beta.100",
-            "@effect/platform-node": "4.0.0-beta.100",
+            effect: "4.0.0-beta.106",
+            "@effect/platform-node": "4.0.0-beta.106",
           },
         ],
         contractBrowserBundleGzipBytes: 2,

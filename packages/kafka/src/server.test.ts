@@ -538,6 +538,8 @@ describe("Kafka Source Adapter Server", () => {
         currentTimeMillis: Effect.succeed(-1),
         currentTimeNanosUnsafe: () => 0n,
         currentTimeNanos: Effect.succeed(0n),
+        monotonicTimeNanosUnsafe: () => 0n,
+        monotonicTimeNanos: Effect.succeed(0n),
         sleep: () => Effect.void,
       };
       const clockFailure = yield* kafkaServerInternals
@@ -2400,6 +2402,12 @@ describe("Kafka Source Adapter Server", () => {
           monotonicNanos += 50n;
           return current;
         }),
+        monotonicTimeNanosUnsafe: () => monotonicNanos,
+        monotonicTimeNanos: Effect.sync(() => {
+          const current = monotonicNanos;
+          monotonicNanos += 50n;
+          return current;
+        }),
         sleep: () => Effect.void,
       };
       return Effect.gen(function* () {
@@ -3243,6 +3251,8 @@ describe("Kafka Source Adapter Server", () => {
           currentTimeMillis: Effect.sync(() => wallMillis),
           currentTimeNanosUnsafe: () => monotonicClock.currentTimeNanosUnsafe(),
           currentTimeNanos: monotonicClock.currentTimeNanos,
+          monotonicTimeNanosUnsafe: () => monotonicClock.monotonicTimeNanosUnsafe(),
+          monotonicTimeNanos: monotonicClock.monotonicTimeNanos,
           sleep: (duration) => monotonicClock.sleep(duration),
           adjust: (duration) => monotonicClock.adjust(duration),
           setTime: (timestamp) => monotonicClock.setTime(timestamp),

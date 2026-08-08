@@ -206,6 +206,8 @@ const makeBenchmarkClock = (): BenchmarkClock => {
     currentTimeMillis: Effect.sync(() => epochMillis),
     currentTimeNanosUnsafe: () => monotonicNanos,
     currentTimeNanos: Effect.sync(() => monotonicNanos),
+    monotonicTimeNanosUnsafe: () => monotonicNanos,
+    monotonicTimeNanos: Effect.sync(() => monotonicNanos),
     sleep: (duration) =>
       Effect.gen(function* () {
         const sleeper = yield* Deferred.make<void>();

@@ -8,7 +8,7 @@ import type { ViewServerAuth, ViewServerAuthRequest } from "@effect-view-server/
 import { validateViewServerAuthRequest, ViewServerAuthError } from "@effect-view-server/server";
 import { Effect, Option, Result, Schema } from "effect";
 
-export class ViewServerTcpPublishIngressError extends Schema.TaggedErrorClass<ViewServerTcpPublishIngressError>()(
+export class ViewServerTcpPublishIngressError extends Schema.TaggedError<ViewServerTcpPublishIngressError>()(
   "ViewServerTcpPublishIngressError",
   {
     cause: Schema.Unknown,
@@ -98,7 +98,7 @@ const tcpDecodeError = (line: string, cause: unknown): ViewServerTcpPublishIngre
 const parseCommand = Effect.fn("ViewServerRuntime.tcpPublish.command.parse")(function* (
   line: string,
 ) {
-  const value = yield* Schema.decodeUnknownEffect(Schema.UnknownFromJsonString)(
+  const value = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(
     line,
     strictParseOptions,
   ).pipe(Effect.mapError((cause) => tcpDecodeError(line, cause)));

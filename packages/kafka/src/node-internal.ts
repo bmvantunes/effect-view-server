@@ -902,7 +902,7 @@ const configValidationMessage = (cause: unknown): string =>
 const configValidationFailure = (cause: unknown): Config.ConfigError =>
   new Config.ConfigError(
     new Schema.SchemaError(
-      new SchemaIssue.InvalidValue(Option.none(), {
+      new SchemaIssue.InvalidValue({
         message: configValidationMessage(cause),
       }),
     ),

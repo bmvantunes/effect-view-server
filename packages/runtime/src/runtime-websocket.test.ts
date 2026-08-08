@@ -1201,6 +1201,8 @@ describe("Runtime WebSocket and operational endpoints", () => {
                 currentTimeMillis: baseClock.currentTimeMillis,
                 currentTimeNanosUnsafe: () => baseClock.currentTimeNanosUnsafe(),
                 currentTimeNanos: baseClock.currentTimeNanos,
+                monotonicTimeNanosUnsafe: () => baseClock.monotonicTimeNanosUnsafe(),
+                monotonicTimeNanos: baseClock.monotonicTimeNanos,
                 sleep: (duration) =>
                   phase === "sleep" && Duration.toNanosUnsafe(duration) === sweepIntervalNanos
                     ? Deferred.await(sweepTrigger).pipe(Effect.andThen(Effect.die(fault)))

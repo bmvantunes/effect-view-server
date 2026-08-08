@@ -1,6 +1,11 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Chunk, HashMap, HashSet, Option, Schema } from "effect";
-import { makeSchemaJsonIdentity, makeSchemaJsonNormalizer } from "./schema-json-identity";
+import { Chunk, HashMap, HashSet, Option, Result, Schema } from "effect";
+import {
+  makeSchemaJsonIdentity,
+  makeSchemaJsonNormalizer,
+  makeStrictJsonSchemaGuard,
+} from "./schema-json-identity";
+import { StrictJsonMaterializationError } from "./strict-json-materialization";
 
 const collisionLeft = "8ocpIaaa";
 const collisionRight = "GpcpIaaa";
@@ -130,6 +135,17 @@ describe("Schema JSON identity", () => {
 
   it("rejects encoded values that are not strict JSON", () => {
     const identity = makeSchemaJsonIdentity(Schema.Unknown);
+    const objectKeywordIdentity = makeSchemaJsonIdentity(
+      Schema.Struct({ payload: Schema.ObjectKeyword }),
+    );
+    const suspendedObjectKeywordIdentity = makeSchemaJsonIdentity(
+      Schema.suspend(() => Schema.Struct({ payload: Schema.ObjectKeyword })),
+    );
+    const arrayObjectKeywordIdentity = makeSchemaJsonIdentity(Schema.Array(Schema.ObjectKeyword));
+    const tupleObjectKeywordIdentity = makeSchemaJsonIdentity(Schema.Tuple([Schema.ObjectKeyword]));
+    const tupleRestObjectKeywordIdentity = makeSchemaJsonIdentity(
+      Schema.TupleWithRest(Schema.Tuple([Schema.String]), [Schema.String, Schema.ObjectKeyword]),
+    );
 
     const nonJson = new Map([["key", "value"]]);
 
@@ -137,6 +153,30 @@ describe("Schema JSON identity", () => {
     expect(() => identity.decodeEncoded(nonJson)).toThrow(
       "Expected a plain data record or dense array",
     );
+    expect(() => objectKeywordIdentity.canonicalKey({ payload: nonJson })).toThrow(
+      "Expected a plain data record or dense array at $.payload",
+    );
+    expect(objectKeywordIdentity.canonicalKey({ payload: { venue: "xnys" } })).toBe(
+      '{"payload":{"venue":"xnys"}}',
+    );
+    expect(() => suspendedObjectKeywordIdentity.canonicalKey({ payload: nonJson })).toThrow(
+      "Expected a plain data record or dense array at $.payload",
+    );
+    expect(() => arrayObjectKeywordIdentity.canonicalKey([nonJson])).toThrow(
+      "Expected a plain data record or dense array at $[0]",
+    );
+    expect(() => tupleObjectKeywordIdentity.canonicalKey([nonJson])).toThrow(
+      "Expected a plain data record or dense array at $[0]",
+    );
+    expect(() => tupleRestObjectKeywordIdentity.canonicalKey(["head", "middle", nonJson])).toThrow(
+      "Expected a plain data record or dense array at $[2]",
+    );
+
+    const nestedObjectKeywordIdentity = makeSchemaJsonIdentity(
+      Schema.Struct({ nested: Schema.Struct({ payload: Schema.ObjectKeyword }) }),
+    );
+    expect(() => nestedObjectKeywordIdentity.canonicalKey({ nested: "invalid" })).toThrow();
+    expect(() => nestedObjectKeywordIdentity.canonicalKey({ nested: {} })).toThrow();
   });
 
   it("keeps the encoded normalizer total for non-matching JSON shapes", () => {
@@ -187,5 +227,37 @@ describe("Schema JSON identity", () => {
     expect(
       makeSchemaJsonNormalizer(Schema.Tuple([Schema.String]).ast)(["head", "extra"]),
     ).toStrictEqual(["head", "extra"]);
+  });
+
+  it("returns typed strict JSON guard failures", () => {
+    const guard = makeStrictJsonSchemaGuard(
+      Schema.toCodecJson(Schema.Struct({ payload: Schema.ObjectKeyword })).ast,
+    );
+    expect(guard({ payload: { venue: "xnys" } })).toStrictEqual(Result.succeed(undefined));
+    expect(guard({ payload: new Map([["venue", "xnys"]]) })).toStrictEqual(
+      Result.fail(
+        StrictJsonMaterializationError.make({
+          path: "$.payload",
+          reason: "unsupported-prototype",
+          message: "Expected a plain data record or dense array at $.payload.",
+        }),
+      ),
+    );
+
+    const unionGuard = makeStrictJsonSchemaGuard(
+      Schema.toCodecJson(Schema.Union([Schema.String, Schema.Struct({ value: Schema.String })]))
+        .ast,
+    );
+    const revoked = Proxy.revocable({ value: "hostile" }, {});
+    revoked.revoke();
+    expect(unionGuard(revoked.proxy)).toStrictEqual(
+      Result.fail(
+        StrictJsonMaterializationError.make({
+          path: "$",
+          reason: "reflection-failure",
+          message: "Could not inspect JSON value at $.",
+        }),
+      ),
+    );
   });
 });

@@ -31,6 +31,8 @@ describe("epoch clock", () => {
         currentTimeMillis: Effect.sync(() => wallMillis),
         currentTimeNanosUnsafe: () => monotonicNanos,
         currentTimeNanos: Effect.sync(() => monotonicNanos),
+        monotonicTimeNanosUnsafe: () => monotonicNanos,
+        monotonicTimeNanos: Effect.sync(() => monotonicNanos),
         sleep: () => Effect.void,
       };
       return Effect.gen(function* () {

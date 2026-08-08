@@ -1,12 +1,18 @@
 import { isBigDecimal, type BigDecimal } from "effect/BigDecimal";
 
+export type WireSafeBigDecimal = {
+  readonly "~effect/BigDecimal": "~effect/BigDecimal";
+  readonly value: bigint;
+  readonly scale: number;
+};
+
 export type WireSafeBigDecimalInspection =
   | { readonly _tag: "NotBigDecimal" }
   | { readonly _tag: "UnsafeBigDecimal" }
   | { readonly _tag: "ReflectionFailure" }
   | {
       readonly _tag: "Success";
-      readonly source: BigDecimal;
+      readonly source: WireSafeBigDecimal;
       readonly coefficient: bigint;
       readonly scale: number;
       readonly semanticKey: string;
@@ -17,7 +23,7 @@ const unsafeBigDecimal: WireSafeBigDecimalInspection = { _tag: "UnsafeBigDecimal
 const reflectionFailure: WireSafeBigDecimalInspection = { _tag: "ReflectionFailure" };
 const bigDecimalTypeId = "~effect/BigDecimal";
 
-const hasBigDecimalPrototype = (value: unknown): value is BigDecimal =>
+const hasBigDecimalPrototype = (value: unknown): value is WireSafeBigDecimal =>
   typeof value === "object" && value !== null && hasBigDecimalPrototypeBrand(value);
 
 const hasBigDecimalPrototypeBrand = (value: object): boolean => {
@@ -109,7 +115,7 @@ export const inspectWireSafeBigDecimal = (value: unknown): WireSafeBigDecimalIns
   }
 };
 
-export const isWireSafeBigDecimal = (value: unknown): value is BigDecimal => {
+export const isWireSafeBigDecimal = (value: unknown): value is WireSafeBigDecimal => {
   return inspectWireSafeBigDecimal(value)._tag === "Success";
 };
 

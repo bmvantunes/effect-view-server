@@ -13,6 +13,7 @@ export {
   isTrustedWireSafeBigDecimal,
   isWireSafeBigDecimal,
   trustedWireSafeBigDecimalSemanticKey,
+  type WireSafeBigDecimal,
   type WireSafeBigDecimalInspection,
   wireSafeBigDecimalSemanticKey,
 } from "./wire-safe-big-decimal";

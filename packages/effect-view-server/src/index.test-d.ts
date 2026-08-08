@@ -21,6 +21,7 @@ import {
   compareWireSafeBigDecimal,
   inspectWireSafeBigDecimal,
   isWireSafeBigDecimal,
+  type WireSafeBigDecimal,
   type WireSafeBigDecimalInspection,
   wireSafeBigDecimalSemanticKey,
 } from "effect-view-server/value-semantics";
@@ -220,13 +221,17 @@ describe("public effect-view-server subpath type contracts", () => {
       | { readonly _tag: "ReflectionFailure" }
       | {
           readonly _tag: "Success";
-          readonly source: BigDecimal;
+          readonly source: WireSafeBigDecimal;
           readonly coefficient: bigint;
           readonly scale: number;
           readonly semanticKey: string;
         }
     >();
-    expectTypeOf(isWireSafeBigDecimal).toEqualTypeOf<(value: unknown) => value is BigDecimal>();
+    expectTypeOf(isWireSafeBigDecimal).toEqualTypeOf<
+      (value: unknown) => value is WireSafeBigDecimal
+    >();
+    expectTypeOf<BigDecimal>().toMatchTypeOf<WireSafeBigDecimal>();
+    expectTypeOf<WireSafeBigDecimal>().not.toMatchTypeOf<BigDecimal>();
     expectTypeOf(compareWireSafeBigDecimal).toEqualTypeOf<
       (left: unknown, right: unknown) => number | undefined
     >();

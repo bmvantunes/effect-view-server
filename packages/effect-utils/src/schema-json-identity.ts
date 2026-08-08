@@ -183,6 +183,7 @@ const strictJson = (value: unknown): Schema.Json => {
 
 type StrictJsonObjectKeywordGuard = (value: unknown, path: string) => unknown;
 type StrictJsonGuardSide = "decoded" | "encoded";
+type StrictJsonGuardMode = "validate" | "snapshot";
 
 const simplePathKey = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 
@@ -253,19 +254,30 @@ const cloneWithReplacements = (
   replacements: ReadonlyMap<string, unknown>,
 ): object => {
   const output = Array.isArray(value) ? [] : Object.create(Object.getPrototypeOf(value));
+  const copiedReplacements = new Set<string>();
   for (const key of Reflect.ownKeys(value)) {
     const descriptor = Object.getOwnPropertyDescriptor(value, key);
     if (descriptor !== undefined) {
-      Object.defineProperty(output, key, descriptor);
+      if (typeof key === "string" && replacements.has(key) && "value" in descriptor) {
+        Object.defineProperty(output, key, {
+          ...descriptor,
+          value: replacements.get(key),
+        });
+        copiedReplacements.add(key);
+      } else {
+        Object.defineProperty(output, key, descriptor);
+      }
     }
   }
   for (const [key, replacement] of replacements) {
-    Object.defineProperty(output, key, {
-      configurable: true,
-      enumerable: true,
-      value: replacement,
-      writable: true,
-    });
+    if (!copiedReplacements.has(key)) {
+      Object.defineProperty(output, key, {
+        configurable: true,
+        enumerable: true,
+        value: replacement,
+        writable: true,
+      });
+    }
   }
   return output;
 };
@@ -315,7 +327,11 @@ const assertNoAccessorProperties = (
   }
 };
 
-const makeStrictJsonObjectKeywordGuard = (root: SchemaAST.AST, side: StrictJsonGuardSide) => {
+const makeStrictJsonObjectKeywordGuard = (
+  root: SchemaAST.AST,
+  side: StrictJsonGuardSide,
+  mode: StrictJsonGuardMode,
+) => {
   const compiled = new Map<SchemaAST.AST, StrictJsonObjectKeywordGuard>();
 
   const compile = (ast: SchemaAST.AST): StrictJsonObjectKeywordGuard => {
@@ -334,7 +350,7 @@ const makeStrictJsonObjectKeywordGuard = (root: SchemaAST.AST, side: StrictJsonG
         if (Result.isFailure(materialized)) {
           throw rebaseStrictJsonMaterializationError(materialized.failure, path);
         }
-        return materialized.success;
+        return mode === "snapshot" ? materialized.success : value;
       };
       return guard;
     }
@@ -389,7 +405,7 @@ const makeStrictJsonObjectKeywordGuard = (root: SchemaAST.AST, side: StrictJsonG
           return value;
         }
         const enumerableValues = new Map<string, unknown>();
-        const replacements = new Map<string, unknown>();
+        const replacements = mode === "snapshot" ? new Map<string, unknown>() : undefined;
         const readProperty = (name: string, propertyPath: string): OwnDataProperty =>
           enumerableValues.has(name)
             ? { present: true, value: enumerableValues.get(name) }
@@ -400,7 +416,7 @@ const makeStrictJsonObjectKeywordGuard = (root: SchemaAST.AST, side: StrictJsonG
           if (propertyValue.present) {
             enumerableValues.set(property.name, propertyValue.value);
             const snapshot = property.guard(propertyValue.value, propertyPath);
-            if (snapshot !== propertyValue.value) {
+            if (replacements !== undefined && snapshot !== propertyValue.value) {
               replacements.set(property.name, snapshot);
             }
           }
@@ -427,13 +443,15 @@ const makeStrictJsonObjectKeywordGuard = (root: SchemaAST.AST, side: StrictJsonG
             const propertyValue = readProperty(key, propertyPath);
             if (propertyValue.present) {
               const snapshot = index.guard(propertyValue.value, propertyPath);
-              if (snapshot !== propertyValue.value) {
+              if (replacements !== undefined && snapshot !== propertyValue.value) {
                 replacements.set(key, snapshot);
               }
             }
           }
         }
-        return replacements.size === 0 ? value : cloneWithReplacements(value, replacements);
+        return replacements === undefined || replacements.size === 0
+          ? value
+          : cloneWithReplacements(value, replacements);
       };
       return guard;
     }
@@ -447,7 +465,7 @@ const makeStrictJsonObjectKeywordGuard = (root: SchemaAST.AST, side: StrictJsonG
         }
         const [head, ...tail] = rest;
         const tailThreshold = readArrayLength(value, path) - tail.length;
-        const replacements = new Map<string, unknown>();
+        const replacements = mode === "snapshot" ? new Map<string, unknown>() : undefined;
         for (let index = 0; index < tailThreshold + tail.length; index += 1) {
           const item =
             index < elements.length
@@ -459,12 +477,14 @@ const makeStrictJsonObjectKeywordGuard = (root: SchemaAST.AST, side: StrictJsonG
           const entry = readOwnDataProperty(value, String(index), itemPath);
           if (entry.present) {
             const snapshot = item?.(entry.value, itemPath) ?? entry.value;
-            if (snapshot !== entry.value) {
+            if (replacements !== undefined && snapshot !== entry.value) {
               replacements.set(String(index), snapshot);
             }
           }
         }
-        return replacements.size === 0 ? value : cloneWithReplacements(value, replacements);
+        return replacements === undefined || replacements.size === 0
+          ? value
+          : cloneWithReplacements(value, replacements);
       };
     }
 
@@ -518,7 +538,7 @@ export const makeStrictJsonSchemaSnapshot = (
   root: SchemaAST.AST,
   side: "decoded" | "encoded" = "decoded",
 ): StrictJsonSchemaSnapshot => {
-  const snapshot = makeStrictJsonObjectKeywordGuard(root, side);
+  const snapshot = makeStrictJsonObjectKeywordGuard(root, side, "snapshot");
   return (value) =>
     Result.try({
       try: () => snapshot(value),
@@ -537,8 +557,21 @@ export const makeStrictJsonSchemaGuard = (
   root: SchemaAST.AST,
   side: "decoded" | "encoded" = "decoded",
 ): StrictJsonSchemaGuard => {
-  const snapshot = makeStrictJsonSchemaSnapshot(root, side);
-  return (value) => Result.map(snapshot(value), () => undefined);
+  const guard = makeStrictJsonObjectKeywordGuard(root, side, "validate");
+  return (value) =>
+    Result.try({
+      try: () => {
+        guard(value);
+      },
+      catch: (error) =>
+        error instanceof StrictJsonMaterializationError
+          ? error
+          : StrictJsonMaterializationError.make({
+              path: "$",
+              reason: "reflection-failure",
+              message: "Could not inspect JSON value at $.",
+            }),
+    });
 };
 
 export const makeSchemaJsonIdentity = <Type>(

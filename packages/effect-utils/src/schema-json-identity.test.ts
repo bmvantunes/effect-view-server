@@ -169,6 +169,17 @@ describe("Schema JSON identity", () => {
     expect(objectKeywordIdentity.canonicalKey({ payload: { venue: "xnys" } })).toBe(
       '{"payload":{"venue":"xnys"}}',
     );
+    expect(
+      objectKeywordIdentity.canonicalJson(
+        Object.freeze({ payload: Object.freeze({ venue: "xnys" }) }),
+      ),
+    ).toStrictEqual({ payload: { venue: "xnys" } });
+    expect(
+      arrayObjectKeywordIdentity.canonicalJson(Object.freeze([{ venue: "xnys" }])),
+    ).toStrictEqual([{ venue: "xnys" }]);
+    expect(
+      arrayObjectKeywordIdentity.canonicalJson(Object.seal([{ venue: "xnys" }])),
+    ).toStrictEqual([{ venue: "xnys" }]);
     expect(() => suspendedObjectKeywordIdentity.canonicalKey({ payload: nonJson })).toThrow(
       "Expected a plain data record or dense array at $.payload",
     );
@@ -502,7 +513,12 @@ describe("Schema JSON identity", () => {
         },
       },
     );
-    expect(recordGuard(cloneDescriptorFlapping)).toStrictEqual(Result.succeed(undefined));
+    const recordSnapshot = makeStrictJsonSchemaSnapshot(
+      Schema.toCodecJson(Schema.Record(Schema.String, Schema.ObjectKeyword)).ast,
+    );
+    expect(recordSnapshot(cloneDescriptorFlapping)).toStrictEqual(
+      Result.succeed({ payload: { venue: "xnys" } }),
+    );
 
     const keysFailure = new Proxy(
       {},
@@ -527,6 +543,15 @@ describe("Schema JSON identity", () => {
     );
     expect(defaultSnapshot({ payload: { venue: "xnys" } })).toStrictEqual(
       Result.succeed({ payload: { venue: "xnys" } }),
+    );
+    expect(defaultSnapshot({ payload: new Map([["venue", "xnys"]]) })).toStrictEqual(
+      Result.fail(
+        StrictJsonMaterializationError.make({
+          path: "$.payload",
+          reason: "unsupported-prototype",
+          message: "Expected a plain data record or dense array at $.payload.",
+        }),
+      ),
     );
 
     const descriptorFailure = new Proxy(
@@ -556,6 +581,19 @@ describe("Schema JSON identity", () => {
       },
     );
     expect(unionGuard(nonStrictFailure)).toStrictEqual(
+      Result.fail(
+        StrictJsonMaterializationError.make({
+          path: "$",
+          reason: "reflection-failure",
+          message: "Could not inspect JSON value at $.",
+        }),
+      ),
+    );
+    const unionSnapshot = makeStrictJsonSchemaSnapshot(
+      Schema.toCodecJson(Schema.Union([Schema.String, Schema.Struct({ value: Schema.String })]))
+        .ast,
+    );
+    expect(unionSnapshot(nonStrictFailure)).toStrictEqual(
       Result.fail(
         StrictJsonMaterializationError.make({
           path: "$",

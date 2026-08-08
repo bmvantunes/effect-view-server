@@ -117,8 +117,12 @@ A two-operand numeric Field Condition whose `filter` lower bound is included and
 _Avoid_: Ambiguous between, inclusive upper bound, exclusive lower bound
 
 **Filter Expression**:
-A finite acyclic recursive typed predicate composed of Field Conditions, nested AND or OR groups, and unary Negation Expressions. It is the only valid Live Query filter form; field-keyed condition maps and cyclic object graphs are not Filter Expressions.
+A finite acyclic recursive typed predicate composed of Field Conditions, Match-None Expressions, nested AND or OR groups, and unary Negation Expressions. It is the only valid Live Query filter form; field-keyed condition maps and cyclic object graphs are not Filter Expressions.
 _Avoid_: Per-column-only filter, flat where object
+
+**Match-None Expression**:
+An exact zero-operand Filter Expression with type `FALSE` that matches no Topic Row. It is the explicit source-level representation for an intentionally empty query result and participates in Boolean Filter Normalization without requiring a fabricated Field Condition operand.
+_Avoid_: Fake non-matching value, empty membership means false, impossible Field Condition
 
 **Negation Expression**:
 An exact unary Filter Expression with type `NOT` and one `condition` that matches the logical complement of its normalized child. It can negate any Filter Expression, while convenient named Negated Conditions remain valid leaves.
@@ -129,7 +133,7 @@ The top-level array of Filter Expressions in a Live Query filter. Its entries ar
 _Avoid_: Root AND wrapper, field-keyed where object
 
 **Filter Normalization**:
-The query-language rule that recursively removes logical groups with no effective Filter Expressions, collapses groups with one effective child, flattens nested groups using the same operator, deduplicates equivalent expressions, and gives commutative groups an order-neutral semantic identity. If no Filter Expressions remain, the query matches every Topic Row; invalid Field Conditions are never treated as empty. It does not apply absorption, distribution, or normal-form conversion.
+The query-language rule that recursively removes logical groups with no effective Filter Expressions, evaluates Match-None Expressions using Boolean identities, collapses groups with one effective child, flattens nested groups using the same operator, deduplicates equivalent expressions, and gives commutative groups an order-neutral semantic identity. If no Filter Expressions remain, the query matches every Topic Row; invalid Field Conditions are never treated as empty. It does not apply absorption, distribution, or normal-form conversion.
 _Avoid_: Empty OR as false, lenient invalid filter handling, Boolean theorem prover
 
 **Wire-Safe Query**:
@@ -601,6 +605,7 @@ _Avoid_: Browser write, send, emit
 - **Filter Normalization** gives reordered AND or OR children the same semantic query identity.
 - **Filter Normalization** deduplicates equivalent AND or OR children using their Field Condition semantics, including Text Matching and Topic Row Value Semantics.
 - **Filter Normalization** removes an **Open Membership Condition** as an absent predicate.
+- **Filter Normalization** preserves a root **Match-None Expression**, reduces any AND containing one to Match-None, removes Match-None children from OR, and treats a negated Match-None Expression as an absent match-all predicate.
 - **Filter Normalization** removes a **Negation Expression** whose child has normalized away, because absence is not a Boolean value to complement.
 - **Filter Normalization** collapses two adjacent **Negation Expressions** to their shared child without applying De Morgan or other expression-expanding rewrites.
 - **Filter Normalization** replaces a **Negation Expression** around a leaf with its exact named positive or Negated Condition when one exists; both forms have one semantic query identity.
@@ -1043,7 +1048,7 @@ _Avoid_: Browser write, send, emit
 >
 > **Dev:** "Does a membership condition with no selected values hide every row?"
 >
-> **Domain expert:** "No. It is an **Open Membership Condition**, so it contributes no predicate and future unseen values remain eligible. Use a real non-matching value to intentionally return no rows."
+> **Domain expert:** "No. It is an **Open Membership Condition**, so it contributes no predicate and future unseen values remain eligible. Use an explicit **Match-None Expression** to intentionally return no rows."
 >
 > **Dev:** "Are `in: [\"open\", \"closed\"]` and `in: [\"closed\", \"open\", \"open\"]` different queries?"
 >

@@ -167,6 +167,16 @@ const updateBaseEvaluationFromRetainedChanges = (
   queryWindow: RawQueryPlanWindow,
 ): ActiveQueryBaseEvaluation<object> | undefined => {
   const currentVersion = store.version();
+  if (compiled.plan.predicate.plan.alwaysFalse === true) {
+    return {
+      keyIndex: new Map(),
+      keys: [],
+      retainedWindowFilled: true,
+      totalRows: 0,
+      version: currentVersion,
+      window: [],
+    };
+  }
   const batches = store.changesSince(evaluation.version, compiled.plan.partitionKey);
   if (batches === undefined) {
     return undefined;

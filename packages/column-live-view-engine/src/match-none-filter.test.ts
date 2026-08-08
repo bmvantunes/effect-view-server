@@ -16,6 +16,14 @@ import { makeEngine, order } from "../test-harness/public-engine";
 import { scanTopicRawWindow, type TopicRawWindowScanState } from "./topic-raw-window-scanner";
 import type { TopicRawWindowScanPlan } from "./raw-window-scan";
 import { evaluateCompiledGroupedQuery, prepareRuntimeGroupedQuery } from "./grouped-query-compiler";
+import { InvalidRowError } from "./engine-errors";
+import {
+  acquireRawQueryExecution,
+  activeQueryTestInterface,
+  activeQueryTestMetadata,
+  releaseRawQueryExecution,
+} from "../test-harness/active-query-interface";
+import { publishTopicStoreRow, TopicStore } from "./topic-store";
 
 const Row = Schema.Struct({
   id: ViewServerId,
@@ -502,6 +510,50 @@ describe("explicit match-none filter", () => {
       expect(compiled.plan.predicate.plan.callbackSkippable).toBe(true);
       expect(compiled.plan.predicate.matches({ id: "a" })).toBe(false);
       expect(partitionMatches).toBe(0);
+    }),
+  );
+
+  it.effect("advances constant FALSE active raw queries without reading retained changes", () =>
+    Effect.gen(function* () {
+      const store = new TopicStore("match-none-active-raw", Row, "id", () => {});
+      const queryInterface = activeQueryTestInterface(store);
+      let changesSinceCalls = 0;
+      const observedQueryInterface = {
+        ...queryInterface,
+        changesSince: (...args: Parameters<typeof queryInterface.changesSince>) => {
+          changesSinceCalls += 1;
+          return queryInterface.changesSince(...args);
+        },
+      };
+      const compiled = yield* prepareRuntimeRawQuery(
+        "match-none-active-raw",
+        activeQueryTestMetadata(store),
+        {
+          select: ["id"],
+          where: [{ type: "FALSE" }],
+        },
+      );
+      const execution = yield* acquireRawQueryExecution(observedQueryInterface, compiled);
+
+      expect(execution.initial("before").version).toBe(0);
+      yield* publishTopicStoreRow(
+        store,
+        { id: "a", status: "open", value: 1 },
+        (topic, message) => new InvalidRowError({ topic, message }),
+      );
+
+      expect(execution.initial("after")).toStrictEqual({
+        type: "snapshot",
+        topic: "match-none-active-raw",
+        queryId: "after",
+        version: 1,
+        keys: [],
+        rows: [],
+        totalRows: 0,
+      });
+      expect(changesSinceCalls).toBe(0);
+
+      yield* releaseRawQueryExecution(observedQueryInterface, compiled);
     }),
   );
 

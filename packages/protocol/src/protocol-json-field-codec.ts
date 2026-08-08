@@ -108,9 +108,11 @@ export const encodeJsonFieldValue = Effect.fn("ViewServerProtocol.jsonField.enco
   errors: JsonFieldCodecErrors<E>,
 ) {
   const compiled = compiledJsonFieldCodec(schema);
-  const strictJson = compiled.strictJson(value);
-  if (Result.isFailure(strictJson)) {
-    return yield* Effect.fail(errors.notJsonSafe(strictJson.failure.message));
+  if (compiled.hasObjectKeyword) {
+    const strictJson = compiled.strictJson(value);
+    if (Result.isFailure(strictJson)) {
+      return yield* Effect.fail(errors.notJsonSafe(strictJson.failure.message));
+    }
   }
   const encodeFailure = (error: Schema.SchemaError) => {
     const message = schemaErrorMessage(error);

@@ -452,7 +452,7 @@ export type StrictJsonSchemaGuard = (
 
 export const makeStrictJsonSchemaGuard = (
   root: SchemaAST.AST,
-  side: StrictJsonGuardSide = "decoded",
+  side: "decoded" | "encoded" = "decoded",
 ): StrictJsonSchemaGuard => {
   const guard = makeStrictJsonObjectKeywordGuard(root, side);
   return (value) =>

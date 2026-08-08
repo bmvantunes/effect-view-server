@@ -1336,6 +1336,59 @@ describe("Grouped incremental query execution", () => {
     }),
   );
 
+  it.effect(
+    "advances an unchanged partitioned grouped evaluation without repeated journal reads",
+    () =>
+      Effect.gen(function* () {
+        let version = 0;
+        let changesSinceCalls = 0;
+        const row = order("1", "open", 10, 1);
+        const compiled = yield* prepareRuntimeGroupedQuery(
+          "orders",
+          rawQueryCompilerMetadata(Order),
+          {
+            groupBy: ["status"],
+            aggregates: { rowCount: { aggFunc: "count" } },
+          },
+        );
+        const execution = makeIncrementalGroupedQueryExecution(
+          {
+            changesSince: () => {
+              changesSinceCalls += 1;
+              return [];
+            },
+            scanRows: (visitor) => {
+              visitor(row.id, row);
+            },
+            version: () => version,
+          },
+          compiled,
+          () => {},
+        );
+
+        expect(execution.latest()).toStrictEqual({
+          rows: [{ status: "open", rowCount: 1n }],
+          keys: [expect.any(String)],
+          totalRows: 1,
+          version: 0,
+          window: [
+            {
+              key: expect.any(String),
+              row: { status: "open", rowCount: 1n },
+            },
+          ],
+        });
+        version = 1;
+        expect(execution.latest().version).toBe(1);
+        expect(execution.latest().version).toBe(1);
+        expect(changesSinceCalls).toBe(1);
+        expect(execution.diagnostics()).toStrictEqual({
+          fullEvaluationCount: 0,
+          patchedEvaluationCount: 0,
+        });
+      }),
+  );
+
   it.effect("uses fallback when a grouped rebuild after a missed journal exceeds admission", () =>
     Effect.gen(function* () {
       let version = 0;

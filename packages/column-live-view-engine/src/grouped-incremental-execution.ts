@@ -752,17 +752,6 @@ const applyIncrementalGroupedQueryBatches = <Row extends RowObject>(
   limits: GroupedIncrementalAdmissionLimits,
   diagnostics: GroupedIncrementalExecutionDiagnostics,
 ): boolean => {
-  if (batches.length === 0) {
-    return true;
-  }
-  if (plan.alwaysFalse === true) {
-    for (const batch of batches) {
-      state.version = batch.version;
-    }
-    state.evaluation = emptyGroupedEvaluation(0, state.version);
-    diagnostics.onPatchedEvaluation();
-    return true;
-  }
   if (state.mode === "countOnly") {
     return applyCountOnlyIncrementalGroupedQueryBatches(
       state,
@@ -892,6 +881,14 @@ export const makeIncrementalGroupedQueryExecution = <
         }
         combinedDiagnostics.onFullEvaluation();
         state = build.state;
+        return state.evaluation;
+      }
+      if (batches.length === 0) {
+        state.version = storeVersion;
+        state.evaluation = {
+          ...state.evaluation,
+          version: storeVersion,
+        };
         return state.evaluation;
       }
       if (

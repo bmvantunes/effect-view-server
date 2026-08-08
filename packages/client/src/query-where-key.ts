@@ -49,7 +49,23 @@ type CanonicalNegation = {
   readonly condition: CanonicalExpression;
 };
 
-type CanonicalExpression = CanonicalCondition | CanonicalGroup | CanonicalNegation;
+type CanonicalFalse = {
+  readonly _tag: "false";
+};
+
+type CanonicalTrue = {
+  readonly _tag: "true";
+};
+
+type CanonicalExpression =
+  | CanonicalCondition
+  | CanonicalGroup
+  | CanonicalNegation
+  | CanonicalFalse
+  | CanonicalTrue;
+
+const canonicalFalse: CanonicalFalse = Object.freeze({ _tag: "false" });
+const canonicalTrue: CanonicalTrue = Object.freeze({ _tag: "true" });
 
 export type CanonicalWhereFieldContract = {
   readonly materialize: (value: unknown) => unknown;
@@ -494,6 +510,8 @@ const makeExpressionIdentityModule = (): ExpressionIdentityModule => {
   const conditions = new Map<string, number>();
   const negations = new Map<number, number>();
   const groups = new Map<string, ExpressionIdentityTrie>();
+  let falseIdentity: number | undefined;
+  let trueIdentity: number | undefined;
   const allocate = (): number => {
     const identity = nextIdentity;
     nextIdentity += 1;
@@ -508,6 +526,12 @@ const makeExpressionIdentityModule = (): ExpressionIdentityModule => {
     if (expression._tag === "condition") {
       identity = conditions.get(expression.key) ?? allocate();
       conditions.set(expression.key, identity);
+    } else if (expression._tag === "false") {
+      identity = falseIdentity ?? allocate();
+      falseIdentity = identity;
+    } else if (expression._tag === "true") {
+      identity = trueIdentity ?? allocate();
+      trueIdentity = identity;
     } else if (expression._tag === "NOT") {
       const childIdentity = identityFor(expression.condition);
       identity = negations.get(childIdentity) ?? allocate();
@@ -547,6 +571,11 @@ type ComparisonNode = {
   readonly children: ReadonlyArray<CanonicalExpression>;
 };
 
+const comparisonAtomicValues = {
+  false: "FALSE",
+  true: "TRUE",
+} as const;
+
 const comparisonNode = (expression: CanonicalExpression): ComparisonNode => {
   if (expression._tag === "condition") {
     return { tag: "condition", value: expression.key, children: [] };
@@ -554,11 +583,14 @@ const comparisonNode = (expression: CanonicalExpression): ComparisonNode => {
   if (expression._tag === "NOT") {
     return { tag: "NOT", value: "", children: [expression.condition] };
   }
-  return {
-    tag: "group",
-    value: `${expression.type}:${expression.conditions.length}`,
-    children: expression.conditions,
-  };
+  if (expression._tag === "group") {
+    return {
+      tag: "group",
+      value: `${expression.type}:${expression.conditions.length}`,
+      children: expression.conditions,
+    };
+  }
+  return { tag: expression._tag, value: comparisonAtomicValues[expression._tag], children: [] };
 };
 
 export const compareCanonicalWhereExpressions = (
@@ -571,6 +603,24 @@ const canonicalGroup = (
   unique: ReadonlyArray<CanonicalExpression>,
   identities: ExpressionIdentityModule,
 ): CanonicalExpression => {
+  if (type === "AND") {
+    if (unique.some((expression) => expression._tag === "false")) {
+      return canonicalFalse;
+    }
+    unique = unique.filter((expression) => expression._tag !== "true");
+    if (unique.length === 0) {
+      return canonicalTrue;
+    }
+  } else {
+    if (unique.some((expression) => expression._tag === "true")) {
+      return canonicalTrue;
+    }
+    const withoutFalse = unique.filter((expression) => expression._tag !== "false");
+    if (withoutFalse.length === 0) {
+      return canonicalFalse;
+    }
+    unique = withoutFalse;
+  }
   if (unique.length === 1) {
     return unique[0]!;
   }
@@ -591,6 +641,14 @@ const canonicalNegation = (
   const materializedChild = materialization.materialize(child);
   if (materializedChild === undefined) {
     return undefined;
+  }
+  if (materializedChild._tag === "false") {
+    identities.identityFor(canonicalTrue);
+    return canonicalTrue;
+  }
+  if (materializedChild._tag === "true") {
+    identities.identityFor(canonicalFalse);
+    return canonicalFalse;
   }
   if (materializedChild._tag === "NOT") {
     return materializedChild.condition;
@@ -753,6 +811,14 @@ const normalizeExpression = (
       frames.push({ _tag: "enter", value: requiredValue(values, "condition") });
       continue;
     }
+    if (type === "FALSE") {
+      requireExactKeys(values, new Set(["type"]));
+      identities.identityFor(canonicalFalse);
+      memo.set(source, canonicalFalse);
+      complete.add(source);
+      results.push(canonicalFalse);
+      continue;
+    }
     const condition = canonicalCondition(values, validationSensitiveSyntax, fieldContracts);
     if (condition !== undefined) {
       identities.identityFor(condition);
@@ -767,6 +833,11 @@ const normalizeExpression = (
 type SerializeFrame =
   | { readonly _tag: "enter"; readonly expression: CanonicalExpression }
   | { readonly _tag: "exit"; readonly expression: CanonicalExpression };
+
+const serializedAtomicValues = {
+  false: JSON.stringify(["FALSE"]),
+  true: JSON.stringify(["TRUE"]),
+} as const;
 
 const serializeExpression = (expression: CanonicalExpression): string => {
   const definitions: Array<string> = [];
@@ -796,11 +867,13 @@ const serializeExpression = (expression: CanonicalExpression): string => {
         ? JSON.stringify(["condition", current.key])
         : current._tag === "NOT"
           ? JSON.stringify(["NOT", identities.get(current.condition)!])
-          : JSON.stringify([
-              "group",
-              current.type,
-              current.conditions.map((condition) => identities.get(condition)!),
-            ]);
+          : current._tag === "group"
+            ? JSON.stringify([
+                "group",
+                current.type,
+                current.conditions.map((condition) => identities.get(condition)!),
+              ])
+            : serializedAtomicValues[current._tag];
     const existingIdentity = identitiesByDefinition.get(definition);
     const identity = existingIdentity ?? definitions.length;
     if (existingIdentity === undefined) {
@@ -841,7 +914,10 @@ export const canonicalWhereKey = (
   const expression = materialization.materialize(
     normalizeGroup("AND", normalized, materialization),
   );
-  const semanticKey = expression === undefined ? undefined : serializeExpression(expression);
+  const semanticKey =
+    expression === undefined || expression._tag === "true"
+      ? undefined
+      : serializeExpression(expression);
   return validationSensitiveSyntax.size === 0
     ? semanticKey
     : JSON.stringify([

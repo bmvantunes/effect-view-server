@@ -18,6 +18,7 @@ export type {
   BlankCondition,
   ExactWhere,
   EqualsCondition,
+  FalseExpression,
   FieldCondition,
   FieldConditionForPath,
   FilterableFieldPath,
@@ -35,6 +36,7 @@ export type {
   TextMatchingOptions,
   TextSearchCondition,
   Where,
+  MatchNoneExpression,
 } from "./query-filter";
 export type {
   AggregateOrderByField,

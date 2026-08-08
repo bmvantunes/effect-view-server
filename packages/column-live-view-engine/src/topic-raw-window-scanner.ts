@@ -52,6 +52,9 @@ export const scanTopicRawWindow = (
   state: TopicRawWindowScanState,
   plan: TopicRawWindowScanPlan<object>,
 ): TopicRawWindowScanResult<object> => {
+  if (plan.predicate.alwaysFalse === true) {
+    return rawWindowScanResult(state, [], 0);
+  }
   const storageKeyCandidates = ownedStorageKeyCandidateSlots(state, plan.candidateStorageKeys);
   if (storageKeyCandidates !== undefined) {
     const matchesSlot = rawPredicateMatchesSlot(state, plan);

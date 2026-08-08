@@ -317,6 +317,15 @@ const transformExpression = Effect.fn("ViewServerProtocol.filter.expression.tran
       frames.push({ _tag: "enter", value: ownValue(snapshot, "condition") });
       continue;
     }
+    if (type === "FALSE") {
+      if (!exactKeys(snapshot, new Set(["type"]))) {
+        return yield* Effect.fail(invalidQuery(topic, "Filter FALSE has invalid keys"));
+      }
+      const transformed = Object.freeze({ type: "FALSE" });
+      state.memo.set(expression, transformed);
+      results.push(transformed);
+      continue;
+    }
     const transformed = yield* transformCondition(direction, topic, rowSchema, snapshot);
     state.memo.set(expression, transformed);
     results.push(transformed);

@@ -60,10 +60,22 @@ export type RuntimeFilterNegation = {
   readonly condition: RuntimeFilterExpression;
 };
 
+export type RuntimeFilterFalse = {
+  readonly _tag: "false";
+  readonly key: "expression:FALSE";
+};
+
+type RuntimeFilterTrue = {
+  readonly _tag: "true";
+  readonly key: "expression:TRUE";
+};
+
 export type RuntimeFilterExpression =
   | RuntimeFilterCondition
   | RuntimeFilterGroup
-  | RuntimeFilterNegation;
+  | RuntimeFilterNegation
+  | RuntimeFilterFalse
+  | RuntimeFilterTrue;
 
 export class FilterExpressionError extends Error {}
 
@@ -85,6 +97,16 @@ type DeferredFilterGroup = {
 };
 
 type NormalizedExpression = RuntimeFilterExpression | DeferredFilterGroup | undefined;
+
+const runtimeFilterFalse: RuntimeFilterFalse = Object.freeze({
+  _tag: "false",
+  key: "expression:FALSE",
+});
+
+const runtimeFilterTrue: RuntimeFilterTrue = Object.freeze({
+  _tag: "true",
+  key: "expression:TRUE",
+});
 
 const textSearchTypes = new Set<RuntimeFilterConditionType>([
   "contains",
@@ -493,6 +515,11 @@ type StructuralKeyFrame =
   | { readonly _tag: "enter"; readonly expression: RuntimeFilterExpression }
   | { readonly _tag: "exit"; readonly expression: RuntimeFilterExpression };
 
+const atomicExpressionDefinitions = {
+  false: "FALSE",
+  true: "TRUE",
+} as const;
+
 const expressionStructuralKey = (expression: RuntimeFilterExpression): string => {
   const definitions: Array<string> = [];
   const identities = new WeakMap<object, number>();
@@ -521,9 +548,11 @@ const expressionStructuralKey = (expression: RuntimeFilterExpression): string =>
         ? `condition:${current.key.length}:${current.key}`
         : current._tag === "NOT"
           ? `NOT:${identities.get(current.condition)!}`
-          : `${current.type}:${current.conditions.length}:${current.conditions
-              .map((condition) => identities.get(condition)!)
-              .join(",")}`;
+          : current._tag === "group"
+            ? `${current.type}:${current.conditions.length}:${current.conditions
+                .map((condition) => identities.get(condition)!)
+                .join(",")}`
+            : atomicExpressionDefinitions[current._tag];
     const existing = identitiesByDefinition.get(definition);
     const identity = existing ?? definitions.length;
     if (existing === undefined) {
@@ -554,6 +583,8 @@ const makeStructuralIdentityModule = (): StructuralIdentityModule => {
   let nextIdentity = 0;
   const byExpression = new WeakMap<object, number>();
   const conditionIdentities = new Map<string, number>();
+  let falseIdentity: number | undefined;
+  let trueIdentity: number | undefined;
   const negationIdentities = new Map<number, number>();
   const groupIdentityTries = new Map<string, StructuralIdentityTrie>();
   const allocateIdentity = (): number => {
@@ -571,6 +602,12 @@ const makeStructuralIdentityModule = (): StructuralIdentityModule => {
       const conditionIdentity = conditionIdentities.get(expression.key);
       identity = conditionIdentity ?? allocateIdentity();
       conditionIdentities.set(expression.key, identity);
+    } else if (expression._tag === "false") {
+      identity = falseIdentity ?? allocateIdentity();
+      falseIdentity = identity;
+    } else if (expression._tag === "true") {
+      identity = trueIdentity ?? allocateIdentity();
+      trueIdentity = identity;
     } else if (expression._tag === "NOT") {
       const childIdentity = identityFor(expression.condition);
       const negationIdentity = negationIdentities.get(childIdentity);
@@ -618,6 +655,10 @@ const structuralComparisonNode = (
   expression: RuntimeFilterExpression,
 ): StructuralComparisonNode => {
   switch (expression._tag) {
+    case "false":
+      return { tag: expression._tag, value: expression.key, children: [] };
+    case "true":
+      return { tag: expression._tag, value: expression.key, children: [] };
     case "condition":
       return { tag: expression._tag, value: expression.key, children: [] };
     case "NOT":
@@ -641,6 +682,25 @@ const canonicalGroup = (
   candidates: ReadonlyArray<RuntimeFilterExpression>,
   identities: StructuralIdentityModule,
 ): RuntimeFilterExpression => {
+  if (type === "AND") {
+    if (candidates.some((candidate) => candidate._tag === "false")) {
+      return runtimeFilterFalse;
+    }
+    const withoutTrue = candidates.filter((candidate) => candidate._tag !== "true");
+    if (withoutTrue.length === 0) {
+      return runtimeFilterTrue;
+    }
+    candidates = withoutTrue;
+  } else {
+    if (candidates.some((candidate) => candidate._tag === "true")) {
+      return runtimeFilterTrue;
+    }
+    const withoutFalse = candidates.filter((candidate) => candidate._tag !== "false");
+    if (withoutFalse.length === 0) {
+      return runtimeFilterFalse;
+    }
+    candidates = withoutFalse;
+  }
   if (candidates.length === 1) {
     return candidates[0]!;
   }
@@ -750,6 +810,14 @@ const normalizeNegation = (
   if (materializedChild === undefined) {
     return undefined;
   }
+  if (materializedChild._tag === "false") {
+    identities.identityFor(runtimeFilterTrue);
+    return runtimeFilterTrue;
+  }
+  if (materializedChild._tag === "true") {
+    identities.identityFor(runtimeFilterFalse);
+    return runtimeFilterFalse;
+  }
   if (materializedChild._tag === "NOT") {
     return materializedChild.condition;
   }
@@ -842,6 +910,14 @@ const normalizeExpression = (
       frames.push({ _tag: "enter", value: child });
       continue;
     }
+    if (type === "FALSE") {
+      validateExactRecordKeys(record, new Set(["type"]));
+      identities.identityFor(runtimeFilterFalse);
+      memo.set(source, runtimeFilterFalse);
+      completed.add(source);
+      results.push(runtimeFilterFalse);
+      continue;
+    }
     const normalized = makeCondition(record, fields);
     if (normalized !== undefined) {
       identities.identityFor(normalized);
@@ -870,13 +946,20 @@ export const normalizeWhere = (
     );
   }
   const root = materialization.materialize(normalizeGroup("AND", normalized, materialization));
-  if (root === undefined || root._tag === "condition") {
+  if (root === undefined || root._tag === "true") {
+    return undefined;
+  }
+  if (root._tag === "condition") {
     return root;
   }
   const key = expressionStructuralKey(root);
-  return root._tag === "group"
-    ? Object.freeze({ _tag: "group", key, type: root.type, conditions: root.conditions })
-    : Object.freeze({ _tag: "NOT", key, condition: root.condition });
+  if (root._tag === "group") {
+    return Object.freeze({ _tag: "group", key, type: root.type, conditions: root.conditions });
+  }
+  if (root._tag === "NOT") {
+    return Object.freeze({ _tag: "NOT", key, condition: root.condition });
+  }
+  return root;
 };
 
 export const normalizeFilterText = normalizeText;

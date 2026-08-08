@@ -242,11 +242,15 @@ export const makeRawQueryPlan = <
       : Object.freeze({
           plan: Object.freeze({
             filters: localPredicate.plan.filters,
-            callbackRequired: true,
-            callbackSkippable: false,
+            callbackRequired: localPredicate.plan.alwaysFalse !== true,
+            callbackSkippable: localPredicate.plan.alwaysFalse === true,
+            ...(localPredicate.plan.alwaysFalse === true ? { alwaysFalse: true } : {}),
           }),
-          matches: (row: Row, storageKey?: string) =>
-            partition.matches(row, storageKey) && localPredicate.matches(row, storageKey),
+          matches:
+            localPredicate.plan.alwaysFalse === true
+              ? () => false
+              : (row: Row, storageKey?: string) =>
+                  partition.matches(row, storageKey) && localPredicate.matches(row, storageKey),
         });
   const storageOrder = storageOrderBy(metadata, orderBy);
   return Object.freeze({

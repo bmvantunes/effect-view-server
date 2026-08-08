@@ -278,10 +278,23 @@ const buildIncrementalGroupedQueryState = <Row extends RowObject>(
   matches: GroupedRowMatcher<Row>,
   limits: GroupedIncrementalAdmissionLimits,
   ownedStorageKeys?: () => Iterable<string>,
-): IncrementalGroupedQueryBuildState =>
-  plan.zeroLimit
+): IncrementalGroupedQueryBuildState => {
+  if (plan.alwaysFalse === true) {
+    const version = store.version();
+    return {
+      admitted: true,
+      state: {
+        mode: "countOnly",
+        groups: new Map(),
+        evaluation: emptyGroupedEvaluation(0, version),
+        version,
+      },
+    };
+  }
+  return plan.zeroLimit
     ? buildCountOnlyIncrementalGroupedQueryState(store, plan, matches, limits, ownedStorageKeys)
     : buildMaterializedIncrementalGroupedQueryState(store, plan, matches, limits, ownedStorageKeys);
+};
 
 const removeMaterializedIncrementalGroupedMember = <Row extends RowObject>(
   dirtyAggregateRecomputes: DirtyAggregateRecomputes,
@@ -738,6 +751,14 @@ const applyIncrementalGroupedQueryBatches = <Row extends RowObject>(
   limits: GroupedIncrementalAdmissionLimits,
   diagnostics: GroupedIncrementalExecutionDiagnostics,
 ): boolean => {
+  if (plan.alwaysFalse === true) {
+    for (const batch of batches) {
+      state.version = batch.version;
+    }
+    state.evaluation = emptyGroupedEvaluation(0, state.version);
+    diagnostics.onPatchedEvaluation();
+    return true;
+  }
   if (state.mode === "countOnly") {
     return applyCountOnlyIncrementalGroupedQueryBatches(
       state,

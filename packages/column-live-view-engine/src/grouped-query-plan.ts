@@ -54,6 +54,7 @@ export type GroupedQueryPlan<Row extends RowObject, ResultRow extends RowObject 
   readonly limit: number | undefined;
   readonly resultSemantics: QueryResultSemantics<ResultRow>;
   readonly zeroLimit: boolean;
+  readonly alwaysFalse?: true;
   readonly groupKey: (row: Row) => string;
 };
 
@@ -256,6 +257,7 @@ export const makeGroupedQueryPlan = <Row extends RowObject, ResultRow extends Ro
     groupBy: ReadonlyArray<string>,
     aggregatePlans: ReadonlyArray<GroupedAggregatePlan>,
   ) => QueryResultSemantics<ResultRow>,
+  alwaysFalse?: true,
 ): GroupedQueryPlan<Row, ResultRow> => {
   const immutableQuery = immutableGroupedQuery(query);
   const groupBy = immutableQuery.groupBy;
@@ -277,6 +279,7 @@ export const makeGroupedQueryPlan = <Row extends RowObject, ResultRow extends Ro
     limit: immutableQuery.limit,
     resultSemantics,
     zeroLimit: immutableQuery.limit === 0,
+    ...(alwaysFalse === true ? { alwaysFalse: true } : {}),
     groupKey: groupedKeyIdentity.key,
   });
 };
@@ -285,7 +288,13 @@ export const makeRuntimeGroupedQueryPlan = <Row extends RowObject = RowObject>(
   query: GroupedQueryPlanInput,
   valueSemantics: TopicRowValueSemantics,
   rawPredicateCacheKey: string,
+  alwaysFalse?: true,
 ): GroupedQueryPlan<Row, RowObject> =>
-  makeGroupedQueryPlan(query, valueSemantics, rawPredicateCacheKey, (groupBy, aggregatePlans) =>
-    runtimeGroupedQueryResultSemantics(valueSemantics, groupBy, aggregatePlans),
+  makeGroupedQueryPlan(
+    query,
+    valueSemantics,
+    rawPredicateCacheKey,
+    (groupBy, aggregatePlans) =>
+      runtimeGroupedQueryResultSemantics(valueSemantics, groupBy, aggregatePlans),
+    alwaysFalse,
   );

@@ -118,6 +118,55 @@ describe("Real View Server RPC wire protocol composition", () => {
     }).pipe(Effect.scoped),
   );
 
+  it.live("round-trips source-native FALSE raw and grouped filters through RPC NDJSON", () =>
+    Effect.gen(function* () {
+      const inMemory = createServerTestRuntime(viewServer);
+      yield* Effect.addFinalizer(() => inMemory.close);
+      const server = yield* makeViewServerWebSocketServer(viewServer, {
+        liveClient: inMemory.liveClient,
+        runtime: inMemory.client,
+      });
+      yield* Effect.addFinalizer(() => server.close);
+      const client = yield* makeViewServerClient(viewServer, { url: server.url });
+      yield* Effect.addFinalizer(() => client.close);
+
+      const rawSubscription = yield* client.subscribe("orders", {
+        select: ["id"],
+        where: [{ type: "FALSE" }],
+        orderBy: [],
+      });
+      yield* Effect.addFinalizer(() => rawSubscription.close().pipe(Effect.orDie));
+      const groupedSubscription = yield* client.subscribe("orders", {
+        groupBy: ["price"],
+        aggregates: { rowCount: { aggFunc: "count" } },
+        where: [{ type: "FALSE" }],
+        orderBy: [{ aggregate: "rowCount", direction: "desc" }],
+      });
+      yield* Effect.addFinalizer(() => groupedSubscription.close().pipe(Effect.orDie));
+
+      const rawEvent = yield* rawSubscription.events.pipe(Stream.take(1), Stream.runHead);
+      const groupedEvent = yield* groupedSubscription.events.pipe(Stream.take(1), Stream.runHead);
+      expect(Option.getOrThrow(rawEvent)).toStrictEqual({
+        type: "snapshot",
+        topic: "orders",
+        queryId: "query-0",
+        version: 0,
+        keys: [],
+        rows: [],
+        totalRows: 0,
+      });
+      expect(Option.getOrThrow(groupedEvent)).toStrictEqual({
+        type: "snapshot",
+        topic: "orders",
+        queryId: "query-1",
+        version: 0,
+        keys: [],
+        rows: [],
+        totalRows: 0,
+      });
+    }).pipe(Effect.scoped),
+  );
+
   it.live("isolates an exhausted Source Topic from an unrelated Topic over WebSocket", () =>
     Effect.gen(function* () {
       const fixture = yield* SourceFixture.make(Order);

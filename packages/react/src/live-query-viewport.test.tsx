@@ -209,6 +209,118 @@ describe("useLiveQueryViewport", () => {
     await Effect.runPromise(runtime.close);
   });
 
+  it("keeps a FALSE viewport empty when later rows arrive", async () => {
+    const runtime = createInMemoryViewServer(viewServer);
+    const grid = makeGridModel<{ readonly id: string }>();
+
+    function ViewportOwner() {
+      const result = useLiveQueryViewport("orders");
+      useLayoutEffect(() => {
+        const generation = result.viewport.replace({
+          window: { firstRow: 0, lastRow: 9 },
+          query: { select: ["id"], where: [{ type: "FALSE" }], orderBy: [] },
+          sink: grid.sink,
+        });
+        return generation.release;
+      }, [result.viewport]);
+      return <output role="status">{`${result.status}:${result.totalRows}`}</output>;
+    }
+
+    const view = await render(
+      <ViewServerClientProvider client={runtime.liveClient}>
+        <ViewportOwner />
+      </ViewServerClientProvider>,
+    );
+    await expect.poll(grid.rowCount).toBe(0);
+    await expect
+      .poll(async () => {
+        const health = await Effect.runPromise(runtime.client.health());
+        return health.engine.topics.orders.activeSubscriptions;
+      })
+      .toBe(1);
+    await expect.element(view.getByRole("status")).toHaveTextContent(/^ready:0$/);
+
+    await Effect.runPromise(
+      runtime.client.publish("orders", { id: "future", status: "open", price: 1 }),
+    );
+    await expect.poll(grid.rowCount).toBe(0);
+    await expect
+      .poll(async () => {
+        const health = await Effect.runPromise(runtime.client.health());
+        return health.engine.topics.orders.rowCount;
+      })
+      .toBe(1);
+
+    await view.unmount();
+    await expect
+      .poll(async () => {
+        const health = await Effect.runPromise(runtime.client.health());
+        return health.engine.topics.orders.activeSubscriptions;
+      })
+      .toBe(0);
+    await Effect.runPromise(runtime.close);
+  });
+
+  it("keeps a grouped FALSE viewport empty when later rows arrive", async () => {
+    const runtime = createInMemoryViewServer(viewServer);
+    const grid = makeGridModel<{
+      readonly status: "open" | "closed";
+      readonly rowCount: bigint;
+    }>();
+
+    function GroupedViewportOwner() {
+      const result = useLiveQueryViewport("orders");
+      useLayoutEffect(() => {
+        const generation = result.viewport.replace({
+          window: { firstRow: 0, lastRow: 9 },
+          query: {
+            groupBy: ["status"],
+            aggregates: { rowCount: { aggFunc: "count" } },
+            where: [{ type: "FALSE" }],
+            orderBy: [{ aggregate: "rowCount", direction: "desc" }],
+          },
+          sink: grid.sink,
+        });
+        return generation.release;
+      }, [result.viewport]);
+      return <output role="status">{`${result.status}:${result.totalRows}`}</output>;
+    }
+
+    const view = await render(
+      <ViewServerClientProvider client={runtime.liveClient}>
+        <GroupedViewportOwner />
+      </ViewServerClientProvider>,
+    );
+    await expect.poll(grid.rowCount).toBe(0);
+    await expect
+      .poll(async () => {
+        const health = await Effect.runPromise(runtime.client.health());
+        return health.engine.topics.orders.activeSubscriptions;
+      })
+      .toBe(1);
+    await expect.element(view.getByRole("status")).toHaveTextContent(/^ready:0$/);
+
+    await Effect.runPromise(
+      runtime.client.publish("orders", { id: "future-group", status: "open", price: 1 }),
+    );
+    await expect.poll(grid.rowCount).toBe(0);
+    await expect
+      .poll(async () => {
+        const health = await Effect.runPromise(runtime.client.health());
+        return health.engine.topics.orders.rowCount;
+      })
+      .toBe(1);
+
+    await view.unmount();
+    await expect
+      .poll(async () => {
+        const health = await Effect.runPromise(runtime.client.health());
+        return health.engine.topics.orders.activeSubscriptions;
+      })
+      .toBe(0);
+    await Effect.runPromise(runtime.close);
+  });
+
   it("loads absolute rows, scrolls through setWindow, and releases on unmount", async () => {
     const runtime = createInMemoryViewServer(viewServer);
     await Effect.runPromise(

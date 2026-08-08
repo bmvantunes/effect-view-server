@@ -66,7 +66,9 @@ and other deep values are not filterable.
 `where: []`, empty `AND`/`OR` groups, `NOT` around an empty expression, and an
 empty `in` list normalize away as no filter. This supports dynamically generated
 queries without accidentally hiding all rows. To intentionally return no rows,
-use a real condition whose operand cannot match the data.
+use the source-native match-none expression `{ type: "FALSE" }`. It remains
+false for rows that arrive later and composes normally inside `AND`, `OR`, and
+`NOT` expressions; it does not require enumerating a field's values.
 
 Only this canonical array form is accepted. A field-keyed object such as
 `where: { status: { type: "equals", filter: "open" } }` is invalid.

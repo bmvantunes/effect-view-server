@@ -554,6 +554,7 @@ describe("explicit match-none filter", () => {
         totalRows: 0,
       });
       expect(changesSinceCalls).toBe(0);
+      expect(queryInterface.changesSince(0)).toBeUndefined();
 
       yield* releaseRawQueryExecution(observedQueryInterface, compiled);
     }),

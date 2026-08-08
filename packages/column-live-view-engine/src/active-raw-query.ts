@@ -635,12 +635,19 @@ const registerRawQueryExecution = Effect.fn("ColumnLiveViewEngine.activeQuery.ra
     const execution = yield* makeRawQueryExecution(store, compiled, windows);
     const cacheKey = compiled.plan.queryCacheKey;
     return yield* Effect.sync(() => {
-      store.retainChanges(compiled.plan.partitionKey);
+      const retainsChanges = compiled.plan.predicate.plan.alwaysFalse !== true;
+      if (retainsChanges) {
+        store.retainChanges(compiled.plan.partitionKey);
+      }
       const entry: RawQueryExecutionSlot = {
         cacheKey,
         canonicalPlan: compiled.plan,
         execution,
-        releaseRetainedChanges: () => store.releaseChanges(compiled.plan.partitionKey),
+        releaseRetainedChanges: () => {
+          if (retainsChanges) {
+            store.releaseChanges(compiled.plan.partitionKey);
+          }
+        },
         windows,
         refs: 1,
       };

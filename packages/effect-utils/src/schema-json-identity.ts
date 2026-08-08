@@ -247,6 +247,14 @@ const readOwnDataProperty = (value: object, key: string, path: string): OwnDataP
   return { present: true, value: descriptor.value };
 };
 
+const readArrayLength = (value: Array<unknown>, path: string): number => {
+  try {
+    return value.length;
+  } catch {
+    throw strictJsonReflectionFailure(`${path}.length`);
+  }
+};
+
 const assertNoAccessorProperties = (
   value: unknown,
   path: string,
@@ -378,7 +386,7 @@ const makeStrictJsonObjectKeywordGuard = (root: SchemaAST.AST) => {
           return;
         }
         const [head, ...tail] = rest;
-        const tailThreshold = value.length - tail.length;
+        const tailThreshold = readArrayLength(value, path) - tail.length;
         for (let index = 0; index < tailThreshold + tail.length; index += 1) {
           const item =
             index < elements.length

@@ -426,6 +426,23 @@ describe("Schema JSON identity", () => {
       Schema.toCodecJson(Schema.Array(Schema.ObjectKeyword)).ast,
     );
     expect(arrayGuard("not-an-array")).toStrictEqual(Result.succeed(undefined));
+    const lengthFailure = new Proxy([], {
+      get: (_target, key) => {
+        if (key === "length") {
+          throw new Error("length read failure");
+        }
+        return Reflect.get(_target, key);
+      },
+    });
+    expect(arrayGuard(lengthFailure)).toStrictEqual(
+      Result.fail(
+        StrictJsonMaterializationError.make({
+          path: "$.length",
+          reason: "reflection-failure",
+          message: "Could not inspect JSON value at $.length.",
+        }),
+      ),
+    );
     const sparseArray: Array<unknown> = [];
     sparseArray.length = 1;
     expect(arrayGuard(sparseArray)).toStrictEqual(Result.succeed(undefined));

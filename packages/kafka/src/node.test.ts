@@ -2779,6 +2779,11 @@ describe("Kafka Node Adapter", () => {
       ]),
     ).toThrowError("Kafka Region options are invalid.");
     expect(kafkaNodeInternals.kafkaSourceRegions(validConfig)).toStrictEqual(new Set(["eu"]));
+    expect(
+      kafkaNodeInternals.makeNodeRegion({
+        bootstrapServers: ["one:9092", "two:9092"],
+      }).endpoints,
+    ).toStrictEqual(["one:9092", "two:9092"]);
     expect(() =>
       Reflect.apply(kafkaNodeInternals.kafkaSourceRegions, undefined, [null]),
     ).toThrowError("Kafka Node Layer requires a View Server Config.");

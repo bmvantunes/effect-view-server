@@ -1548,6 +1548,7 @@ const makeNodeRegion = (regionOptions: KafkaNodeRegionSnapshot): KafkaServerRegi
     };
   });
   return {
+    endpoints: regionOptions.bootstrapServers,
     acquire,
     metrics: (input) =>
       bindingState(input).pipe(Effect.map((state) => snapshotMetrics(input.region, state.metrics))),

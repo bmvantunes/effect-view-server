@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import { ViewServerId, defineViewServerConfig } from "@effect-view-server/config";
-import { Deferred, Effect, Exit, Fiber, Schema } from "effect";
+import { Cause, Deferred, Duration, Effect, Exit, Fiber, Schema } from "effect";
 import { HttpServerError } from "effect/unstable/http";
 import { makeDefaultRuntimeDependencies, makeViewServerRuntimeWithDependencies } from "./internal";
 import type { ViewServerRuntimeDependencies } from "./runtime-dependencies";
@@ -66,6 +66,8 @@ describe("generic runtime composition lifecycle", () => {
   it.live("acquires Runtime Core, server, and TCP ingress and closes them in reverse order", () =>
     Effect.gen(function* () {
       const events: Array<string> = [];
+      const heartbeatStatuses: Array<string> = [];
+      let dependencyUpdates = 0;
       const runtime = yield* makeViewServerRuntimeWithDependencies(
         makeTrackedDependencies(events),
         viewServer,
@@ -74,10 +76,25 @@ describe("generic runtime composition lifecycle", () => {
           tcpPublishHost: "127.0.0.1",
           tcpPublishPort: 0,
           websocketPort: 0,
+          reporting: {
+            heartbeatInterval: Duration.hours(1),
+            dependenciesInterval: Duration.hours(1),
+            onHeartbeat: (heartbeat) =>
+              Effect.sync(() => {
+                heartbeatStatuses.push(heartbeat.status);
+              }),
+            onDependenciesUpdate: () =>
+              Effect.sync(() => {
+                dependencyUpdates += 1;
+              }),
+          },
         },
       );
+      yield* Effect.yieldNow;
 
       expect(events).toStrictEqual(["acquire:runtime-core", "acquire:server", "acquire:tcp"]);
+      expect(heartbeatStatuses).toStrictEqual(["Starting", "Ready"]);
+      expect(dependencyUpdates).toBe(0);
 
       yield* runtime.close;
       yield* runtime.close;
@@ -90,6 +107,126 @@ describe("generic runtime composition lifecycle", () => {
         "close:server",
         "close:runtime-core",
       ]);
+      expect(heartbeatStatuses).toStrictEqual(["Starting", "Ready", "Stopping"]);
+      expect(dependencyUpdates).toBe(0);
+    }),
+  );
+
+  it.live("does not let in-flight reporting callbacks hold startup or shutdown", () =>
+    Effect.gen(function* () {
+      const events: Array<string> = [];
+      const heartbeatStatuses: Array<string> = [];
+      const startingInterrupted = yield* Deferred.make<void>();
+      const readyStarted = yield* Deferred.make<void>();
+      const readyInterrupted = yield* Deferred.make<void>();
+      const dependenciesStarted = yield* Deferred.make<void>();
+      const dependenciesInterrupted = yield* Deferred.make<void>();
+      const stoppingInterrupted = yield* Deferred.make<void>();
+      let dependencyCallbacks = 0;
+
+      const runtime = yield* makeViewServerRuntimeWithDependencies(
+        makeTrackedDependencies(events),
+        viewServer,
+        {
+          websocketPort: 0,
+          reporting: {
+            heartbeatInterval: Duration.hours(1),
+            dependenciesInterval: Duration.millis(1),
+            onHeartbeat: (heartbeat) => {
+              heartbeatStatuses.push(heartbeat.status);
+              if (heartbeat.status === "Starting") {
+                return Effect.never.pipe(
+                  Effect.ensuring(Deferred.succeed(startingInterrupted, undefined)),
+                );
+              }
+              if (heartbeat.status === "Ready") {
+                return Deferred.succeed(readyStarted, undefined).pipe(
+                  Effect.andThen(Effect.never),
+                  Effect.ensuring(Deferred.succeed(readyInterrupted, undefined)),
+                );
+              }
+              return Effect.never.pipe(
+                Effect.ensuring(Deferred.succeed(stoppingInterrupted, undefined)),
+              );
+            },
+            onDependenciesUpdate: () => {
+              dependencyCallbacks += 1;
+              return Deferred.succeed(dependenciesStarted, undefined).pipe(
+                Effect.andThen(Effect.never),
+                Effect.ensuring(Deferred.succeed(dependenciesInterrupted, undefined)),
+              );
+            },
+          },
+        },
+      );
+      yield* Deferred.await(startingInterrupted);
+      yield* Deferred.await(readyStarted);
+      yield* Deferred.await(dependenciesStarted);
+
+      yield* runtime.close;
+      yield* Deferred.await(readyInterrupted);
+      yield* Deferred.await(dependenciesInterrupted);
+      yield* Deferred.await(stoppingInterrupted);
+
+      expect(events).toStrictEqual([
+        "acquire:runtime-core",
+        "acquire:server",
+        "close:server",
+        "close:runtime-core",
+      ]);
+      expect(heartbeatStatuses).toStrictEqual(["Starting", "Ready", "Stopping"]);
+      expect(dependencyCallbacks).toBe(1);
+    }),
+  );
+
+  it.live("closes reporting ownership when runtime construction is interrupted", () =>
+    Effect.gen(function* () {
+      const heartbeatStatuses: Array<string> = [];
+      const startingStarted = yield* Deferred.make<void>();
+      const startingInterrupted = yield* Deferred.make<void>();
+      const runtimeCoreAcquiring = yield* Deferred.make<void>();
+      const runtimeCoreInterrupted = yield* Deferred.make<void>();
+      const tracked = makeTrackedDependencies([]);
+      const dependencies = {
+        ...tracked,
+        makeRuntimeCore: () =>
+          Deferred.succeed(runtimeCoreAcquiring, undefined).pipe(
+            Effect.andThen(Effect.never),
+            Effect.ensuring(Deferred.succeed(runtimeCoreInterrupted, undefined)),
+          ),
+      } satisfies ViewServerRuntimeDependencies<typeof viewServer.topics>;
+      const startup = yield* makeViewServerRuntimeWithDependencies(dependencies, viewServer, {
+        websocketPort: 0,
+        reporting: {
+          heartbeatInterval: Duration.hours(1),
+          dependenciesInterval: Duration.hours(1),
+          onHeartbeat: (heartbeat) => {
+            heartbeatStatuses.push(heartbeat.status);
+            return heartbeat.status === "Starting"
+              ? Deferred.succeed(startingStarted, undefined).pipe(
+                  Effect.andThen(Effect.never),
+                  Effect.ensuring(Deferred.succeed(startingInterrupted, undefined)),
+                )
+              : Effect.void;
+          },
+          onDependenciesUpdate: () => Effect.void,
+        },
+      }).pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.await(startingStarted);
+      yield* Deferred.await(runtimeCoreAcquiring);
+
+      yield* Fiber.interrupt(startup);
+      const exit = yield* Fiber.await(startup);
+
+      expect(
+        Exit.match(exit, {
+          onFailure: Cause.hasInterruptsOnly,
+          onSuccess: () => false,
+        }),
+      ).toBe(true);
+      yield* Deferred.await(startingInterrupted);
+      yield* Deferred.await(runtimeCoreInterrupted);
+      expect(heartbeatStatuses).toStrictEqual(["Starting", "Stopping"]);
     }),
   );
 
@@ -147,6 +284,7 @@ describe("generic runtime composition lifecycle", () => {
   it.live("releases Runtime Core when server acquisition fails", () =>
     Effect.gen(function* () {
       const events: Array<string> = [];
+      const heartbeatStatuses: Array<string> = [];
       const tracked = makeTrackedDependencies(events);
       const serverFailure = new HttpServerError.ServeError({
         cause: "server acquisition failed",
@@ -161,17 +299,28 @@ describe("generic runtime composition lifecycle", () => {
           tcpPublishHost: "127.0.0.1",
           tcpPublishPort: 0,
           websocketPort: 0,
+          reporting: {
+            heartbeatInterval: Duration.hours(1),
+            dependenciesInterval: Duration.hours(1),
+            onHeartbeat: (heartbeat) =>
+              Effect.sync(() => {
+                heartbeatStatuses.push(heartbeat.status);
+              }),
+            onDependenciesUpdate: () => Effect.void,
+          },
         }),
       );
 
       expect(failure).toStrictEqual(serverFailure);
       expect(events).toStrictEqual(["acquire:runtime-core", "close:runtime-core"]);
+      expect(heartbeatStatuses).toStrictEqual(["Starting", "Stopping"]);
     }),
   );
 
   it.live("fails startup when Runtime Core becomes fatal during server acquisition", () =>
     Effect.gen(function* () {
       const events: Array<string> = [];
+      const heartbeatStatuses: Array<string> = [];
       const fatalSignal = yield* Deferred.make<{
         readonly _tag: "ViewServerRuntimeError";
         readonly code: "RuntimeUnavailable";
@@ -210,6 +359,15 @@ describe("generic runtime composition lifecycle", () => {
       } satisfies ViewServerRuntimeDependencies<typeof viewServer.topics>;
       const startup = yield* makeViewServerRuntimeWithDependencies(dependencies, viewServer, {
         websocketPort: 0,
+        reporting: {
+          heartbeatInterval: Duration.hours(1),
+          dependenciesInterval: Duration.hours(1),
+          onHeartbeat: (heartbeat) =>
+            Effect.sync(() => {
+              heartbeatStatuses.push(heartbeat.status);
+            }),
+          onDependenciesUpdate: () => Effect.void,
+        },
       }).pipe(Effect.forkChild({ startImmediately: true }));
       yield* Deferred.await(serverAcquiring);
       yield* Deferred.succeed(fatalSignal, fatal);
@@ -220,12 +378,111 @@ describe("generic runtime composition lifecycle", () => {
         "interrupt:server-acquisition",
         "close:runtime-core",
       ]);
+      expect(heartbeatStatuses).toStrictEqual(["Starting", "Stopping"]);
+    }),
+  );
+
+  it.live("closes every runtime resource when the Stopping callback interrupts itself", () =>
+    Effect.gen(function* () {
+      const events: Array<string> = [];
+      const heartbeatStatuses: Array<string> = [];
+      const runtime = yield* makeViewServerRuntimeWithDependencies(
+        makeTrackedDependencies(events),
+        viewServer,
+        {
+          tcpPublishPort: 0,
+          websocketPort: 0,
+          reporting: {
+            heartbeatInterval: Duration.hours(1),
+            dependenciesInterval: Duration.hours(1),
+            onHeartbeat: (heartbeat) =>
+              Effect.sync(() => {
+                heartbeatStatuses.push(heartbeat.status);
+              }).pipe(
+                Effect.andThen(heartbeat.status === "Stopping" ? Effect.interrupt : Effect.void),
+              ),
+            onDependenciesUpdate: () => Effect.void,
+          },
+        },
+      );
+      yield* Effect.yieldNow;
+
+      const closeExit = yield* runtime.close.pipe(Effect.exit);
+
+      expect(Exit.isSuccess(closeExit)).toBe(true);
+      expect(events).toStrictEqual([
+        "acquire:runtime-core",
+        "acquire:server",
+        "acquire:tcp",
+        "close:tcp",
+        "close:server",
+        "close:runtime-core",
+      ]);
+      expect(heartbeatStatuses).toStrictEqual(["Starting", "Ready", "Stopping"]);
+    }),
+  );
+
+  it.live("closes every runtime resource after fatal failure when Stopping interrupts itself", () =>
+    Effect.gen(function* () {
+      const events: Array<string> = [];
+      const heartbeatStatuses: Array<string> = [];
+      const fatal = {
+        _tag: "ViewServerRuntimeError",
+        code: "RuntimeUnavailable",
+        topic: "orders",
+        message: "fatal with interrupting reporter",
+      } as const;
+      const fatalSignal = yield* Deferred.make<typeof fatal>();
+      const runtimeCoreClosed = yield* Deferred.make<void>();
+      const tracked = makeTrackedDependencies(events);
+      const dependencies = {
+        ...tracked,
+        makeRuntimeCore: (config, options) =>
+          tracked.makeRuntimeCore(config, options).pipe(
+            Effect.map((runtimeCore) => ({
+              ...runtimeCore,
+              fatal: Deferred.await(fatalSignal).pipe(Effect.flatMap(Effect.fail)),
+              close: runtimeCore.close.pipe(
+                Effect.ensuring(Deferred.succeed(runtimeCoreClosed, undefined)),
+              ),
+            })),
+          ),
+      } satisfies ViewServerRuntimeDependencies<typeof viewServer.topics>;
+      const runtime = yield* makeViewServerRuntimeWithDependencies(dependencies, viewServer, {
+        websocketPort: 0,
+        reporting: {
+          heartbeatInterval: Duration.hours(1),
+          dependenciesInterval: Duration.hours(1),
+          onHeartbeat: (heartbeat) =>
+            Effect.sync(() => {
+              heartbeatStatuses.push(heartbeat.status);
+            }).pipe(
+              Effect.andThen(heartbeat.status === "Stopping" ? Effect.interrupt : Effect.void),
+            ),
+          onDependenciesUpdate: () => Effect.void,
+        },
+      });
+      yield* Effect.yieldNow;
+
+      yield* Deferred.succeed(fatalSignal, fatal);
+      yield* Deferred.await(runtimeCoreClosed);
+      const closeExit = yield* runtime.close.pipe(Effect.exit);
+
+      expect(Exit.isSuccess(closeExit)).toBe(true);
+      expect(events).toStrictEqual([
+        "acquire:runtime-core",
+        "acquire:server",
+        "close:server",
+        "close:runtime-core",
+      ]);
+      expect(heartbeatStatuses).toStrictEqual(["Starting", "Ready", "Stopping"]);
     }),
   );
 
   it.live("awaits the fatal-triggered scope close from concurrent runtime.close", () =>
     Effect.gen(function* () {
       const events: Array<string> = [];
+      const heartbeatStatuses: Array<string> = [];
       const fatal = {
         _tag: "ViewServerRuntimeError",
         code: "RuntimeUnavailable",
@@ -265,9 +522,21 @@ describe("generic runtime composition lifecycle", () => {
       } satisfies ViewServerRuntimeDependencies<typeof viewServer.topics>;
       const runtime = yield* makeViewServerRuntimeWithDependencies(dependencies, viewServer, {
         websocketPort: 0,
+        reporting: {
+          heartbeatInterval: Duration.hours(1),
+          dependenciesInterval: Duration.hours(1),
+          onHeartbeat: (heartbeat) =>
+            Effect.sync(() => {
+              heartbeatStatuses.push(heartbeat.status);
+            }),
+          onDependenciesUpdate: () => Effect.void,
+        },
       });
+      yield* Effect.yieldNow;
+      expect(heartbeatStatuses).toStrictEqual(["Starting", "Ready"]);
       yield* Deferred.succeed(fatalSignal, fatal);
       yield* Deferred.await(serverCloseStarted);
+      expect(heartbeatStatuses).toStrictEqual(["Starting", "Ready", "Stopping"]);
       const closeFiber = yield* runtime.close.pipe(Effect.forkChild({ startImmediately: true }));
 
       expect(closeFiber.pollUnsafe()).toBeUndefined();
@@ -279,6 +548,7 @@ describe("generic runtime composition lifecycle", () => {
         "close:server",
         "close:runtime-core",
       ]);
+      expect(heartbeatStatuses).toStrictEqual(["Starting", "Ready", "Stopping"]);
     }),
   );
 

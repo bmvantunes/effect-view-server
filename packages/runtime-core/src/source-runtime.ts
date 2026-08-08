@@ -87,6 +87,15 @@ import {
   Stream,
   SubscriptionRef,
 } from "effect";
+import {
+  makeRuntimeSourceReportingState,
+  runtimeSourceReportingSnapshot,
+  sameRuntimeSourceReportingSnapshot,
+  updateRuntimeSourceReportingState,
+  type RuntimeSourceReportingDefinition,
+  type RuntimeSourceReportingSnapshot,
+  type RuntimeSourceReportingState,
+} from "./source-reporting";
 import type { ViewServerRuntimeCoreInternalMutations } from "./source-mutation-pipeline";
 import type { RuntimeCoreBaseHealth } from "./health";
 import { makeTopicSourceBindings } from "./source-binding-resolution";
@@ -199,6 +208,7 @@ type SourceRuntimeEntry = {
   readonly service: RuntimeService;
   readonly lifecycle: RuntimeLifecycle;
   readonly declaration: SourceLifecycleDeclarationAny;
+  readonly reporting: RuntimeSourceReportingDefinition;
 };
 
 export type SourceRuntimeRouteEntry = {
@@ -297,6 +307,10 @@ export type RuntimeCoreSourceManager<Topics extends TopicDefinitions> = {
     queryId: string,
   ) => ViewServerLiveSubscription<Row>;
   readonly overlayHealth: (health: RuntimeCoreBaseHealth<Topics>) => ViewServerHealth<Topics>;
+  readonly reporting: {
+    readonly snapshot: Effect.Effect<RuntimeSourceReportingSnapshot>;
+    readonly changes: Stream.Stream<RuntimeSourceReportingSnapshot>;
+  };
   readonly close: Effect.Effect<void>;
   readonly fatal: Effect.Effect<never, ViewServerRuntimeError>;
 };
@@ -541,6 +555,88 @@ const resolveEntries = Effect.fn("ViewServerRuntimeCore.source.entries.resolve")
         ),
       );
     }
+    const invalidReportingTargets = () =>
+      runtimeError(
+        topic,
+        `Source Adapter ${runtimeDefinition.identity.name} returned invalid dependency reporting targets.`,
+      );
+    const reporting = service.reporting;
+    const dependencyTargets =
+      reporting === undefined
+        ? []
+        : yield* Effect.try({
+            try: () => {
+              const dependencyEffect = reporting.dependencies({
+                topic,
+                lifecycle: runtimeDefinition.lifecycle,
+                definition: runtimeDefinition.options,
+              });
+              return Effect.isEffect(dependencyEffect) ? dependencyEffect : undefined;
+            },
+            catch: invalidReportingTargets,
+          }).pipe(
+            Effect.flatMap((dependencyEffect) => {
+              if (dependencyEffect === undefined) {
+                return Effect.fail(invalidReportingTargets());
+              }
+              return dependencyEffect.pipe(
+                Effect.catchCause((cause) => {
+                  const interruptReasons = cause.reasons.filter(Cause.isInterruptReason);
+                  return interruptReasons.length === 0
+                    ? Effect.fail(invalidReportingTargets())
+                    : Effect.failCause(Cause.fromReasons<ViewServerRuntimeError>(interruptReasons));
+                }),
+              );
+            }),
+            Effect.flatMap((candidates) =>
+              Effect.try({
+                try: () => {
+                  if (!Array.isArray(candidates)) {
+                    throw new TypeError("Dependency targets must be an array.");
+                  }
+                  const capturedTargets: Array<
+                    RuntimeSourceReportingDefinition["targets"][number]
+                  > = [];
+                  const targetNames = new Set<string>();
+                  for (const candidate of candidates) {
+                    if (
+                      typeof candidate !== "object" ||
+                      candidate === null ||
+                      Array.isArray(candidate)
+                    ) {
+                      throw new TypeError("Dependency target entries must be objects.");
+                    }
+                    const target = Reflect.get(candidate, "target");
+                    const endpoints = Reflect.get(candidate, "endpoints");
+                    if (
+                      typeof target !== "string" ||
+                      target.length === 0 ||
+                      targetNames.has(target) ||
+                      !Array.isArray(endpoints)
+                    ) {
+                      throw new TypeError("Dependency target entry is invalid.");
+                    }
+                    const capturedEndpoints: Array<string> = [];
+                    for (const endpoint of endpoints) {
+                      if (typeof endpoint !== "string" || endpoint.length === 0) {
+                        throw new TypeError("Dependency endpoint is invalid.");
+                      }
+                      capturedEndpoints.push(endpoint);
+                    }
+                    targetNames.add(target);
+                    capturedTargets.push(
+                      Object.freeze({
+                        target,
+                        endpoints: Object.freeze(capturedEndpoints),
+                      }),
+                    );
+                  }
+                  return Object.freeze(capturedTargets);
+                },
+                catch: invalidReportingTargets,
+              }),
+            ),
+          );
     entries.set(topic, {
       topic,
       schema: binding.schema,
@@ -548,6 +644,12 @@ const resolveEntries = Effect.fn("ViewServerRuntimeCore.source.entries.resolve")
       service,
       lifecycle,
       declaration,
+      reporting: {
+        dependency: runtimeDefinition.identity.name,
+        lifecycle: runtimeDefinition.lifecycle,
+        targets: dependencyTargets,
+        classifyFailure: service.reporting?.classifyFailure ?? (() => ({ problem: "self" })),
+      },
     });
   }
   return entries;
@@ -2877,6 +2979,50 @@ export const makeRuntimeCoreSourceManager = Effect.fn("ViewServerRuntimeCore.sou
               })),
             );
           const sourceHealthSnapshots = new Map<string, AggregateSourceHealthSnapshot>();
+          const reportingDefinitions = Array.from(entries.values(), ({ reporting }) => reporting);
+          const reportingStates = new Map<string, RuntimeSourceReportingState>();
+          const reportingSnapshot = yield* SubscriptionRef.make(
+            runtimeSourceReportingSnapshot(reportingDefinitions, reportingStates.values()),
+          );
+          const publishReporting = Effect.fn("ViewServerRuntimeCore.source.reporting.publish")(
+            function* () {
+              const next = runtimeSourceReportingSnapshot(
+                reportingDefinitions,
+                reportingStates.values(),
+              );
+              const current = SubscriptionRef.getUnsafe(reportingSnapshot);
+              if (!sameRuntimeSourceReportingSnapshot(current, next)) {
+                yield* SubscriptionRef.set(reportingSnapshot, next);
+              }
+            },
+          );
+          const recordSourceStatus = Effect.fn(
+            "ViewServerRuntimeCore.source.reporting.recordStatus",
+          )(function* (
+            sourceKey: string,
+            entry: SourceRuntimeEntry,
+            status: SourceStatus<unknown, unknown>,
+          ) {
+            sourceStatuses.set(sourceKey, {
+              topic: entry.topic,
+              status,
+            });
+            const reportingState = reportingStates.get(sourceKey);
+            let changed: boolean;
+            if (reportingState === undefined) {
+              reportingStates.set(
+                sourceKey,
+                makeRuntimeSourceReportingState(entry.reporting, status),
+              );
+              changed = true;
+            } else {
+              changed = updateRuntimeSourceReportingState(reportingState, status);
+            }
+            if (changed) {
+              yield* publishReporting();
+            }
+            yield* onHealthChange;
+          });
           let closed = false;
           let leaseSequence = 0n;
 
@@ -2901,17 +3047,19 @@ export const makeRuntimeCoreSourceManager = Effect.fn("ViewServerRuntimeCore.sou
                     health,
                   });
                 }),
-              onStatus: (status) =>
-                Effect.sync(() => {
-                  sourceStatuses.set(sourceKey, {
-                    topic: entry.topic,
-                    status,
-                  });
-                }).pipe(Effect.andThen(onHealthChange)),
+              onStatus: (status) => recordSourceStatus(sourceKey, entry, status),
               onFatal,
             });
             materialized.set(entry.topic, runtime);
+            reportingStates.set(
+              sourceKey,
+              makeRuntimeSourceReportingState(
+                entry.reporting,
+                SubscriptionRef.getUnsafe(runtime.status),
+              ),
+            );
           }
+          yield* publishReporting();
           for (const runtime of materialized.values()) {
             yield* runtime.activate;
           }
@@ -2941,7 +3089,9 @@ export const makeRuntimeCoreSourceManager = Effect.fn("ViewServerRuntimeCore.sou
                   Effect.sync(() => {
                     sourceStatuses.delete(lease.feedKey);
                     sourceHealthSnapshots.delete(lease.feedKey);
+                    reportingStates.delete(lease.feedKey);
                   }),
+                  publishReporting(),
                   onHealthChange,
                 ]);
                 if (Exit.isFailure(deletion)) {
@@ -3044,17 +3194,19 @@ export const makeRuntimeCoreSourceManager = Effect.fn("ViewServerRuntimeCore.sou
                                       health,
                                     });
                                   }),
-                                onStatus: (status) =>
-                                  Effect.sync(() => {
-                                    sourceStatuses.set(feedKey, {
-                                      topic: entry.topic,
-                                      status,
-                                    });
-                                  }).pipe(Effect.andThen(onHealthChange)),
+                                onStatus: (status) => recordSourceStatus(feedKey, entry, status),
                                 onFatal,
                               });
                               yield* runtime.activate;
                               acquiredLease.runtime = runtime;
+                              reportingStates.set(
+                                feedKey,
+                                makeRuntimeSourceReportingState(
+                                  entry.reporting,
+                                  SubscriptionRef.getUnsafe(runtime.status),
+                                ),
+                              );
+                              yield* publishReporting();
                               yield* constructionOptions.leaseHandoff?.beforeReturn ?? Effect.void;
                               const diagnostics = leasedDiagnostics.get(feedKey);
                               if (diagnostics !== undefined) {
@@ -3385,6 +3537,10 @@ export const makeRuntimeCoreSourceManager = Effect.fn("ViewServerRuntimeCore.sou
             subscribeProtocolSourceHealth,
             decorateMaterialized,
             overlayHealth,
+            reporting: {
+              snapshot: SubscriptionRef.get(reportingSnapshot),
+              changes: SubscriptionRef.changes(reportingSnapshot),
+            },
             close,
             fatal,
           };

@@ -29,6 +29,9 @@ export {
 } from "./model";
 export type {
   SourceAdapterRuntimeService,
+  SourceAdapterRuntimeReporting,
+  SourceDependencyTarget,
+  SourceFailureClassification,
   SourceAdapterServiceIdentifier,
   SourceRuntimeLifecycle,
 } from "./model";

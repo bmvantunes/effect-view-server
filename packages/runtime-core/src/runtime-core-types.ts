@@ -7,7 +7,7 @@ import type {
   ViewServerRuntimeError,
 } from "@effect-view-server/config";
 import type { ViewServerRuntimeDecodedMutationClient } from "@effect-view-server/config/internal";
-import type { Duration, Effect } from "effect";
+import type { Duration, Effect, Stream } from "effect";
 import type { RuntimeCoreHealthOverlay, RuntimeCoreTransportHealth } from "./health";
 import type { ViewServerRuntimeCoreInternalLiveClient } from "./live-client-contract";
 import type { ViewServerRuntimeCoreProtocolQuerySubscriber } from "./protocol-query-subscriber";
@@ -17,6 +17,7 @@ import type {
   ViewServerRuntimeCoreServerLiveClient,
 } from "./public-client";
 import type { ViewServerRuntimeCoreInternalClient } from "./runtime-client";
+import type { RuntimeSourceReportingSnapshot } from "./source-reporting";
 
 export type ViewServerRuntimeCoreInstance<Topics extends TopicDefinitions> = {
   readonly client: ViewServerRuntimeCorePublicClient<Topics>;
@@ -26,6 +27,10 @@ export type ViewServerRuntimeCoreInstance<Topics extends TopicDefinitions> = {
   readonly close: Effect.Effect<void>;
   readonly requestHealthRefresh: Effect.Effect<void>;
   readonly refreshHealth: Effect.Effect<ViewServerHealth<Topics>, ViewServerRuntimeError>;
+  readonly reporting: {
+    readonly snapshot: Effect.Effect<RuntimeSourceReportingSnapshot>;
+    readonly changes: Stream.Stream<RuntimeSourceReportingSnapshot>;
+  };
 };
 
 export type ViewServerRuntimeCoreOptions = {

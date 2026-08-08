@@ -93,6 +93,22 @@ describe("Source Adapter low-level conformance driver", () => {
         const service = Option.getOrThrow(
           Context.getOption(context, fixture.adapter.runtimeService),
         );
+        const reporting = Option.getOrThrow(Option.fromUndefinedOr(service.reporting));
+        expect(
+          yield* reporting.dependencies({
+            topic: "rows",
+            lifecycle: "materialized",
+            definition: fixture.callbackBridge.source.options,
+          }),
+        ).toStrictEqual([
+          {
+            target: "callback",
+            endpoints: ["fixture://callback"],
+          },
+        ]);
+        expect(reporting.classifyFailure(SourceFixture.failure("down", "stream"))).toStrictEqual({
+          problem: "dependency",
+        });
         const callbackLifecycle = Option.getOrThrow(Option.fromUndefinedOr(service.materialized));
         const lifetimeScope = yield* Effect.scope;
         expect(

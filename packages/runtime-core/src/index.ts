@@ -26,6 +26,13 @@ export type {
   ViewServerRuntimeCoreOptionsFor,
 } from "./runtime-core-types";
 export type { ViewServerSourceRequirements } from "./source-runtime";
+export type {
+  RuntimeDependency,
+  RuntimeDependencyStatus,
+  RuntimeHeartbeat,
+  RuntimeHeartbeatStatus,
+  RuntimeSourceReportingSnapshot,
+} from "./source-reporting";
 
 type SynchronousRuntimeCoreConfig<Topics extends TopicDefinitions> = ViewServerConfig<Topics> &
   ([ViewServerSourceRequirements<NoInfer<Topics>>] extends [never] ? unknown : never);
@@ -50,6 +57,7 @@ export const makeViewServerRuntimeCore: <const Topics extends TopicDefinitions>(
     close: runtimeCore.close,
     requestHealthRefresh: runtimeCore.requestHealthRefresh,
     refreshHealth: runtimeCore.refreshHealth,
+    reporting: runtimeCore.reporting,
   };
 });
 

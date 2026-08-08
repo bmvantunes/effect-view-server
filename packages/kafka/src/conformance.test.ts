@@ -324,6 +324,7 @@ const makeKafkaConformanceDriver = Effect.fn("KafkaSourceAdapter.conformance.dri
       }
       const decorated: typeof service = {
         adapter: service.adapter,
+        reporting: service.reporting,
         leased: service.leased,
         materialized: {
           ...(materialized.applicationState === undefined

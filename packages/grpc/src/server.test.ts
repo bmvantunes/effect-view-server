@@ -372,6 +372,96 @@ const rawMaterializedSource = (options: unknown): unknown =>
   Reflect.apply(GrpcSourceAdapter.materializedSource, GrpcSourceAdapter, [options]);
 
 describe("gRPC Source Adapter Runtime Core vertical slice", () => {
+  it.effect("reports logical-client endpoints and classifies dependency provenance", () =>
+    Effect.gen(function* () {
+      const controlled = makeControlledClient();
+      const source = grpc.topicSources({ orders: OrdersService }).materialized({
+        client: "orders",
+        method: "stream",
+        request: () => ({ region: "all" }),
+        map: ({ value }) => ({
+          id: value.id,
+          price: value.price,
+          region: value.region,
+        }),
+      });
+      const config = defineViewServerConfig({
+        topics: {
+          orders: { schema: Order, source },
+        },
+      });
+      const context = yield* Effect.scoped(
+        Layer.build(
+          grpcServerLayer(config, {
+            orders: {
+              ...controlled.client,
+              endpoints: ["https://orders.grpc-tky.com"],
+            },
+          }),
+        ),
+      );
+      const service = Context.getUnsafe(context, GrpcSourceAdapter.runtimeService);
+      const reporting = Option.getOrThrow(Option.fromNullishOr(service.reporting));
+
+      expect(
+        yield* reporting.dependencies({
+          topic: "orders",
+          lifecycle: "materialized",
+          definition: source.options,
+        }),
+      ).toStrictEqual([
+        {
+          target: "orders",
+          endpoints: ["https://orders.grpc-tky.com"],
+        },
+      ]);
+      expect(
+        [
+          {
+            _tag: "GrpcConfigurationFailure",
+            client: "orders",
+            phase: "configuration",
+            message: "invalid config",
+          } as const,
+          {
+            _tag: "GrpcRequestConstructionFailure",
+            client: "orders",
+            method: "stream",
+            message: "request failed",
+          } as const,
+          {
+            _tag: "GrpcMappingFailure",
+            client: "orders",
+            method: "stream",
+            message: "mapping failed",
+          } as const,
+        ].map(reporting.classifyFailure),
+      ).toStrictEqual([{ problem: "self" }, { problem: "self" }, { problem: "self" }]);
+      expect(
+        (["GrpcInvocationFailure", "GrpcStreamFailure"] as const).map((_tag) =>
+          reporting.classifyFailure({
+            _tag,
+            client: "orders",
+            method: "stream",
+            code: "Unavailable",
+            message: "service down",
+          }),
+        ),
+      ).toStrictEqual([
+        { problem: "dependency", targets: ["orders"] },
+        { problem: "dependency", targets: ["orders"] },
+      ]);
+      expect(
+        reporting.classifyFailure({
+          _tag: "GrpcCancellationFailure",
+          client: "orders",
+          method: "stream",
+          message: "cancel failed",
+        }),
+      ).toStrictEqual({ problem: "dependency", targets: ["orders"] });
+    }),
+  );
+
   it.effect("short-circuits owned iterator reads after finalization starts", () =>
     Effect.gen(function* () {
       let nextCalls = 0;

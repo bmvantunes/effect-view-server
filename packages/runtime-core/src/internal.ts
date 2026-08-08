@@ -46,6 +46,7 @@ export type {
   ViewServerRuntimeCoreInternalOptionsFor,
 } from "./runtime-core-types";
 export type { ViewServerSourceRequirements } from "./source-runtime";
+export type { RuntimeSourceReportingSnapshot } from "./source-reporting";
 
 export const makeViewServerRuntimeCoreInternal: <const Topics extends TopicDefinitions>(
   config: ViewServerTopicConfig<Topics>,

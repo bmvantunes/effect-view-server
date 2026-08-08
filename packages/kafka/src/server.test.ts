@@ -12,6 +12,7 @@ import {
 import {
   Cause,
   Clock,
+  Context,
   Deferred,
   Effect,
   Exit,
@@ -525,6 +526,80 @@ const makeFaultSource = (keyDecodeStarted?: Deferred.Deferred<void>) => {
 };
 
 describe("Kafka Source Adapter Server", () => {
+  it.effect("reports region endpoints and classifies dependency provenance", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakeRegion("tokyo", []);
+      const layer = makeKafkaServerLayer({
+        brokerContracts: [],
+        retentionSweepIntervalNanos: 900_000_000_000n,
+        consumerGroupPrefix: "reporting",
+        regions: new Map([
+          [
+            "tokyo",
+            {
+              ...fake.runtime,
+              endpoints: ["b-1.kafka-tky.com", "b-2.kafka-tky.com"],
+            },
+          ],
+        ]),
+      });
+      const context = yield* Effect.scoped(Layer.build(layer));
+      const service = Context.getUnsafe(context, KafkaSourceAdapter.runtimeService);
+      const reporting = Option.getOrThrow(Option.fromNullishOr(service.reporting));
+
+      expect(
+        yield* reporting.dependencies({
+          topic: "orders",
+          lifecycle: "materialized",
+          definition: {
+            ...makeSource("earliest").options,
+            regions: ["tokyo"],
+          },
+        }),
+      ).toStrictEqual([
+        {
+          target: "tokyo",
+          endpoints: ["b-1.kafka-tky.com", "b-2.kafka-tky.com"],
+        },
+      ]);
+      expect(
+        [
+          { _tag: "KafkaConfigurationFailure", message: "invalid config" } as const,
+          {
+            _tag: "KafkaMappingFailure",
+            region: "tokyo",
+            topic: "orders",
+            message: "mapping failed",
+          } as const,
+        ].map(reporting.classifyFailure),
+      ).toStrictEqual([{ problem: "self" }, { problem: "self" }]);
+      expect(
+        (
+          [
+            "KafkaAcquisitionFailure",
+            "KafkaConsumeFailure",
+            "KafkaDecodeFailure",
+            "KafkaCommitFailure",
+            "KafkaReleaseFailure",
+          ] as const
+        ).map((_tag) =>
+          reporting.classifyFailure({
+            _tag,
+            region: "tokyo",
+            topic: "orders",
+            message: "dependency failed",
+          }),
+        ),
+      ).toStrictEqual([
+        { problem: "dependency", targets: ["tokyo"] },
+        { problem: "dependency", targets: ["tokyo"] },
+        { problem: "dependency", targets: ["tokyo"] },
+        { problem: "dependency", targets: ["tokyo"] },
+        { problem: "dependency", targets: ["tokyo"] },
+      ]);
+    }),
+  );
+
   it.effect("enforces epoch time, start, and broker fallback invariants", () =>
     Effect.gen(function* () {
       expect(kafkaServerInternals.epochNanosFromWallMillis(1_234)).toBe(1_234_000_000n);

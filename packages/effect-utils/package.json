@@ -10,6 +10,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./value-semantics": {
+      "types": "./dist/value-semantics.d.ts",
+      "import": "./dist/value-semantics.js"
     }
   },
   "scripts": {

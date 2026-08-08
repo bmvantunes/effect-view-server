@@ -299,7 +299,17 @@ export const packageSurfacePolicy = {
       },
       directory: "effect-utils",
       packageName: "@effect-view-server/effect-utils",
-      entrypoints: [{ exportKey: ".", sourceEntrypoint: "src/index.ts" }],
+      entrypoints: [
+        { exportKey: ".", sourceEntrypoint: "src/index.ts" },
+        {
+          exportKey: "./value-semantics",
+          sourceEntrypoint: "src/value-semantics.ts",
+          facade: {
+            exportKey: "./value-semantics",
+            sourceEntrypoint: "src/value-semantics.ts",
+          },
+        },
+      ],
     },
     {
       architecture: {
@@ -634,6 +644,17 @@ export const packageSurfacePolicy = {
       forbidden: [],
       required: ["ignoreLoggedTypedFailuresPreserveNonTypedFailures"],
       workspaceSpecifier: "@effect-view-server/effect-utils",
+    },
+    {
+      forbidden: [],
+      required: [
+        "compareTrustedWireSafeBigDecimal",
+        "compareWireSafeBigDecimal",
+        "inspectWireSafeBigDecimal",
+        "isWireSafeBigDecimal",
+        "wireSafeBigDecimalSemanticKey",
+      ],
+      workspaceSpecifier: "@effect-view-server/effect-utils/value-semantics",
     },
     {
       forbidden: [

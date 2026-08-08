@@ -393,7 +393,7 @@ const pendingTagMatchesHead = (execution, version) => {
   return headTarget !== undefined && pendingTarget === headTarget;
 };
 
-const preparePublicPackage = ({
+export const preparePublicPackage = ({
   publicPackageDirectory,
   packageJson,
   publishDirectory,

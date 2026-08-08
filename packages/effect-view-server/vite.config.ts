@@ -11,6 +11,7 @@ export default defineConfig({
           "@effect-view-server/client#build",
           "@effect-view-server/column-live-view-engine#build",
           "@effect-view-server/config#build",
+          "@effect-view-server/effect-utils#build",
           "@effect-view-server/grpc#build",
           "@effect-view-server/in-memory#build",
           "@effect-view-server/kafka#build",
@@ -57,6 +58,7 @@ export default defineConfig({
       "src/source-adapter.ts",
       "src/source-adapter-server.ts",
       "src/source-adapter-testing.ts",
+      "src/value-semantics.ts",
     ],
     {
       alias: {

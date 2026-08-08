@@ -14,6 +14,7 @@ import { kafka } from "effect-view-server/kafka/contract";
 import { kafkaNode } from "effect-view-server/kafka/node";
 import { grpc } from "effect-view-server/grpc/contract";
 import { grpcNode } from "effect-view-server/grpc/node";
+import { inspectWireSafeBigDecimal } from "effect-view-server/value-semantics";
 ```
 
 Adapter tests and reusable conformance suites are exported from
@@ -48,6 +49,13 @@ viewSchema.admitClass(Profile);
 ```
 
 Class methods remain domain behavior and are not exposed as Topic Row columns.
+
+Consumers that must share the View Server's exact BigDecimal boundary semantics
+can import the focused `effect-view-server/value-semantics` subpath. It exposes
+wire-safe admission, canonical semantic keys, and allocation-safe comparison
+without loading the server, transport, or schema runtime surfaces. The functions
+require the package's exact compatible `effect` peer and never coerce a
+BigDecimal through JavaScript `number`.
 
 Live-query filters use one canonical recursive format. The root `where` value is
 an implicit-`AND` array; cross-field Boolean logic uses explicit nested groups:

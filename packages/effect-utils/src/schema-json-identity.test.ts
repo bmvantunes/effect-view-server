@@ -252,6 +252,23 @@ describe("Schema JSON identity", () => {
       /^Expected a plain data record or dense array at \$\.payload\.$/,
     );
 
+    const transformedUnionObjectKeywordIdentity = makeSchemaJsonIdentity(
+      Schema.Union([
+        Schema.String.pipe(
+          Schema.encodeTo(Schema.Struct({ payload: Schema.ObjectKeyword }), {
+            decode: SchemaGetter.transform(() => "decoded"),
+            encode: SchemaGetter.transform(() => ({
+              payload: new Map([["venue", "xnys"]]),
+            })),
+          }),
+        ),
+        Schema.Number,
+      ]),
+    );
+    expect(() => transformedUnionObjectKeywordIdentity.canonicalKey("input")).toThrow(
+      /^Expected a plain data record or dense array at \$\.payload\.$/,
+    );
+
     let transformedEncodeCalls = 0;
     const validTransformedObjectKeywordIdentity = makeSchemaJsonIdentity(
       Schema.String.pipe(

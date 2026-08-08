@@ -327,7 +327,9 @@ const makeStrictJsonObjectKeywordGuard = (root: SchemaAST.AST) => {
 
     if (SchemaAST.isUnion(ast)) {
       const members = ast.types.map((member) => ({
-        is: Schema.is(Schema.make<Schema.Codec<unknown, unknown, never, never>>(member)),
+        is: Schema.is(
+          Schema.make<Schema.Codec<unknown, unknown, never, never>>(SchemaAST.toEncoded(member)),
+        ),
         guard: compile(member),
       }));
       implementation = (value, path) => {

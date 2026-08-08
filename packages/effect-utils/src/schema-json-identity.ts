@@ -181,7 +181,7 @@ const strictJson = (value: unknown): Schema.Json => {
   return materialized.success;
 };
 
-type StrictJsonObjectKeywordGuard = (value: unknown, path: string) => void;
+type StrictJsonObjectKeywordGuard = (value: unknown, path: string) => unknown;
 type StrictJsonGuardSide = "decoded" | "encoded";
 
 const simplePathKey = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
@@ -248,6 +248,28 @@ const readOwnDataProperty = (value: object, key: string, path: string): OwnDataP
   return { present: true, value: descriptor.value };
 };
 
+const cloneWithReplacements = (
+  value: object,
+  replacements: ReadonlyMap<string, unknown>,
+): object => {
+  const output = Array.isArray(value) ? [] : Object.create(Object.getPrototypeOf(value));
+  for (const key of Reflect.ownKeys(value)) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (descriptor !== undefined) {
+      Object.defineProperty(output, key, descriptor);
+    }
+  }
+  for (const [key, replacement] of replacements) {
+    Object.defineProperty(output, key, {
+      configurable: true,
+      enumerable: true,
+      value: replacement,
+      writable: true,
+    });
+  }
+  return output;
+};
+
 const readArrayLength = (value: Array<unknown>, path: string): number => {
   try {
     return value.length;
@@ -302,7 +324,7 @@ const makeStrictJsonObjectKeywordGuard = (root: SchemaAST.AST, side: StrictJsonG
       return cached;
     }
 
-    let implementation: StrictJsonObjectKeywordGuard = () => undefined;
+    let implementation: StrictJsonObjectKeywordGuard = (value) => value;
     const guard: StrictJsonObjectKeywordGuard = (value, path) => implementation(value, path);
     compiled.set(ast, guard);
 
@@ -312,6 +334,7 @@ const makeStrictJsonObjectKeywordGuard = (root: SchemaAST.AST, side: StrictJsonG
         if (Result.isFailure(materialized)) {
           throw rebaseStrictJsonMaterializationError(materialized.failure, path);
         }
+        return materialized.success;
       };
       return guard;
     }
@@ -337,7 +360,8 @@ const makeStrictJsonObjectKeywordGuard = (root: SchemaAST.AST, side: StrictJsonG
       }));
       implementation = (value, path) => {
         assertNoAccessorProperties(value, path);
-        members.find((member) => member.is(value))?.guard(value, path);
+        const member = members.find((candidate) => candidate.is(value));
+        return member === undefined ? value : member.guard(value, path);
       };
       return guard;
     }
@@ -354,31 +378,62 @@ const makeStrictJsonObjectKeywordGuard = (root: SchemaAST.AST, side: StrictJsonG
         }));
       const indexes = ast.indexSignatures.map((index) => ({
         accepts: Schema.is(
-          Schema.make<Schema.Codec<unknown, unknown, never, never>>(index.parameter),
+          Schema.make<Schema.Codec<unknown, unknown, never, never>>(
+            side === "encoded" ? SchemaAST.toEncoded(index.parameter) : index.parameter,
+          ),
         ),
         guard: compile(index.type),
       }));
       implementation = (value, path) => {
         if (value === null || (typeof value !== "object" && typeof value !== "function")) {
-          return;
+          return value;
         }
+        const enumerableValues = new Map<string, unknown>();
+        const replacements = new Map<string, unknown>();
+        const readProperty = (name: string, propertyPath: string): OwnDataProperty =>
+          enumerableValues.has(name)
+            ? { present: true, value: enumerableValues.get(name) }
+            : readOwnDataProperty(value, name, propertyPath);
         for (const property of properties) {
           const propertyPath = appendStrictJsonPropertyPath(path, property.name);
-          const propertyValue = readOwnDataProperty(value, property.name, propertyPath);
+          const propertyValue = readProperty(property.name, propertyPath);
           if (propertyValue.present) {
-            property.guard(propertyValue.value, propertyPath);
-          }
-        }
-        for (const key of Object.keys(value)) {
-          const index = indexes.find((candidate) => candidate.accepts(key));
-          if (index !== undefined) {
-            const propertyPath = appendStrictJsonPropertyPath(path, key);
-            const propertyValue = readOwnDataProperty(value, key, propertyPath);
-            if (propertyValue.present) {
-              index.guard(propertyValue.value, propertyPath);
+            enumerableValues.set(property.name, propertyValue.value);
+            const snapshot = property.guard(propertyValue.value, propertyPath);
+            if (snapshot !== propertyValue.value) {
+              replacements.set(property.name, snapshot);
             }
           }
         }
+        let keys: ReadonlyArray<string> = [];
+        if (indexes.length > 0) {
+          try {
+            keys = Object.keys(value);
+          } catch {
+            throw strictJsonReflectionFailure(path);
+          }
+          for (const key of keys) {
+            const propertyPath = appendStrictJsonPropertyPath(path, key);
+            const propertyValue = readProperty(key, propertyPath);
+            if (propertyValue.present) {
+              enumerableValues.set(key, propertyValue.value);
+            }
+          }
+        }
+        for (const key of keys) {
+          const index = indexes.find((candidate) => candidate.accepts(key));
+          if (index !== undefined) {
+            const propertyPath = appendStrictJsonPropertyPath(path, key);
+            const propertyValue = readProperty(key, propertyPath);
+            if (propertyValue.present) {
+              const snapshot = index.guard(propertyValue.value, propertyPath);
+              if (snapshot !== propertyValue.value) {
+                replacements.set(key, snapshot);
+              }
+            }
+          }
+        }
+        return replacements.size === 0 ? value : cloneWithReplacements(value, replacements);
       };
       return guard;
     }
@@ -388,10 +443,11 @@ const makeStrictJsonObjectKeywordGuard = (root: SchemaAST.AST, side: StrictJsonG
       const rest = ast.rest.map(compile);
       implementation = (value, path) => {
         if (!Array.isArray(value)) {
-          return;
+          return value;
         }
         const [head, ...tail] = rest;
         const tailThreshold = readArrayLength(value, path) - tail.length;
+        const replacements = new Map<string, unknown>();
         for (let index = 0; index < tailThreshold + tail.length; index += 1) {
           const item =
             index < elements.length
@@ -402,9 +458,13 @@ const makeStrictJsonObjectKeywordGuard = (root: SchemaAST.AST, side: StrictJsonG
           const itemPath = `${path}[${index}]`;
           const entry = readOwnDataProperty(value, String(index), itemPath);
           if (entry.present) {
-            item?.(entry.value, itemPath);
+            const snapshot = item?.(entry.value, itemPath) ?? entry.value;
+            if (snapshot !== entry.value) {
+              replacements.set(String(index), snapshot);
+            }
           }
         }
+        return replacements.size === 0 ? value : cloneWithReplacements(value, replacements);
       };
     }
 
@@ -412,7 +472,7 @@ const makeStrictJsonObjectKeywordGuard = (root: SchemaAST.AST, side: StrictJsonG
   };
 
   const guard = compile(root);
-  return (value: unknown): void => guard(value, "$");
+  return (value: unknown): unknown => guard(value, "$");
 };
 
 export const schemaAstContainsObjectKeyword = (root: SchemaAST.AST): boolean => {
@@ -450,16 +510,18 @@ export type StrictJsonSchemaGuard = (
   value: unknown,
 ) => Result.Result<void, StrictJsonMaterializationError>;
 
-export const makeStrictJsonSchemaGuard = (
+export type StrictJsonSchemaSnapshot = (
+  value: unknown,
+) => Result.Result<unknown, StrictJsonMaterializationError>;
+
+export const makeStrictJsonSchemaSnapshot = (
   root: SchemaAST.AST,
   side: "decoded" | "encoded" = "decoded",
-): StrictJsonSchemaGuard => {
-  const guard = makeStrictJsonObjectKeywordGuard(root, side);
+): StrictJsonSchemaSnapshot => {
+  const snapshot = makeStrictJsonObjectKeywordGuard(root, side);
   return (value) =>
     Result.try({
-      try: () => {
-        guard(value);
-      },
+      try: () => snapshot(value),
       catch: (error) =>
         error instanceof StrictJsonMaterializationError
           ? error
@@ -469,6 +531,14 @@ export const makeStrictJsonSchemaGuard = (
               message: "Could not inspect JSON value at $.",
             }),
     });
+};
+
+export const makeStrictJsonSchemaGuard = (
+  root: SchemaAST.AST,
+  side: "decoded" | "encoded" = "decoded",
+): StrictJsonSchemaGuard => {
+  const snapshot = makeStrictJsonSchemaSnapshot(root, side);
+  return (value) => Result.map(snapshot(value), () => undefined);
 };
 
 export const makeSchemaJsonIdentity = <Type>(
@@ -485,7 +555,7 @@ export const makeSchemaJsonIdentity = <Type>(
   const normalize = makeSchemaJsonNormalizer(codec.ast);
   const containsObjectKeyword = schemaAstContainsObjectKeyword(codec.ast);
   const strictDecodedObjectKeywordGuard = makeStrictJsonSchemaGuard(codec.ast);
-  const strictEncodedObjectKeywordGuard = makeStrictJsonSchemaGuard(codec.ast, "encoded");
+  const strictEncodedObjectKeywordSnapshot = makeStrictJsonSchemaSnapshot(codec.ast, "encoded");
   const strictEncoded = (value: unknown): Schema.Json => {
     if (!containsObjectKeyword) {
       return strictJson(encode(value));
@@ -495,11 +565,11 @@ export const makeSchemaJsonIdentity = <Type>(
       throw guardResult.failure;
     }
     const encodedValue = encodeRaw(value);
-    const encodedGuardResult = strictEncodedObjectKeywordGuard(encodedValue);
-    if (Result.isFailure(encodedGuardResult)) {
-      throw encodedGuardResult.failure;
+    const encodedSnapshotResult = strictEncodedObjectKeywordSnapshot(encodedValue);
+    if (Result.isFailure(encodedSnapshotResult)) {
+      throw encodedSnapshotResult.failure;
     }
-    return strictJson(encodeJson(encodedValue));
+    return strictJson(encodeJson(encodedSnapshotResult.success));
   };
   const canonicalJson = (value: unknown): Schema.Json => normalize(strictEncoded(value));
   const canonicalKey =

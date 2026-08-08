@@ -8,9 +8,11 @@ export {
 export {
   makeSchemaJsonIdentity,
   makeStrictJsonSchemaGuard,
+  makeStrictJsonSchemaSnapshot,
   schemaAstContainsObjectKeyword,
   type SchemaJsonIdentity,
   type StrictJsonSchemaGuard,
+  type StrictJsonSchemaSnapshot,
 } from "./schema-json-identity";
 export {
   compareWireSafeBigDecimalComparisonMetadata,

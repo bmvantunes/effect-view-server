@@ -1,9 +1,19 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Chunk, HashMap, HashSet, Option, Result, Schema, SchemaGetter } from "effect";
+import {
+  Chunk,
+  HashMap,
+  HashSet,
+  Option,
+  Result,
+  Schema,
+  SchemaGetter,
+  SchemaTransformation,
+} from "effect";
 import {
   makeSchemaJsonIdentity,
   makeSchemaJsonNormalizer,
   makeStrictJsonSchemaGuard,
+  makeStrictJsonSchemaSnapshot,
 } from "./schema-json-identity";
 import { StrictJsonMaterializationError } from "./strict-json-materialization";
 
@@ -287,6 +297,45 @@ describe("Schema JSON identity", () => {
     expect(transformedEncodeCalls).toBe(1);
   });
 
+  it("guards transformed record keys on the encoded side", () => {
+    const transformedKey = Schema.String.pipe(Schema.decode(SchemaTransformation.snakeToCamel()));
+    const identity = makeSchemaJsonIdentity(Schema.Record(transformedKey, Schema.ObjectKeyword));
+
+    expect(identity.canonicalJson({ payloadValue: { venue: "xnys" } })).toStrictEqual({
+      payload_value: { venue: "xnys" },
+    });
+    expect(() => identity.canonicalKey({ payloadValue: new Map([["venue", "xnys"]]) })).toThrow(
+      /^Expected a plain data record or dense array at \$\.payloadValue\.$/,
+    );
+  });
+
+  it("passes the guarded ObjectKeyword snapshot into JSON encoding", () => {
+    let reads = 0;
+    const mutablePayload = new Proxy(
+      { venue: "xnys" },
+      {
+        get: (target, key, receiver) => {
+          if (key === "venue") {
+            reads += 1;
+            return reads === 1 ? new Map([["venue", "xnys"]]) : Reflect.get(target, key, receiver);
+          }
+          return Reflect.get(target, key, receiver);
+        },
+      },
+    );
+    const identity = makeSchemaJsonIdentity(
+      Schema.String.pipe(
+        Schema.encodeTo(Schema.Struct({ payload: Schema.ObjectKeyword }), {
+          decode: SchemaGetter.transform(() => "decoded"),
+          encode: SchemaGetter.transform(() => ({ payload: mutablePayload })),
+        }),
+      ),
+    );
+
+    expect(identity.canonicalJson("input")).toStrictEqual({ payload: { venue: "xnys" } });
+    expect(reads).toBe(0);
+  });
+
   it("keeps the encoded normalizer total for non-matching JSON shapes", () => {
     const objectNormalizer = makeSchemaJsonNormalizer(
       Schema.toCodecJson(Schema.Struct({ value: Schema.String })).ast,
@@ -433,6 +482,52 @@ describe("Schema JSON identity", () => {
       },
     );
     expect(recordGuard(flappingDescriptor)).toStrictEqual(Result.succeed(undefined));
+
+    expect(recordGuard({ value: null })).toStrictEqual(Result.succeed(undefined));
+    const unmatchedRecordGuard = makeStrictJsonSchemaGuard(
+      Schema.toCodecJson(Schema.Record(Schema.Number, Schema.ObjectKeyword)).ast,
+    );
+    expect(unmatchedRecordGuard({ other: {} })).toStrictEqual(Result.succeed(undefined));
+
+    let cloneDescriptorReads = 0;
+    const cloneDescriptorFlapping = new Proxy(
+      {},
+      {
+        ownKeys: () => ["payload"],
+        getOwnPropertyDescriptor: () => {
+          cloneDescriptorReads += 1;
+          return cloneDescriptorReads === 3
+            ? undefined
+            : { configurable: true, enumerable: true, value: { venue: "xnys" } };
+        },
+      },
+    );
+    expect(recordGuard(cloneDescriptorFlapping)).toStrictEqual(Result.succeed(undefined));
+
+    const keysFailure = new Proxy(
+      {},
+      {
+        ownKeys: () => {
+          throw new Error("keys failure");
+        },
+      },
+    );
+    expect(recordGuard(keysFailure)).toStrictEqual(
+      Result.fail(
+        StrictJsonMaterializationError.make({
+          path: "$",
+          reason: "reflection-failure",
+          message: "Could not inspect JSON value at $.",
+        }),
+      ),
+    );
+
+    const defaultSnapshot = makeStrictJsonSchemaSnapshot(
+      Schema.toCodecJson(Schema.Struct({ payload: Schema.ObjectKeyword })).ast,
+    );
+    expect(defaultSnapshot({ payload: { venue: "xnys" } })).toStrictEqual(
+      Result.succeed({ payload: { venue: "xnys" } }),
+    );
 
     const descriptorFailure = new Proxy(
       { value: "descriptor-failure" },

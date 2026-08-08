@@ -768,6 +768,7 @@ describe("Subscription lifecycle ownership", () => {
             patchedEvaluationCount: 0,
           }),
           incremental: false,
+          retainsChanges: false,
           latest: () => evaluation,
         };
       };

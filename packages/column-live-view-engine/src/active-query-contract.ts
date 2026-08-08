@@ -76,6 +76,7 @@ export type MaterializedQueryExecution = {
     readonly patchedEvaluationCount: number;
   };
   readonly incremental: boolean;
+  readonly retainsChanges: boolean;
   readonly latest: () => QueryEvaluation<RowObject>;
 };
 

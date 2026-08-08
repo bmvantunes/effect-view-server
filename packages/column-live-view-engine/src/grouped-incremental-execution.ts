@@ -40,6 +40,7 @@ type CountOnlyIncrementalGroupState = {
 export type IncrementalGroupedQueryExecution = {
   readonly diagnostics: () => GroupedIncrementalExecutionDiagnosticCounts;
   readonly incremental: boolean;
+  readonly retainsChanges: boolean;
   readonly latest: () => QueryEvaluation<RowObject>;
 };
 
@@ -796,6 +797,7 @@ const makeFallbackGroupedQueryExecution = <Row extends RowObject, ResultRow exte
   return {
     diagnostics: counts,
     incremental: false,
+    retainsChanges: false,
     latest: () => {
       const storeVersion = store.version();
       if (snapshot.version !== storeVersion) {
@@ -858,6 +860,9 @@ export const makeIncrementalGroupedQueryExecution = <
     diagnostics: localDiagnostics.counts,
     get incremental() {
       return fallback === undefined;
+    },
+    get retainsChanges() {
+      return fallback === undefined && compiled.plan.alwaysFalse !== true;
     },
     latest: () => {
       if (fallback !== undefined) {

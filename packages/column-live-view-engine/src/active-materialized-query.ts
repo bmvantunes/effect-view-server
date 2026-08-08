@@ -93,7 +93,7 @@ const registerMaterializedQueryExecution = <ResultRow extends RowObject>(
     store.releaseChanges(partitionKey);
   };
   const compilation = makeCompilation(releaseRetainedChanges);
-  if (compilation.execution.incremental) {
+  if (compilation.execution.retainsChanges) {
     retainedChanges = true;
     store.retainChanges(partitionKey);
   }

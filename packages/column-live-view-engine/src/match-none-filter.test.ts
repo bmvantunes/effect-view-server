@@ -18,9 +18,11 @@ import type { TopicRawWindowScanPlan } from "./raw-window-scan";
 import { evaluateCompiledGroupedQuery, prepareRuntimeGroupedQuery } from "./grouped-query-compiler";
 import { InvalidRowError } from "./engine-errors";
 import {
+  acquireMaterializedQueryExecution,
   acquireRawQueryExecution,
   activeQueryTestInterface,
   activeQueryTestMetadata,
+  releaseMaterializedQueryExecution,
   releaseRawQueryExecution,
 } from "../test-harness/active-query-interface";
 import { publishTopicStoreRow, TopicStore } from "./topic-store";
@@ -614,6 +616,8 @@ describe("explicit match-none filter", () => {
         () => undefined,
       );
 
+      expect(execution.incremental).toBe(true);
+      expect(execution.retainsChanges).toBe(false);
       expect(execution.latest()).toStrictEqual({
         rows: [],
         keys: [],
@@ -631,6 +635,48 @@ describe("explicit match-none filter", () => {
       });
       expect(changesSinceCalls).toBe(0);
       expect(scanCalls).toBe(0);
+    }),
+  );
+
+  it.effect("does not retain changes for an active constant FALSE grouped query", () =>
+    Effect.gen(function* () {
+      const store = new TopicStore("match-none-active-grouped", Row, "id", () => {});
+      const queryInterface = activeQueryTestInterface(store);
+      const compiled = yield* prepareRuntimeGroupedQuery(
+        "match-none-active-grouped",
+        activeQueryTestMetadata(store),
+        {
+          groupBy: ["status"],
+          aggregates: { rowCount: { aggFunc: "count" } },
+          where: [{ type: "FALSE" }],
+        },
+      );
+      const execution = yield* acquireMaterializedQueryExecution(
+        queryInterface,
+        compiled.plan.cacheKey,
+        compiled.plan.resultSemantics,
+        (releaseRetainedChanges) =>
+          makeIncrementalGroupedQueryExecution(queryInterface, compiled, releaseRetainedChanges),
+      );
+
+      yield* publishTopicStoreRow(
+        store,
+        { id: "a", status: "open", value: 1 },
+        (topic, message) => new InvalidRowError({ topic, message }),
+      );
+
+      expect(queryInterface.changesSince(0)).toBeUndefined();
+      expect(execution.initial("after")).toStrictEqual({
+        type: "snapshot",
+        topic: "match-none-active-grouped",
+        queryId: "after",
+        version: 1,
+        keys: [],
+        rows: [],
+        totalRows: 0,
+      });
+
+      yield* releaseMaterializedQueryExecution(queryInterface, compiled.plan.cacheKey);
     }),
   );
 });

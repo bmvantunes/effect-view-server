@@ -192,6 +192,7 @@ describe("column-live-view-engine Active Query materialization", () => {
         () => ({
           diagnostics: emptyDiagnostics,
           incremental: false,
+          retainsChanges: false,
           latest: () => emptyEvaluation(queryInterface.version()),
         }),
       );
@@ -202,6 +203,7 @@ describe("column-live-view-engine Active Query materialization", () => {
         () => ({
           diagnostics: emptyDiagnostics,
           incremental: false,
+          retainsChanges: false,
           latest: () => emptyEvaluation(isolatedQueryInterface.version()),
         }),
       );

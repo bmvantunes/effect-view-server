@@ -7,6 +7,21 @@ import {
   requireProtocolJsonArray,
 } from "./protocol-json-value";
 
+const CustomObjectDeclaration = Schema.declareConstructor()(
+  [Schema.ObjectKeyword],
+  () => (input) => Effect.succeed(input),
+  {
+    representation: { id: "custom/Box", payload: null },
+    toCodecJson: ([value]) =>
+      Schema.link()(Schema.Struct({ value }), {
+        decode: SchemaGetter.transform<{ readonly value: object }, { readonly value: object }>(
+          (encoded) => ({ value: encoded.value }),
+        ),
+        encode: SchemaGetter.transform<{ readonly value: object }, unknown>(() => ({ value: {} })),
+      }),
+  },
+);
+
 describe("protocol JSON values", () => {
   it.effect("accepts deep JSON DAGs and returns a typed JSON value", () =>
     Effect.gen(function* () {
@@ -178,6 +193,17 @@ describe("protocol JSON values", () => {
       );
 
       expect(error).toBe("Expected a plain data record or dense array at $.value.");
+
+      const customDeclarationError = yield* Effect.flip(
+        encodeJsonFieldValue(
+          CustomObjectDeclaration,
+          { value: new Map([["venue", "xnys"]]) },
+          errors,
+        ),
+      );
+      expect(customDeclarationError).toBe(
+        "Cannot safely validate ObjectKeyword data inside an unknown schema declaration at $.",
+      );
     }),
   );
 

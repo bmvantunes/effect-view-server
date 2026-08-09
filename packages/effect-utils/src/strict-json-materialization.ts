@@ -11,6 +11,7 @@ const StrictJsonMaterializationReasonSchema = Schema.Literals([
   "non-enumerable-property",
   "accessor-property",
   "reflection-failure",
+  "unsupported-schema",
 ]);
 
 export type StrictJsonMaterializationReason = typeof StrictJsonMaterializationReasonSchema.Type;

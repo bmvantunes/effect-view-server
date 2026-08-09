@@ -143,9 +143,26 @@ describe("Topic schema admission", () => {
     expect(viewServerUnsupportedRuntimeFieldDomain(Schema.Option(Schema.Date))).toBe("Date");
     expect(
       viewServerUnsupportedRuntimeFieldDomain(
+        Schema.Struct({ optionalDate: Schema.optionalKey(Schema.Date) }),
+      ),
+    ).toBe("Date");
+    expect(
+      viewServerUnsupportedRuntimeFieldDomain(
         Schema.Option(Schema.Union([Schema.Number, Schema.BigInt])),
       ),
     ).toBe("mixed numeric domain: bigint, number");
+    expect(
+      viewServerUnsupportedRuntimeFieldDomain(
+        Schema.Struct({
+          optionalNumeric: Schema.optionalKey(Schema.Union([Schema.Number, Schema.BigInt])),
+        }),
+      ),
+    ).toBe("mixed numeric domain: bigint, number");
+    expect(
+      viewServerUnsupportedRuntimeFieldDomain(
+        Schema.Struct({ optionalString: Schema.optionalKey(Schema.String) }),
+      ),
+    ).toBe(undefined);
     expect(viewServerUnsupportedRuntimeFieldDomain(viewSchema.Option(Schema.String))).toBe(
       undefined,
     );

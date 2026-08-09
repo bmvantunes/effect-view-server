@@ -2,6 +2,7 @@ import { describe, expect, it } from "@effect/vitest";
 import {
   Cause,
   Chunk,
+  Effect,
   Exit,
   HashMap,
   HashSet,
@@ -27,6 +28,19 @@ class Profile extends Schema.Class<Profile>("Profile")({
   name: Schema.String,
 }) {}
 
+const CustomObjectDeclaration = Schema.declareConstructor()(
+  [Schema.ObjectKeyword],
+  () => (input) => Effect.succeed(input),
+  {
+    representation: { id: "custom/Box", payload: null },
+    toCodecJson: ([value]) =>
+      Schema.link()(Schema.Struct({ value }), {
+        decode: SchemaGetter.transform((encoded) => ({ value: encoded.value })),
+        encode: SchemaGetter.transform<{ readonly value: object }, unknown>(() => ({ value: {} })),
+      }),
+  },
+);
+
 describe("Schema JSON identity", () => {
   it("keeps the direct string key path byte-identical and validates invalid inputs", () => {
     const identity = makeSchemaJsonIdentity(Schema.String);
@@ -49,6 +63,25 @@ describe("Schema JSON identity", () => {
     expect(setIdentity.canonicalKey(leftSet)).toBe(setIdentity.canonicalKey(rightSet));
     expect(mapIdentity.canonicalJson(leftMap)).toStrictEqual(mapIdentity.canonicalJson(rightMap));
     expect(setIdentity.canonicalJson(leftSet)).toStrictEqual(setIdentity.canonicalJson(rightSet));
+
+    const optionalMapIdentity = makeSchemaJsonIdentity(
+      Schema.optional(Schema.HashMap(Schema.String, Schema.String)),
+    );
+    const optionalSetIdentity = makeSchemaJsonIdentity(
+      Schema.optional(Schema.HashSet(Schema.String)),
+    );
+    const optionalKeySetIdentity = makeSchemaJsonIdentity(
+      Schema.optionalKey(Schema.HashSet(Schema.String)),
+    );
+    expect(optionalMapIdentity.canonicalKey(leftMap)).toBe(
+      optionalMapIdentity.canonicalKey(rightMap),
+    );
+    expect(optionalSetIdentity.canonicalKey(leftSet)).toBe(
+      optionalSetIdentity.canonicalKey(rightSet),
+    );
+    expect(optionalKeySetIdentity.canonicalKey(leftSet)).toBe(
+      optionalKeySetIdentity.canonicalKey(rightSet),
+    );
   });
 
   it("normalizes nested unordered values without changing ordered collections", () => {
@@ -213,14 +246,28 @@ describe("Schema JSON identity", () => {
       Schema.Struct({
         required: Schema.ObjectKeyword,
         optional: Schema.optional(Schema.ObjectKeyword),
+        optionalKey: Schema.optionalKey(Schema.ObjectKeyword),
       }),
     );
     expect(() =>
       optionalObjectKeywordIdentity.canonicalKey({
         required: { venue: "xnys" },
         optional: nonJson,
+        optionalKey: nonJson,
       }),
     ).toThrow(/^Expected a plain data record or dense array at \$\.optional\.$/);
+    expect(() =>
+      optionalObjectKeywordIdentity.canonicalKey({
+        required: { venue: "xnys" },
+        optionalKey: nonJson,
+      }),
+    ).toThrow(/^Expected a plain data record or dense array at \$\.optionalKey\.$/);
+
+    expect(() =>
+      makeSchemaJsonIdentity(CustomObjectDeclaration).canonicalKey({ value: nonJson }),
+    ).toThrow(
+      /^Cannot safely validate ObjectKeyword data inside an unknown schema declaration at \$\.$/,
+    );
 
     const dottedKeyIdentity = makeSchemaJsonIdentity(
       Schema.Record(Schema.String, Schema.ObjectKeyword),
@@ -307,6 +354,81 @@ describe("Schema JSON identity", () => {
         Schema.toCodecJson(Schema.HashMap(Schema.String, Schema.ObjectKeyword)).ast,
       )("not-a-hash-map"),
     ).toStrictEqual(Result.succeed(undefined));
+    const invalidHashMapIterator = HashMap.make(["key", { venue: "xnys" }]);
+    Object.defineProperty(invalidHashMapIterator, Symbol.iterator, {
+      configurable: true,
+      enumerable: true,
+      value: () => ["not-an-entry"][Symbol.iterator](),
+    });
+    expect(
+      makeStrictJsonSchemaGuard(
+        Schema.toCodecJson(Schema.HashMap(Schema.String, Schema.ObjectKeyword)).ast,
+      )(invalidHashMapIterator),
+    ).toStrictEqual(
+      Result.fail(
+        StrictJsonMaterializationError.make({
+          path: "$.entries[0]",
+          reason: "reflection-failure",
+          message: "Could not inspect JSON value at $.entries[0].",
+        }),
+      ),
+    );
+    const throwingHashMapIterator = HashMap.make(["key", { venue: "xnys" }]);
+    Object.defineProperty(throwingHashMapIterator, Symbol.iterator, {
+      configurable: true,
+      enumerable: true,
+      value: () => {
+        throw new Error("iterator failure");
+      },
+    });
+    expect(
+      makeStrictJsonSchemaGuard(
+        Schema.toCodecJson(Schema.HashMap(Schema.String, Schema.ObjectKeyword)).ast,
+      )(throwingHashMapIterator),
+    ).toStrictEqual(
+      Result.fail(
+        StrictJsonMaterializationError.make({
+          path: "$",
+          reason: "reflection-failure",
+          message: "Could not inspect JSON value at $.",
+        }),
+      ),
+    );
+    const missingHashMapIterator = HashMap.make(["key", { venue: "xnys" }]);
+    Object.defineProperty(missingHashMapIterator, Symbol.iterator, {
+      configurable: true,
+      enumerable: true,
+      value: 1,
+    });
+    expect(
+      makeStrictJsonSchemaGuard(
+        Schema.toCodecJson(Schema.HashMap(Schema.String, Schema.ObjectKeyword)).ast,
+      )(missingHashMapIterator),
+    ).toStrictEqual(Result.succeed(undefined));
+    let hashMapIteratorReads = 0;
+    const accessorHashMapIterator = HashMap.make(["key", { venue: "xnys" }]);
+    Object.defineProperty(accessorHashMapIterator, Symbol.iterator, {
+      configurable: true,
+      enumerable: true,
+      get: () => {
+        hashMapIteratorReads += 1;
+        return () => [][Symbol.iterator]();
+      },
+    });
+    expect(
+      makeStrictJsonSchemaGuard(
+        Schema.toCodecJson(Schema.HashMap(Schema.String, Schema.ObjectKeyword)).ast,
+      )(accessorHashMapIterator),
+    ).toStrictEqual(
+      Result.fail(
+        StrictJsonMaterializationError.make({
+          path: "$[Symbol(Symbol.iterator)]",
+          reason: "accessor-property",
+          message: "Accessor properties are not valid JSON data at $[Symbol(Symbol.iterator)].",
+        }),
+      ),
+    );
+    expect(hashMapIteratorReads).toBe(0);
     expect(
       makeStrictJsonSchemaGuard(Schema.toCodecJson(Schema.HashSet(Schema.ObjectKeyword)).ast)(
         "not-a-hash-set",
@@ -426,10 +548,63 @@ describe("Schema JSON identity", () => {
       ),
     );
     expect(optionReads).toBe(0);
+    let optionTagReads = 0;
+    const accessorOptionTag = Option.some({ venue: "xnys" });
+    Object.defineProperty(accessorOptionTag, "_tag", {
+      configurable: true,
+      enumerable: true,
+      get: () => {
+        optionTagReads += 1;
+        return "Some";
+      },
+    });
+    expect(optionGuard(accessorOptionTag)).toStrictEqual(
+      Result.fail(
+        StrictJsonMaterializationError.make({
+          path: "$._tag",
+          reason: "accessor-property",
+          message: "Accessor properties are not valid JSON data at $._tag.",
+        }),
+      ),
+    );
+    expect(optionTagReads).toBe(0);
+    const nullPrototypeOption = new Proxy(
+      {},
+      {
+        has: () => true,
+        getPrototypeOf: () => null,
+      },
+    );
+    expect(optionGuard(nullPrototypeOption)).toStrictEqual(Result.succeed(undefined));
+    const hostilePrototypeOption = new Proxy(
+      {},
+      {
+        has: () => true,
+        getPrototypeOf: () => {
+          throw new Error("prototype failure");
+        },
+      },
+    );
+    expect(optionGuard(hostilePrototypeOption)).toStrictEqual(
+      Result.fail(
+        StrictJsonMaterializationError.make({
+          path: "$._tag",
+          reason: "reflection-failure",
+          message: "Could not inspect JSON value at $._tag.",
+        }),
+      ),
+    );
 
     const resultGuard = makeStrictJsonSchemaGuard(
       Schema.toCodecJson(Schema.Result(Schema.ObjectKeyword, Schema.ObjectKeyword)).ast,
     );
+    const unknownResultTag = Result.succeed({ venue: "xnys" });
+    Object.defineProperty(unknownResultTag, "_tag", {
+      configurable: true,
+      enumerable: true,
+      value: "Unknown",
+    });
+    expect(resultGuard(unknownResultTag)).toStrictEqual(Result.succeed(undefined));
     const missingSuccess = Result.succeed({ venue: "xnys" });
     Reflect.deleteProperty(missingSuccess, "success");
     expect(resultGuard(missingSuccess)).toStrictEqual(Result.succeed(undefined));
@@ -456,6 +631,26 @@ describe("Schema JSON identity", () => {
       ),
     );
     expect(resultReads).toBe(0);
+    let resultTagReads = 0;
+    const accessorResultTag = Result.succeed({ venue: "xnys" });
+    Object.defineProperty(accessorResultTag, "_tag", {
+      configurable: true,
+      enumerable: true,
+      get: () => {
+        resultTagReads += 1;
+        return "Success";
+      },
+    });
+    expect(resultGuard(accessorResultTag)).toStrictEqual(
+      Result.fail(
+        StrictJsonMaterializationError.make({
+          path: "$._tag",
+          reason: "accessor-property",
+          message: "Accessor properties are not valid JSON data at $._tag.",
+        }),
+      ),
+    );
+    expect(resultTagReads).toBe(0);
 
     const causeReasonGuard = makeStrictJsonSchemaGuard(
       Schema.toCodecJson(Schema.CauseReason(Schema.ObjectKeyword, Schema.ObjectKeyword)).ast,
@@ -486,6 +681,26 @@ describe("Schema JSON identity", () => {
       ),
     );
     expect(causeReads).toBe(0);
+    let causeTagReads = 0;
+    const accessorReasonTag = Cause.fail({ venue: "xnys" }).reasons[0]!;
+    Object.defineProperty(accessorReasonTag, "_tag", {
+      configurable: true,
+      enumerable: true,
+      get: () => {
+        causeTagReads += 1;
+        return "Fail";
+      },
+    });
+    expect(causeReasonGuard(accessorReasonTag)).toStrictEqual(
+      Result.fail(
+        StrictJsonMaterializationError.make({
+          path: "$._tag",
+          reason: "accessor-property",
+          message: "Accessor properties are not valid JSON data at $._tag.",
+        }),
+      ),
+    );
+    expect(causeTagReads).toBe(0);
 
     const causeGuard = makeStrictJsonSchemaGuard(
       Schema.toCodecJson(Schema.Cause(Schema.ObjectKeyword, Schema.ObjectKeyword)).ast,
@@ -511,6 +726,13 @@ describe("Schema JSON identity", () => {
     const missingExit = Exit.succeed({ venue: "xnys" });
     Reflect.deleteProperty(missingExit, "~effect/Effect/args");
     expect(exitGuard(missingExit)).toStrictEqual(Result.succeed(undefined));
+    const unknownExitTag = Exit.succeed({ venue: "xnys" });
+    Object.defineProperty(unknownExitTag, "_tag", {
+      configurable: true,
+      enumerable: true,
+      value: "Unknown",
+    });
+    expect(exitGuard(unknownExitTag)).toStrictEqual(Result.succeed(undefined));
     const ownValueExit = Exit.succeed({ venue: "xnys" });
     Object.defineProperty(ownValueExit, "value", {
       configurable: true,
@@ -539,6 +761,26 @@ describe("Schema JSON identity", () => {
       ),
     );
     expect(exitReads).toBe(0);
+    let exitTagReads = 0;
+    const accessorExitTag = Exit.succeed({ venue: "xnys" });
+    Object.defineProperty(accessorExitTag, "_tag", {
+      configurable: true,
+      enumerable: true,
+      get: () => {
+        exitTagReads += 1;
+        return "Success";
+      },
+    });
+    expect(exitGuard(accessorExitTag)).toStrictEqual(
+      Result.fail(
+        StrictJsonMaterializationError.make({
+          path: "$._tag",
+          reason: "accessor-property",
+          message: "Accessor properties are not valid JSON data at $._tag.",
+        }),
+      ),
+    );
+    expect(exitTagReads).toBe(0);
 
     const redactedGuard = makeStrictJsonSchemaGuard(
       Schema.toCodecJson(Schema.Redacted(Schema.ObjectKeyword)).ast,
@@ -620,9 +862,11 @@ describe("Schema JSON identity", () => {
         Schema.CauseReason(Schema.ObjectKeyword, Schema.ObjectKeyword),
       ).canonicalJson(Cause.die(validObject).reasons[0]!),
     ).toStrictEqual({ _tag: "Die", defect: validObject });
-    makeSchemaJsonIdentity(
-      Schema.CauseReason(Schema.ObjectKeyword, Schema.ObjectKeyword),
-    ).canonicalJson(Cause.interrupt().reasons[0]!);
+    expect(
+      makeSchemaJsonIdentity(
+        Schema.CauseReason(Schema.ObjectKeyword, Schema.ObjectKeyword),
+      ).canonicalJson(Cause.interrupt().reasons[0]!),
+    ).toStrictEqual({ _tag: "Interrupt", fiberId: null });
     expect(
       makeSchemaJsonIdentity(
         Schema.Cause(Schema.ObjectKeyword, Schema.ObjectKeyword),
@@ -805,6 +1049,70 @@ describe("Schema JSON identity", () => {
     expect(reads).toBe(0);
   });
 
+  it("freezes optional ObjectKeyword observations before JSON encoding", () => {
+    let descriptorReads = 0;
+    const flappingOptionalPayload = new Proxy(
+      {},
+      {
+        ownKeys: () => ["payload"],
+        getOwnPropertyDescriptor: () => {
+          descriptorReads += 1;
+          return descriptorReads === 1
+            ? undefined
+            : {
+                configurable: true,
+                enumerable: true,
+                value: new Map([["venue", "xnys"]]),
+              };
+        },
+      },
+    );
+    const identity = makeSchemaJsonIdentity(
+      Schema.String.pipe(
+        Schema.encodeTo(Schema.Struct({ payload: Schema.optional(Schema.ObjectKeyword) }), {
+          decode: SchemaGetter.transform(() => "decoded"),
+          encode: SchemaGetter.transform(() => flappingOptionalPayload),
+        }),
+      ),
+    );
+
+    expect(identity.canonicalJson("input")).toStrictEqual({});
+    expect(descriptorReads).toBe(1);
+  });
+
+  it("shares accessor scans across recursive union guards", () => {
+    type RecursiveNode = {
+      readonly child: RecursiveNode | null;
+      readonly metadata: object;
+    };
+    let RecursiveNode: Schema.Codec<RecursiveNode, unknown, never, never>;
+    RecursiveNode = Schema.suspend(() =>
+      Schema.Struct({
+        child: Schema.NullOr(RecursiveNode),
+        metadata: Schema.ObjectKeyword,
+      }),
+    );
+
+    let descriptorReads = 0;
+    const wrap = (child: unknown): unknown => {
+      const target = { child, metadata: { venue: "xnys" } };
+      return new Proxy(target, {
+        getOwnPropertyDescriptor: (object, key) => {
+          descriptorReads += 1;
+          return Reflect.getOwnPropertyDescriptor(object, key);
+        },
+      });
+    };
+    let value: unknown = null;
+    for (let index = 0; index < 24; index += 1) {
+      value = wrap(value);
+    }
+
+    const guard = makeStrictJsonSchemaGuard(Schema.toCodecJson(RecursiveNode).ast);
+    expect(guard(value)).toStrictEqual(Result.succeed(undefined));
+    expect(descriptorReads).toBeLessThanOrEqual(24 * 30);
+  });
+
   it("keeps the encoded normalizer total for non-matching JSON shapes", () => {
     const objectNormalizer = makeSchemaJsonNormalizer(
       Schema.toCodecJson(Schema.Struct({ value: Schema.String })).ast,
@@ -977,6 +1285,14 @@ describe("Schema JSON identity", () => {
     expect(recordSnapshot(cloneDescriptorFlapping)).toStrictEqual(
       Result.succeed({ payload: { venue: "xnys" } }),
     );
+    const missingSnapshotDescriptor = new Proxy(
+      {},
+      {
+        ownKeys: () => ["payload"],
+        getOwnPropertyDescriptor: () => undefined,
+      },
+    );
+    expect(recordSnapshot(missingSnapshotDescriptor)).toStrictEqual(Result.succeed({}));
 
     const keysFailure = new Proxy(
       {},
@@ -999,6 +1315,10 @@ describe("Schema JSON identity", () => {
     const defaultSnapshot = makeStrictJsonSchemaSnapshot(
       Schema.toCodecJson(Schema.Struct({ payload: Schema.ObjectKeyword })).ast,
     );
+    const optionalSnapshot = makeStrictJsonSchemaSnapshot(
+      Schema.toCodecJson(Schema.Struct({ optional: Schema.optional(Schema.String) })).ast,
+    );
+    expect(optionalSnapshot({})).toStrictEqual(Result.succeed({}));
     expect(defaultSnapshot({ payload: { venue: "xnys" } })).toStrictEqual(
       Result.succeed({ payload: { venue: "xnys" } }),
     );
@@ -1008,6 +1328,79 @@ describe("Schema JSON identity", () => {
           path: "$.payload",
           reason: "unsupported-prototype",
           message: "Expected a plain data record or dense array at $.payload.",
+        }),
+      ),
+    );
+    expect(defaultSnapshot(keysFailure)).toStrictEqual(
+      Result.fail(
+        StrictJsonMaterializationError.make({
+          path: "$",
+          reason: "reflection-failure",
+          message: "Could not inspect JSON value at $.",
+        }),
+      ),
+    );
+    const snapshotDescriptorFailure = new Proxy(
+      { payload: { venue: "xnys" } },
+      {
+        getOwnPropertyDescriptor: () => {
+          throw new Error("descriptor failure");
+        },
+      },
+    );
+    expect(defaultSnapshot(snapshotDescriptorFailure)).toStrictEqual(
+      Result.fail(
+        StrictJsonMaterializationError.make({
+          path: "$.payload",
+          reason: "reflection-failure",
+          message: "Could not inspect JSON value at $.payload.",
+        }),
+      ),
+    );
+    const prototypeFailure = new Proxy(
+      { payload: { venue: "xnys" } },
+      {
+        getPrototypeOf: () => {
+          throw new Error("prototype failure");
+        },
+      },
+    );
+    expect(defaultSnapshot(prototypeFailure)).toStrictEqual(
+      Result.fail(
+        StrictJsonMaterializationError.make({
+          path: "$",
+          reason: "reflection-failure",
+          message: "Could not inspect JSON value at $.",
+        }),
+      ),
+    );
+    const hiddenSnapshotValue = {};
+    Object.defineProperty(hiddenSnapshotValue, "payload", {
+      configurable: true,
+      enumerable: false,
+      value: { venue: "xnys" },
+    });
+    expect(defaultSnapshot(hiddenSnapshotValue)).toStrictEqual(
+      Result.fail(
+        StrictJsonMaterializationError.make({
+          path: "$.payload",
+          reason: "non-enumerable-property",
+          message: "Expected an enumerable data property at $.payload.",
+        }),
+      ),
+    );
+    const accessorSnapshotValue = {};
+    Object.defineProperty(accessorSnapshotValue, "payload", {
+      configurable: true,
+      enumerable: true,
+      get: () => ({ venue: "xnys" }),
+    });
+    expect(defaultSnapshot(accessorSnapshotValue)).toStrictEqual(
+      Result.fail(
+        StrictJsonMaterializationError.make({
+          path: "$.payload",
+          reason: "accessor-property",
+          message: "Accessor properties are not valid JSON data at $.payload.",
         }),
       ),
     );

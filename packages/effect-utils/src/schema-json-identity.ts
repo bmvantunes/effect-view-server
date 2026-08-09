@@ -391,6 +391,11 @@ const makeStrictJsonObjectKeywordGuard = (
       return guard;
     }
 
+    if (side === "encoded" && ast.encoding !== undefined && ast.encoding.length > 0) {
+      implementation = compile(ast.encoding[ast.encoding.length - 1]!.to);
+      return guard;
+    }
+
     if (SchemaAST.isDeclaration(ast)) {
       // Declaration ASTs retain type parameters but erase their runtime shape. Inspect the
       // built-in Effect representations explicitly so ObjectKeyword values cannot hide inside
@@ -405,14 +410,22 @@ const makeStrictJsonObjectKeywordGuard = (
         defectGuard: StrictJsonObjectKeywordGuard,
       ): Cause.Reason<unknown> => {
         if (Cause.isFailReason(reason)) {
-          const error = reason.error;
+          const errorProperty = readOwnDataProperty(reason, "error", `${path}.error`);
+          if (!errorProperty.present) {
+            return reason;
+          }
+          const error = errorProperty.value;
           const snapshot = guardDeclarationValue(errorGuard, error, `${path}.error`);
           return mode === "snapshot" && snapshot !== error
             ? Cause.makeFailReason(snapshot)
             : reason;
         }
         if (Cause.isDieReason(reason)) {
-          const defect = reason.defect;
+          const defectProperty = readOwnDataProperty(reason, "defect", `${path}.defect`);
+          if (!defectProperty.present) {
+            return reason;
+          }
+          const defect = defectProperty.value;
           const snapshot = guardDeclarationValue(defectGuard, defect, `${path}.defect`);
           return mode === "snapshot" && snapshot !== defect
             ? Cause.makeDieReason(snapshot)
@@ -438,9 +451,14 @@ const makeStrictJsonObjectKeywordGuard = (
         if (!Cause.isCause(value)) {
           return { value, changed: false };
         }
+        const reasonsProperty = readOwnDataProperty(value, "reasons", `${path}.reasons`);
+        if (!reasonsProperty.present || !Array.isArray(reasonsProperty.value)) {
+          return { value, changed: false };
+        }
+        const reasons = reasonsProperty.value;
         const snapshots: Array<Cause.Reason<unknown>> = [];
         let changed = false;
-        for (const [index, reason] of value.reasons.entries()) {
+        for (const [index, reason] of reasons.entries()) {
           const snapshot = guardKnownCauseReason(
             reason,
             `${path}.reasons[${index}]`,
@@ -473,7 +491,11 @@ const makeStrictJsonObjectKeywordGuard = (
           if (!Option.isOption(value) || Option.isNone(value)) {
             return value;
           }
-          const optionValue = value.value;
+          const optionValueProperty = readOwnDataProperty(value, "value", `${path}.value`);
+          if (!optionValueProperty.present) {
+            return value;
+          }
+          const optionValue = optionValueProperty.value;
           const snapshot = guardDeclarationValue(typeParameter(0), optionValue, `${path}.value`);
           if (mode !== "snapshot" || snapshot === optionValue) {
             return value;
@@ -489,14 +511,22 @@ const makeStrictJsonObjectKeywordGuard = (
             return value;
           }
           if (Result.isSuccess(value)) {
-            const success = value.success;
+            const successProperty = readOwnDataProperty(value, "success", `${path}.success`);
+            if (!successProperty.present) {
+              return value;
+            }
+            const success = successProperty.value;
             const snapshot = guardDeclarationValue(typeParameter(0), success, `${path}.success`);
             if (mode !== "snapshot" || snapshot === success) {
               return value;
             }
             return cloneWithReplacements(value, new Map([["success", snapshot]]));
           }
-          const failure = value.failure;
+          const failureProperty = readOwnDataProperty(value, "failure", `${path}.failure`);
+          if (!failureProperty.present) {
+            return value;
+          }
+          const failure = failureProperty.value;
           const snapshot = guardDeclarationValue(typeParameter(1), failure, `${path}.failure`);
           if (mode !== "snapshot" || snapshot === failure) {
             return value;
@@ -511,6 +541,7 @@ const makeStrictJsonObjectKeywordGuard = (
           if (!Redacted.isRedacted(value)) {
             return value;
           }
+          const labelProperty = readOwnDataProperty(value, "label", `${path}.label`);
           const redactedValue = Redacted.value(value);
           const snapshot = guardDeclarationValue(typeParameter(0), redactedValue, `${path}.value`);
           if (mode !== "snapshot" || snapshot === redactedValue) {
@@ -518,7 +549,9 @@ const makeStrictJsonObjectKeywordGuard = (
           }
           return Redacted.make(
             snapshot,
-            value.label === undefined ? undefined : { label: value.label },
+            labelProperty.present && typeof labelProperty.value === "string"
+              ? { label: labelProperty.value }
+              : undefined,
           );
         };
         return guard;
@@ -529,8 +562,18 @@ const makeStrictJsonObjectKeywordGuard = (
           if (!Exit.isExit(value)) {
             return value;
           }
-          if (Exit.isSuccess(value)) {
-            const success = value.value;
+          const isSuccess = Exit.isSuccess(value);
+          const payloadKey = isSuccess ? "value" : "cause";
+          const payloadPath = `${path}.${payloadKey}`;
+          const ownPayload = readOwnDataProperty(value, payloadKey, payloadPath);
+          const payloadProperty = ownPayload.present
+            ? ownPayload
+            : readOwnDataProperty(value, "~effect/Effect/args", payloadPath);
+          if (!payloadProperty.present) {
+            return value;
+          }
+          if (isSuccess) {
+            const success = payloadProperty.value;
             const snapshot = guardDeclarationValue(typeParameter(0), success, `${path}.value`);
             if (mode !== "snapshot" || snapshot === success) {
               return value;
@@ -538,7 +581,7 @@ const makeStrictJsonObjectKeywordGuard = (
             return cloneWithReplacements(value, new Map([["value", snapshot]]));
           }
           const cause = guardCause(
-            value.cause,
+            payloadProperty.value,
             `${path}.cause`,
             typeParameter(1),
             typeParameter(2),
@@ -664,11 +707,6 @@ const makeStrictJsonObjectKeywordGuard = (
         };
         return guard;
       }
-    }
-
-    if (ast.encoding !== undefined && ast.encoding.length > 0) {
-      implementation = compile(ast.encoding[ast.encoding.length - 1]!.to);
-      return guard;
     }
 
     if (SchemaAST.isUnion(ast)) {

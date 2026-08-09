@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Option, Schema, SchemaAST, SchemaGetter } from "effect";
+import { Effect, HashMap, Option, Schema, SchemaAST, SchemaGetter } from "effect";
 import { encodeJsonFieldValue } from "./protocol-json-field-codec";
 import {
   isProtocolJson,
@@ -204,6 +204,24 @@ describe("protocol JSON values", () => {
       expect(customDeclarationError).toBe(
         "Cannot safely validate ObjectKeyword data inside an unknown schema declaration at $.",
       );
+
+      let iteratorCalls = 0;
+      const statefulHashMap = HashMap.make(["key", { venue: "safe" }]);
+      Object.defineProperty(statefulHashMap, Symbol.iterator, {
+        configurable: true,
+        enumerable: true,
+        value: () => {
+          iteratorCalls += 1;
+          return [["key", { venue: iteratorCalls === 1 ? "safe" : "evil" }]][Symbol.iterator]();
+        },
+      });
+      const encodedStatefulHashMap = yield* encodeJsonFieldValue(
+        Schema.HashMap(Schema.String, Schema.ObjectKeyword),
+        statefulHashMap,
+        errors,
+      );
+      expect(encodedStatefulHashMap).toStrictEqual([["key", { venue: "safe" }]]);
+      expect(iteratorCalls).toBe(1);
     }),
   );
 

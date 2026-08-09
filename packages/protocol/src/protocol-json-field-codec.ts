@@ -44,7 +44,8 @@ type TopicNamedJsonFieldEncodeContext<E> = TopicNamedJsonFieldCodecContext<E> & 
 type CompiledJsonFieldCodec<Row> = {
   readonly accepts: (value: unknown) => boolean;
   readonly hasObjectKeyword: boolean;
-  readonly strictEncoded: StrictJsonSchemaCodec["strictEncoded"];
+  readonly strictJsonSnapshot: StrictJsonSchemaCodec["strictJsonSnapshot"];
+  readonly strictEncodedJson: StrictJsonSchemaCodec["strictEncodedJson"];
   readonly decode: (value: unknown) => Effect.Effect<Row, Schema.SchemaError>;
   readonly encode: (value: unknown) => Effect.Effect<Schema.Json, Schema.SchemaError>;
   readonly encodeRaw: (value: unknown) => Effect.Effect<unknown, Schema.SchemaError>;
@@ -77,7 +78,8 @@ function compiledJsonFieldCodec(schema: JsonFieldSchema): CompiledJsonFieldCodec
   const compiled: CompiledJsonFieldCodec<unknown> = {
     accepts: Schema.is(schema),
     hasObjectKeyword: compiledSchema.hasObjectKeyword,
-    strictEncoded: compiledSchema.strictEncoded,
+    strictJsonSnapshot: compiledSchema.strictJsonSnapshot,
+    strictEncodedJson: compiledSchema.strictEncodedJson,
     decode: Schema.decodeUnknownEffect(compiledSchema.codec),
     encode: Schema.encodeUnknownEffect(compiledSchema.codec),
     encodeRaw: Schema.encodeUnknownEffect(schema),
@@ -115,12 +117,14 @@ export const encodeJsonFieldValue = Effect.fn("ViewServerProtocol.jsonField.enco
     const encoded = yield* compiled.encode(value).pipe(Effect.catch(encodeFailure));
     return yield* materializeJsonFieldValue(encoded, errors.notJsonSafe);
   }
-  const strictEncodedResult = compiled.strictEncoded(value);
-  if (Result.isFailure(strictEncodedResult)) {
-    return yield* Effect.fail(errors.notJsonSafe(strictEncodedResult.failure.message));
+  const strictDecodedSnapshotResult = compiled.strictJsonSnapshot(value);
+  if (Result.isFailure(strictDecodedSnapshotResult)) {
+    return yield* Effect.fail(errors.notJsonSafe(strictDecodedSnapshotResult.failure.message));
   }
-  const encoded = yield* compiled.encodeRaw(value).pipe(Effect.catch(encodeFailure));
-  const encodedSnapshot = strictEncodedResult.success(encoded);
+  const encoded = yield* compiled
+    .encodeRaw(strictDecodedSnapshotResult.success)
+    .pipe(Effect.catch(encodeFailure));
+  const encodedSnapshot = compiled.strictEncodedJson(encoded);
   if (Result.isFailure(encodedSnapshot)) {
     return yield* Effect.fail(errors.notJsonSafe(encodedSnapshot.failure.message));
   }

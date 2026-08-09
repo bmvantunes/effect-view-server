@@ -222,6 +222,33 @@ describe("protocol JSON values", () => {
       );
       expect(encodedStatefulHashMap).toStrictEqual([["key", { venue: "safe" }]]);
       expect(iteratorCalls).toBe(1);
+
+      let failedIteratorCalls = 0;
+      const failedStatefulHashMap = HashMap.make(["key", { venue: "safe" }]);
+      Object.defineProperty(failedStatefulHashMap, Symbol.iterator, {
+        configurable: true,
+        enumerable: true,
+        value: () => {
+          failedIteratorCalls += 1;
+          return [["key", { venue: "safe" }]][Symbol.iterator]();
+        },
+      });
+      const encodingFailureSchema = Schema.Struct({
+        payload: Schema.HashMap(Schema.String, Schema.ObjectKeyword),
+      }).pipe(
+        Schema.encodeTo(Schema.Struct({ payload: Schema.ObjectKeyword }), {
+          decode: SchemaGetter.transform(() => ({ payload: HashMap.empty() })),
+          encode: SchemaGetter.forbidden<
+            { readonly payload: object },
+            { readonly payload: object }
+          >(() => "encoding forbidden"),
+        }),
+      );
+      const encodingFailure = yield* Effect.flip(
+        encodeJsonFieldValue(encodingFailureSchema, { payload: failedStatefulHashMap }, errors),
+      );
+      expect(encodingFailure).toBe("Expected a plain data record or dense array at $.payload.");
+      expect(failedIteratorCalls).toBe(1);
     }),
   );
 

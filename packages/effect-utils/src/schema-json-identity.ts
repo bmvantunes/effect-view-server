@@ -88,6 +88,27 @@ const defineJsonProperty = (
   });
 };
 
+type IndexSignatureParameter = SchemaAST.IndexSignature["parameter"];
+
+const numberIndexKey = /^(?:[+-]?\d*\.?\d+(?:[Ee][+-]?\d+)?|Infinity|-Infinity|NaN)$/;
+
+const indexSignatureAcceptsPropertyKey = (
+  key: string,
+  parameter: IndexSignatureParameter,
+): boolean => {
+  if (SchemaAST.isUnion(parameter)) {
+    return parameter.types.some((member) => indexSignatureAcceptsPropertyKey(key, member));
+  }
+  const encodedParameter = SchemaAST.toEncoded(parameter);
+  const accepts = Schema.is(
+    Schema.make<Schema.Codec<unknown, unknown, never, never>>(encodedParameter),
+  );
+  if (SchemaAST.isNumber(encodedParameter)) {
+    return numberIndexKey.test(key) && accepts(globalThis.Number(key));
+  }
+  return accepts(key);
+};
+
 export const makeSchemaJsonNormalizer = (root: SchemaAST.AST): JsonNormalizer => {
   const compiled = new Map<SchemaAST.AST, JsonNormalizer>();
 
@@ -147,11 +168,7 @@ export const makeSchemaJsonNormalizer = (root: SchemaAST.AST): JsonNormalizer =>
           .map((property) => [property.name, compile(property.type)] as const),
       );
       const indexes = ast.indexSignatures.map((index) => ({
-        accepts: Schema.is(
-          Schema.make<Schema.Codec<unknown, unknown, never, never>>(
-            SchemaAST.toEncoded(index.parameter),
-          ),
-        ),
+        accepts: (key: string) => indexSignatureAcceptsPropertyKey(key, index.parameter),
         normalize: compile(index.type),
       }));
       implementation = (value) => {
@@ -261,6 +278,11 @@ const strictJsonUnsupportedSchema = (path: string): StrictJsonMaterializationErr
     message: `Cannot safely validate ObjectKeyword data inside an unknown schema declaration at ${path}.`,
   });
 
+// Reflection is an input boundary. Keep hostile iterators and union graphs from
+// turning one validation into an unbounded allocation or traversal.
+const strictJsonMaxIterableEntries = 10_000;
+const strictJsonMaxGraphEntries = 10_000;
+
 type OwnDataProperty =
   | { readonly present: false }
   | { readonly present: true; readonly value: unknown };
@@ -345,6 +367,9 @@ const readIterableValues = (value: object, path: string): ReadonlyArray<unknown>
     const doneProperty = readVisibleDataProperty(result, "done", `${resultPath}.done`);
     if (doneProperty.present && Boolean(doneProperty.value)) {
       return values;
+    }
+    if (index >= strictJsonMaxIterableEntries) {
+      throw strictJsonReflectionFailure(path);
     }
     const valueProperty = readVisibleDataProperty(result, "value", `${resultPath}.value`);
     values.push(valueProperty.present ? valueProperty.value : undefined);
@@ -438,13 +463,10 @@ const cloneWithReplacements = (
   return output;
 };
 
-const readArrayLength = (value: Array<unknown>, path: string): number => {
-  let descriptor: PropertyDescriptor | undefined;
-  try {
-    descriptor = Object.getOwnPropertyDescriptor(value, "length");
-  } catch {
-    throw strictJsonReflectionFailure(`${path}.length`);
-  }
+const arrayLengthFromDescriptor = (
+  descriptor: PropertyDescriptor | undefined,
+  path: string,
+): number => {
   if (
     descriptor === undefined ||
     !("value" in descriptor) ||
@@ -458,19 +480,18 @@ const readArrayLength = (value: Array<unknown>, path: string): number => {
   return descriptor.value;
 };
 
-const readCapturedArrayLength = (captured: CapturedOwnProperties, path: string): number => {
-  const descriptor = captured.descriptors.get("length");
-  if (
-    descriptor === undefined ||
-    !("value" in descriptor) ||
-    typeof descriptor.value !== "number" ||
-    !Number.isSafeInteger(descriptor.value) ||
-    descriptor.value < 0 ||
-    descriptor.value > 0xffffffff
-  ) {
+const readArrayLength = (value: Array<unknown>, path: string): number => {
+  let descriptor: PropertyDescriptor | undefined;
+  try {
+    descriptor = Object.getOwnPropertyDescriptor(value, "length");
+  } catch {
     throw strictJsonReflectionFailure(`${path}.length`);
   }
-  return descriptor.value;
+  return arrayLengthFromDescriptor(descriptor, path);
+};
+
+const readCapturedArrayLength = (captured: CapturedOwnProperties, path: string): number => {
+  return arrayLengthFromDescriptor(captured.descriptors.get("length"), path);
 };
 
 const assertNoOwnIteratorOverride = (value: object, path: string): void => {
@@ -487,6 +508,7 @@ const makeAccessorSafeSnapshot = (
   value: unknown,
   path: string,
   snapshots: WeakMap<object, unknown>,
+  state: { count: number } = { count: 0 },
 ): unknown => {
   if (value === null || (typeof value !== "object" && typeof value !== "function")) {
     return value;
@@ -495,6 +517,10 @@ const makeAccessorSafeSnapshot = (
   if (existing !== undefined) {
     return existing;
   }
+  if (state.count >= strictJsonMaxGraphEntries) {
+    throw strictJsonReflectionFailure(path);
+  }
+  state.count += 1;
   const isArray = Array.isArray(value);
   const isCallable = typeof value === "function";
   let isMap = false;
@@ -532,7 +558,12 @@ const makeAccessorSafeSnapshot = (
     if (!("value" in descriptor)) {
       throw strictJsonAccessorProperty(propertyPath);
     }
-    const childSnapshot = makeAccessorSafeSnapshot(descriptor.value, propertyPath, snapshots);
+    const childSnapshot = makeAccessorSafeSnapshot(
+      descriptor.value,
+      propertyPath,
+      snapshots,
+      state,
+    );
     if (snapshot !== value) {
       Object.defineProperty(snapshot, key, {
         ...descriptor,
@@ -547,6 +578,7 @@ const assertNoAccessorProperties = (
   value: unknown,
   path: string,
   active: WeakSet<object>,
+  state: { count: number } = { count: 0 },
 ): void => {
   if (value === null || (typeof value !== "object" && typeof value !== "function")) {
     return;
@@ -554,6 +586,10 @@ const assertNoAccessorProperties = (
   if (active.has(value)) {
     return;
   }
+  if (state.count >= strictJsonMaxGraphEntries) {
+    throw strictJsonReflectionFailure(path);
+  }
+  state.count += 1;
   active.add(value);
 
   let keys: ReadonlyArray<string | symbol>;
@@ -576,7 +612,7 @@ const assertNoAccessorProperties = (
     if (!("value" in descriptor)) {
       throw strictJsonAccessorProperty(propertyPath);
     }
-    assertNoAccessorProperties(descriptor.value, propertyPath, active);
+    assertNoAccessorProperties(descriptor.value, propertyPath, active, state);
   }
 };
 
@@ -708,6 +744,7 @@ const schemaAstReferences = (
 const schemaAstContainsRecursiveUnion = (
   root: SchemaAST.AST,
   side: StrictJsonGuardSide,
+  recursiveUnionCache: Map<SchemaAST.AST, boolean>,
 ): boolean => {
   const visited = new Set<SchemaAST.AST>();
   const visit = (ast: SchemaAST.AST): boolean => {
@@ -715,11 +752,16 @@ const schemaAstContainsRecursiveUnion = (
       return false;
     }
     visited.add(ast);
-    if (
-      SchemaAST.isUnion(ast) &&
-      ast.types.some((member) => schemaAstReferences(member, ast, side))
-    ) {
-      return true;
+    if (SchemaAST.isUnion(ast)) {
+      const cached = recursiveUnionCache.get(ast);
+      if (cached !== undefined) {
+        return cached;
+      }
+      const recursive = ast.types.some((member) => schemaAstReferences(member, ast, side));
+      recursiveUnionCache.set(ast, recursive);
+      if (recursive) {
+        return true;
+      }
     }
     if (SchemaAST.isSuspend(ast) && visit(ast.thunk())) {
       return true;
@@ -799,15 +841,21 @@ registerKnownDeclarationRunSource("effect/ReadonlySet", Schema.ReadonlySet(Schem
 registerKnownDeclarationRunSource("effect/Redacted", Schema.Redacted(Schema.String).ast);
 registerKnownDeclarationRunSource("effect/Result", Schema.Result(Schema.String, Schema.String).ast);
 
-const isKnownDeclaration = (ast: SchemaAST.Declaration, tag: unknown): boolean =>
-  knownDeclarationExpected.get(String(tag)) === ast.annotations?.["expected"] &&
-  knownDeclarationRunSources.get(String(tag)) === declarationRunSource(ast) &&
-  typeof ast.annotations?.["toCode"] === "function" &&
-  typeof ast.annotations?.["toArbitrary"] === "function" &&
-  typeof ast.annotations?.["toEquivalence"] === "function" &&
-  typeof ast.annotations?.["toFormatter"] === "function" &&
-  (typeof ast.annotations?.["toCodec"] === "function" ||
-    typeof ast.annotations?.["toCodecJson"] === "function");
+const isKnownDeclaration = (ast: SchemaAST.Declaration, tag: unknown): boolean => {
+  if (typeof tag !== "string" || !knownDeclarationExpected.has(tag)) {
+    return false;
+  }
+  return (
+    knownDeclarationExpected.get(tag) === ast.annotations?.["expected"] &&
+    knownDeclarationRunSources.get(tag) === declarationRunSource(ast) &&
+    typeof ast.annotations?.["toCode"] === "function" &&
+    typeof ast.annotations?.["toArbitrary"] === "function" &&
+    typeof ast.annotations?.["toEquivalence"] === "function" &&
+    typeof ast.annotations?.["toFormatter"] === "function" &&
+    (typeof ast.annotations?.["toCodec"] === "function" ||
+      typeof ast.annotations?.["toCodecJson"] === "function")
+  );
+};
 
 const isSchemaClassDeclaration = (ast: SchemaAST.Declaration): boolean => {
   const constructor = ast.annotations?.["~constructor"];
@@ -833,6 +881,7 @@ const makeStrictJsonObjectKeywordGuard = (
   mode: StrictJsonGuardMode,
 ) => {
   const compiled = new Map<SchemaAST.AST, StrictJsonObjectKeywordGuard>();
+  const recursiveUnionCache = new Map<SchemaAST.AST, boolean>();
   let accessorSafeSnapshots: WeakMap<object, unknown> | undefined;
 
   const compile = (ast: SchemaAST.AST): StrictJsonObjectKeywordGuard => {
@@ -1265,7 +1314,11 @@ const makeStrictJsonObjectKeywordGuard = (
     }
 
     if (SchemaAST.isUnion(ast)) {
-      const isRecursiveUnion = ast.types.some((member) => schemaAstReferences(member, ast, side));
+      let isRecursiveUnion = recursiveUnionCache.get(ast);
+      if (isRecursiveUnion === undefined) {
+        isRecursiveUnion = ast.types.some((member) => schemaAstReferences(member, ast, side));
+        recursiveUnionCache.set(ast, isRecursiveUnion);
+      }
       const members = ast.types.map((member) => ({
         is: Schema.is(
           Schema.make<Schema.Codec<unknown, unknown, never, never>>(
@@ -1275,12 +1328,18 @@ const makeStrictJsonObjectKeywordGuard = (
         guard: compile(member),
       }));
       implementation = (value, path) => {
-        const memberValue =
+        let memberValue = value;
+        if (
           isRecursiveUnion &&
           value !== null &&
           (typeof value === "object" || typeof value === "function")
-            ? accessorSafeSnapshots!.get(value)
-            : value;
+        ) {
+          const snapshots = accessorSafeSnapshots;
+          if (snapshots === undefined || !snapshots.has(value)) {
+            throw strictJsonReflectionFailure(path);
+          }
+          memberValue = snapshots.get(value);
+        }
         const member = members.find((candidate) => candidate.is(memberValue));
         return member === undefined ? value : member.guard(value, path);
       };
@@ -1298,11 +1357,7 @@ const makeStrictJsonObjectKeywordGuard = (
           guard: compile(property.type),
         }));
       const indexes = ast.indexSignatures.map((index) => ({
-        accepts: Schema.is(
-          Schema.make<Schema.Codec<unknown, unknown, never, never>>(
-            side === "encoded" ? SchemaAST.toEncoded(index.parameter) : index.parameter,
-          ),
-        ),
+        accepts: (key: string) => indexSignatureAcceptsPropertyKey(key, index.parameter),
         guard: compile(index.type),
       }));
       implementation = (value, path) => {
@@ -1415,7 +1470,7 @@ const makeStrictJsonObjectKeywordGuard = (
 
   const guard = compile(root);
   const containsUnion = schemaAstContainsUnion(root, side);
-  const containsRecursiveUnion = schemaAstContainsRecursiveUnion(root, side);
+  const containsRecursiveUnion = schemaAstContainsRecursiveUnion(root, side, recursiveUnionCache);
   return (value: unknown): unknown => {
     const previousAccessorSafeSnapshots = accessorSafeSnapshots;
     accessorSafeSnapshots = containsRecursiveUnion ? new WeakMap<object, unknown>() : undefined;

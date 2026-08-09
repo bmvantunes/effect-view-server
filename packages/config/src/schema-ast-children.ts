@@ -3,17 +3,21 @@ import { SchemaAST } from "effect";
 const schemaClassConstructorAnnotationKey = "~constructor";
 
 const schemaClassConstructorDescriptorIsPresent = (ast: SchemaAST.Declaration): boolean => {
-  const getDescriptor = Reflect.get(Object(ast.annotations), schemaClassConstructorAnnotationKey);
-  if (typeof getDescriptor !== "function") {
+  try {
+    const getDescriptor = Reflect.get(Object(ast.annotations), schemaClassConstructorAnnotationKey);
+    if (typeof getDescriptor !== "function") {
+      return false;
+    }
+    const descriptor = Reflect.apply(getDescriptor, undefined, [ast.typeParameters]);
+    return (
+      typeof descriptor === "object" &&
+      descriptor !== null &&
+      typeof Reflect.get(descriptor, "isConstructed") === "function" &&
+      Reflect.get(descriptor, "link") !== undefined
+    );
+  } catch {
     return false;
   }
-  const descriptor = Reflect.apply(getDescriptor, undefined, [ast.typeParameters]);
-  return (
-    typeof descriptor === "object" &&
-    descriptor !== null &&
-    typeof Reflect.get(descriptor, "isConstructed") === "function" &&
-    Reflect.get(descriptor, "link") !== undefined
-  );
 };
 
 export const schemaAstIsClass = (ast: SchemaAST.AST): boolean =>

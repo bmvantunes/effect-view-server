@@ -10,6 +10,7 @@ import {
   Redacted,
   Result,
   Schema,
+  SchemaAST,
   SchemaGetter,
   SchemaTransformation,
 } from "effect";
@@ -205,6 +206,74 @@ describe("Schema JSON identity", () => {
       ),
     ).toStrictEqual([["key", { venue: "safe" }]]);
     expect(hashMapIteratorCalls).toBe(1);
+
+    const infiniteIteratorHashMap = HashMap.make(["key", { venue: "xnys" }]);
+    Object.defineProperty(infiniteIteratorHashMap, Symbol.iterator, {
+      configurable: true,
+      enumerable: true,
+      value: () => ({
+        next: () => ({ done: false, value: ["key", { venue: "xnys" }] }),
+      }),
+    });
+    expect(() =>
+      makeSchemaJsonIdentity(Schema.HashMap(Schema.String, Schema.ObjectKeyword)).canonicalKey(
+        infiniteIteratorHashMap,
+      ),
+    ).toThrow("Could not inspect JSON value at $.");
+
+    const numericRecordIdentity = makeSchemaJsonIdentity(
+      Schema.Record(Schema.Number, Schema.ObjectKeyword),
+    );
+    expect(() =>
+      numericRecordIdentity.canonicalKey({
+        "1": new Map([["venue", "xnys"]]),
+      }),
+    ).toThrow('Expected a plain data record or dense array at $["1"].');
+
+    const numericRecordMapIdentity = makeSchemaJsonIdentity(
+      Schema.Record(Schema.Number, Schema.HashMap(Schema.String, Schema.String)),
+    );
+    const numericRecordLeft = {
+      "1": HashMap.make([collisionLeft, "left"], [collisionRight, "right"]),
+    };
+    const numericRecordRight = {
+      "1": HashMap.make([collisionRight, "right"], [collisionLeft, "left"]),
+    };
+    expect(numericRecordMapIdentity.canonicalKey(numericRecordLeft)).toBe(
+      numericRecordMapIdentity.canonicalKey(numericRecordRight),
+    );
+
+    const numericOrStringRecordIdentity = makeSchemaJsonIdentity(
+      Schema.Record(Schema.Union([Schema.Number, Schema.String]), Schema.ObjectKeyword),
+    );
+    expect(() =>
+      numericOrStringRecordIdentity.canonicalKey({
+        "1": new Map([["venue", "xnys"]]),
+      }),
+    ).toThrow('Expected a plain data record or dense array at $["1"].');
+
+    const unionRecordAst = new SchemaAST.Objects(
+      [],
+      [
+        new SchemaAST.IndexSignature(
+          new SchemaAST.Union([Schema.Number.ast, Schema.String.ast], "anyOf"),
+          Schema.ObjectKeyword.ast,
+        ),
+      ],
+    );
+    expect(
+      makeStrictJsonSchemaGuard(unionRecordAst)({
+        "1": new Map([["venue", "xnys"]]),
+      }),
+    ).toStrictEqual(
+      Result.fail(
+        StrictJsonMaterializationError.make({
+          path: '$["1"]',
+          reason: "unsupported-prototype",
+          message: 'Expected a plain data record or dense array at $["1"].',
+        }),
+      ),
+    );
   });
 
   it("normalizes nested unordered values without changing ordered collections", () => {
@@ -494,15 +563,6 @@ describe("Schema JSON identity", () => {
       value: () => [][Symbol.iterator](),
     });
     expect(() => readonlyMapIdentity.canonicalKey(dataReadonlyMap)).toThrow(
-      /^Could not inspect JSON value at \$\[Symbol\(Symbol\.iterator\)\]\.$/,
-    );
-    const dataIteratorReadonlyMap = new Map([["key", { venue: "xnys" }]]);
-    Object.defineProperty(dataIteratorReadonlyMap, Symbol.iterator, {
-      configurable: true,
-      enumerable: true,
-      value: () => [][Symbol.iterator](),
-    });
-    expect(() => readonlyMapIdentity.canonicalKey(dataIteratorReadonlyMap)).toThrow(
       /^Could not inspect JSON value at \$\[Symbol\(Symbol\.iterator\)\]\.$/,
     );
     const readonlySetIdentity = makeSchemaJsonIdentity(Schema.ReadonlySet(Schema.ObjectKeyword));
@@ -1748,6 +1808,21 @@ describe("Schema JSON identity", () => {
     expect(descriptorReads).toBeLessThanOrEqual(24 * 4);
   });
 
+  it("bounds descriptor graph walks for union values", () => {
+    const unionGuard = makeStrictJsonSchemaGuard(
+      Schema.toCodecJson(Schema.Union([Schema.String, Schema.Any])).ast,
+    );
+    const wideValue = Array.from({ length: 10_001 }, () => ({}));
+
+    const result = unionGuard(wideValue);
+    expect(
+      Result.match(result, {
+        onFailure: (error) => error.reason,
+        onSuccess: () => "success",
+      }),
+    ).toBe("reflection-failure");
+  });
+
   it("uses descriptor-safe snapshots for recursive collection unions", () => {
     type RichNode = {
       readonly child: null | ReadonlyArray<RichNode> | Option.Option<RichNode>;
@@ -1813,6 +1888,32 @@ describe("Schema JSON identity", () => {
     Object.defineProperty(repeated, "fn", { enumerable: true, value: () => undefined });
     expect(arrayGuard(repeated)).toStrictEqual(Result.succeed(undefined));
     expect(arrayGuard(() => undefined)).toStrictEqual(Result.succeed(undefined));
+
+    const wideArray = Array.from({ length: 10_001 }, () => []);
+    const deepArrayResult = arrayGuard(wideArray);
+    expect(
+      Result.match(deepArrayResult, {
+        onFailure: (error) => error.reason,
+        onSuccess: () => "success",
+      }),
+    ).toBe("reflection-failure");
+
+    const originalWeakMapHas = Object.getOwnPropertyDescriptor(WeakMap.prototype, "has")!;
+    Object.defineProperty(WeakMap.prototype, "has", {
+      configurable: true,
+      value: () => false,
+    });
+    const missingSnapshotResult = arrayGuard([null]);
+    Object.defineProperty(WeakMap.prototype, "has", {
+      configurable: true,
+      ...originalWeakMapHas,
+    });
+    expect(
+      Result.match(missingSnapshotResult, {
+        onFailure: (error) => error.reason,
+        onSuccess: () => "success",
+      }),
+    ).toBe("reflection-failure");
 
     let TupleRecursive: Schema.Codec<unknown, unknown, never, never>;
     TupleRecursive = Schema.suspend(() =>

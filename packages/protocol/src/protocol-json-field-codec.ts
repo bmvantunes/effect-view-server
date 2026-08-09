@@ -104,17 +104,17 @@ export const encodeJsonFieldValue = Effect.fn("ViewServerProtocol.jsonField.enco
   errors: JsonFieldCodecErrors<E>,
 ) {
   const compiled = compiledJsonFieldCodec(schema);
-  const encodeFailure = (error: Schema.SchemaError) => {
+  const encodeFailure = (checkedValue: unknown) => (error: Schema.SchemaError) => {
     const message = schemaErrorMessage(error);
-    if (!compiled.accepts(value)) {
+    if (!compiled.accepts(checkedValue)) {
       return Effect.fail(errors.invalid(message));
     }
-    return materializeJsonFieldValue(value, errors.notJsonSafe).pipe(
+    return materializeJsonFieldValue(checkedValue, errors.notJsonSafe).pipe(
       Effect.andThen(Effect.fail(errors.invalid(message))),
     );
   };
   if (!compiled.hasObjectKeyword) {
-    const encoded = yield* compiled.encode(value).pipe(Effect.catch(encodeFailure));
+    const encoded = yield* compiled.encode(value).pipe(Effect.catch(encodeFailure(value)));
     return yield* materializeJsonFieldValue(encoded, errors.notJsonSafe);
   }
   const strictDecodedSnapshotResult = compiled.strictJsonSnapshot(value);
@@ -123,7 +123,7 @@ export const encodeJsonFieldValue = Effect.fn("ViewServerProtocol.jsonField.enco
   }
   const encoded = yield* compiled
     .encodeRaw(strictDecodedSnapshotResult.success)
-    .pipe(Effect.catch(encodeFailure));
+    .pipe(Effect.catch(encodeFailure(strictDecodedSnapshotResult.success)));
   const encodedSnapshot = compiled.strictEncodedJson(encoded);
   if (Result.isFailure(encodedSnapshot)) {
     return yield* Effect.fail(errors.notJsonSafe(encodedSnapshot.failure.message));

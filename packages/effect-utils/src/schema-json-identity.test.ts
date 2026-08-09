@@ -219,7 +219,7 @@ describe("Schema JSON identity", () => {
       makeSchemaJsonIdentity(Schema.HashMap(Schema.String, Schema.ObjectKeyword)).canonicalKey(
         infiniteIteratorHashMap,
       ),
-    ).toThrow("Could not inspect JSON value at $.");
+    ).toThrow(/^Could not inspect JSON value at \$\.$/);
 
     const numericRecordIdentity = makeSchemaJsonIdentity(
       Schema.Record(Schema.Number, Schema.ObjectKeyword),
@@ -228,7 +228,7 @@ describe("Schema JSON identity", () => {
       numericRecordIdentity.canonicalKey({
         "1": new Map([["venue", "xnys"]]),
       }),
-    ).toThrow('Expected a plain data record or dense array at $["1"].');
+    ).toThrow(/^Expected a plain data record or dense array at \$\["1"\]\.$/);
 
     const numericRecordMapIdentity = makeSchemaJsonIdentity(
       Schema.Record(Schema.Number, Schema.HashMap(Schema.String, Schema.String)),
@@ -250,7 +250,7 @@ describe("Schema JSON identity", () => {
       numericOrStringRecordIdentity.canonicalKey({
         "1": new Map([["venue", "xnys"]]),
       }),
-    ).toThrow('Expected a plain data record or dense array at $["1"].');
+    ).toThrow(/^Expected a plain data record or dense array at \$\["1"\]\.$/);
 
     const unionRecordAst = new SchemaAST.Objects(
       [],

@@ -92,21 +92,21 @@ type IndexSignatureParameter = SchemaAST.IndexSignature["parameter"];
 
 const numberIndexKey = /^(?:[+-]?\d*\.?\d+(?:[Ee][+-]?\d+)?|Infinity|-Infinity|NaN)$/;
 
-const indexSignatureAcceptsPropertyKey = (
-  key: string,
+const compileIndexSignatureKeyPredicate = (
   parameter: IndexSignatureParameter,
-): boolean => {
+): ((key: string) => boolean) => {
   if (SchemaAST.isUnion(parameter)) {
-    return parameter.types.some((member) => indexSignatureAcceptsPropertyKey(key, member));
+    const members = parameter.types.map(compileIndexSignatureKeyPredicate);
+    return (key) => members.some((member) => member(key));
   }
   const encodedParameter = SchemaAST.toEncoded(parameter);
   const accepts = Schema.is(
     Schema.make<Schema.Codec<unknown, unknown, never, never>>(encodedParameter),
   );
   if (SchemaAST.isNumber(encodedParameter)) {
-    return numberIndexKey.test(key) && accepts(globalThis.Number(key));
+    return (key) => numberIndexKey.test(key) && accepts(globalThis.Number(key));
   }
-  return accepts(key);
+  return (key) => accepts(key);
 };
 
 export const makeSchemaJsonNormalizer = (root: SchemaAST.AST): JsonNormalizer => {
@@ -168,7 +168,7 @@ export const makeSchemaJsonNormalizer = (root: SchemaAST.AST): JsonNormalizer =>
           .map((property) => [property.name, compile(property.type)] as const),
       );
       const indexes = ast.indexSignatures.map((index) => ({
-        accepts: (key: string) => indexSignatureAcceptsPropertyKey(key, index.parameter),
+        accepts: compileIndexSignatureKeyPredicate(index.parameter),
         normalize: compile(index.type),
       }));
       implementation = (value) => {
@@ -199,7 +199,7 @@ export const makeSchemaJsonNormalizer = (root: SchemaAST.AST): JsonNormalizer =>
           return value;
         }
         const [head, ...tail] = rest;
-        const tailThreshold = value.length - tail.length;
+        const tailThreshold = Math.max(value.length - tail.length, elements.length);
         return value.map((entry, index) => {
           const item =
             index < elements.length
@@ -1357,7 +1357,7 @@ const makeStrictJsonObjectKeywordGuard = (
           guard: compile(property.type),
         }));
       const indexes = ast.indexSignatures.map((index) => ({
-        accepts: (key: string) => indexSignatureAcceptsPropertyKey(key, index.parameter),
+        accepts: compileIndexSignatureKeyPredicate(index.parameter),
         guard: compile(index.type),
       }));
       implementation = (value, path) => {

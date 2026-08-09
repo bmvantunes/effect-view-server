@@ -284,7 +284,7 @@ const strictJsonUnsupportedSchema = (path: string): StrictJsonMaterializationErr
 
 // Reflection is an input boundary. Keep custom iterators and union graphs from
 // turning one validation into an unbounded allocation or traversal; canonical
-// Effect collection iterators use their trusted internal traversal instead.
+// Effect collection sizes bound their internal iterator traversal instead.
 const strictJsonMaxIterableEntries = 10_000;
 const strictJsonMaxGraphEntries = 10_000;
 
@@ -337,7 +337,12 @@ const readVisibleDataProperty = (
   return { present: false };
 };
 
-const readIterableValues = (value: object, path: string): ReadonlyArray<unknown> => {
+const readIterableValues = (
+  value: object,
+  path: string,
+  maxEntries = strictJsonMaxIterableEntries,
+  expectedEntries?: number,
+): ReadonlyArray<unknown> => {
   const iteratorPath = strictJsonPropertyPath(path, Symbol.iterator);
   const iteratorProperty = readVisibleDataProperty(value, Symbol.iterator, iteratorPath);
   if (!iteratorProperty.present || typeof iteratorProperty.value !== "function") {
@@ -371,9 +376,12 @@ const readIterableValues = (value: object, path: string): ReadonlyArray<unknown>
     const resultPath = `${iteratorPath}[${index}]`;
     const doneProperty = readVisibleDataProperty(result, "done", `${resultPath}.done`);
     if (doneProperty.present && Boolean(doneProperty.value)) {
+      if (expectedEntries !== undefined && index !== expectedEntries) {
+        throw strictJsonReflectionFailure(path);
+      }
       return values;
     }
-    if (index >= strictJsonMaxIterableEntries) {
+    if (index >= maxEntries) {
       throw strictJsonReflectionFailure(path);
     }
     const valueProperty = readVisibleDataProperty(result, "value", `${resultPath}.value`);
@@ -386,18 +394,23 @@ const readCollectionValues = (
   value: object,
   path: string,
   canonicalIterator: unknown,
-  trusted: () => ReadonlyArray<unknown>,
+  size: () => number,
 ): ReadonlyArray<unknown> => {
   const iteratorPath = strictJsonPropertyPath(path, Symbol.iterator);
   const iteratorProperty = readVisibleDataProperty(value, Symbol.iterator, iteratorPath);
   if (!iteratorProperty.present || iteratorProperty.value !== canonicalIterator) {
     return readIterableValues(value, path);
   }
+  let collectionSize: number;
   try {
-    return trusted();
+    collectionSize = size();
   } catch {
     throw strictJsonReflectionFailure(path);
   }
+  if (!Number.isSafeInteger(collectionSize) || collectionSize < 0) {
+    throw strictJsonReflectionFailure(path);
+  }
+  return readIterableValues(value, path, collectionSize, collectionSize);
 };
 
 type CapturedOwnProperties = {
@@ -1257,9 +1270,7 @@ const makeStrictJsonObjectKeywordGuard = (
           }
           const snapshots: Array<readonly [unknown, unknown]> = [];
           for (const [index, entry] of Array.prototype.entries.call(
-            readCollectionValues(value, path, hashMapIterator, () =>
-              Array.from(Function.prototype.call.call(hashMapIterator, value)),
-            ),
+            readCollectionValues(value, path, hashMapIterator, () => HashMap.size(value)),
           )) {
             const entryPath = `${path}.entries[${index}]`;
             if (!Array.isArray(entry)) {
@@ -1295,9 +1306,9 @@ const makeStrictJsonObjectKeywordGuard = (
           if (!HashSet.isHashSet(value)) {
             return value;
           }
-          const values = readCollectionValues(value, path, hashSetIterator, () => {
-            return Array.from(Function.prototype.call.call(hashSetIterator, value));
-          });
+          const values = readCollectionValues(value, path, hashSetIterator, () =>
+            HashSet.size(value),
+          );
           const snapshots: Array<unknown> = [];
           for (const [index, entry] of Array.prototype.entries.call(values)) {
             const snapshot = guardDeclarationValue(
@@ -1319,9 +1330,7 @@ const makeStrictJsonObjectKeywordGuard = (
           }
           const snapshots: Array<unknown> = [];
           for (const [index, entry] of Array.prototype.entries.call(
-            readCollectionValues(value, path, chunkIterator, () =>
-              Array.from(Function.prototype.call.call(chunkIterator, value)),
-            ),
+            readCollectionValues(value, path, chunkIterator, () => Chunk.size(value)),
           )) {
             const snapshot = guardDeclarationValue(
               typeParameter(0),

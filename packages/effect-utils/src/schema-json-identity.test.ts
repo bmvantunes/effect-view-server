@@ -221,22 +221,35 @@ describe("Schema JSON identity", () => {
       ),
     ).toThrow(/^Could not inspect JSON value at \$\.$/);
 
+    expect(
+      makeSchemaJsonIdentity(Schema.HashMap(Schema.String, Schema.ObjectKeyword)).canonicalJson(
+        HashMap.make(["a", { venue: "a" }], ["b", { venue: "b" }]),
+      ),
+    ).toStrictEqual([
+      ["a", { venue: "a" }],
+      ["b", { venue: "b" }],
+    ]);
+
     const largeObjects = Array.from({ length: 10_001 }, (_, index) => ({ index }));
     expect(() =>
       makeSchemaJsonIdentity(Schema.HashMap(Schema.Number, Schema.ObjectKeyword)).canonicalKey(
         HashMap.fromIterable(largeObjects.map((entry) => [entry.index, entry] as const)),
       ),
     ).not.toThrow();
-    expect(() =>
-      makeSchemaJsonIdentity(Schema.HashSet(Schema.ObjectKeyword)).canonicalKey(
-        HashSet.fromIterable(largeObjects),
-      ),
-    ).not.toThrow();
-    expect(() =>
-      makeSchemaJsonIdentity(Schema.Chunk(Schema.ObjectKeyword)).canonicalKey(
-        Chunk.fromIterable(largeObjects),
-      ),
-    ).not.toThrow();
+    const largeHashMapJson = makeSchemaJsonIdentity(
+      Schema.HashMap(Schema.Number, Schema.ObjectKeyword),
+    ).canonicalJson(
+      HashMap.fromIterable(largeObjects.map((entry) => [entry.index, entry] as const)),
+    );
+    expect(largeHashMapJson).toHaveLength(10_001);
+    const largeHashSetJson = makeSchemaJsonIdentity(
+      Schema.HashSet(Schema.ObjectKeyword),
+    ).canonicalJson(HashSet.fromIterable(largeObjects));
+    expect(largeHashSetJson).toHaveLength(10_001);
+    const largeChunkJson = makeSchemaJsonIdentity(Schema.Chunk(Schema.ObjectKeyword)).canonicalJson(
+      Chunk.fromIterable(largeObjects),
+    );
+    expect(largeChunkJson).toHaveLength(10_001);
 
     const numericRecordIdentity = makeSchemaJsonIdentity(
       Schema.Record(Schema.Number, Schema.ObjectKeyword),
@@ -720,6 +733,67 @@ describe("Schema JSON identity", () => {
       makeStrictJsonSchemaGuard(
         Schema.toCodecJson(Schema.HashMap(Schema.String, Schema.ObjectKeyword)).ast,
       )(malformedHashMap),
+    ).toStrictEqual(
+      Result.fail(
+        StrictJsonMaterializationError.make({
+          path: "$",
+          reason: "reflection-failure",
+          message: "Could not inspect JSON value at $.",
+        }),
+      ),
+    );
+    const shortHashMap = HashMap.make(["key", { venue: "xnys" }]);
+    Object.defineProperty(shortHashMap, "_size", {
+      configurable: true,
+      enumerable: true,
+      value: 2,
+      writable: true,
+    });
+    expect(
+      makeStrictJsonSchemaGuard(
+        Schema.toCodecJson(Schema.HashMap(Schema.String, Schema.ObjectKeyword)).ast,
+      )(shortHashMap),
+    ).toStrictEqual(
+      Result.fail(
+        StrictJsonMaterializationError.make({
+          path: "$",
+          reason: "reflection-failure",
+          message: "Could not inspect JSON value at $.",
+        }),
+      ),
+    );
+    const throwingHashMapSize = HashMap.make(["key", { venue: "xnys" }]);
+    Object.defineProperty(throwingHashMapSize, "_size", {
+      configurable: true,
+      enumerable: true,
+      get: () => {
+        throw new Error("size failure");
+      },
+    });
+    expect(
+      makeStrictJsonSchemaGuard(
+        Schema.toCodecJson(Schema.HashMap(Schema.String, Schema.ObjectKeyword)).ast,
+      )(throwingHashMapSize),
+    ).toStrictEqual(
+      Result.fail(
+        StrictJsonMaterializationError.make({
+          path: "$",
+          reason: "reflection-failure",
+          message: "Could not inspect JSON value at $.",
+        }),
+      ),
+    );
+    const invalidHashMapSize = HashMap.make(["key", { venue: "xnys" }]);
+    Object.defineProperty(invalidHashMapSize, "_size", {
+      configurable: true,
+      enumerable: true,
+      value: Number.NaN,
+      writable: true,
+    });
+    expect(
+      makeStrictJsonSchemaGuard(
+        Schema.toCodecJson(Schema.HashMap(Schema.String, Schema.ObjectKeyword)).ast,
+      )(invalidHashMapSize),
     ).toStrictEqual(
       Result.fail(
         StrictJsonMaterializationError.make({

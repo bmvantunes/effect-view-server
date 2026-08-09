@@ -13,28 +13,28 @@ const HealthJson = Schema.Struct({
   }),
 });
 
-class RuntimeHealthJsonParseError extends Schema.TaggedErrorClass<RuntimeHealthJsonParseError>()(
+class RuntimeHealthJsonParseError extends Schema.TaggedError<RuntimeHealthJsonParseError>()(
   "RuntimeHealthJsonParseError",
   {
     cause: Schema.Unknown,
   },
 ) {}
 
-class RuntimeJsonParseError extends Schema.TaggedErrorClass<RuntimeJsonParseError>()(
+class RuntimeJsonParseError extends Schema.TaggedError<RuntimeJsonParseError>()(
   "RuntimeJsonParseError",
   {
     cause: Schema.Unknown,
   },
 ) {}
 
-export class RuntimeTestFailure extends Schema.TaggedErrorClass<RuntimeTestFailure>()(
+export class RuntimeTestFailure extends Schema.TaggedError<RuntimeTestFailure>()(
   "RuntimeTestFailure",
   {
     message: Schema.String,
   },
 ) {}
 
-export class RuntimeTcpTestFailure extends Schema.TaggedErrorClass<RuntimeTcpTestFailure>()(
+export class RuntimeTcpTestFailure extends Schema.TaggedError<RuntimeTcpTestFailure>()(
   "RuntimeTcpTestFailure",
   {
     cause: Schema.Unknown,

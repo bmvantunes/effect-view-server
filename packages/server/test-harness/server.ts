@@ -58,28 +58,28 @@ export const TcpAddress = Schema.Struct({
   port: Schema.Number,
 });
 
-export class ServerTestJsonParseError extends Schema.TaggedErrorClass<ServerTestJsonParseError>()(
+export class ServerTestJsonParseError extends Schema.TaggedError<ServerTestJsonParseError>()(
   "ServerTestJsonParseError",
   {
     cause: Schema.Unknown,
   },
 ) {}
 
-export class ServerTestMalformedUpgradeError extends Schema.TaggedErrorClass<ServerTestMalformedUpgradeError>()(
+export class ServerTestMalformedUpgradeError extends Schema.TaggedError<ServerTestMalformedUpgradeError>()(
   "ServerTestMalformedUpgradeError",
   {
     cause: Schema.Unknown,
   },
 ) {}
 
-export class ServerTestTcpError extends Schema.TaggedErrorClass<ServerTestTcpError>()(
+export class ServerTestTcpError extends Schema.TaggedError<ServerTestTcpError>()(
   "ServerTestTcpError",
   {
     cause: Schema.Unknown,
   },
 ) {}
 
-export class ServerTestWebSocketOpenError extends Schema.TaggedErrorClass<ServerTestWebSocketOpenError>()(
+export class ServerTestWebSocketOpenError extends Schema.TaggedError<ServerTestWebSocketOpenError>()(
   "ServerTestWebSocketOpenError",
   {
     cause: Schema.Unknown,

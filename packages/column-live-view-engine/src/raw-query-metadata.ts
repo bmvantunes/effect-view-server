@@ -44,17 +44,17 @@ const isSchemaWithFields = (
 ): schema is SchemaWithFields => "fields" in schema && isRecord(schema.fields);
 
 const schemaAst = (schema: unknown): SchemaAST.AST | undefined => {
-  if (!isRecord(schema)) {
+  if ((typeof schema !== "object" || schema === null) && typeof schema !== "function") {
     return undefined;
   }
-  const ast = schema["ast"];
+  const ast = Reflect.get(schema, "ast");
   return SchemaAST.isAST(ast) ? ast : undefined;
 };
 
 const isBigDecimalAst = (ast: SchemaAST.AST): boolean =>
   SchemaAST.isDeclaration(ast) &&
-  isRecord(ast.annotations?.["typeConstructor"]) &&
-  ast.annotations["typeConstructor"]["_tag"] === "effect/BigDecimal";
+  isRecord(ast.annotations?.["representation"]) &&
+  ast.annotations["representation"]["id"] === "effect/schema/BigDecimal";
 
 const builtInBigDecimalEquivalence = SchemaAST.resolve(Schema.BigDecimal.ast)?.["toEquivalence"];
 

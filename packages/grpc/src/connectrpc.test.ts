@@ -41,13 +41,10 @@ type Row = {
   readonly region: string;
 };
 
-class ConnectRpcTestError extends Schema.TaggedErrorClass<ConnectRpcTestError>()(
-  "ConnectRpcTestError",
-  {
-    message: Schema.String,
-    cause: Schema.optionalKey(Schema.Unknown),
-  },
-) {}
+class ConnectRpcTestError extends Schema.TaggedError<ConnectRpcTestError>()("ConnectRpcTestError", {
+  message: Schema.String,
+  cause: Schema.optionalKey(Schema.Unknown),
+}) {}
 
 const descriptorFile = fileDesc(
   globalThis.btoa(

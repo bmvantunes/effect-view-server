@@ -78,7 +78,7 @@ export const makeViewServerRuntimeCoreInternalWithConstructionOptions: <
           yield* markAcquired(engineClose);
           const engineHealth = yield* restore(engine.health());
           const runtimeStartedAtMillis = yield* restore(Clock.currentTimeMillis);
-          const runtimeStartedAtNanos = yield* restore(Clock.currentTimeNanos);
+          const runtimeStartedAtNanos = yield* restore(Clock.monotonicTimeNanos);
           let sourceManager: RuntimeCoreSourceManager<Topics> | undefined;
           let pushedHealthRefresh: Effect.Effect<void> = Effect.void;
           const requestPushedHealthRefresh = Effect.suspend(() => pushedHealthRefresh);

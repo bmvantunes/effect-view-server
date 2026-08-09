@@ -135,8 +135,8 @@
     "@bufbuild/protobuf": "2.12.0",
     "@connectrpc/connect": "2.1.2",
     "@connectrpc/connect-node": "2.1.2",
-    "@effect/platform-browser": "4.0.0-beta.100",
-    "@effect/platform-node": "4.0.0-beta.100",
+    "@effect/platform-browser": "4.0.0-beta.106",
+    "@effect/platform-node": "4.0.0-beta.106",
     "@platformatic/kafka": "2.2.3"
   },
   "devDependencies": {
@@ -165,11 +165,11 @@
     "vitest": "catalog:"
   },
   "peerDependencies": {
-    "@effect/atom-react": "4.0.0-beta.100",
-    "@effect/vitest": "4.0.0-beta.100",
-    "effect": "4.0.0-beta.100",
-    "react": "19.2.6",
-    "react-dom": "19.2.6",
+    "@effect/atom-react": "4.0.0-beta.106",
+    "@effect/vitest": "4.0.0-beta.106",
+    "effect": "4.0.0-beta.106",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
     "typescript": ">=5.7.0 <7.0.0",
     "vite": "*"
   },

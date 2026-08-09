@@ -1,11 +1,13 @@
 import { execFileSync } from "node:child_process";
 import {
+  cpSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
-  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -18,6 +20,78 @@ import { runReleasePublish } from "./release-publish-orchestration.mjs";
 import { inspectTypeScriptModule } from "./typescript-module-inspection";
 
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
+
+const copyConsumerPackage = (sourceDirectory: string, targetDirectory: string): void => {
+  mkdirSync(targetDirectory, { recursive: true });
+  cpSync(
+    join(sourceDirectory, "package.json"),
+    join(targetDirectory, "package.json"),
+    { dereference: true },
+  );
+  const packageJson = JSON.parse(readFileSync(join(sourceDirectory, "package.json"), "utf8"));
+  const targets = new Set<string>();
+  const collectTargets = (value: unknown): void => {
+    if (typeof value === "string") {
+      targets.add(value);
+      return;
+    }
+    if (Array.isArray(value)) {
+      value.forEach(collectTargets);
+      return;
+    }
+    if (value !== null && typeof value === "object") {
+      Object.values(value).forEach(collectTargets);
+    }
+  };
+  collectTargets(packageJson.exports);
+  collectTargets(packageJson.main);
+  collectTargets(packageJson.module);
+  collectTargets(packageJson.types);
+  const copiedTopLevelEntries = new Set<string>();
+  for (const target of targets) {
+    if (!target.startsWith("./")) {
+      continue;
+    }
+    const relativeTarget = target.slice(2).split("*")[0];
+    const topLevelEntry = relativeTarget.split("/")[0];
+    if (topLevelEntry === "" || copiedTopLevelEntries.has(topLevelEntry)) {
+      continue;
+    }
+    const sourcePath = join(sourceDirectory, topLevelEntry);
+    if (!existsSync(sourcePath)) {
+      continue;
+    }
+    cpSync(sourcePath, join(targetDirectory, topLevelEntry), {
+      dereference: true,
+      recursive: true,
+    });
+    copiedTopLevelEntries.add(topLevelEntry);
+  }
+};
+
+const copyConsumerDependencyTree = (sourceDirectory: string, targetDirectory: string): void => {
+  for (const entry of readdirSync(sourceDirectory, { withFileTypes: true })) {
+    if (entry.name === "effect") {
+      continue;
+    }
+    const sourcePath = join(sourceDirectory, entry.name);
+    if ((entry.isDirectory() || entry.isSymbolicLink()) && entry.name.startsWith("@")) {
+      for (const scopedEntry of readdirSync(sourcePath, { withFileTypes: true })) {
+        if (!scopedEntry.isDirectory() && !scopedEntry.isSymbolicLink()) {
+          continue;
+        }
+        copyConsumerPackage(
+          join(sourcePath, scopedEntry.name),
+          join(targetDirectory, entry.name, scopedEntry.name),
+        );
+      }
+      continue;
+    }
+    if (entry.isDirectory() || entry.isSymbolicLink()) {
+      copyConsumerPackage(sourcePath, join(targetDirectory, entry.name));
+    }
+  }
+};
 
 type CommandResult = {
   readonly status: number;
@@ -196,6 +270,7 @@ describe("published value semantics consumer", () => {
       const packedPaths = packResult.files.map((file) => file.path);
       expect(packedPaths).toContain("dist/value-semantics.js");
       expect(packedPaths).toContain("dist/value-semantics.d.ts");
+      expect(packedPaths).toContain("dist/effect-schemaast-compat.d.ts");
 
       extract({
         cwd: installedPackageDirectory,
@@ -203,11 +278,30 @@ describe("published value semantics consumer", () => {
         strip: 1,
         sync: true,
       });
-      symlinkSync(
-        realpathSync(join(repositoryRoot, "node_modules", "effect")),
-        join(consumerDirectory, "node_modules", "effect"),
-        "junction",
+      const effectDirectory = realpathSync(join(repositoryRoot, "node_modules", "effect"));
+      const consumerEffectDirectory = join(consumerDirectory, "node_modules", "effect");
+      copyConsumerPackage(effectDirectory, consumerEffectDirectory);
+      mkdirSync(join(consumerEffectDirectory, "node_modules"), { recursive: true });
+      copyConsumerDependencyTree(
+        dirname(effectDirectory),
+        join(consumerEffectDirectory, "node_modules"),
       );
+      const fastCheckDirectory = realpathSync(join(dirname(effectDirectory), "fast-check"));
+      copyConsumerPackage(
+        realpathSync(join(dirname(fastCheckDirectory), "pure-rand")),
+        join(consumerEffectDirectory, "node_modules", "pure-rand"),
+      );
+      const schemaAstDeclarationPath = join(consumerEffectDirectory, "dist", "SchemaAST.d.ts");
+      const schemaAstDeclaration = readFileSync(schemaAstDeclarationPath, "utf8");
+      const unpatchedSchemaAstDeclaration = schemaAstDeclaration.replace(
+        /\n\/\*\* @internal \*\/\nexport interface Sentinel \{\n    readonly key: PropertyKey;\n    readonly literal: LiteralValue \| symbol;\n\}\n/,
+        "\n",
+      );
+      expect(
+        unpatchedSchemaAstDeclaration,
+        `Expected the beta106 Effect fixture to contain its patched Sentinel declaration.\nOriginal: ${schemaAstDeclaration}\nResult: ${unpatchedSchemaAstDeclaration}`,
+      ).not.toBe(schemaAstDeclaration);
+      writeFileSync(schemaAstDeclarationPath, unpatchedSchemaAstDeclaration);
 
       const installedManifest = decodePackageManifest(
         readFileSync(join(installedPackageDirectory, "package.json"), "utf8"),
@@ -215,7 +309,7 @@ describe("published value semantics consumer", () => {
       const valueSemanticsExport = installedManifest.exports["./value-semantics"];
       const entryTarget = valueSemanticsExport.import;
       const declarationTarget = valueSemanticsExport.types;
-      expect(installedManifest.peerDependencies.effect).toBe("4.0.0-beta.100");
+      expect(installedManifest.peerDependencies.effect).toBe("4.0.0-beta.106");
 
       const graph = collectStaticModuleGraph(
         join(installedPackageDirectory, entryTarget.replace(/^\.\//, "")),
@@ -232,6 +326,9 @@ describe("published value semantics consumer", () => {
       const declarationSource = readFileSync(
         join(installedPackageDirectory, declarationTarget.replace(/^\.\//, "")),
         "utf8",
+      );
+      expect(declarationSource).toContain(
+        '/// <reference path="./effect-schemaast-compat.d.ts" />',
       );
       expect(declarationSource).not.toContain("@effect-view-server/");
 
@@ -300,6 +397,21 @@ describe("published value semantics consumer", () => {
           2,
         )}\n`,
       );
+      execFileSync(
+        process.execPath,
+        [
+          join(repositoryRoot, "node_modules", "typescript", "bin", "tsc"),
+          "-p",
+          join(consumerDirectory, "tsconfig.json"),
+        ],
+        { cwd: consumerDirectory, stdio: "inherit" },
+      );
+
+      writeFileSync(schemaAstDeclarationPath, schemaAstDeclaration);
+      expect(readFileSync(schemaAstDeclarationPath, "utf8")).toBe(schemaAstDeclaration);
+      execFileSync(process.execPath, [join(consumerDirectory, "runtime.mjs")], {
+        cwd: consumerDirectory,
+      });
       execFileSync(
         process.execPath,
         [

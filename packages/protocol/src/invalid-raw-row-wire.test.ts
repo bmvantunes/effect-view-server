@@ -89,9 +89,7 @@ describe("Invalid raw row wire inputs", () => {
 
       expect(invalidEncodeFieldType.code).toBe("InvalidRow");
 
-      expect(invalidEncodeFieldType.message).toBe(
-        'Invalid field price: Expected number, got "nope"',
-      );
+      expect(invalidEncodeFieldType.message).toBe("Invalid field price: Expected number");
 
       const extraField = yield* Effect.flip(
         viewServerDecodeLiveEvent(viewServer, "orders", idQuery, {
@@ -136,7 +134,7 @@ describe("Invalid raw row wire inputs", () => {
       expect(invalidFieldType.code).toBe("InvalidRow");
 
       expect(invalidFieldType.message).toBe(
-        'Invalid field price: Expected "Infinity" | "-Infinity" | "NaN", got "nope"',
+        'Invalid field price: Expected "Infinity" | "-Infinity" | "NaN"',
       );
 
       const hostileRowSchema = Schema.Struct({ id: ViewServerId });

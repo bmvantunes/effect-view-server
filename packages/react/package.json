@@ -43,16 +43,16 @@
     "@vitest/coverage-istanbul": "catalog:",
     "@vitest/runner": "catalog:",
     "playwright": "1.60.0",
-    "react": "19.2.6",
-    "react-dom": "19.2.6",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
     "typescript": "catalog:",
     "vitest": "catalog:",
     "vitest-browser-react": "catalog:"
   },
   "peerDependencies": {
     "@effect-view-server/in-memory": "workspace:*",
-    "react": "19.2.6",
-    "react-dom": "19.2.6"
+    "react": "19.2.7",
+    "react-dom": "19.2.7"
   },
   "peerDependenciesMeta": {
     "@effect-view-server/in-memory": {

@@ -1,7 +1,7 @@
 import { Deferred, Effect, Schema } from "effect";
 import * as Net from "node:net";
 
-export class TcpPublisherExampleError extends Schema.TaggedErrorClass<TcpPublisherExampleError>()(
+export class TcpPublisherExampleError extends Schema.TaggedError<TcpPublisherExampleError>()(
   "TcpPublisherExampleError",
   {
     cause: Schema.optional(Schema.Unknown),

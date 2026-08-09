@@ -1629,7 +1629,7 @@ describe("remote ViewServer client", () => {
         }),
       );
       expect(invalidSelect.code).toBe("InvalidQuery");
-      expect(invalidSelect.message).toBe('Expected string, got 1\n  at ["select"][0]');
+      expect(invalidSelect.message).toBe('Expected string\n  at ["select"][0]');
 
       const unknownSelect = yield* Effect.flip(
         // @ts-expect-error hostile callers can still send unknown selected fields.
@@ -2042,7 +2042,7 @@ describe("remote ViewServer client", () => {
         queryId: "remote",
         status: "error",
         code: "InvalidRow",
-        message: 'Invalid field price: Expected "Infinity" | "-Infinity" | "NaN", got "nope"',
+        message: 'Invalid field price: Expected "Infinity" | "-Infinity" | "NaN"',
       });
 
       const invalidTopicSubscription = yield* client.subscribe("orders", {

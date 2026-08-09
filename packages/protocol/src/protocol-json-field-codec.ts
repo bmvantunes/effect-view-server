@@ -1,5 +1,9 @@
-import { materializeStrictJson } from "@effect-view-server/effect-utils";
-import { Effect, Result, Schema } from "effect";
+import {
+  makeStrictJsonSchemaCodec,
+  materializeStrictJson,
+  type StrictJsonSchemaCodec,
+} from "@effect-view-server/effect-utils";
+import { Effect, Result, Schema, SchemaAST } from "effect";
 
 export type JsonFieldSchema = Schema.Codec<unknown, unknown, never, never>;
 
@@ -39,8 +43,16 @@ type TopicNamedJsonFieldEncodeContext<E> = TopicNamedJsonFieldCodecContext<E> & 
 
 type CompiledJsonFieldCodec<Row> = {
   readonly accepts: (value: unknown) => boolean;
+  readonly hasObjectKeyword: boolean;
+  readonly strictJsonSnapshot: StrictJsonSchemaCodec["strictJsonSnapshot"];
+  readonly strictEncodedJson: StrictJsonSchemaCodec["strictEncodedJson"];
   readonly decode: (value: unknown) => Effect.Effect<Row, Schema.SchemaError>;
   readonly encode: (value: unknown) => Effect.Effect<Schema.Json, Schema.SchemaError>;
+  readonly encodeRaw: (value: unknown) => Effect.Effect<unknown, Schema.SchemaError>;
+  readonly encodeJson: (
+    value: unknown,
+    options?: SchemaAST.ParseOptions,
+  ) => Effect.Effect<Schema.Json, Schema.SchemaError>;
 };
 
 const compiledJsonFieldCodecCache = new WeakMap<JsonFieldSchema, CompiledJsonFieldCodec<unknown>>();
@@ -62,11 +74,16 @@ function compiledJsonFieldCodec(schema: JsonFieldSchema): CompiledJsonFieldCodec
   if (cached !== undefined) {
     return cached;
   }
-  const codec = Schema.toCodecJson(schema);
+  const compiledSchema = makeStrictJsonSchemaCodec(schema);
   const compiled: CompiledJsonFieldCodec<unknown> = {
     accepts: Schema.is(schema),
-    decode: Schema.decodeUnknownEffect(codec),
-    encode: Schema.encodeUnknownEffect(codec),
+    hasObjectKeyword: compiledSchema.hasObjectKeyword,
+    strictJsonSnapshot: compiledSchema.strictJsonSnapshot,
+    strictEncodedJson: compiledSchema.strictEncodedJson,
+    decode: Schema.decodeUnknownEffect(compiledSchema.codec),
+    encode: Schema.encodeUnknownEffect(compiledSchema.codec),
+    encodeRaw: Schema.encodeUnknownEffect(schema),
+    encodeJson: Schema.encodeUnknownEffect(compiledSchema.encodedCodec),
   };
   compiledJsonFieldCodecCache.set(schema, compiled);
   return compiled;
@@ -87,18 +104,41 @@ export const encodeJsonFieldValue = Effect.fn("ViewServerProtocol.jsonField.enco
   errors: JsonFieldCodecErrors<E>,
 ) {
   const compiled = compiledJsonFieldCodec(schema);
-  const encoded = yield* compiled.encode(value).pipe(
-    Effect.catch((error) => {
-      const message = schemaErrorMessage(error);
-      if (!compiled.accepts(value)) {
-        return Effect.fail(errors.invalid(message));
-      }
-      return materializeJsonFieldValue(value, errors.notJsonSafe).pipe(
-        Effect.andThen(Effect.fail(errors.invalid(message))),
-      );
-    }),
-  );
-  return yield* materializeJsonFieldValue(encoded, errors.notJsonSafe);
+  const encodeFailure = (checkedValue: unknown) => (error: Schema.SchemaError) => {
+    const message = schemaErrorMessage(error);
+    if (!compiled.accepts(checkedValue)) {
+      return Effect.fail(errors.invalid(message));
+    }
+    return materializeJsonFieldValue(checkedValue, errors.notJsonSafe).pipe(
+      Effect.andThen(Effect.fail(errors.invalid(message))),
+    );
+  };
+  if (!compiled.hasObjectKeyword) {
+    const encoded = yield* compiled.encode(value).pipe(Effect.catch(encodeFailure(value)));
+    return yield* materializeJsonFieldValue(encoded, errors.notJsonSafe);
+  }
+  const strictDecodedSnapshotResult = compiled.strictJsonSnapshot(value);
+  if (Result.isFailure(strictDecodedSnapshotResult)) {
+    return yield* Effect.fail(errors.notJsonSafe(strictDecodedSnapshotResult.failure.message));
+  }
+  const encoded = yield* compiled
+    .encodeRaw(strictDecodedSnapshotResult.success)
+    .pipe(Effect.catch(encodeFailure(strictDecodedSnapshotResult.success)));
+  const encodedSnapshot = compiled.strictEncodedJson(encoded);
+  if (Result.isFailure(encodedSnapshot)) {
+    return yield* Effect.fail(errors.notJsonSafe(encodedSnapshot.failure.message));
+  }
+  const jsonEncoded = yield* compiled
+    .encodeJson(encodedSnapshot.success, { disableChecks: true })
+    .pipe(
+      Effect.catch((error) => {
+        const message = schemaErrorMessage(error);
+        return materializeJsonFieldValue(encodedSnapshot.success, errors.notJsonSafe).pipe(
+          Effect.andThen(Effect.fail(errors.invalid(message))),
+        );
+      }),
+    );
+  return yield* materializeJsonFieldValue(jsonEncoded, errors.notJsonSafe);
 });
 
 export const decodeMaterializedJsonFieldValue = Effect.fn(

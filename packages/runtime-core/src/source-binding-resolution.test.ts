@@ -113,7 +113,7 @@ describe("source binding resolution", () => {
     }).get("externalOrders");
 
     expect(binding).toStrictEqual({
-      schema: Row,
+      schema: viewServer.topics.externalOrders.schema,
       source: undefined,
       sourceLifecycle: "unknown",
       sourceLeased: false,

@@ -8,7 +8,7 @@ import type { ViewServerAuth, ViewServerAuthRequest } from "@effect-view-server/
 import { validateViewServerAuthRequest, ViewServerAuthError } from "@effect-view-server/server";
 import { Effect, Option, Result, Schema } from "effect";
 
-export class ViewServerTcpPublishIngressError extends Schema.TaggedErrorClass<ViewServerTcpPublishIngressError>()(
+export class ViewServerTcpPublishIngressError extends Schema.TaggedError<ViewServerTcpPublishIngressError>()(
   "ViewServerTcpPublishIngressError",
   {
     cause: Schema.Unknown,
@@ -45,6 +45,7 @@ type TcpConfiguredTopic<
 
 const TcpJsonObject = Schema.Record(Schema.String, Schema.Json);
 const TcpHeaders = Schema.Record(Schema.String, Schema.String);
+const TcpJsonFromString = Schema.fromJsonString(Schema.Unknown);
 
 const TcpPublishCommandSchema = Schema.Union([
   Schema.Struct({
@@ -98,10 +99,9 @@ const tcpDecodeError = (line: string, cause: unknown): ViewServerTcpPublishIngre
 const parseCommand = Effect.fn("ViewServerRuntime.tcpPublish.command.parse")(function* (
   line: string,
 ) {
-  const value = yield* Schema.decodeUnknownEffect(Schema.UnknownFromJsonString)(
-    line,
-    strictParseOptions,
-  ).pipe(Effect.mapError((cause) => tcpDecodeError(line, cause)));
+  const value = yield* Schema.decodeUnknownEffect(TcpJsonFromString)(line, strictParseOptions).pipe(
+    Effect.mapError((cause) => tcpDecodeError(line, cause)),
+  );
   return yield* Result.match(
     Schema.decodeUnknownResult(TcpPublishCommandSchema)(value, strictParseOptions),
     {

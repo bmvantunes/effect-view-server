@@ -2,6 +2,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { readFileSync } from "node:fs";
 import {
   compareReleaseTags,
+  effectSchemaAstCompatibilityDeclaration,
   incrementReleaseVersion,
   internalPublishViolations,
   oidcPublishEnvironmentViolations,
@@ -57,14 +58,28 @@ const publicPackageJson = {
   publishConfig: { provenance: true },
   dependencies: {
     "@effect-view-server/client": "workspace:*",
-    effect: "4.0.0-beta.100",
+    effect: "4.0.0-beta.106",
   },
   devDependencies: { "@effect-view-server/runtime": "workspace:*" },
-  peerDependencies: { react: "19.2.6" },
+  peerDependencies: { react: "19.2.7" },
   peerDependenciesMeta: { react: { optional: true } },
 };
 
 describe("release publish policy", () => {
+  it("keeps the beta106 SchemaAST declaration compatibility source explicit", () => {
+    expect(effectSchemaAstCompatibilityDeclaration).toBe(
+      `export {};
+
+declare module "effect/SchemaAST" {
+  export interface Sentinel {
+    readonly key: PropertyKey;
+    readonly literal: LiteralValue | symbol;
+  }
+}
+`,
+    );
+  });
+
   it("refuses the placeholder version before trusted publishing", () => {
     expect(
       publishDecision({
@@ -274,8 +289,8 @@ describe("release publish policy", () => {
       engines: { node: ">=26.0.0" },
       files: ["dist", "README.md"],
       publishConfig: { access: "public", provenance: true },
-      dependencies: { effect: "4.0.0-beta.100" },
-      peerDependencies: { react: "19.2.6" },
+      dependencies: { effect: "4.0.0-beta.106" },
+      peerDependencies: { react: "19.2.7" },
       peerDependenciesMeta: { react: { optional: true } },
     });
   });

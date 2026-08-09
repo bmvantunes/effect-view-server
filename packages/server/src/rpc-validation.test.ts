@@ -369,7 +369,7 @@ describe("Real View Server RPC validation and typed errors", () => {
         }),
       );
       expect(invalidQuery.code).toBe("InvalidQuery");
-      expect(invalidQuery.message).toBe('Expected string, got 1\n  at ["select"][0]');
+      expect(invalidQuery.message).toBe('Expected string\n  at ["select"][0]');
 
       const unknownSelect = yield* Effect.flip(
         // @ts-expect-error hostile callers can still send unknown projected fields.

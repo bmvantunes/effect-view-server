@@ -1,10 +1,26 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect } from "effect";
+import { Effect, HashMap, Option, Schema, SchemaAST, SchemaGetter } from "effect";
+import { encodeJsonFieldValue } from "./protocol-json-field-codec";
 import {
   isProtocolJson,
   requireProtocolJson,
   requireProtocolJsonArray,
 } from "./protocol-json-value";
+
+const CustomObjectDeclaration = Schema.declareConstructor()(
+  [Schema.ObjectKeyword],
+  () => (input) => Effect.succeed(input),
+  {
+    representation: { id: "custom/Box", payload: null },
+    toCodecJson: ([value]) =>
+      Schema.link()(Schema.Struct({ value }), {
+        decode: SchemaGetter.transform<{ readonly value: object }, { readonly value: object }>(
+          (encoded) => ({ value: encoded.value }),
+        ),
+        encode: SchemaGetter.transform<{ readonly value: object }, unknown>(() => ({ value: {} })),
+      }),
+  },
+);
 
 describe("protocol JSON values", () => {
   it.effect("accepts deep JSON DAGs and returns a typed JSON value", () =>
@@ -83,6 +99,175 @@ describe("protocol JSON values", () => {
         message: "Encoded filter is not JSON-safe",
         topic: "values",
       });
+    }),
+  );
+
+  it.effect("keeps schema diagnostics safe when encoding fails", () =>
+    Effect.gen(function* () {
+      const errors = {
+        invalid: (message: string) => message,
+        notJsonSafe: (message: string) => message,
+      };
+      const encodingFailureSchema = Schema.String.pipe(
+        Schema.encodeTo(Schema.Number, {
+          decode: SchemaGetter.transform(() => "decoded"),
+          encode: SchemaGetter.forbidden<number, string>(() => "encoding forbidden"),
+        }),
+      );
+      const encodingFailure = yield* Effect.flip(
+        encodeJsonFieldValue(encodingFailureSchema, "value", errors),
+      );
+      expect(encodingFailure).toBe("encoding forbidden");
+
+      const hostileDiagnosticSchema = Schema.String.pipe(Schema.annotate({ title: "hostile" }));
+      const annotations = SchemaAST.resolve(hostileDiagnosticSchema.ast)!;
+      Object.defineProperty(annotations, "message", {
+        configurable: true,
+        get: () => {
+          throw new Error("hostile diagnostic");
+        },
+      });
+      const hostileDiagnostic = yield* Effect.flip(
+        encodeJsonFieldValue(hostileDiagnosticSchema, 1, errors),
+      );
+      expect(hostileDiagnostic).toBe(
+        "Schema validation failed without a safely printable diagnostic.",
+      );
+    }),
+  );
+
+  it.effect("guards the encoded side of transformed JSON fields", () =>
+    Effect.gen(function* () {
+      let encodeCalls = 0;
+      const transformedSchema = Schema.String.pipe(
+        Schema.encodeTo(Schema.Struct({ payload: Schema.ObjectKeyword }), {
+          decode: SchemaGetter.transform(() => "decoded"),
+          encode: SchemaGetter.transform(() => {
+            encodeCalls += 1;
+            return { payload: new Map([["venue", "xnys"]]) };
+          }),
+        }),
+      );
+      const errors = {
+        invalid: (message: string) => message,
+        notJsonSafe: (message: string) => message,
+      };
+
+      const error = yield* Effect.flip(encodeJsonFieldValue(transformedSchema, "input", errors));
+
+      expect(error).toBe("Expected a plain data record or dense array at $.payload.");
+      expect(encodeCalls).toBe(1);
+
+      const transformedUnionSchema = Schema.Union([
+        Schema.String.pipe(
+          Schema.encodeTo(Schema.Struct({ payload: Schema.ObjectKeyword }), {
+            decode: SchemaGetter.transform(() => "decoded"),
+            encode: SchemaGetter.transform(() => ({
+              payload: new Map([["venue", "xnys"]]),
+            })),
+          }),
+        ),
+        Schema.Number,
+      ]);
+      const unionError = yield* Effect.flip(
+        encodeJsonFieldValue(transformedUnionSchema, "input", errors),
+      );
+
+      expect(unionError).toBe("Expected a plain data record or dense array at $.payload.");
+    }),
+  );
+
+  it.effect("guards ObjectKeyword values inside declaration schemas", () =>
+    Effect.gen(function* () {
+      const errors = {
+        invalid: (message: string) => message,
+        notJsonSafe: (message: string) => message,
+      };
+
+      const error = yield* Effect.flip(
+        encodeJsonFieldValue(
+          Schema.Option(Schema.ObjectKeyword),
+          Option.some(new Map([["venue", "xnys"]])),
+          errors,
+        ),
+      );
+
+      expect(error).toBe("Expected a plain data record or dense array at $.value.");
+
+      const customDeclarationError = yield* Effect.flip(
+        encodeJsonFieldValue(
+          CustomObjectDeclaration,
+          { value: new Map([["venue", "xnys"]]) },
+          errors,
+        ),
+      );
+      expect(customDeclarationError).toBe(
+        "Cannot safely validate ObjectKeyword data inside an unknown schema declaration at $.",
+      );
+
+      let iteratorCalls = 0;
+      const statefulHashMap = HashMap.make(["key", { venue: "safe" }]);
+      Object.defineProperty(statefulHashMap, Symbol.iterator, {
+        configurable: true,
+        enumerable: true,
+        value: () => {
+          iteratorCalls += 1;
+          return [["key", { venue: iteratorCalls === 1 ? "safe" : "evil" }]][Symbol.iterator]();
+        },
+      });
+      const encodedStatefulHashMap = yield* encodeJsonFieldValue(
+        Schema.HashMap(Schema.String, Schema.ObjectKeyword),
+        statefulHashMap,
+        errors,
+      );
+      expect(encodedStatefulHashMap).toStrictEqual([["key", { venue: "safe" }]]);
+      expect(iteratorCalls).toBe(1);
+
+      let failedIteratorCalls = 0;
+      const failedStatefulHashMap = HashMap.make(["key", { venue: "safe" }]);
+      Object.defineProperty(failedStatefulHashMap, Symbol.iterator, {
+        configurable: true,
+        enumerable: true,
+        value: () => {
+          failedIteratorCalls += 1;
+          return [["key", { venue: "safe" }]][Symbol.iterator]();
+        },
+      });
+      const encodingFailureSchema = Schema.Struct({
+        payload: Schema.HashMap(Schema.String, Schema.ObjectKeyword),
+      }).pipe(
+        Schema.encodeTo(Schema.Struct({ payload: Schema.ObjectKeyword }), {
+          decode: SchemaGetter.transform(() => ({ payload: HashMap.empty() })),
+          encode: SchemaGetter.forbidden<
+            { readonly payload: object },
+            { readonly payload: object }
+          >(() => "encoding forbidden"),
+        }),
+      );
+      const encodingFailure = yield* Effect.flip(
+        encodeJsonFieldValue(encodingFailureSchema, { payload: failedStatefulHashMap }, errors),
+      );
+      expect(encodingFailure).toBe("Expected a plain data record or dense array at $.payload.");
+      expect(failedIteratorCalls).toBe(1);
+    }),
+  );
+
+  it.effect("reports JSON codec failures after raw encoding", () =>
+    Effect.gen(function* () {
+      const errors = {
+        invalid: (message: string) => message,
+        notJsonSafe: (message: string) => message,
+      };
+
+      const error = yield* Effect.flip(
+        encodeJsonFieldValue(
+          Schema.Struct({ payload: Schema.ObjectKeyword, symbol: Schema.Symbol }),
+          { payload: { venue: "xnys" }, symbol: Symbol("not-registered") },
+          errors,
+        ),
+      );
+
+      expect(error).toBe('Unsupported JSON value type "symbol" at $.symbol.');
     }),
   );
 });

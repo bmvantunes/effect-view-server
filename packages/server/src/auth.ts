@@ -2,7 +2,7 @@ import { Effect, Schema } from "effect";
 import type { HttpServerRequest } from "effect/unstable/http";
 import { HttpServerResponse } from "effect/unstable/http";
 
-export class ViewServerAuthError extends Schema.TaggedErrorClass<ViewServerAuthError>()(
+export class ViewServerAuthError extends Schema.TaggedError<ViewServerAuthError>()(
   "ViewServerAuthError",
   {
     message: Schema.String,

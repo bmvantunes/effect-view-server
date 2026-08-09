@@ -92,6 +92,10 @@ type IndexSignatureParameter = SchemaAST.IndexSignature["parameter"];
 
 const numberIndexKey = /^(?:[+-]?\d*\.?\d+(?:[Ee][+-]?\d+)?|Infinity|-Infinity|NaN)$/;
 
+const hashMapIterator = HashMap.empty<unknown, unknown>()[Symbol.iterator];
+const hashSetIterator = HashSet.empty<unknown>()[Symbol.iterator];
+const chunkIterator = Chunk.empty<unknown>()[Symbol.iterator];
+
 const compileIndexSignatureKeyPredicate = (
   parameter: IndexSignatureParameter,
 ): ((key: string) => boolean) => {
@@ -278,8 +282,9 @@ const strictJsonUnsupportedSchema = (path: string): StrictJsonMaterializationErr
     message: `Cannot safely validate ObjectKeyword data inside an unknown schema declaration at ${path}.`,
   });
 
-// Reflection is an input boundary. Keep hostile iterators and union graphs from
-// turning one validation into an unbounded allocation or traversal.
+// Reflection is an input boundary. Keep custom iterators and union graphs from
+// turning one validation into an unbounded allocation or traversal; canonical
+// Effect collection iterators use their trusted internal traversal instead.
 const strictJsonMaxIterableEntries = 10_000;
 const strictJsonMaxGraphEntries = 10_000;
 
@@ -374,6 +379,24 @@ const readIterableValues = (value: object, path: string): ReadonlyArray<unknown>
     const valueProperty = readVisibleDataProperty(result, "value", `${resultPath}.value`);
     values.push(valueProperty.present ? valueProperty.value : undefined);
     index += 1;
+  }
+};
+
+const readCollectionValues = (
+  value: object,
+  path: string,
+  canonicalIterator: unknown,
+  trusted: () => ReadonlyArray<unknown>,
+): ReadonlyArray<unknown> => {
+  const iteratorPath = strictJsonPropertyPath(path, Symbol.iterator);
+  const iteratorProperty = readVisibleDataProperty(value, Symbol.iterator, iteratorPath);
+  if (!iteratorProperty.present || iteratorProperty.value !== canonicalIterator) {
+    return readIterableValues(value, path);
+  }
+  try {
+    return trusted();
+  } catch {
+    throw strictJsonReflectionFailure(path);
   }
 };
 
@@ -1234,7 +1257,9 @@ const makeStrictJsonObjectKeywordGuard = (
           }
           const snapshots: Array<readonly [unknown, unknown]> = [];
           for (const [index, entry] of Array.prototype.entries.call(
-            readIterableValues(value, path),
+            readCollectionValues(value, path, hashMapIterator, () =>
+              Array.from(Function.prototype.call.call(hashMapIterator, value)),
+            ),
           )) {
             const entryPath = `${path}.entries[${index}]`;
             if (!Array.isArray(entry)) {
@@ -1270,10 +1295,11 @@ const makeStrictJsonObjectKeywordGuard = (
           if (!HashSet.isHashSet(value)) {
             return value;
           }
+          const values = readCollectionValues(value, path, hashSetIterator, () => {
+            return Array.from(Function.prototype.call.call(hashSetIterator, value));
+          });
           const snapshots: Array<unknown> = [];
-          for (const [index, entry] of Array.prototype.entries.call(
-            readIterableValues(value, path),
-          )) {
+          for (const [index, entry] of Array.prototype.entries.call(values)) {
             const snapshot = guardDeclarationValue(
               typeParameter(0),
               entry,
@@ -1293,7 +1319,9 @@ const makeStrictJsonObjectKeywordGuard = (
           }
           const snapshots: Array<unknown> = [];
           for (const [index, entry] of Array.prototype.entries.call(
-            readIterableValues(value, path),
+            readCollectionValues(value, path, chunkIterator, () =>
+              Array.from(Function.prototype.call.call(chunkIterator, value)),
+            ),
           )) {
             const snapshot = guardDeclarationValue(
               typeParameter(0),

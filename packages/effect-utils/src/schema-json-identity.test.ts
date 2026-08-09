@@ -221,6 +221,23 @@ describe("Schema JSON identity", () => {
       ),
     ).toThrow(/^Could not inspect JSON value at \$\.$/);
 
+    const largeObjects = Array.from({ length: 10_001 }, (_, index) => ({ index }));
+    expect(() =>
+      makeSchemaJsonIdentity(Schema.HashMap(Schema.Number, Schema.ObjectKeyword)).canonicalKey(
+        HashMap.fromIterable(largeObjects.map((entry) => [entry.index, entry] as const)),
+      ),
+    ).not.toThrow();
+    expect(() =>
+      makeSchemaJsonIdentity(Schema.HashSet(Schema.ObjectKeyword)).canonicalKey(
+        HashSet.fromIterable(largeObjects),
+      ),
+    ).not.toThrow();
+    expect(() =>
+      makeSchemaJsonIdentity(Schema.Chunk(Schema.ObjectKeyword)).canonicalKey(
+        Chunk.fromIterable(largeObjects),
+      ),
+    ).not.toThrow();
+
     const numericRecordIdentity = makeSchemaJsonIdentity(
       Schema.Record(Schema.Number, Schema.ObjectKeyword),
     );
@@ -689,6 +706,26 @@ describe("Schema JSON identity", () => {
           path: "$[Symbol(Symbol.iterator)]",
           reason: "reflection-failure",
           message: "Could not inspect JSON value at $[Symbol(Symbol.iterator)].",
+        }),
+      ),
+    );
+    const malformedHashMap = HashMap.make(["key", { venue: "xnys" }]);
+    Object.defineProperty(malformedHashMap, "_root", {
+      configurable: true,
+      enumerable: true,
+      value: null,
+      writable: true,
+    });
+    expect(
+      makeStrictJsonSchemaGuard(
+        Schema.toCodecJson(Schema.HashMap(Schema.String, Schema.ObjectKeyword)).ast,
+      )(malformedHashMap),
+    ).toStrictEqual(
+      Result.fail(
+        StrictJsonMaterializationError.make({
+          path: "$",
+          reason: "reflection-failure",
+          message: "Could not inspect JSON value at $.",
         }),
       ),
     );

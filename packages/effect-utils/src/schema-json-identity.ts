@@ -282,11 +282,10 @@ const strictJsonUnsupportedSchema = (path: string): StrictJsonMaterializationErr
     message: `Cannot safely validate ObjectKeyword data inside an unknown schema declaration at ${path}.`,
   });
 
-// Reflection is an input boundary. Keep custom iterators and union graphs from
-// turning one validation into an unbounded allocation or traversal; canonical
-// Effect collection sizes bound their internal iterator traversal instead.
+// Reflection is an input boundary. Keep custom iterators from turning one
+// validation into an unbounded allocation or traversal; canonical Effect
+// collection sizes bound their internal iterator traversal instead.
 const strictJsonMaxIterableEntries = 10_000;
-const strictJsonMaxGraphEntries = 10_000;
 
 type OwnDataProperty =
   | { readonly present: false }
@@ -544,7 +543,6 @@ const makeAccessorSafeSnapshot = (
   value: unknown,
   path: string,
   snapshots: WeakMap<object, unknown>,
-  state: { count: number } = { count: 0 },
 ): unknown => {
   if (value === null || (typeof value !== "object" && typeof value !== "function")) {
     return value;
@@ -553,10 +551,6 @@ const makeAccessorSafeSnapshot = (
   if (existing !== undefined) {
     return existing;
   }
-  if (state.count >= strictJsonMaxGraphEntries) {
-    throw strictJsonReflectionFailure(path);
-  }
-  state.count += 1;
   const isArray = Array.isArray(value);
   const isCallable = typeof value === "function";
   let isMap = false;
@@ -594,12 +588,7 @@ const makeAccessorSafeSnapshot = (
     if (!("value" in descriptor)) {
       throw strictJsonAccessorProperty(propertyPath);
     }
-    const childSnapshot = makeAccessorSafeSnapshot(
-      descriptor.value,
-      propertyPath,
-      snapshots,
-      state,
-    );
+    const childSnapshot = makeAccessorSafeSnapshot(descriptor.value, propertyPath, snapshots);
     if (snapshot !== value) {
       Object.defineProperty(snapshot, key, {
         ...descriptor,
@@ -614,7 +603,6 @@ const assertNoAccessorProperties = (
   value: unknown,
   path: string,
   active: WeakSet<object>,
-  state: { count: number } = { count: 0 },
 ): void => {
   if (value === null || (typeof value !== "object" && typeof value !== "function")) {
     return;
@@ -622,10 +610,6 @@ const assertNoAccessorProperties = (
   if (active.has(value)) {
     return;
   }
-  if (state.count >= strictJsonMaxGraphEntries) {
-    throw strictJsonReflectionFailure(path);
-  }
-  state.count += 1;
   active.add(value);
 
   let keys: ReadonlyArray<string | symbol>;
@@ -648,7 +632,7 @@ const assertNoAccessorProperties = (
     if (!("value" in descriptor)) {
       throw strictJsonAccessorProperty(propertyPath);
     }
-    assertNoAccessorProperties(descriptor.value, propertyPath, active, state);
+    assertNoAccessorProperties(descriptor.value, propertyPath, active);
   }
 };
 

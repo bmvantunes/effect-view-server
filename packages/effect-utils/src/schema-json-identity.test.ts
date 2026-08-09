@@ -1919,9 +1919,9 @@ describe("Schema JSON identity", () => {
     expect(descriptorReads).toBeLessThanOrEqual(24 * 4);
   });
 
-  it("bounds descriptor graph walks for union values", () => {
+  it("walks wide union values without imposing a graph-size limit", () => {
     const unionGuard = makeStrictJsonSchemaGuard(
-      Schema.toCodecJson(Schema.Union([Schema.String, Schema.Any])).ast,
+      Schema.toCodecJson(Schema.Union([Schema.ObjectKeyword, Schema.String])).ast,
     );
     const wideValue = Array.from({ length: 10_001 }, () => ({}));
 
@@ -1931,7 +1931,7 @@ describe("Schema JSON identity", () => {
         onFailure: (error) => error.reason,
         onSuccess: () => "success",
       }),
-    ).toBe("reflection-failure");
+    ).toBe("success");
   });
 
   it("uses descriptor-safe snapshots for recursive collection unions", () => {
@@ -2007,7 +2007,7 @@ describe("Schema JSON identity", () => {
         onFailure: (error) => error.reason,
         onSuccess: () => "success",
       }),
-    ).toBe("reflection-failure");
+    ).toBe("success");
 
     const originalWeakMapHas = Object.getOwnPropertyDescriptor(WeakMap.prototype, "has")!;
     Object.defineProperty(WeakMap.prototype, "has", {

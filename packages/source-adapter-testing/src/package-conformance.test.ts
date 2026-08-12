@@ -309,7 +309,7 @@ const invalidSnapshot: SourceAdapterPackageConformanceSnapshot = {
     effect: "bundled",
   },
   peerDependencies: {
-    effect: "^4.0.0-beta.106",
+    effect: "^4.0.0-beta.107",
   },
   devDependencies: {
     effect: "wrong",
@@ -325,6 +325,7 @@ const invalidSnapshot: SourceAdapterPackageConformanceSnapshot = {
     lifecycles: {},
     typeTests: {
       compilerExitCode: 1,
+      compilerVersion: "7.0.2",
       contractFiles: 0,
       positiveCases: 0,
       negativeCases: 0,
@@ -535,6 +536,7 @@ describe("Source Adapter package conformance validation", () => {
       });
       expect(compilerFailure.contract.typeTests).toStrictEqual({
         compilerExitCode: 1,
+        compilerVersion: "7.0.2",
         contractFiles: 0,
         positiveCases: 0,
         negativeCases: 0,
@@ -543,6 +545,7 @@ describe("Source Adapter package conformance validation", () => {
       const compilerRootEvidence = yield* inspectSourceAdapterPackageConformance(options);
       expect(compilerRootEvidence.contract.typeTests).toStrictEqual({
         compilerExitCode: 0,
+        compilerVersion: "7.0.2",
         contractFiles: 1,
         positiveCases: 3,
         negativeCases: 3,
@@ -554,6 +557,7 @@ describe("Source Adapter package conformance validation", () => {
       });
       expect(unrelatedEvidence.contract.typeTests).toStrictEqual({
         compilerExitCode: 0,
+        compilerVersion: "7.0.2",
         contractFiles: 0,
         positiveCases: 0,
         negativeCases: 0,
@@ -570,6 +574,7 @@ describe("Source Adapter package conformance validation", () => {
       });
       expect(unlinkedEvidence.contract.typeTests).toStrictEqual({
         compilerExitCode: 0,
+        compilerVersion: "7.0.2",
         contractFiles: 1,
         positiveCases: 0,
         negativeCases: 0,
@@ -586,6 +591,7 @@ describe("Source Adapter package conformance validation", () => {
       });
       expect(shadowedEvidence.contract.typeTests).toStrictEqual({
         compilerExitCode: 0,
+        compilerVersion: "7.0.2",
         contractFiles: 2,
         positiveCases: 0,
         negativeCases: 0,
@@ -831,19 +837,19 @@ describe("Source Adapter package conformance validation", () => {
         dependencies: {},
         peerDependencies: {
           "effect-view-server": "0.0.6",
-          effect: "4.0.0-beta.106",
-          "@effect/platform-node": "4.0.0-beta.106",
+          effect: "4.0.0-beta.107",
+          "@effect/platform-node": "4.0.0-beta.107",
         },
         devDependencies: {
           "effect-view-server": "0.0.6",
-          effect: "4.0.0-beta.106",
-          "@effect/platform-node": "4.0.0-beta.106",
+          effect: "4.0.0-beta.107",
+          "@effect/platform-node": "4.0.0-beta.107",
         },
         testedPeerMatrix: [
           {
             "effect-view-server": "0.0.6",
-            effect: "4.0.0-beta.106",
-            "@effect/platform-node": "4.0.0-beta.106",
+            effect: "4.0.0-beta.107",
+            "@effect/platform-node": "4.0.0-beta.107",
           },
         ],
         contractBrowserBundleGzipBytes: 2,

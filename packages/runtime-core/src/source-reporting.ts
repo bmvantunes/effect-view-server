@@ -492,8 +492,10 @@ const statusRank: Readonly<Record<RuntimeDependencyStatus, number>> = {
   Stopping: 7,
 };
 
-const worseStatus = <Status extends RuntimeDependencyStatus>(left: Status, right: Status): Status =>
-  statusRank[left] >= statusRank[right] ? left : right;
+const worseStatus = <Status extends RuntimeDependencyStatus>(
+  left: Status,
+  right: Status,
+): Status => (statusRank[left] >= statusRank[right] ? left : right);
 
 const heartbeatStatus = (states: Iterable<RuntimeSourceReportingState>): RuntimeHeartbeat => {
   let status: RuntimeHeartbeatStatus = "Ready";

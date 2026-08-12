@@ -86,7 +86,7 @@ export class ServerTestWebSocketOpenError extends Schema.TaggedError<ServerTestW
   },
 ) {}
 
-export const BadJsonField = Schema.String.pipe(
+export const BadJsonField = ViewServerId.pipe(
   Schema.encodeTo(Schema.Any, {
     decode: SchemaGetter.transform((value) => (typeof value === "string" ? value : "decoded")),
     encode: SchemaGetter.transform(() => Symbol("not-json")),
@@ -95,10 +95,6 @@ export const BadJsonField = Schema.String.pipe(
 
 export const BadJsonRow = Schema.Struct({
   id: ViewServerId,
-});
-
-export const BadJsonRowEdge = Schema.Struct({
-  id: BadJsonField,
 });
 
 export const viewServer = defineViewServerConfig({
@@ -122,16 +118,6 @@ export const safeEdgeViewServer = defineViewServerConfig({
     },
   },
 });
-export const edgeViewServer = {
-  ...safeEdgeViewServer,
-  topics: {
-    badjson: {
-      ...safeEdgeViewServer.topics.badjson,
-      schema: BadJsonRowEdge,
-    },
-  },
-};
-
 export const createServerTestRuntime = <const Topics extends TopicDefinitions>(
   config: ViewServerConfig<Topics>,
   options: Parameters<typeof makeViewServerRuntimeCoreInternal<Topics>>[1] = {},

@@ -172,8 +172,7 @@ type SourceStatus<E, Location> =
     };
 
 type SourceTarget<Route> =
-  | { readonly _tag: "Materialized" }
-  | { readonly _tag: "Leased"; readonly route: Route };
+  { readonly _tag: "Materialized" } | { readonly _tag: "Leased"; readonly route: Route };
 ```
 
 Every source health value always contains Source Adapter Identity, Source Target, Source Status, mandatory `{ runtime, adapter }` metrics, and `sampledAtNanos`. Route, rejection, failure, retry timing, and exhaustion are never optional fields. Live Queries map both `Ready` and `Degraded` to ready availability, `WaitingToRetry` and `Reacquiring` to stale, `Exhausted` to error, and recovery to ready while preserving their Subscription and retained rows. Exact degraded state remains visible through Source Diagnostics. One settled Source Item Rejection also marks the affected Topic health row and aggregate View Server health summary degraded. Liveness and readiness transports continue to respond successfully while returning that degraded state; they do not evict or restart the instance. An exhausted required source retains its exact `Exhausted` diagnostics and rows but contributes `starting` Topic and aggregate health, keeping readiness unsuccessful until recovery. Operators can alert on degraded status or `rejectedItemCount` without introducing a health refresh on the lane hot path.

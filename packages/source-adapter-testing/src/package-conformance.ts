@@ -3,12 +3,14 @@ import {
   isSourceDefinition,
 } from "@effect-view-server/source-adapter/internal";
 import { readFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
 import { builtinModules } from "node:module";
 import { isAbsolute, resolve, sep } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { gzipSync } from "node:zlib";
 import { Cause, Context, Data, Effect, Exit, Layer, Option, Schema } from "effect";
-import ts from "typescript";
+import ts from "typescript-compiler-api";
+import { version as typescriptVersion } from "typescript";
 import { build, type Plugin } from "vite";
 import { browserBuildChunks } from "./browser-build-output";
 import { sourceAdapterConformanceDefinitionIsLinked } from "./conformance";
@@ -21,6 +23,7 @@ export type SourceAdapterPackageSchemaProbe = {
 
 export type SourceAdapterPackageTypeTestEvidence = {
   readonly compilerExitCode: number;
+  readonly compilerVersion: string;
   readonly contractFiles: number;
   readonly positiveCases: number;
   readonly negativeCases: number;
@@ -379,6 +382,27 @@ const executeSchemaProbe = (
     invalid: Effect.exit(Schema.decodeUnknownEffect(schema)(probe.invalid)),
   });
 
+const typescriptPackageRoot = resolve(
+  fileURLToPath(import.meta.resolve("typescript/package.json")),
+  "..",
+);
+
+const executeTypeScriptCompiler = (projectPath: string): number => {
+  const compiler = spawnSync(
+    process.execPath,
+    [
+      resolve(typescriptPackageRoot, "lib/tsc.js"),
+      "--project",
+      projectPath,
+      "--noEmit",
+      "--pretty",
+      "false",
+    ],
+    { stdio: "ignore" },
+  );
+  return compiler.status === 0 ? 0 : 1;
+};
+
 const inspectTypeTests = (
   packageRoot: string,
   project: string,
@@ -391,6 +415,7 @@ const inspectTypeTests = (
         project,
         "Source Adapter type-test project",
       );
+      const compiler = executeTypeScriptCompiler(projectPath);
       const config = ts.readConfigFile(projectPath, (path) => ts.sys.readFile(path));
       if (config.error !== undefined) {
         throw new Error(ts.flattenDiagnosticMessageText(config.error.messageText, "\n"));
@@ -419,7 +444,8 @@ const inspectTypeTests = (
         return bindings.size === 0 ? [] : [{ sourceFile, bindings }];
       });
       return {
-        compilerExitCode: ts.getPreEmitDiagnostics(program).length === 0 ? 0 : 1,
+        compilerExitCode: compiler,
+        compilerVersion: typescriptVersion,
         contractFiles: contractSources.length,
         positiveCases: contractSources.reduce(
           (count, contractSource) =>

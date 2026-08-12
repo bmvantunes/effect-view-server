@@ -36,23 +36,23 @@
     "@effect-view-server/server": "workspace:*",
     "@effect-view-server/source-adapter": "workspace:*",
     "@effect/vitest": "catalog:",
-    "@types/react": "19.2.15",
-    "@types/react-dom": "19.2.3",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.4",
     "@vitest/browser": "catalog:",
     "@vitest/browser-playwright": "catalog:",
     "@vitest/coverage-istanbul": "catalog:",
     "@vitest/runner": "catalog:",
-    "playwright": "1.60.0",
-    "react": "19.2.7",
-    "react-dom": "19.2.7",
+    "playwright": "1.62.1",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
     "typescript": "catalog:",
     "vitest": "catalog:",
     "vitest-browser-react": "catalog:"
   },
   "peerDependencies": {
     "@effect-view-server/in-memory": "workspace:*",
-    "react": "19.2.7",
-    "react-dom": "19.2.7"
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
   },
   "peerDependenciesMeta": {
     "@effect-view-server/in-memory": {

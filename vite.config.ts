@@ -199,7 +199,7 @@ const effectDiagnosticsTask = (
   declarationTask: string | undefined,
   additionalDependencies: ReadonlyArray<string>,
 ) => ({
-  command: `effect-language-service diagnostics --project ${project}/tsconfig.json --format text --strict`,
+  command: `effect-tsgo diagnostics --project ${project}/tsconfig.json --format text --strict`,
   dependsOn: [
     ...(declarationTask === undefined ? [] : [declarationTask]),
     ...additionalDependencies,
@@ -259,7 +259,7 @@ export default defineConfig({
     "*": "vp check --fix",
   },
   fmt: {
-    ignorePatterns: [".pnpm-store/**", ".repos/**", "scripts/**"],
+    ignorePatterns: [".agents/**", ".pnpm-store/**", ".repos/**", "scripts/**"],
   },
   lint: {
     ignorePatterns: [

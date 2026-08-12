@@ -304,6 +304,12 @@ class InMemoryColumnLiveViewEngine<
     },
   );
 
+  private readonly allocateQueryId = (): string => {
+    const queryId = `query-${this.nextQueryId}`;
+    this.nextQueryId += 1;
+    return queryId;
+  };
+
   readonly publish: ColumnLiveViewEngine<Topics>["publish"] = Effect.fn(
     "ColumnLiveViewEngine.publish",
   )({ self: this }, function* <
@@ -400,6 +406,23 @@ class InMemoryColumnLiveViewEngine<
     },
   );
 
+  private readonly snapshotQuery = Effect.fn("ColumnLiveViewEngine.snapshot")(
+    { self: this },
+    function* <Topic extends Extract<keyof Topics, string>>(
+      this: InMemoryColumnLiveViewEngine<Topics>,
+      topic: Topic,
+      capturedQuery: Result.Result<object, unknown>,
+    ) {
+      if (Result.isFailure(capturedQuery)) {
+        return yield* InvalidQueryError.make({
+          topic,
+          message: viewServerQuerySnapshotErrorMessage,
+        });
+      }
+      return yield* this.snapshotRuntime(topic, capturedQuery.success);
+    },
+  );
+
   snapshot<Topic extends Extract<keyof Topics, string>, const Query>(
     topic: Topic,
     query: ExactEngineLiveQueryInputForTopic<Topics, NoInfer<Topic>, Query>,
@@ -411,82 +434,80 @@ class InMemoryColumnLiveViewEngine<
     topic: Topic,
     query: object,
   ): Effect.Effect<LiveQueryResult<object>, ColumnLiveViewEngineError> {
-    const capturedQuery = Result.try(() => snapshotViewServerQuery(query));
-    return Effect.fn("ColumnLiveViewEngine.snapshot")(
-      { self: this },
-      function* (this: InMemoryColumnLiveViewEngine<Topics>) {
-        if (Result.isFailure(capturedQuery)) {
-          return yield* InvalidQueryError.make({
-            topic,
-            message: viewServerQuerySnapshotErrorMessage,
-          });
-        }
-        return yield* this.snapshotRuntime(topic, capturedQuery.success);
-      },
-    )();
+    return this.snapshotQuery(
+      topic,
+      Result.try(() => snapshotViewServerQuery(query)),
+    );
   }
 
-  readonly snapshotRuntime: ColumnLiveViewEngineInternal<Topics>["snapshotRuntime"] = (
-    topic,
-    query,
-  ) =>
-    Effect.gen({ self: this }, function* (this: InMemoryColumnLiveViewEngine<Topics>) {
-      yield* this.ensureOpen();
-      const store = yield* this.getStore(topic);
-      return yield* snapshotRuntimeExecutableQuery(store, query);
-    });
+  readonly snapshotRuntime: ColumnLiveViewEngineInternal<Topics>["snapshotRuntime"] = Effect.fn(
+    "ColumnLiveViewEngine.snapshotRuntime",
+  )({ self: this }, function* (this: InMemoryColumnLiveViewEngine<Topics>, topic, query) {
+    yield* this.ensureOpen();
+    const store = yield* this.getStore(topic);
+    return yield* snapshotRuntimeExecutableQuery(store, query);
+  });
+
+  private readonly subscribeCapturedRuntimeQuery = Effect.fn(
+    "ColumnLiveViewEngine.subscribeRuntime",
+  )({ self: this }, function* <
+    Topic extends Extract<keyof Topics, string>,
+  >(this: InMemoryColumnLiveViewEngine<Topics>, topic: Topic, capturedQuery: Result.Result<object, unknown>, terminalObserver: ColumnLiveViewTerminalObserver, partition?: ColumnLiveViewEngineQueryPartition) {
+    if (Result.isFailure(capturedQuery)) {
+      return yield* InvalidQueryError.make({
+        topic,
+        message: viewServerQuerySnapshotErrorMessage,
+      });
+    }
+    yield* this.ensureOpen();
+    const store = yield* this.getStore(topic);
+    const ensureOpen = this.ensureOpen;
+    const allocateQueryId = this.allocateQueryId;
+    const groupedIncrementalAdmissionLimits = this.groupedIncrementalAdmissionLimits;
+    const queueCapacity = this.subscriptionQueueCapacity;
+    const subscription = yield* acquireTopicStoreSubscription(
+      store,
+      (
+        permit,
+        markAcquired: (subscription: LiveSubscription<object>) => Effect.Effect<void>,
+      ): Effect.Effect<LiveSubscription<object>, ColumnLiveViewEngineError> =>
+        Effect.gen(function* () {
+          yield* ensureOpen();
+          const queryId = allocateQueryId();
+          const acquiredSubscription = yield* subscribeRuntimeExecutableQuery(
+            capturedQuery.success,
+            {
+              groupedIncrementalAdmissionLimits,
+              permit,
+              queryId,
+              queueCapacity,
+              terminalObserver,
+            },
+            partition,
+          );
+          yield* markAcquired(acquiredSubscription);
+          return acquiredSubscription;
+        }),
+    );
+
+    return {
+      events: subscription.events,
+      close: subscription.close,
+    };
+  });
 
   private readonly subscribeRuntimeQuery = <Topic extends Extract<keyof Topics, string>>(
     topic: Topic,
     query: unknown,
     terminalObserver: ColumnLiveViewTerminalObserver,
     partition?: ColumnLiveViewEngineQueryPartition,
-  ) => {
-    const capturedQuery = Result.try(() => snapshotViewServerQuery(query));
-    return Effect.fn("ColumnLiveViewEngine.subscribeRuntime")(
-      { self: this },
-      function* (this: InMemoryColumnLiveViewEngine<Topics>) {
-        if (Result.isFailure(capturedQuery)) {
-          return yield* InvalidQueryError.make({
-            topic,
-            message: viewServerQuerySnapshotErrorMessage,
-          });
-        }
-        yield* this.ensureOpen();
-        const store = yield* this.getStore(topic);
-        const subscription = yield* acquireTopicStoreSubscription(
-          store,
-          (
-            permit,
-            markAcquired: (subscription: LiveSubscription<object>) => Effect.Effect<void>,
-          ): Effect.Effect<LiveSubscription<object>, ColumnLiveViewEngineError> =>
-            Effect.gen({ self: this }, function* () {
-              yield* this.ensureOpen();
-              const queryId = `query-${this.nextQueryId}`;
-              this.nextQueryId += 1;
-              const acquiredSubscription = yield* subscribeRuntimeExecutableQuery(
-                capturedQuery.success,
-                {
-                  groupedIncrementalAdmissionLimits: this.groupedIncrementalAdmissionLimits,
-                  permit,
-                  queryId,
-                  queueCapacity: this.subscriptionQueueCapacity,
-                  terminalObserver,
-                },
-                partition,
-              );
-              yield* markAcquired(acquiredSubscription);
-              return acquiredSubscription;
-            }),
-        );
-
-        return {
-          events: subscription.events,
-          close: subscription.close,
-        };
-      },
-    )();
-  };
+  ) =>
+    this.subscribeCapturedRuntimeQuery(
+      topic,
+      Result.try(() => snapshotViewServerQuery(query)),
+      terminalObserver,
+      partition,
+    );
 
   subscribe<Topic extends Extract<keyof Topics, string>, const Query>(
     topic: Topic,

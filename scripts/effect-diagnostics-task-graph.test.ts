@@ -159,7 +159,7 @@ describe("strict Effect diagnostics task graph", () => {
       },
       runtimeDiagnostics: {
         command:
-          "effect-language-service diagnostics --project packages/runtime/tsconfig.json --format text --strict",
+          "effect-tsgo diagnostics --project packages/runtime/tsconfig.json --format text --strict",
         dependsOn: ["build:effect-declarations:runtime"],
       },
       serverDeclarationBuild: {
@@ -225,7 +225,7 @@ describe("strict Effect diagnostics task graph", () => {
     }).toStrictEqual({
       appTask: {
         command:
-          "effect-language-service diagnostics --project apps/example/tsconfig.json --format text --strict",
+          "effect-tsgo diagnostics --project apps/example/tsconfig.json --format text --strict",
         dependsOn: ["build:effect-declarations"],
       },
       diagnosticDependencies: {
@@ -270,7 +270,7 @@ describe("strict Effect diagnostics task graph", () => {
       },
       inMemoryExampleTask: {
         command:
-          "effect-language-service diagnostics --project examples/in-memory-react/tsconfig.json --format text --strict",
+          "effect-tsgo diagnostics --project examples/in-memory-react/tsconfig.json --format text --strict",
         dependsOn: ["build:effect-declarations"],
       },
       legacyCheckScript: undefined,

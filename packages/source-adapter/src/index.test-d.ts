@@ -1424,8 +1424,11 @@ describe("Source Adapter public type contracts", () => {
       sweepIntervalNanos: 1n,
       initialState: (): ApplicationState => ({ count: 0 }),
       reduce: (state: ApplicationState): ApplicationState => state,
+      // This deliberately invalid Effect error channel is the contract under test.
+      // @effect-diagnostics missingEffectError:off
       // @ts-expect-error transition acquisition must return an infallible scoped release Effect.
       acquireTransition: () => Effect.fail("cannot acquire"),
+      // @effect-diagnostics missingEffectError:on
       metrics: (state: ApplicationState): ApplicationMetrics => ({ count: state.count }),
       runDueSweep: () => Effect.succeed({ attempted: 0 }),
     });

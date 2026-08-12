@@ -25,7 +25,7 @@
     "bench:source-lanes": "vp run -t @effect-view-server/runtime-core#build && vp run -t @effect-view-server/source-adapter#build && sh -c 'output=${VIEW_SERVER_KAFKA_SOURCE_BENCH_OUTPUT_JSON:-.artifacts/source-lanes-64rows-64partitions.json}; mkdir -p .artifacts; VIEW_SERVER_KAFKA_SOURCE_BENCH_OUTPUT_JSON=\"$output\" vp test bench src/source-lanes.bench.ts --run --testTimeout 0 --outputJson \"$output\"'"
   },
   "dependencies": {
-    "@bufbuild/protobuf": "2.12.0",
+    "@bufbuild/protobuf": "2.13.0",
     "@platformatic/kafka": "catalog:"
   },
   "devDependencies": {
@@ -37,13 +37,13 @@
     "@types/node": "catalog:",
     "@vitest/coverage-istanbul": "catalog:",
     "@vitest/runner": "catalog:",
-    "effect": "4.0.0-beta.106",
+    "effect": "4.0.0-beta.107",
     "effect-view-server": "0.0.6",
     "typescript": "catalog:",
     "vitest": "catalog:"
   },
   "peerDependencies": {
-    "effect": "4.0.0-beta.106",
+    "effect": "4.0.0-beta.107",
     "effect-view-server": "0.0.6"
   }
 }

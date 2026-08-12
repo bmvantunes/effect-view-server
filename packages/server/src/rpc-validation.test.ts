@@ -1,15 +1,18 @@
 import { describe, expect, it } from "@effect/vitest";
 import type { ViewServerLiveEvent } from "@effect-view-server/client";
 import { makeViewServerClient } from "@effect-view-server/client/remote";
-import { VIEW_SERVER_HEALTH_TOPIC } from "@effect-view-server/config";
+import {
+  defineViewServerConfig,
+  VIEW_SERVER_HEALTH_TOPIC,
+  ViewServerId,
+} from "@effect-view-server/config";
 import { ViewServerRpcErrorSchema } from "@effect-view-server/protocol";
 import { Effect, Schema, Stream } from "effect";
 import { makeViewServerWebSocketServer } from "./index";
 import {
   createServerTestRuntime,
-  edgeViewServer,
+  BadJsonField,
   makeRawRpcClient,
-  safeEdgeViewServer,
   serverTestLiveClientWithSubscribe,
   viewServer,
 } from "../test-harness/server";
@@ -294,7 +297,15 @@ describe("Real View Server RPC validation and typed errors", () => {
 
   it.live("rejects non-json schema encodings during server event encoding", () =>
     Effect.gen(function* () {
-      const inMemory = createServerTestRuntime(safeEdgeViewServer);
+      const LocalBadJsonRow = Schema.Struct({ id: ViewServerId });
+      const localEdgeViewServer = defineViewServerConfig({
+        topics: {
+          badjson: {
+            schema: LocalBadJsonRow,
+          },
+        },
+      });
+      const inMemory = createServerTestRuntime(localEdgeViewServer);
       yield* Effect.addFinalizer(() => inMemory.close);
       const event: ViewServerLiveEvent<object> = {
         type: "snapshot",
@@ -311,7 +322,22 @@ describe("Real View Server RPC validation and typed errors", () => {
           close: () => Effect.void,
         }),
       );
-      const server = yield* makeViewServerWebSocketServer(edgeViewServer, {
+      Object.defineProperty(LocalBadJsonRow.fields, "id", {
+        configurable: true,
+        enumerable: true,
+        value: BadJsonField,
+        writable: true,
+      });
+      const unsafeLocalEdgeViewServer = {
+        ...localEdgeViewServer,
+        topics: {
+          badjson: {
+            ...localEdgeViewServer.topics.badjson,
+            schema: LocalBadJsonRow,
+          },
+        },
+      };
+      const server = yield* makeViewServerWebSocketServer(unsafeLocalEdgeViewServer, {
         liveClient,
         runtime: inMemory.client,
       });

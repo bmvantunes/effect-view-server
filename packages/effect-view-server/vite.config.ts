@@ -61,6 +61,9 @@ export default defineConfig({
       "src/value-semantics.ts",
     ],
     {
+      deps: {
+        neverBundle: ["typescript-compiler-api"],
+      },
       alias: {
         "effect-view-server/source-adapter/server": fileURLToPath(
           new URL("../source-adapter/dist/server.js", import.meta.url),

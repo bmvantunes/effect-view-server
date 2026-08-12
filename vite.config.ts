@@ -259,16 +259,42 @@ export default defineConfig({
     "*": "vp check --fix",
   },
   fmt: {
-    ignorePatterns: [".pnpm-store/**", ".repos/**", "scripts/**"],
-  },
-  lint: {
     ignorePatterns: [
       ".pnpm-store/**",
       ".repos/**",
       "scripts/**",
+      ".agents/skills/install-anti-slop/**",
+      "tools/oxlint/anti-slop/**",
+    ],
+  },
+  lint: {
+    jsPlugins: [
+      {
+        name: "anti-slop",
+        specifier: "./tools/oxlint/anti-slop/index.ts",
+      },
+    ],
+    ignorePatterns: [
+      ".pnpm-store/**",
+      ".repos/**",
+      "scripts/**",
+      ".agents/skills/install-anti-slop/**",
       "packages/source-adapter-testing/test-fixtures/package-adapter/invalid-types/**",
+      "tools/oxlint/anti-slop/**",
     ],
     options: { typeAware: true, typeCheck: true },
+    rules: {
+      "anti-slop/no-chained-type-assertions": "error",
+      "anti-slop/no-conditional-empty-object-spread": "error",
+      "anti-slop/no-known-value-widening": "error",
+      "anti-slop/no-object-parameters": "error",
+      "anti-slop/no-runtime-typeof": "error",
+      "anti-slop/no-shape-in-symbol-names": "error",
+      "anti-slop/no-unknown-parameters": "error",
+      "anti-slop/no-unknown-type-aliases": "error",
+      "anti-slop/no-unsafe-dictionary-type": "error",
+      "anti-slop/no-widen-then-assert": "error",
+    },
   },
   run: {
     cache: true,

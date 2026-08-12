@@ -606,12 +606,20 @@ const resolveEntries = Effect.fn("ViewServerRuntimeCore.source.entries.resolve")
                     ) {
                       throw new TypeError("Dependency target entries must be objects.");
                     }
+                    const dependencyCandidate = Reflect.get(candidate, "dependency");
+                    const dependency =
+                      dependencyCandidate === undefined
+                        ? runtimeDefinition.identity.name
+                        : dependencyCandidate;
                     const target = Reflect.get(candidate, "target");
                     const endpoints = Reflect.get(candidate, "endpoints");
+                    const targetKey = JSON.stringify([dependency, target]);
                     if (
+                      typeof dependency !== "string" ||
+                      dependency.length === 0 ||
                       typeof target !== "string" ||
                       target.length === 0 ||
-                      targetNames.has(target) ||
+                      targetNames.has(targetKey) ||
                       !Array.isArray(endpoints)
                     ) {
                       throw new TypeError("Dependency target entry is invalid.");
@@ -623,9 +631,10 @@ const resolveEntries = Effect.fn("ViewServerRuntimeCore.source.entries.resolve")
                       }
                       capturedEndpoints.push(endpoint);
                     }
-                    targetNames.add(target);
+                    targetNames.add(targetKey);
                     capturedTargets.push(
                       Object.freeze({
+                        dependency,
                         target,
                         endpoints: Object.freeze(capturedEndpoints),
                       }),
@@ -645,6 +654,7 @@ const resolveEntries = Effect.fn("ViewServerRuntimeCore.source.entries.resolve")
       lifecycle,
       declaration,
       reporting: {
+        source: topic,
         dependency: runtimeDefinition.identity.name,
         lifecycle: runtimeDefinition.lifecycle,
         targets: dependencyTargets,

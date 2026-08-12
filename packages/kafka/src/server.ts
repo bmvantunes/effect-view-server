@@ -1,4 +1,5 @@
-import { Duration, Effect, Layer, Option, Result, Schedule, Scope, Stream } from "effect";
+import { fromBinary } from "@bufbuild/protobuf";
+import { Duration, Effect, Fiber, Layer, Option, Result, Schedule, Scope, Stream } from "effect";
 import type {
   SourceApplicationExit,
   SourceExecutionFailure,
@@ -16,19 +17,26 @@ import {
   KafkaSourceConfigurationError,
   decodeKafkaCompactionKeyCodec,
   decodeKafkaCodec,
+  isKafkaSchemaRegistryProtobufCodec,
   kafkaConsumerGroupId,
   kafkaRowId,
   type KafkaAdapterFailure,
   type KafkaCapturedStartPosition,
   type KafkaCodec,
+  type KafkaCodecError,
   type KafkaMaterializedMetrics,
   type KafkaMessageMetadata,
   type KafkaRegionMetrics,
   type KafkaRejectionPhase,
   type KafkaResolvedStartPosition,
+  type KafkaSchemaRegistryProtobufCodec,
   type KafkaStartResolution,
   type KafkaSourceRejectionLocation,
 } from "./contract";
+import type {
+  KafkaSchemaRegistryBindingInput,
+  KafkaServerSchemaRegistry,
+} from "./schema-registry-runtime";
 import {
   completeKafkaDelivery,
   configurationFailure,
@@ -91,6 +99,7 @@ export type KafkaServerRegion<Region extends string = string> = {
 export type KafkaServerLayerOptions = {
   readonly consumerGroupPrefix: string;
   readonly regions: ReadonlyMap<string, KafkaServerRegion>;
+  readonly schemaRegistries?: ReadonlyMap<string, KafkaServerSchemaRegistry>;
   readonly brokerContracts: ReadonlyArray<KafkaResolvedBrokerContract>;
   readonly retentionSweepIntervalNanos: bigint;
 };
@@ -120,7 +129,10 @@ const bindRegionFailure = <const Region extends string>(
       tag !== "KafkaDecodeFailure" &&
       tag !== "KafkaMappingFailure" &&
       tag !== "KafkaCommitFailure" &&
-      tag !== "KafkaReleaseFailure"
+      tag !== "KafkaReleaseFailure" &&
+      tag !== "KafkaSchemaRegistryUnavailable" &&
+      tag !== "KafkaSchemaRegistryPolicyMismatch" &&
+      tag !== "KafkaSchemaRegistrySchemaMismatch"
     ) {
       return configurationFailure<Region>(
         `Kafka Region ${JSON.stringify(region)} returned an invalid failure.`,
@@ -138,12 +150,35 @@ const bindRegionFailure = <const Region extends string>(
         `Kafka Region ${JSON.stringify(region)} returned a failure for source Topic ${JSON.stringify(topic)}.`,
       );
     }
-    return {
-      _tag: tag,
-      region,
-      topic: sourceTopic,
-      message,
-    };
+    if (
+      tag === "KafkaSchemaRegistryUnavailable" ||
+      tag === "KafkaSchemaRegistryPolicyMismatch" ||
+      tag === "KafkaSchemaRegistrySchemaMismatch"
+    ) {
+      const subject = failure.subject;
+      const side = failure.side;
+      const schemaId = failure.schemaId;
+      if (
+        typeof subject !== "string" ||
+        subject.length === 0 ||
+        (side !== "key" && side !== "value") ||
+        (schemaId !== null && (typeof schemaId !== "number" || !Number.isSafeInteger(schemaId)))
+      ) {
+        return configurationFailure<Region>(
+          `Kafka Region ${JSON.stringify(region)} returned an invalid failure.`,
+        );
+      }
+      return {
+        _tag: tag,
+        region,
+        topic: sourceTopic,
+        subject,
+        side,
+        schemaId,
+        message,
+      };
+    }
+    return { _tag: tag, region, topic: sourceTopic, message };
   }).pipe(
     Result.match({
       onFailure: () =>
@@ -476,6 +511,47 @@ const effectFailure = <Value>(
     onSuccess: (value) => Effect.succeed(processedValue(value)),
   });
 
+type KafkaSchemaRegistryCodecs = {
+  readonly key: KafkaSchemaRegistryProtobufCodec | undefined;
+  readonly value: KafkaSchemaRegistryProtobufCodec | undefined;
+};
+
+const schemaRegistryCodecs = (definition: KafkaRuntimeDefinition): KafkaSchemaRegistryCodecs =>
+  Object.freeze({
+    key: isKafkaSchemaRegistryProtobufCodec(definition.key) ? definition.key : undefined,
+    value: isKafkaSchemaRegistryProtobufCodec(definition.value) ? definition.value : undefined,
+  });
+
+const schemaRegistrySides = (codecs: KafkaSchemaRegistryCodecs): ReadonlyArray<"key" | "value"> =>
+  Object.freeze([
+    ...(codecs.key === undefined ? [] : (["key"] as const)),
+    ...(codecs.value === undefined ? [] : (["value"] as const)),
+  ]);
+
+const validateSchemaRegistryPayload = (
+  registry: KafkaServerSchemaRegistry,
+  input: {
+    readonly region: string;
+    readonly viewServerTopic: string;
+    readonly sourceTopic: string;
+    readonly side: "key" | "value";
+    readonly bytes: Uint8Array;
+  },
+): Effect.Effect<Uint8Array, SourceExecutionFailure<KafkaAdapterFailure>> =>
+  registry.validate(input).pipe(Effect.mapError(adapterExecutionFailure));
+
+const decodeSchemaRegistryProtobufPayload = (
+  codec: KafkaSchemaRegistryProtobufCodec,
+  payload: Uint8Array,
+): Effect.Effect<unknown, KafkaCodecError> =>
+  Effect.try({
+    try: () => fromBinary(codec.descriptor, payload),
+    catch: () => ({
+      _tag: "KafkaCodecError",
+      message: "Kafka Schema Registry protobuf payload could not be decoded.",
+    }),
+  });
+
 const recordEvent = Effect.fn("KafkaSourceAdapter.record.event")(function* <
   Row extends object,
   Topic extends string,
@@ -485,6 +561,8 @@ const recordEvent = Effect.fn("KafkaSourceAdapter.record.event")(function* <
   regionConsumer: KafkaServerRegionConsumer,
   metricInput: KafkaServerRegionMetricsInput,
   record: KafkaServerRecord,
+  schemaRegistry: KafkaServerSchemaRegistry | undefined,
+  registryCodecs: KafkaSchemaRegistryCodecs,
   lifetime: {
     readonly applicationState: KafkaApplicationState<Topic>;
     readonly contracts: ReadonlyMap<string, KafkaResolvedBrokerContract>;
@@ -542,6 +620,32 @@ const recordEvent = Effect.fn("KafkaSourceAdapter.record.event")(function* <
   if (record.key === null) {
     return yield* rejectDecode("keyDecode", "Kafka record key is required.");
   }
+  const registryKeyPayload =
+    registryCodecs.key === undefined
+      ? undefined
+      : yield* validateSchemaRegistryPayload(
+          Option.getOrThrow(Option.fromUndefinedOr(schemaRegistry)),
+          {
+            region,
+            viewServerTopic: toolkit.topic,
+            sourceTopic,
+            side: "key",
+            bytes: record.key,
+          },
+        );
+  const processedRegistryKey =
+    registryCodecs.key === undefined
+      ? undefined
+      : yield* effectFailure(
+          decodeSchemaRegistryProtobufPayload(
+            registryCodecs.key,
+            Option.getOrThrow(Option.fromUndefinedOr(registryKeyPayload)),
+          ),
+          () => rejectDecode("keyDecode", codecRejectionMessage("key", definition.key)),
+        );
+  if (processedRegistryKey?._tag === "Rejected") {
+    return processedRegistryKey.event;
+  }
   // Compaction identity owns an immutable snapshot that application codecs can never mutate.
   const serializedKeyBytes =
     definition.cleanupPolicy === "delete" ? undefined : Uint8Array.from(record.key);
@@ -567,15 +671,30 @@ const recordEvent = Effect.fn("KafkaSourceAdapter.record.event")(function* <
       authoritativeExpired: false,
     });
   }
+  const registryValuePayload =
+    registryCodecs.value === undefined
+      ? undefined
+      : yield* validateSchemaRegistryPayload(
+          Option.getOrThrow(Option.fromUndefinedOr(schemaRegistry)),
+          {
+            region,
+            viewServerTopic: toolkit.topic,
+            sourceTopic,
+            side: "value",
+            bytes: record.value,
+          },
+        );
   const processedKey = yield* effectFailure(
-    definition.cleanupPolicy === "delete"
-      ? decodeKafkaCodec(definition.key, {
-          bytes: record.key,
-          metadata,
-        })
-      : decodeKafkaCompactionKeyCodec(definition.key, {
-          bytes: record.key,
-        }),
+    registryCodecs.key !== undefined
+      ? Effect.succeed(Option.getOrThrow(Option.fromUndefinedOr(processedRegistryKey)).value)
+      : definition.cleanupPolicy === "delete"
+        ? decodeKafkaCodec(definition.key, {
+            bytes: record.key,
+            metadata,
+          })
+        : decodeKafkaCompactionKeyCodec(definition.key, {
+            bytes: record.key,
+          }),
     () => rejectDecode("keyDecode", codecRejectionMessage("key", definition.key)),
   );
   if (processedKey._tag === "Rejected") {
@@ -583,10 +702,15 @@ const recordEvent = Effect.fn("KafkaSourceAdapter.record.event")(function* <
   }
   const key = processedKey.value;
   const processedValueResult = yield* effectFailure(
-    decodeKafkaCodec(definition.value, {
-      bytes: record.value,
-      metadata,
-    }),
+    registryCodecs.value === undefined
+      ? decodeKafkaCodec(definition.value, {
+          bytes: record.value,
+          metadata,
+        })
+      : decodeSchemaRegistryProtobufPayload(
+          registryCodecs.value,
+          Option.getOrThrow(Option.fromUndefinedOr(registryValuePayload)),
+        ),
     () => rejectDecode("valueDecode", codecRejectionMessage("value", definition.value)),
   );
   if (processedValueResult._tag === "Rejected") {
@@ -790,6 +914,7 @@ export const makeKafkaServerLayer = (
   }
   const consumerGroupPrefix = options.consumerGroupPrefix;
   const regions = new Map(options.regions);
+  const schemaRegistries = new Map(options.schemaRegistries ?? []);
   const retentionSweepIntervalNanos = options.retentionSweepIntervalNanos;
   return Layer.unwrap(
     Effect.sync(() => {
@@ -852,20 +977,61 @@ export const makeKafkaServerLayer = (
         );
       return SourceAdapterServer.make(KafkaSourceAdapter, {
         reporting: {
-          dependencies: (input) =>
-            Effect.succeed(
-              input.definition.regions.map((region) => ({
-                target: region,
-                endpoints: regions.get(region)?.endpoints ?? [],
-              })),
-            ),
-          classifyFailure: (failure) =>
-            failure._tag === "KafkaConfigurationFailure" || failure._tag === "KafkaMappingFailure"
-              ? { problem: "self" }
-              : {
-                  problem: "dependency",
-                  targets: [failure.region],
+          dependencies: (input) => {
+            const registrySides = schemaRegistrySides(schemaRegistryCodecs(input.definition));
+            return Effect.succeed(
+              input.definition.regions.flatMap((region) => [
+                {
+                  dependency: "kafka",
+                  target: region,
+                  endpoints: regions.get(region)?.endpoints ?? [],
                 },
+                ...(registrySides.length === 0
+                  ? []
+                  : [
+                      {
+                        dependency: "schema-registry",
+                        target: region,
+                        endpoints: schemaRegistries.get(region)?.endpoints ?? [],
+                      },
+                    ]),
+              ]),
+            );
+          },
+          classifyFailure: (failure) => {
+            if (
+              failure._tag === "KafkaConfigurationFailure" ||
+              failure._tag === "KafkaMappingFailure"
+            ) {
+              return { problem: "self" };
+            }
+            if (
+              failure._tag === "KafkaSchemaRegistryUnavailable" ||
+              failure._tag === "KafkaSchemaRegistryPolicyMismatch" ||
+              failure._tag === "KafkaSchemaRegistrySchemaMismatch"
+            ) {
+              const attributes = [
+                { name: "subject", value: failure.subject },
+                { name: "side", value: failure.side },
+              ];
+              if (failure.schemaId !== null) {
+                attributes.push({ name: "schemaId", value: String(failure.schemaId) });
+              }
+              return {
+                problem: "dependency",
+                targets: [{ dependency: "schema-registry", target: failure.region }],
+                issue: {
+                  code: failure._tag,
+                  message: failure.message,
+                  attributes,
+                },
+              };
+            }
+            return {
+              problem: "dependency",
+              targets: [{ dependency: "kafka", target: failure.region }],
+            };
+          },
         },
         materialized: {
           applicationState: applicationStateRegistration,
@@ -914,7 +1080,15 @@ export const makeKafkaServerLayer = (
                   sourceTopic: definition.topic,
                   viewServerTopic: input.toolkit.topic,
                 };
-                return regionRuntime
+                const schemaRegistry = schemaRegistries.get(region);
+                const registryCodecs = schemaRegistryCodecs(definition);
+                const registrySides = schemaRegistrySides(registryCodecs);
+                const registryBinding: KafkaSchemaRegistryBindingInput = {
+                  viewServerTopic: input.toolkit.topic,
+                  sourceTopic: definition.topic,
+                  sides: registrySides,
+                };
+                const acquireRegion = regionRuntime
                   .acquire({
                     ...metricInput,
                     start,
@@ -923,38 +1097,78 @@ export const makeKafkaServerLayer = (
                     Effect.mapError((failure) =>
                       adapterExecutionFailure(bindRegionFailure(region, definition.topic, failure)),
                     ),
-                    Effect.map((consumer) =>
-                      SourceAdapterServer.lane({
-                        id: region,
-                        events: consumer.records.pipe(
-                          Stream.rechunk(1),
-                          Stream.mapError((failure) =>
-                            adapterExecutionFailure(
-                              bindRegionFailure(region, definition.topic, failure),
-                            ),
+                    Effect.map((consumer) => {
+                      const records = consumer.records.pipe(
+                        Stream.rechunk(1),
+                        Stream.mapError((failure) =>
+                          adapterExecutionFailure(
+                            bindRegionFailure(region, definition.topic, failure),
                           ),
-                          Stream.mapEffect((record) =>
-                            bindRegionRecord(region, definition.topic, record).pipe(
-                              Effect.mapError(adapterExecutionFailure),
-                              Effect.flatMap((boundRecord) =>
-                                recordEvent(
-                                  definition,
-                                  input.toolkit,
-                                  consumer,
-                                  metricInput,
-                                  boundRecord,
-                                  {
-                                    applicationState,
-                                    contracts: state.contracts,
-                                  },
-                                ),
+                        ),
+                        Stream.mapEffect((record) =>
+                          bindRegionRecord(region, definition.topic, record).pipe(
+                            Effect.mapError(adapterExecutionFailure),
+                            Effect.flatMap((boundRecord) =>
+                              recordEvent(
+                                definition,
+                                input.toolkit,
+                                consumer,
+                                metricInput,
+                                boundRecord,
+                                schemaRegistry,
+                                registryCodecs,
+                                {
+                                  applicationState,
+                                  contracts: state.contracts,
+                                },
                               ),
                             ),
                           ),
                         ),
-                      }),
-                    ),
+                      );
+                      const events =
+                        registrySides.length === 0 || schemaRegistry === undefined
+                          ? records
+                          : Stream.transformPull(records, (pull, scope) =>
+                              Effect.map(
+                                Effect.forkIn(
+                                  schemaRegistry
+                                    .failures(registryBinding)
+                                    .pipe(
+                                      Stream.mapError(adapterExecutionFailure),
+                                      Stream.runDrain,
+                                      Effect.andThen(Effect.never),
+                                    ),
+                                  scope,
+                                ),
+                                (failureFiber) => Effect.raceFirst(pull, Fiber.join(failureFiber)),
+                              ),
+                            );
+                      return SourceAdapterServer.lane({ id: region, events });
+                    }),
                   );
+                if (registrySides.length === 0) {
+                  return acquireRegion;
+                }
+                const firstRegistrySide = Option.getOrThrow(
+                  Option.fromUndefinedOr(registrySides[0]),
+                );
+                if (schemaRegistry === undefined) {
+                  return Effect.fail(
+                    adapterExecutionFailure({
+                      _tag: "KafkaSchemaRegistryUnavailable",
+                      region,
+                      topic: definition.topic,
+                      subject: `${definition.topic}-${firstRegistrySide}`,
+                      side: firstRegistrySide,
+                      schemaId: null,
+                      message: `Kafka Region ${JSON.stringify(region)} has no Schema Registry resource.`,
+                    }),
+                  );
+                }
+                return schemaRegistry
+                  .guard(registryBinding)
+                  .pipe(Effect.mapError(adapterExecutionFailure), Effect.andThen(acquireRegion));
               });
               const [first, ...rest] = acquired;
               return SourceAdapterServer.attempt([first, ...rest]);

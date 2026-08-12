@@ -631,9 +631,28 @@ export interface SourceAdapterDescriptor<
 }
 
 export type SourceDependencyTarget = {
+  readonly dependency?: string;
   readonly target: string;
   readonly endpoints: ReadonlyArray<string>;
 };
+
+export type SourceDependencyIssueAttribute = {
+  readonly name: string;
+  readonly value: string;
+};
+
+export type SourceDependencyIssue = {
+  readonly code: string;
+  readonly message: string;
+  readonly attributes: ReadonlyArray<SourceDependencyIssueAttribute>;
+};
+
+export type SourceDependencyFailureTarget =
+  | string
+  | {
+      readonly dependency: string;
+      readonly target: string;
+    };
 
 export type SourceProblem = "self" | "dependency";
 
@@ -641,10 +660,12 @@ export type SourceFailureClassification =
   | {
       readonly problem: "self";
       readonly targets?: never;
+      readonly issue?: never;
     }
   | {
       readonly problem: "dependency";
-      readonly targets?: ReadonlyArray<string>;
+      readonly targets?: ReadonlyArray<SourceDependencyFailureTarget>;
+      readonly issue?: SourceDependencyIssue;
     };
 
 type SourceAdapterDependencyInputFor<Lifecycle extends SourceLifecycle, Definition> = [

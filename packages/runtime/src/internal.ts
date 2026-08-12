@@ -39,7 +39,11 @@ export type {
   ViewServerRuntimeReportingOptions,
   ViewServerRuntimeTopicDefinitions,
 };
-export type { RuntimeDependency, RuntimeHeartbeat } from "./runtime-reporting";
+export type {
+  RuntimeDependency,
+  RuntimeDependencyIssue,
+  RuntimeHeartbeat,
+} from "./runtime-reporting";
 
 const toPublicLiveClient = <const Topics extends ViewServerRuntimeTopicDefinitions>(
   liveClient: ViewServerRuntimeLiveClient<Topics>,

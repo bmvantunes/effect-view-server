@@ -20,8 +20,10 @@ import {
   type KafkaCapturedStartPosition,
   type KafkaCodec,
   type KafkaCodecDecodeInput,
+  type KafkaCodecError,
   type KafkaCodecFailure,
   type KafkaCodecValue,
+  type KafkaCompactionKeyCodec,
   type KafkaCompactionKeyCodecDecodeInput,
   type KafkaCompactionMappingInput,
   type KafkaCompactionSourceDefinition,
@@ -32,6 +34,12 @@ import {
   type KafkaLocalRowKeyInput,
   type KafkaSourceRetryPolicy,
 } from "@effect-view-server/kafka/contract";
+import {
+  OrderKeySchema,
+  OrderValueSchema,
+  type OrderKey,
+  type OrderValue,
+} from "./test-fixtures/orders_pb";
 
 const JsonValueRow = Schema.Struct({
   price: Schema.Number,
@@ -221,6 +229,43 @@ const compactAndDeleteSource = kafka.source({
   map: ({ value }) => ({ price: value.price }),
   startFrom: "latest",
 });
+const registryCompactionKey = kafka.schemaRegistry.protobuf(OrderKeySchema);
+const registryCompactionValue = kafka.schemaRegistry.protobuf(OrderValueSchema);
+const registryCompactSource = kafka.source({
+  cleanupPolicy: "compact",
+  retentionPolicy: "match-kafka-retention",
+  topic: "registry-compacted-orders-source",
+  regions: ["eu"],
+  key: registryCompactionKey,
+  value: registryCompactionValue,
+  map: ({ key, value }) => {
+    expectTypeOf(key).toEqualTypeOf<OrderKey>();
+    expectTypeOf(value).toEqualTypeOf<OrderValue>();
+    return { orderId: key.orderId, price: value.price };
+  },
+  startFrom: "earliest",
+});
+const registryCompactAndDeleteKeyOnlySource = kafka.source({
+  cleanupPolicy: "compact-and-delete",
+  retentionPolicy: "5 minutes",
+  topic: "registry-key-only-orders-source",
+  regions: ["eu"],
+  key: registryCompactionKey,
+  value,
+  map: ({ key, value }) => ({ orderId: key.orderId, price: value.price }),
+  startFrom: "latest",
+});
+const registryValueOnlySource = kafka.source({
+  cleanupPolicy: "delete",
+  retentionPolicy: "Infinity",
+  topic: "registry-value-only-orders-source",
+  regions: ["eu"],
+  key,
+  value: registryCompactionValue,
+  localRowKey: ({ key: localKey }) => localKey,
+  map: ({ value: registryValue }) => ({ price: registryValue.price }),
+  startFrom: "earliest",
+});
 
 declare const unsafeAny: any;
 declare const unsafeUnknown: unknown;
@@ -231,6 +276,7 @@ declare const unsafeAnyFailureEffect: Effect.Effect<string, any>;
 declare const unsafeUnknownFailureEffect: Effect.Effect<string, unknown>;
 declare const protobufDescriptor: DescMessage;
 declare const protobufDescriptorOrString: DescMessage | string;
+declare const generatedProtobufDescriptorUnion: typeof OrderKeySchema | typeof OrderValueSchema;
 declare const kafkaRuntimeService: Context.Service.Identifier<
   typeof KafkaSourceAdapter.runtimeService
 >;
@@ -268,6 +314,13 @@ describe("Kafka Source Adapter type contract", () => {
       readonly decodedBytes: number;
     }>();
     expectTypeOf<KafkaCodecValue<typeof customCompactionKey>>().toEqualTypeOf<number>();
+    const registryKey = kafka.schemaRegistry.protobuf(OrderKeySchema);
+    const registryValue = kafka.schemaRegistry.protobuf(OrderValueSchema);
+    expectTypeOf<KafkaCodecValue<typeof registryKey>>().toEqualTypeOf<OrderKey>();
+    expectTypeOf<KafkaCodecValue<typeof registryValue>>().toEqualTypeOf<OrderValue>();
+    expectTypeOf(registryKey).toExtend<KafkaCodec<OrderKey, KafkaCodecError>>();
+    expectTypeOf(registryKey).toExtend<KafkaCompactionKeyCodec<OrderKey, KafkaCodecError>>();
+    expectTypeOf(registryKey.format).toEqualTypeOf<"schema-registry-protobuf">();
     // @ts-expect-error compaction key codecs are intentionally distinct from ordinary codecs.
     const ordinaryCodec: KafkaCodec<unknown, unknown> = compactionKey;
     expectTypeOf(ordinaryCodec).not.toBeAny();
@@ -310,6 +363,20 @@ describe("Kafka Source Adapter type contract", () => {
     expectTypeOf(
       compactAndDeleteSource.options.cleanupPolicy,
     ).toEqualTypeOf<"compact-and-delete">();
+    expectTypeOf(registryCompactSource).toExtend<
+      KafkaCompactionSourceDefinition<
+        readonly ["eu"],
+        "compact",
+        typeof registryCompactionKey,
+        typeof registryCompactionValue
+      >
+    >();
+    expectTypeOf(
+      registryCompactAndDeleteKeyOnlySource.options.cleanupPolicy,
+    ).toEqualTypeOf<"compact-and-delete">();
+    expectTypeOf(registryValueOnlySource).toExtend<
+      KafkaDeleteSourceDefinition<readonly ["eu"], typeof key, typeof registryCompactionValue>
+    >();
     expectTypeOf(compactSource.options).not.toHaveProperty("localRowKey");
     expectTypeOf<SourceDefinitionRetryServices<typeof source>>().toEqualTypeOf<never>();
     expectTypeOf<SourceDefinitionRetryServices<typeof retrySource>>().toEqualTypeOf<never>();
@@ -427,6 +494,20 @@ describe("Kafka Source Adapter type contract", () => {
     kafka.protobuf(unsafeAny);
     // @ts-expect-error protobuf descriptor unions cannot contain non-descriptor members.
     kafka.protobuf(protobufDescriptorOrString);
+    // @ts-expect-error Schema Registry protobuf descriptors cannot be any.
+    kafka.schemaRegistry.protobuf(unsafeAny);
+    // @ts-expect-error Schema Registry protobuf descriptors cannot be unknown.
+    kafka.schemaRegistry.protobuf(unsafeUnknown);
+    // @ts-expect-error Schema Registry protobuf requires a concrete Buf-generated descriptor.
+    kafka.schemaRegistry.protobuf(protobufDescriptor);
+    // @ts-expect-error Schema Registry protobuf rejects unions of generated descriptors.
+    kafka.schemaRegistry.protobuf(generatedProtobufDescriptorUnion);
+    // @ts-expect-error Schema Registry protobuf descriptor unions cannot contain non-descriptors.
+    kafka.schemaRegistry.protobuf(protobufDescriptorOrString);
+    // @ts-expect-error Schema Registry protobuf accepts exactly one generated descriptor.
+    kafka.schemaRegistry.protobuf(OrderKeySchema, { dynamicFallback: true });
+    // @ts-expect-error Schema Registry is intentionally not duplicated under compactionKey.
+    kafka.compactionKey.schemaRegistry.protobuf(OrderKeySchema);
     // @ts-expect-error custom codec definitions cannot be any.
     kafka.codec(unsafeAny);
     const compactionCodecWithAnyName = {

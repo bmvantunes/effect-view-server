@@ -1,4 +1,6 @@
 import { describe, expectTypeOf, it } from "@effect/vitest";
+import type { DescMessage } from "@bufbuild/protobuf";
+import { EmptySchema, TimestampSchema, type Timestamp } from "@bufbuild/protobuf/wkt";
 import { ViewServerId, defineViewServerConfig, viewSchema } from "effect-view-server/config";
 import type { FalseExpression, LiveQueryResult, RowFromSchema } from "effect-view-server/config";
 import { createViewServerReact } from "effect-view-server/react";
@@ -6,6 +8,7 @@ import { createInMemoryViewServerReact } from "effect-view-server/react/testing"
 import { runViewServerRuntime } from "effect-view-server/runtime";
 import type {
   RuntimeDependency,
+  RuntimeDependencyIssue,
   RuntimeHeartbeat,
   ViewServerRuntimeReportingOptions,
 } from "effect-view-server/runtime";
@@ -17,7 +20,11 @@ import {
   type KafkaCodecValue as KafkaSourceCodecValue,
   type KafkaCompactionMappingInput,
 } from "effect-view-server/kafka/contract";
-import { Context, Effect, Schema } from "effect";
+import {
+  layer as kafkaNodeLayer,
+  layerConfig as kafkaNodeLayerConfig,
+} from "effect-view-server/kafka/node";
+import { Config, Context, Effect, Schema } from "effect";
 import type * as EffectOption from "effect/Option";
 import type { BigDecimal } from "effect/BigDecimal";
 import type { ViewServerLiveClient } from "effect-view-server/client";
@@ -43,11 +50,16 @@ import {
   type SourceAdapterConformanceOptions,
   type SourceAdapterPackageConformanceOptions,
 } from "effect-view-server/source-adapter/testing";
-
 const Order = Schema.Struct({
   id: ViewServerId,
   customerId: Schema.String,
   status: Schema.Literals(["open", "closed"]),
+  price: Schema.Number,
+  region: Schema.String,
+});
+
+const RegistryOrder = Schema.Struct({
+  id: ViewServerId,
   price: Schema.Number,
   region: Schema.String,
 });
@@ -77,6 +89,9 @@ const IncomingKafkaOrder = Schema.Struct({
   region: Schema.String,
 });
 const kafkaSourceValue = kafkaSourceAdapter.json(() => Schema.toCodecJson(IncomingKafkaOrder));
+const kafkaRegistryValue = kafkaSourceAdapter.schemaRegistry.protobuf(TimestampSchema);
+declare const widenedKafkaDescriptor: DescMessage;
+declare const generatedKafkaDescriptorUnion: typeof EmptySchema | typeof TimestampSchema;
 const kafkaSourceViewServer = defineViewServerConfig({
   topics: {
     orders: {
@@ -124,6 +139,48 @@ const compactedKafkaSourceViewServer = defineViewServerConfig({
         },
         startFrom: "earliest",
       }),
+    },
+  },
+});
+const registryKafkaSourceViewServer = defineViewServerConfig({
+  topics: {
+    orders: {
+      schema: RegistryOrder,
+      source: kafkaSourceAdapter.source({
+        cleanupPolicy: "delete",
+        retentionPolicy: "Infinity",
+        topic: "registry-orders-source",
+        regions: ["eu"],
+        key: kafkaSourceAdapter.string(),
+        value: kafkaRegistryValue,
+        localRowKey: ({ key }) => key,
+        map: ({ value, region }) => ({
+          price: value.nanos,
+          region: String(region),
+        }),
+        startFrom: "earliest",
+      }),
+    },
+  },
+});
+const registryKafkaLayer = kafkaNodeLayer(registryKafkaSourceViewServer, {
+  consumerGroupPrefix: "public-facade",
+  regions: {
+    eu: {
+      bootstrapServers: "eu:9092",
+      schemaRegistry: { url: "https://registry.example.com" },
+    },
+  },
+});
+const registryKafkaConfigLayer = kafkaNodeLayerConfig(registryKafkaSourceViewServer, {
+  consumerGroupPrefix: Config.succeed("public-facade"),
+  regions: {
+    eu: {
+      bootstrapServers: Config.succeed("eu:9092"),
+      schemaRegistry: {
+        url: Config.succeed("https://registry.example.com"),
+        monitorInterval: Config.succeed("30 seconds"),
+      },
     },
   },
 });
@@ -209,7 +266,17 @@ describe("public effect-view-server subpath type contracts", () => {
         | "Exhausted"
         | "Stopping"
         | "Inactive";
+      readonly issues: ReadonlyArray<RuntimeDependencyIssue>;
     }>();
+    expectTypeOf<RuntimeDependencyIssue["source"]>().toEqualTypeOf<string>();
+    expectTypeOf<RuntimeDependencyIssue["code"]>().toEqualTypeOf<string>();
+    expectTypeOf<RuntimeDependencyIssue["message"]>().toEqualTypeOf<string>();
+    expectTypeOf<RuntimeDependencyIssue["attributes"]>().toEqualTypeOf<
+      ReadonlyArray<{
+        readonly name: string;
+        readonly value: string;
+      }>
+    >();
     expectTypeOf<
       Parameters<ViewServerRuntimeReportingOptions["onHeartbeat"]>[0]
     >().toEqualTypeOf<RuntimeHeartbeat>();
@@ -306,6 +373,20 @@ describe("public effect-view-server subpath type contracts", () => {
     expectTypeOf<KafkaSourceCodecValue<typeof kafkaSourceValue>>().toEqualTypeOf<
       typeof IncomingKafkaOrder.Type
     >();
+    expectTypeOf<KafkaSourceCodecValue<typeof kafkaRegistryValue>>().toEqualTypeOf<Timestamp>();
+    expectTypeOf(registryKafkaLayer).not.toBeAny();
+    expectTypeOf(registryKafkaConfigLayer).not.toBeAny();
+    // @ts-expect-error the public facade rejects widened dynamic descriptors.
+    kafkaSourceAdapter.schemaRegistry.protobuf(widenedKafkaDescriptor);
+    // @ts-expect-error the public facade rejects unions of generated descriptors.
+    kafkaSourceAdapter.schemaRegistry.protobuf(generatedKafkaDescriptorUnion);
+    kafkaNodeLayer(registryKafkaSourceViewServer, {
+      consumerGroupPrefix: "public-facade",
+      regions: {
+        // @ts-expect-error a public Registry-backed Source requires its Region Registry resource.
+        eu: { bootstrapServers: "eu:9092" },
+      },
+    });
     expectTypeOf(kafkaSourceValue).not.toHaveProperty("schema");
     expectTypeOf(kafkaSourceViewServer.topics.orders.source).not.toBeAny();
     expectTypeOf(

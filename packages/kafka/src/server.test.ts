@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from "@effect/vitest";
+import { create, toBinary } from "@bufbuild/protobuf";
+import { EmptySchema } from "@bufbuild/protobuf/wkt";
 import { ViewServerId, defineViewServerConfig } from "@effect-view-server/config";
 import { makeViewServerRuntimeCore } from "@effect-view-server/runtime-core";
 import { makeViewServerRuntimeCoreInternal } from "@effect-view-server/runtime-core/internal";
@@ -30,6 +32,7 @@ import { TestClock } from "effect/testing";
 import { kafkaBrokerContractKey, resolveKafkaRetention } from "./broker-contract";
 import {
   kafka,
+  kafkaRowId,
   type KafkaAdapterFailure,
   KafkaSourceAdapter,
   type KafkaMessageMetadata,
@@ -45,6 +48,7 @@ import {
   type KafkaServerRegionAcquireInput,
 } from "./server";
 import * as kafkaServerInternals from "./server-internal";
+import { OrderKeySchema, OrderValueSchema } from "./test-fixtures/orders_pb";
 
 const Order = Schema.Struct({
   id: ViewServerId,
@@ -55,6 +59,19 @@ const Order = Schema.Struct({
 const kafkaTestLifetimeIdentity = Object.freeze({});
 
 const bytes = (value: string): Uint8Array => new TextEncoder().encode(value);
+
+const schemaRegistryFrame = (schemaId: number, payload: Uint8Array): Uint8Array =>
+  Uint8Array.from([
+    0,
+    Math.floor(schemaId / 0x1_00_00_00) % 0x100,
+    Math.floor(schemaId / 0x1_00_00) % 0x100,
+    Math.floor(schemaId / 0x1_00) % 0x100,
+    schemaId % 0x100,
+    0,
+    ...payload,
+  ]);
+
+const schemaRegistryPayload = (frame: Uint8Array): Uint8Array => frame.slice(6);
 
 const metadata = (
   region: string,
@@ -100,6 +117,10 @@ type FakeRegion = {
     readonly timestampNanos?: bigint;
   }) => Effect.Effect<void>;
   readonly offerRecord: (record: KafkaServerRecord) => Effect.Effect<void>;
+  readonly offerTopicRecord: (
+    viewServerTopic: string,
+    record: KafkaServerRecord,
+  ) => Effect.Effect<void>;
   readonly failStream: (failure: KafkaAdapterFailure) => Effect.Effect<void>;
   readonly counts: () => {
     readonly acquisitions: number;
@@ -146,6 +167,7 @@ const makeFakeRegion = (
 ): Effect.Effect<FakeRegion> =>
   Effect.sync(() => {
     let active: Queue.Queue<KafkaServerRecord, KafkaAdapterFailure> | undefined;
+    const activeByTopic = new Map<string, Queue.Queue<KafkaServerRecord, KafkaAdapterFailure>>();
     let finalizations = 0;
     let shouldFailAcquisition = false;
     const acquisitions: Array<KafkaServerRegionAcquireInput> = [];
@@ -184,6 +206,7 @@ const makeFakeRegion = (
           acquisitions.push(input);
           const queue = yield* Queue.unbounded<KafkaServerRecord, KafkaAdapterFailure>();
           active = queue;
+          activeByTopic.set(input.viewServerTopic, queue);
           yield* Scope.addFinalizer(
             yield* Effect.scope,
             Effect.sync(() => {
@@ -191,6 +214,9 @@ const makeFakeRegion = (
               metrics.closes += 1n;
               if (active === queue) {
                 active = undefined;
+              }
+              if (activeByTopic.get(input.viewServerTopic) === queue) {
+                activeByTopic.delete(input.viewServerTopic);
               }
             }).pipe(Effect.andThen(Queue.shutdown(queue))),
           );
@@ -246,6 +272,16 @@ const makeFakeRegion = (
           const queue = active;
           if (queue === undefined) {
             return yield* Effect.die(new Error(`Kafka fake Region ${region} is not active.`));
+          }
+          yield* Queue.offer(queue, record);
+        }),
+      offerTopicRecord: (viewServerTopic, record) =>
+        Effect.gen(function* () {
+          const queue = activeByTopic.get(viewServerTopic);
+          if (queue === undefined) {
+            return yield* Effect.die(
+              new Error(`Kafka fake Region ${region} Topic ${viewServerTopic} is not active.`),
+            );
           }
           yield* Queue.offer(queue, record);
         }),
@@ -346,20 +382,27 @@ const finiteBrokerContract = () =>
     },
   }) as const;
 
+const foreverBrokerContract = (
+  viewServerTopic: string,
+  sourceTopic: string,
+  region: string,
+  cleanupPolicy: "delete" | "compact" | "compact-and-delete" = "delete",
+) => ({
+  viewServerTopic,
+  sourceTopic,
+  region,
+  cleanupPolicy,
+  retentionPolicy: { _tag: "Forever" as const },
+  observedCleanupPolicy: cleanupPolicy,
+  observedRetentionMs: -1n,
+  resolvedRetention: { _tag: "Forever" as const },
+});
+
 const foreverBrokerContracts = (
   regions: ReadonlyArray<string>,
   cleanupPolicy: "delete" | "compact" | "compact-and-delete" = "delete",
 ) =>
-  regions.map((region) => ({
-    viewServerTopic: "orders",
-    sourceTopic: "source-orders",
-    region,
-    cleanupPolicy,
-    retentionPolicy: { _tag: "Forever" as const },
-    observedCleanupPolicy: cleanupPolicy,
-    observedRetentionMs: -1n,
-    resolvedRetention: { _tag: "Forever" as const },
-  }));
+  regions.map((region) => foreverBrokerContract("orders", "source-orders", region, cleanupPolicy));
 
 type FaultLocalRowKeyInput = {
   readonly key: string;
@@ -542,6 +585,17 @@ describe("Kafka Source Adapter Server", () => {
             },
           ],
         ]),
+        schemaRegistries: new Map([
+          [
+            "tokyo",
+            {
+              endpoints: ["https://registry.kafka-tky.com"],
+              guard: () => Effect.void,
+              failures: () => Stream.empty,
+              validate: ({ bytes }) => Effect.succeed(schemaRegistryPayload(bytes)),
+            },
+          ],
+        ]),
       });
       const context = yield* Effect.scoped(Layer.build(layer));
       const service = Context.getUnsafe(context, KafkaSourceAdapter.runtimeService);
@@ -558,8 +612,41 @@ describe("Kafka Source Adapter Server", () => {
         }),
       ).toStrictEqual([
         {
+          dependency: "kafka",
           target: "tokyo",
           endpoints: ["b-1.kafka-tky.com", "b-2.kafka-tky.com"],
+        },
+      ]);
+      const registrySource = kafka.source({
+        cleanupPolicy: "delete",
+        retentionPolicy: "Infinity",
+        topic: "source-orders",
+        regions: ["tokyo"],
+        key: kafka.string(),
+        value: kafka.schemaRegistry.protobuf(EmptySchema),
+        localRowKey: ({ key }) => key,
+        map: ({ region }) => ({
+          price: 0,
+          region: String(region),
+        }),
+        startFrom: "earliest",
+      });
+      expect(
+        yield* reporting.dependencies({
+          topic: "orders",
+          lifecycle: "materialized",
+          definition: registrySource.options,
+        }),
+      ).toStrictEqual([
+        {
+          dependency: "kafka",
+          target: "tokyo",
+          endpoints: ["b-1.kafka-tky.com", "b-2.kafka-tky.com"],
+        },
+        {
+          dependency: "schema-registry",
+          target: "tokyo",
+          endpoints: ["https://registry.kafka-tky.com"],
         },
       ]);
       expect(
@@ -591,13 +678,674 @@ describe("Kafka Source Adapter Server", () => {
           }),
         ),
       ).toStrictEqual([
-        { problem: "dependency", targets: ["tokyo"] },
-        { problem: "dependency", targets: ["tokyo"] },
-        { problem: "dependency", targets: ["tokyo"] },
-        { problem: "dependency", targets: ["tokyo"] },
-        { problem: "dependency", targets: ["tokyo"] },
+        { problem: "dependency", targets: [{ dependency: "kafka", target: "tokyo" }] },
+        { problem: "dependency", targets: [{ dependency: "kafka", target: "tokyo" }] },
+        { problem: "dependency", targets: [{ dependency: "kafka", target: "tokyo" }] },
+        { problem: "dependency", targets: [{ dependency: "kafka", target: "tokyo" }] },
+        { problem: "dependency", targets: [{ dependency: "kafka", target: "tokyo" }] },
       ]);
+      expect(
+        reporting.classifyFailure({
+          _tag: "KafkaSchemaRegistrySchemaMismatch",
+          region: "tokyo",
+          topic: "source-orders",
+          subject: "source-orders-value",
+          side: "value",
+          schemaId: 42,
+          message: "Schema ID 42 is not WIRE-compatible with the generated descriptor.",
+        }),
+      ).toStrictEqual({
+        problem: "dependency",
+        targets: [{ dependency: "schema-registry", target: "tokyo" }],
+        issue: {
+          code: "KafkaSchemaRegistrySchemaMismatch",
+          message: "Schema ID 42 is not WIRE-compatible with the generated descriptor.",
+          attributes: [
+            { name: "subject", value: "source-orders-value" },
+            { name: "side", value: "value" },
+            { name: "schemaId", value: "42" },
+          ],
+        },
+      });
+      expect(
+        reporting.classifyFailure({
+          _tag: "KafkaSchemaRegistryPolicyMismatch",
+          region: "tokyo",
+          topic: "source-orders",
+          subject: "source-orders-value",
+          side: "value",
+          schemaId: null,
+          message: "Subject policy is no longer FULL_TRANSITIVE.",
+        }),
+      ).toStrictEqual({
+        problem: "dependency",
+        targets: [{ dependency: "schema-registry", target: "tokyo" }],
+        issue: {
+          code: "KafkaSchemaRegistryPolicyMismatch",
+          message: "Subject policy is no longer FULL_TRANSITIVE.",
+          attributes: [
+            { name: "subject", value: "source-orders-value" },
+            { name: "side", value: "value" },
+          ],
+        },
+      });
     }),
+  );
+
+  it.effect("isolates Registry failures while another Source in the same Region continues", () =>
+    Effect.gen(function* () {
+      const acquisitionOrder: Array<string> = [];
+      const eu = yield* makeFakeRegion("eu", acquisitionOrder);
+      let orderMappings = 0;
+      let inventoryMappings = 0;
+      let orderSettlements = 0;
+      let ordersRegistryHealthy = false;
+      const orderCommits: Array<bigint> = [];
+      const inventoryCommits: Array<bigint> = [];
+      const inventorySettlements: Array<bigint> = [];
+      const registryValidations: Array<{
+        readonly region: string;
+        readonly sourceTopic: string;
+        readonly side: "key" | "value";
+      }> = [];
+      const config = defineViewServerConfig({
+        topics: {
+          orders: {
+            schema: Order,
+            source: kafka.source(
+              {
+                cleanupPolicy: "delete",
+                retentionPolicy: "Infinity",
+                topic: "source-orders",
+                regions: ["eu"],
+                key: kafka.string(),
+                value: kafka.schemaRegistry.protobuf(OrderValueSchema),
+                localRowKey: ({ key }) => key,
+                map: ({ value, region }) => {
+                  orderMappings += 1;
+                  return { price: value.price, region: String(region) };
+                },
+                startFrom: "earliest",
+              },
+              Schedule.spaced("1 second"),
+            ),
+          },
+          inventory: {
+            schema: Order,
+            source: kafka.source({
+              cleanupPolicy: "delete",
+              retentionPolicy: "Infinity",
+              topic: "source-inventory",
+              regions: ["eu"],
+              key: kafka.string(),
+              value: kafka.schemaRegistry.protobuf(OrderValueSchema),
+              localRowKey: ({ key }) => key,
+              map: ({ value, region }) => {
+                inventoryMappings += 1;
+                return { price: value.price, region: String(region) };
+              },
+              startFrom: "earliest",
+            }),
+          },
+        },
+      });
+      const registryFailure: KafkaAdapterFailure = {
+        _tag: "KafkaSchemaRegistrySchemaMismatch",
+        region: "eu",
+        topic: "source-orders",
+        subject: "source-orders-value",
+        side: "value",
+        schemaId: 99,
+        message: "Schema ID 99 is not WIRE-compatible with the generated descriptor.",
+      };
+      const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(
+        Effect.provide(
+          makeKafkaServerLayer({
+            brokerContracts: [
+              foreverBrokerContract("orders", "source-orders", "eu"),
+              foreverBrokerContract("inventory", "source-inventory", "eu"),
+            ],
+            retentionSweepIntervalNanos: 900_000_000_000n,
+            consumerGroupPrefix: "registry-isolation",
+            regions: new Map([["eu", eu.runtime]]),
+            schemaRegistries: new Map([
+              [
+                "eu",
+                {
+                  endpoints: ["https://registry.eu.example.com"],
+                  guard: () => Effect.void,
+                  failures: () => Stream.empty,
+                  validate: (input) =>
+                    Effect.gen(function* () {
+                      registryValidations.push({
+                        region: "eu",
+                        sourceTopic: input.sourceTopic,
+                        side: input.side,
+                      });
+                      if (input.sourceTopic === "source-orders" && !ordersRegistryHealthy) {
+                        return yield* Effect.fail(registryFailure);
+                      }
+                      return schemaRegistryPayload(input.bytes);
+                    }),
+                },
+              ],
+            ]),
+          }),
+        ),
+      );
+      const ordersHealth = yield* runtime.liveClient.subscribeSourceHealth({ topic: "orders" });
+      yield* eu.awaitAcquisitions(2);
+
+      const inventoryValue = (price: number) =>
+        schemaRegistryFrame(
+          42,
+          toBinary(
+            OrderValueSchema,
+            create(OrderValueSchema, { customerId: `customer-${String(price)}`, price }),
+          ),
+        );
+      const offerInventory = (key: string, price: number, offset: bigint) =>
+        eu.offerTopicRecord("inventory", {
+          key: bytes(key),
+          value: inventoryValue(price),
+          metadata: {
+            ...metadata("eu", offset),
+            sourceTopic: "source-inventory",
+          },
+          settlement: (applicationExit) =>
+            Exit.isSuccess(applicationExit)
+              ? Effect.sync(() => {
+                  inventorySettlements.push(offset);
+                  inventoryCommits.push(offset);
+                })
+              : Effect.void,
+        });
+
+      yield* offerInventory("first", 10, 1n);
+      yield* awaitCondition(() => inventoryCommits.length === 1, "first unrelated Registry commit");
+      yield* eu.offerTopicRecord("orders", {
+        key: bytes("bad-schema"),
+        value: schemaRegistryFrame(
+          99,
+          toBinary(OrderValueSchema, create(OrderValueSchema, { customerId: "bad", price: 999 })),
+        ),
+        metadata: metadata("eu", 1n),
+        settlement: () =>
+          Effect.sync(() => {
+            orderSettlements += 1;
+            orderCommits.push(1n);
+          }),
+      });
+      yield* awaitCondition(() => eu.counts().finalizations === 1, "Registry lane failure");
+      const waiting = Option.getOrThrow(
+        yield* ordersHealth.events.pipe(
+          Stream.filter((health) => health.status._tag === "WaitingToRetry"),
+          Stream.take(1),
+          Stream.runHead,
+        ),
+      );
+
+      yield* offerInventory("second", 20, 2n);
+      yield* awaitCondition(
+        () => inventoryCommits.length === 2,
+        "second unrelated Registry commit",
+      );
+      const inventory = yield* runtime.client.snapshot("inventory", {
+        select: ["id", "price", "region"],
+        orderBy: [{ field: "id", direction: "asc" }],
+      });
+
+      expect({
+        acquisitionOrder: [...acquisitionOrder].sort(),
+        failedReporting: yield* runtime.reporting.snapshot,
+        inventory,
+        inventoryCommits,
+        inventoryMappings,
+        inventorySettlements,
+        orderCommits,
+        orderMappings,
+        orderSettlements,
+        registryValidations,
+        status: waiting.status,
+        euCounts: eu.counts(),
+      }).toStrictEqual({
+        acquisitionOrder: ["eu:1", "eu:2"],
+        failedReporting: {
+          heartbeat: { status: "WaitingToRetry", problems: ["dependency"] },
+          dependencies: [
+            {
+              dependency: "kafka",
+              target: "eu",
+              endpoints: [],
+              status: "Ready",
+              issues: [],
+            },
+            {
+              dependency: "schema-registry",
+              target: "eu",
+              endpoints: ["https://registry.eu.example.com"],
+              status: "WaitingToRetry",
+              issues: [
+                {
+                  source: "orders",
+                  code: "KafkaSchemaRegistrySchemaMismatch",
+                  message: "Schema ID 99 is not WIRE-compatible with the generated descriptor.",
+                  attributes: [
+                    { name: "subject", value: "source-orders-value" },
+                    { name: "side", value: "value" },
+                    { name: "schemaId", value: "99" },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+        inventory: {
+          rows: [
+            { id: "eu:0:first", price: 10, region: "eu" },
+            { id: "eu:0:second", price: 20, region: "eu" },
+          ],
+          totalRows: 2,
+          version: 2,
+          status: "ready",
+          statusCode: "Ready",
+        },
+        inventoryCommits: [1n, 2n],
+        inventoryMappings: 2,
+        inventorySettlements: [1n, 2n],
+        orderCommits: [],
+        orderMappings: 0,
+        orderSettlements: 0,
+        registryValidations: [
+          { region: "eu", sourceTopic: "source-inventory", side: "value" },
+          { region: "eu", sourceTopic: "source-orders", side: "value" },
+          { region: "eu", sourceTopic: "source-inventory", side: "value" },
+        ],
+        status: {
+          _tag: "WaitingToRetry",
+          nextAttempt: 2n,
+          termination: {
+            _tag: "Failed",
+            failure: { _tag: "AdapterFailure", failure: registryFailure },
+          },
+          retryAtNanos: 1_000_000_000n,
+        },
+        euCounts: { acquisitions: 2, finalizations: 1 },
+      });
+
+      ordersRegistryHealthy = true;
+      yield* TestClock.withLive(Effect.sleep("1 millis"));
+      yield* TestClock.adjust("1 second");
+      yield* eu.awaitAcquisitions(3);
+      yield* eu.offerTopicRecord("orders", {
+        key: bytes("recovered"),
+        value: inventoryValue(30),
+        metadata: metadata("eu", 2n),
+        settlement: (applicationExit) =>
+          Exit.isSuccess(applicationExit)
+            ? Effect.sync(() => {
+                orderCommits.push(2n);
+              })
+            : Effect.void,
+      });
+      yield* awaitCondition(() => orderCommits.length === 1, "recovered Registry commit");
+      yield* awaitEffectCondition("Registry reporting recovery", () =>
+        runtime.reporting.snapshot.pipe(
+          Effect.map(({ heartbeat }) => heartbeat.status === "Ready"),
+        ),
+      );
+      expect(yield* runtime.reporting.snapshot).toStrictEqual({
+        heartbeat: { status: "Ready", problems: [] },
+        dependencies: [
+          {
+            dependency: "kafka",
+            target: "eu",
+            endpoints: [],
+            status: "Ready",
+            issues: [],
+          },
+          {
+            dependency: "schema-registry",
+            target: "eu",
+            endpoints: ["https://registry.eu.example.com"],
+            status: "Ready",
+            issues: [],
+          },
+        ],
+      });
+
+      yield* ordersHealth.close();
+      yield* runtime.close;
+    }),
+  );
+
+  it.effect("validates Registry-backed keys and values before decoding either payload", () =>
+    Effect.gen(function* () {
+      const acquisitionOrder: Array<string> = [];
+      const eu = yield* makeFakeRegion("eu", acquisitionOrder);
+      const validations: Array<"key" | "value"> = [];
+      let mappings = 0;
+      const source = kafka.source({
+        cleanupPolicy: "delete",
+        retentionPolicy: "Infinity",
+        topic: "source-orders",
+        regions: ["eu"],
+        key: kafka.schemaRegistry.protobuf(OrderValueSchema),
+        value: kafka.schemaRegistry.protobuf(OrderValueSchema),
+        localRowKey: ({ key }) => key.customerId,
+        map: ({ value, region }) => {
+          mappings += 1;
+          return { price: value.price, region: String(region) };
+        },
+        startFrom: "earliest",
+      });
+      const config = defineViewServerConfig({
+        topics: { orders: { schema: Order, source } },
+      });
+      const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(
+        Effect.provide(
+          makeKafkaServerLayer({
+            brokerContracts: foreverBrokerContracts(["eu"]),
+            retentionSweepIntervalNanos: 900_000_000_000n,
+            consumerGroupPrefix: "registry-key-value",
+            regions: new Map([["eu", eu.runtime]]),
+            schemaRegistries: new Map([
+              [
+                "eu",
+                {
+                  endpoints: ["https://registry.eu.example.com"],
+                  guard: () => Effect.void,
+                  failures: () => Stream.empty,
+                  validate: ({ bytes: framedBytes, side }) =>
+                    Effect.sync(() => {
+                      validations.push(side);
+                      return schemaRegistryPayload(framedBytes);
+                    }),
+                },
+              ],
+            ]),
+          }),
+        ),
+      );
+      yield* eu.awaitAcquisitions(1);
+      const key = schemaRegistryFrame(
+        41,
+        toBinary(OrderValueSchema, create(OrderValueSchema, { customerId: "order-1", price: 0 })),
+      );
+      const value = schemaRegistryFrame(
+        42,
+        toBinary(
+          OrderValueSchema,
+          create(OrderValueSchema, { customerId: "customer-1", price: 12 }),
+        ),
+      );
+      yield* eu.offerRecord({
+        key,
+        value,
+        metadata: metadata("eu", 1n),
+        settlement: (applicationExit) =>
+          Exit.isSuccess(applicationExit)
+            ? Effect.sync(() => {
+                eu.commits.push(1n);
+              })
+            : Effect.void,
+      });
+      yield* awaitCondition(() => eu.commits.length === 1, "Registry key/value commit");
+
+      expect(validations).toStrictEqual(["key", "value"]);
+      expect(
+        yield* runtime.client.snapshot("orders", {
+          select: ["id", "price", "region"],
+        }),
+      ).toStrictEqual({
+        rows: [{ id: "eu:0:order-1", price: 12, region: "eu" }],
+        totalRows: 1,
+        version: 1,
+        status: "ready",
+        statusCode: "Ready",
+      });
+
+      let malformedSettlements = 0;
+      yield* eu.offerRecord({
+        key,
+        value: schemaRegistryFrame(43, Uint8Array.from([0x0a, 0x02, 0x61])),
+        metadata: metadata("eu", 2n),
+        settlement: () =>
+          Effect.sync(() => {
+            malformedSettlements += 1;
+          }),
+      });
+      yield* awaitCondition(
+        () => malformedSettlements === 1,
+        "malformed Registry protobuf rejection settlement",
+      );
+      expect({ malformedSettlements, mappings, validations }).toStrictEqual({
+        malformedSettlements: 1,
+        mappings: 1,
+        validations: ["key", "value", "key", "value"],
+      });
+      yield* runtime.close;
+    }),
+  );
+
+  it.effect("keeps Registry delivery pull-ordered and observes normal consumer completion", () =>
+    Effect.gen(function* () {
+      const firstSettlementStarted = yield* Deferred.make<void>();
+      const releaseFirstSettlement = yield* Deferred.make<void>();
+      const settlements: Array<bigint> = [];
+      const validations: Array<number> = [];
+      const valueFrame = (schemaId: number, price: number) =>
+        schemaRegistryFrame(
+          schemaId,
+          toBinary(
+            OrderValueSchema,
+            create(OrderValueSchema, {
+              customerId: `customer-${String(price)}`,
+              price,
+            }),
+          ),
+        );
+      const records: ReadonlyArray<KafkaServerRecord> = [
+        {
+          key: bytes("order-1"),
+          value: valueFrame(41, 1),
+          metadata: metadata("eu", 1n),
+          settlement: () =>
+            Deferred.succeed(firstSettlementStarted, undefined).pipe(
+              Effect.andThen(Deferred.await(releaseFirstSettlement)),
+              Effect.andThen(
+                Effect.sync(() => {
+                  settlements.push(1n);
+                }),
+              ),
+            ),
+        },
+        {
+          key: bytes("order-2"),
+          value: valueFrame(42, 2),
+          metadata: metadata("eu", 2n),
+          settlement: () =>
+            Effect.sync(() => {
+              settlements.push(2n);
+            }),
+        },
+      ];
+      const region: KafkaServerRegion = {
+        acquire: () =>
+          Effect.succeed({
+            records: Stream.fromIterable(records),
+            recordDecoded: Effect.void,
+            recordDecodeFailure: Effect.void,
+            recordMapped: Effect.void,
+            recordMappingFailure: Effect.void,
+            recordRejection: Effect.void,
+          }),
+        metrics: () =>
+          Effect.succeed({
+            region: "eu",
+            assignments: [],
+            commits: 0n,
+            commitFailures: 0n,
+            decoded: 0n,
+            decodeFailures: 0n,
+            mapped: 0n,
+            mappingFailures: 0n,
+            rejections: 0n,
+            reconnects: 0n,
+            rebalances: 0n,
+            closes: 0n,
+            closeFailures: 0n,
+          }),
+      };
+      const source = kafka.source(
+        {
+          cleanupPolicy: "delete",
+          retentionPolicy: "Infinity",
+          topic: "source-orders",
+          regions: ["eu"],
+          key: kafka.string(),
+          value: kafka.schemaRegistry.protobuf(OrderValueSchema),
+          localRowKey: ({ key }) => key,
+          map: ({ value, region }) => ({ price: value.price, region: String(region) }),
+          startFrom: "earliest",
+        },
+        Schedule.recurs(0),
+      );
+      const config = defineViewServerConfig({
+        topics: { orders: { schema: Order, source } },
+      });
+      const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(
+        Effect.provide(
+          makeKafkaServerLayer({
+            brokerContracts: foreverBrokerContracts(["eu"]),
+            retentionSweepIntervalNanos: 900_000_000_000n,
+            consumerGroupPrefix: "registry-pull-order",
+            regions: new Map([["eu", region]]),
+            schemaRegistries: new Map([
+              [
+                "eu",
+                {
+                  endpoints: ["https://registry.eu.example.com"],
+                  guard: () => Effect.void,
+                  failures: () => Stream.empty,
+                  validate: ({ bytes: framedBytes }) =>
+                    Effect.sync(() => {
+                      validations.push(framedBytes[4] ?? -1);
+                      return schemaRegistryPayload(framedBytes);
+                    }),
+                },
+              ],
+            ]),
+          }),
+        ),
+      );
+      const diagnostics = yield* runtime.liveClient.subscribeSourceHealth({ topic: "orders" });
+
+      yield* Deferred.await(firstSettlementStarted);
+      yield* Effect.forEach(Array.from({ length: 100 }), () => Effect.yieldNow, {
+        discard: true,
+      });
+      expect({ settlements, validations }).toStrictEqual({
+        settlements: [],
+        validations: [41],
+      });
+
+      yield* Deferred.succeed(releaseFirstSettlement, undefined);
+      const exhausted = Option.getOrThrow(
+        yield* diagnostics.events.pipe(
+          Stream.filter((health) => health.status._tag === "Exhausted"),
+          Stream.take(1),
+          Stream.runHead,
+        ),
+      );
+      expect({ settlements, status: exhausted.status, validations }).toStrictEqual({
+        settlements: [1n, 2n],
+        status: {
+          _tag: "Exhausted",
+          exhaustion: {
+            _tag: "RetryExhausted",
+            lastTermination: { _tag: "UnexpectedCompletion" },
+          },
+          exhaustedAtNanos: 0n,
+        },
+        validations: [41, 42],
+      });
+
+      yield* diagnostics.close();
+      yield* runtime.close;
+    }),
+  );
+
+  it.effect(
+    "fails a Registry-backed Source before Region acquisition when its resource is absent",
+    () =>
+      Effect.gen(function* () {
+        const acquisitionOrder: Array<string> = [];
+        const eu = yield* makeFakeRegion("eu", acquisitionOrder);
+        const source = kafka.source(
+          {
+            cleanupPolicy: "delete",
+            retentionPolicy: "Infinity",
+            topic: "source-orders",
+            regions: ["eu"],
+            key: kafka.string(),
+            value: kafka.schemaRegistry.protobuf(OrderValueSchema),
+            localRowKey: ({ key }) => key,
+            map: ({ value, region }) => ({ price: value.price, region: String(region) }),
+            startFrom: "earliest",
+          },
+          Schedule.recurs(0),
+        );
+        const config = defineViewServerConfig({
+          topics: { orders: { schema: Order, source } },
+        });
+        const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(
+          Effect.provide(
+            makeKafkaServerLayer({
+              brokerContracts: foreverBrokerContracts(["eu"]),
+              retentionSweepIntervalNanos: 900_000_000_000n,
+              consumerGroupPrefix: "registry-missing",
+              regions: new Map([["eu", eu.runtime]]),
+            }),
+          ),
+        );
+        const diagnostics = yield* runtime.liveClient.subscribeSourceHealth({ topic: "orders" });
+        const exhausted = Option.getOrThrow(
+          yield* diagnostics.events.pipe(
+            Stream.filter((health) => health.status._tag === "Exhausted"),
+            Stream.take(1),
+            Stream.runHead,
+          ),
+        );
+
+        expect({ acquisitionOrder, status: exhausted.status }).toStrictEqual({
+          acquisitionOrder: [],
+          status: {
+            _tag: "Exhausted",
+            exhaustion: {
+              _tag: "RetryExhausted",
+              lastTermination: {
+                _tag: "Failed",
+                failure: {
+                  _tag: "AdapterFailure",
+                  failure: {
+                    _tag: "KafkaSchemaRegistryUnavailable",
+                    region: "eu",
+                    topic: "source-orders",
+                    subject: "source-orders-value",
+                    side: "value",
+                    schemaId: null,
+                    message: 'Kafka Region "eu" has no Schema Registry resource.',
+                  },
+                },
+              },
+            },
+            exhaustedAtNanos: 0n,
+          },
+        });
+        yield* diagnostics.close();
+        yield* runtime.close;
+      }),
   );
 
   it.effect("enforces epoch time, start, and broker fallback invariants", () =>
@@ -3308,6 +4056,213 @@ describe("Kafka Source Adapter Server", () => {
   );
 
   it.effect(
+    "validates Registry compaction keys for upserts and tombstones and stops mismatches before Mapping or settlement",
+    () =>
+      Effect.gen(function* () {
+        const acquisitionOrder: Array<string> = [];
+        const eu = yield* makeFakeRegion("eu", acquisitionOrder);
+        let mappings = 0;
+        const validations: Array<{ readonly schemaId: number; readonly side: "key" | "value" }> =
+          [];
+        const settledOffsets: Array<bigint> = [];
+        const committedOffsets: Array<bigint> = [];
+        const source = kafka.source(
+          {
+            cleanupPolicy: "compact",
+            retentionPolicy: "Infinity",
+            topic: "source-orders",
+            regions: ["eu"],
+            key: kafka.schemaRegistry.protobuf(OrderKeySchema),
+            value: kafka.json(() => Schema.toCodecJson(Schema.Struct({ price: Schema.Number }))),
+            map: ({ value, region }) => {
+              mappings += 1;
+              return { price: value.price, region: String(region) };
+            },
+            startFrom: "earliest",
+          },
+          Schedule.recurs(0),
+        );
+        const config = defineViewServerConfig({
+          topics: { orders: { schema: Order, source } },
+        });
+        const mismatchFailure: KafkaAdapterFailure = {
+          _tag: "KafkaSchemaRegistrySchemaMismatch",
+          region: "eu",
+          topic: "source-orders",
+          subject: "source-orders-key",
+          side: "key",
+          schemaId: 99,
+          message: "Schema ID 99 is not an active validated key schema.",
+        };
+        const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(
+          Effect.provide(
+            makeKafkaServerLayer({
+              brokerContracts: foreverBrokerContracts(["eu"], "compact"),
+              retentionSweepIntervalNanos: 900_000_000_000n,
+              consumerGroupPrefix: "registry-compaction-key",
+              regions: new Map([["eu", eu.runtime]]),
+              schemaRegistries: new Map([
+                [
+                  "eu",
+                  {
+                    endpoints: ["https://registry.eu.example.com"],
+                    guard: () => Effect.void,
+                    failures: () => Stream.empty,
+                    validate: ({ bytes: framedBytes, side }) => {
+                      const schemaId = framedBytes[4] ?? -1;
+                      validations.push({ schemaId, side });
+                      return schemaId === 99
+                        ? Effect.fail(mismatchFailure)
+                        : Effect.succeed(schemaRegistryPayload(framedBytes));
+                    },
+                  },
+                ],
+              ]),
+            }),
+          ),
+        );
+        const diagnostics = yield* runtime.liveClient.subscribeSourceHealth({ topic: "orders" });
+        yield* eu.awaitAcquisitions(1);
+        const keyPayload = toBinary(OrderKeySchema, create(OrderKeySchema, { orderId: "order-1" }));
+        const offer = (schemaId: number, value: Uint8Array | null, offset: bigint) =>
+          eu.offerRecord({
+            key: schemaRegistryFrame(schemaId, keyPayload),
+            value,
+            metadata: metadata("eu", offset),
+            settlement: (applicationExit) =>
+              Effect.sync(() => {
+                settledOffsets.push(offset);
+                if (Exit.isSuccess(applicationExit)) {
+                  committedOffsets.push(offset);
+                }
+              }),
+          });
+
+        yield* eu.offerRecord({
+          key: schemaRegistryFrame(41, Uint8Array.from([10, 4, 1])),
+          value: null,
+          metadata: metadata("eu", 0n),
+          settlement: (applicationExit) =>
+            Effect.sync(() => {
+              settledOffsets.push(0n);
+              if (Exit.isSuccess(applicationExit)) {
+                committedOffsets.push(0n);
+              }
+            }),
+        });
+        yield* awaitCondition(
+          () => committedOffsets.includes(0n),
+          "malformed Registry tombstone rejection settlement",
+        );
+        const rejectedHealth = Option.getOrThrow(
+          yield* diagnostics.events.pipe(
+            Stream.filter((health) => health.status._tag === "Degraded"),
+            Stream.take(1),
+            Stream.runHead,
+          ),
+        );
+        const rejectedStatus = Option.getOrThrow(
+          Option.liftPredicate(rejectedHealth.status, (status) => status._tag === "Degraded"),
+        );
+        expect(
+          Option.getOrThrow(
+            Option.liftPredicate(
+              rejectedStatus.reasons[0],
+              (reason) => reason._tag === "SourceItemRejection",
+            ),
+          ).latestRejection.location,
+        ).toStrictEqual({
+          region: "eu",
+          topic: "source-orders",
+          partition: 0,
+          offset: 0n,
+          phase: "keyDecode",
+          message: "Kafka key codec rejected the record.",
+        });
+        expect(
+          yield* runtime.client.snapshot("orders", { select: ["id", "price", "region"] }),
+        ).toStrictEqual({
+          rows: [],
+          totalRows: 0,
+          version: 0,
+          status: "ready",
+          statusCode: "Ready",
+        });
+
+        yield* offer(41, bytes(JSON.stringify({ price: 12 })), 1n);
+        yield* awaitCondition(() => committedOffsets.includes(1n), "Registry key upsert commit");
+        expect(
+          yield* runtime.client.snapshot("orders", {
+            select: ["id", "price", "region"],
+          }),
+        ).toStrictEqual({
+          rows: [
+            {
+              id: kafkaRowId({
+                cleanupPolicy: "compact",
+                region: "eu",
+                partition: 0,
+                serializedKeyBytes: schemaRegistryFrame(41, keyPayload),
+              }),
+              price: 12,
+              region: "eu",
+            },
+          ],
+          totalRows: 1,
+          version: 1,
+          status: "ready",
+          statusCode: "Ready",
+        });
+
+        yield* offer(41, null, 2n);
+        yield* awaitCondition(() => committedOffsets.includes(2n), "Registry key tombstone commit");
+        expect(
+          yield* runtime.client.snapshot("orders", { select: ["id", "price", "region"] }),
+        ).toStrictEqual({
+          rows: [],
+          totalRows: 0,
+          version: 2,
+          status: "ready",
+          statusCode: "Ready",
+        });
+
+        yield* offer(99, bytes(JSON.stringify({ price: 99 })), 3n);
+        const exhausted = Option.getOrThrow(
+          yield* diagnostics.events.pipe(
+            Stream.filter((health) => health.status._tag === "Exhausted"),
+            Stream.take(1),
+            Stream.runHead,
+          ),
+        );
+        expect(exhausted.status).toStrictEqual({
+          _tag: "Exhausted",
+          exhaustion: {
+            _tag: "RetryExhausted",
+            lastTermination: {
+              _tag: "Failed",
+              failure: { _tag: "AdapterFailure", failure: mismatchFailure },
+            },
+          },
+          exhaustedAtNanos: 0n,
+        });
+        expect({ committedOffsets, mappings, settledOffsets, validations }).toStrictEqual({
+          committedOffsets: [0n, 1n, 2n],
+          mappings: 1,
+          settledOffsets: [0n, 1n, 2n],
+          validations: [
+            { schemaId: 41, side: "key" },
+            { schemaId: 41, side: "key" },
+            { schemaId: 41, side: "key" },
+            { schemaId: 99, side: "key" },
+          ],
+        });
+
+        yield* diagnostics.close();
+        yield* runtime.close;
+      }),
+  );
+
+  it.effect(
     "resolves matched zero against epoch record time while sweep cadence remains monotonic",
     () =>
       Effect.gen(function* () {
@@ -5714,6 +6669,44 @@ describe("Kafka Source Adapter Server", () => {
         yield* diagnostics.close();
         yield* runtime.close;
       });
+      const expectAdapterExhaustion = Effect.fn("KafkaSourceAdapter.test.adapterExhaustion")(
+        function* (regionRuntime: KafkaServerRegion, failure: KafkaAdapterFailure) {
+          const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(
+            Effect.provide(
+              makeKafkaServerLayer({
+                brokerContracts: foreverBrokerContracts(["eu", "us"]),
+                retentionSweepIntervalNanos: 900_000_000_000n,
+                consumerGroupPrefix: "replica",
+                regions: new Map([["eu", regionRuntime]]),
+              }),
+            ),
+          );
+          const diagnostics = yield* runtime.liveClient.subscribeSourceHealth({ topic: "orders" });
+          const exhausted = Option.getOrThrow(
+            yield* diagnostics.events.pipe(
+              Stream.filter((health) => health.status._tag === "Exhausted"),
+              Stream.take(1),
+              Stream.runHead,
+            ),
+          );
+          expect(exhausted.status).toStrictEqual({
+            _tag: "Exhausted",
+            exhaustion: {
+              _tag: "RetryExhausted",
+              lastTermination: {
+                _tag: "Failed",
+                failure: {
+                  _tag: "AdapterFailure",
+                  failure,
+                },
+              },
+            },
+            exhaustedAtNanos: 0n,
+          });
+          yield* diagnostics.close();
+          yield* runtime.close;
+        },
+      );
       const expectInvalidSettlementExhaustion = Effect.fn(
         "KafkaSourceAdapter.test.invalidSettlementExhaustion",
       )(function* (regionRuntime: KafkaServerRegion) {
@@ -5816,6 +6809,27 @@ describe("Kafka Source Adapter Server", () => {
       };
       const hostileStreamFailureRegion: KafkaServerRegion = {
         acquire: () => Effect.succeed(consumer(Stream.fail(hostileFailure()))),
+        metrics: () => Effect.succeed(metrics),
+      };
+      const schemaFailure: KafkaAdapterFailure = {
+        _tag: "KafkaSchemaRegistrySchemaMismatch",
+        region: "eu",
+        topic: "source-orders",
+        subject: "source-orders-value",
+        side: "value",
+        schemaId: 41,
+        message: "registered schema does not match generated code",
+      };
+      const schemaFailureRegion: KafkaServerRegion = {
+        acquire: () => Effect.fail(schemaFailure),
+        metrics: () => Effect.succeed(metrics),
+      };
+      const invalidSchemaFailure = new Proxy(schemaFailure, {
+        get: (target, property, receiver) =>
+          property === "subject" ? "" : Reflect.get(target, property, receiver),
+      });
+      const invalidSchemaFailureRegion: KafkaServerRegion = {
+        acquire: () => Effect.fail(invalidSchemaFailure),
         metrics: () => Effect.succeed(metrics),
       };
       const metadataFailureRegion: KafkaServerRegion = {
@@ -6032,6 +7046,11 @@ describe("Kafka Source Adapter Server", () => {
       );
       yield* expectConfigurationExhaustion(
         hostileStreamFailureRegion,
+        'Kafka Region "eu" returned an invalid failure.',
+      );
+      yield* expectAdapterExhaustion(schemaFailureRegion, schemaFailure);
+      yield* expectConfigurationExhaustion(
+        invalidSchemaFailureRegion,
         'Kafka Region "eu" returned an invalid failure.',
       );
       yield* expectConfigurationExhaustion(

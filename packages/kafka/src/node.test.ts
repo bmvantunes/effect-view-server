@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, expectTypeOf, it } from "@effect/vitest";
+import { afterEach, beforeEach, describe, expect, expectTypeOf, it } from "@effect/vitest";
 // Vitest's mock transform requires this API to come directly from "vitest";
 // the @effect/vitest re-export cannot be hoisted.
 import { vi } from "vitest";
@@ -9,10 +9,13 @@ import type {
   SourceRuntimeFailure,
 } from "effect-view-server/source-adapter";
 import { runViewServerRuntime } from "@effect-view-server/runtime";
+import { toBinary } from "@bufbuild/protobuf";
+import { FileDescriptorProtoSchema } from "@bufbuild/protobuf/wkt";
 import { Buffer } from "node:buffer";
 import {
   Cause,
   Config,
+  Duration,
   Effect,
   Exit,
   Fiber,
@@ -35,6 +38,7 @@ import {
 } from "./contract";
 import { layer, layerConfig, type KafkaBrokerContractValidationFailure } from "./node";
 import { kafkaNodeInternals } from "./node-internal";
+import { OrderValueSchema } from "./test-fixtures/orders_pb";
 
 const platformatic = vi.hoisted(() => {
   type ConsumerOptions = {
@@ -218,12 +222,14 @@ const platformatic = vi.hoisted(() => {
       readonly input: ConsumeInput;
     }>;
     readonly streams: Array<ControlledStream>;
+    readonly dispatchers: Array<{ closed: boolean }>;
     readonly offsetsByTimestamp: Map<bigint, ReadonlyArray<bigint>>;
     readonly committedByGroup: Map<string, ReadonlyArray<bigint>>;
     failNextConstruction: boolean;
     failNextAdminConstruction: boolean;
     failNextAdminClose: boolean;
     failNextDescribeConfigs: boolean;
+    failNextDispatcherConstruction: boolean;
     blockNextDescribeConfigs: boolean;
     failNextListOffsets: boolean;
     failNextListCommitted: boolean;
@@ -246,12 +252,14 @@ const platformatic = vi.hoisted(() => {
     committedCalls: [],
     consumeCalls: [],
     streams: [],
+    dispatchers: [],
     offsetsByTimestamp: new Map(),
     committedByGroup: new Map(),
     failNextConstruction: false,
     failNextAdminConstruction: false,
     failNextAdminClose: false,
     failNextDescribeConfigs: false,
+    failNextDispatcherConstruction: false,
     blockNextDescribeConfigs: false,
     failNextListOffsets: false,
     failNextListCommitted: false,
@@ -465,12 +473,14 @@ const platformatic = vi.hoisted(() => {
     state.committedCalls.splice(0);
     state.consumeCalls.splice(0);
     state.streams.splice(0);
+    state.dispatchers.splice(0);
     state.offsetsByTimestamp.clear();
     state.committedByGroup.clear();
     state.failNextConstruction = false;
     state.failNextAdminConstruction = false;
     state.failNextAdminClose = false;
     state.failNextDescribeConfigs = false;
+    state.failNextDispatcherConstruction = false;
     state.blockNextDescribeConfigs = false;
     state.failNextListOffsets = false;
     state.failNextListCommitted = false;
@@ -487,6 +497,20 @@ const platformatic = vi.hoisted(() => {
   return {
     Admin,
     Consumer,
+    createUndiciAgent: () => {
+      if (state.failNextDispatcherConstruction) {
+        state.failNextDispatcherConstruction = false;
+        throw new Error("dispatcher construction failed");
+      }
+      const dispatcher = { closed: false };
+      state.dispatchers.push(dispatcher);
+      return {
+        close: () => {
+          dispatcher.closed = true;
+          return Promise.resolve();
+        },
+      };
+    },
     reset,
     state,
   };
@@ -498,6 +522,7 @@ vi.mock("@platformatic/kafka", () => ({
     TOPIC: 2,
   },
   Consumer: platformatic.Consumer,
+  createUndiciAgent: platformatic.createUndiciAgent,
 }));
 
 const Order = Schema.Struct({
@@ -582,6 +607,92 @@ const makeBatchedBrokerConfig = () =>
           key: kafka.string(),
           value: kafka.json(() => Schema.toCodecJson(Schema.Struct({ price: Schema.Number }))),
           localRowKey: ({ key }) => key,
+          map: ({ value, region }) => ({
+            price: value.price,
+            region: String(region),
+          }),
+          startFrom: "earliest",
+        }),
+      },
+    },
+  });
+
+const makeSchemaRegistryConfig = () =>
+  defineViewServerConfig({
+    topics: {
+      orders: {
+        schema: Order,
+        source: kafka.source({
+          cleanupPolicy: "delete",
+          retentionPolicy: "Infinity",
+          topic: "source-orders",
+          regions: ["eu"],
+          key: kafka.string(),
+          value: kafka.schemaRegistry.protobuf(OrderValueSchema),
+          localRowKey: ({ key }) => key,
+          map: ({ value, region }) => ({
+            price: value.price,
+            region: String(region),
+          }),
+          startFrom: "earliest",
+        }),
+      },
+    },
+  });
+
+const makeMultiSourceSchemaRegistryConfig = () =>
+  defineViewServerConfig({
+    topics: {
+      orders: {
+        schema: Order,
+        source: kafka.source({
+          cleanupPolicy: "delete",
+          retentionPolicy: "Infinity",
+          topic: "source-orders",
+          regions: ["eu"],
+          key: kafka.string(),
+          value: kafka.schemaRegistry.protobuf(OrderValueSchema),
+          localRowKey: ({ key }) => key,
+          map: ({ value, region }) => ({
+            price: value.price,
+            region: String(region),
+          }),
+          startFrom: "earliest",
+        }),
+      },
+      inventory: {
+        schema: Order,
+        source: kafka.source({
+          cleanupPolicy: "delete",
+          retentionPolicy: "Infinity",
+          topic: "source-inventory",
+          regions: ["eu"],
+          key: kafka.string(),
+          value: kafka.schemaRegistry.protobuf(OrderValueSchema),
+          localRowKey: ({ key }) => key,
+          map: ({ value, region }) => ({
+            price: value.price,
+            region: String(region),
+          }),
+          startFrom: "earliest",
+        }),
+      },
+    },
+  });
+
+const makeSchemaRegistryKeyValueConfig = () =>
+  defineViewServerConfig({
+    topics: {
+      orders: {
+        schema: Order,
+        source: kafka.source({
+          cleanupPolicy: "delete",
+          retentionPolicy: "Infinity",
+          topic: "source-orders",
+          regions: ["eu"],
+          key: kafka.schemaRegistry.protobuf(OrderValueSchema),
+          value: kafka.schemaRegistry.protobuf(OrderValueSchema),
+          localRowKey: ({ key }) => key.customerId,
           map: ({ value, region }) => ({
             price: value.price,
             region: String(region),
@@ -694,7 +805,193 @@ beforeEach(() => {
   platformatic.reset();
 });
 
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
 describe("Kafka Node Adapter", () => {
+  it.effect("fails Schema Registry contract validation before constructing any consumer", () =>
+    Effect.gen(function* () {
+      vi.stubGlobal("fetch", () =>
+        Promise.resolve(
+          new Response(JSON.stringify({ compatibilityLevel: "BACKWARD" }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          }),
+        ),
+      );
+      const config = makeSchemaRegistryConfig();
+      const failure = yield* Effect.scoped(
+        EffectLayer.build(
+          layer(config, {
+            consumerGroupPrefix: "replica",
+            regions: {
+              eu: {
+                bootstrapServers: "eu:9092",
+                schemaRegistry: { url: "https://registry.example.com" },
+              },
+            },
+          }),
+        ),
+      ).pipe(Effect.flip);
+
+      expect(failure).toStrictEqual({
+        _tag: "KafkaSchemaRegistryContractValidationFailure",
+        message: "Kafka Schema Registry Protobuf validation failed before runtime startup.",
+        issues: [
+          {
+            _tag: "KafkaSchemaRegistryContractIssue",
+            region: "eu",
+            viewServerTopic: "orders",
+            sourceTopic: "source-orders",
+            side: "value",
+            subject: "source-orders-value",
+            code: "CompatibilityPolicyMismatch",
+            version: null,
+            schemaId: null,
+            message:
+              'Subject "source-orders-value" requires effective FULL_TRANSITIVE compatibility; observed "BACKWARD".',
+          },
+        ],
+      });
+      expect({
+        admins: platformatic.state.admins.map((admin) => admin.closed),
+        consumers: platformatic.state.consumers.length,
+      }).toStrictEqual({
+        admins: [true],
+        consumers: 0,
+      });
+    }),
+  );
+
+  it.effect("builds one validated Schema Registry runtime per configured Region", () =>
+    Effect.gen(function* () {
+      const requests: Array<string> = [];
+      const serialized = Buffer.from(
+        toBinary(FileDescriptorProtoSchema, OrderValueSchema.file.proto),
+      ).toString("base64");
+      vi.stubGlobal("fetch", (input: string | URL | Request) => {
+        const url =
+          typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        requests.push(url);
+        if (url.includes("/config/")) {
+          return Promise.resolve(
+            new Response(JSON.stringify({ compatibilityLevel: "FULL_TRANSITIVE" })),
+          );
+        }
+        if (url.includes("/versions/1")) {
+          const subject = url.includes("source-inventory-value")
+            ? "source-inventory-value"
+            : "source-orders-value";
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({
+                subject,
+                version: 1,
+                id: 41,
+                schemaType: "PROTOBUF",
+                references: [],
+                schema: serialized,
+              }),
+            ),
+          );
+        }
+        return Promise.resolve(new Response(JSON.stringify([1])));
+      });
+      const config = makeMultiSourceSchemaRegistryConfig();
+
+      yield* Effect.scoped(
+        EffectLayer.build(
+          layer(config, {
+            consumerGroupPrefix: "replica",
+            regions: {
+              eu: {
+                bootstrapServers: "eu:9092",
+                schemaRegistry: { url: "https://registry.example.com/base", tls: {} },
+              },
+            },
+          }),
+        ),
+      );
+
+      expect({
+        admins: platformatic.state.admins.map((admin) => admin.closed),
+        consumers: platformatic.state.consumers.length,
+        dispatchers: platformatic.state.dispatchers,
+        requests,
+      }).toStrictEqual({
+        admins: [true],
+        consumers: 0,
+        dispatchers: [{ closed: true }],
+        requests: [
+          "https://registry.example.com/base/config/source-orders-value?defaultToGlobal=true",
+          "https://registry.example.com/base/subjects/source-orders-value/versions",
+          "https://registry.example.com/base/subjects/source-orders-value/versions?deleted=true",
+          "https://registry.example.com/base/subjects/source-orders-value/versions/1?deleted=true&format=serialized",
+          "https://registry.example.com/base/config/source-inventory-value?defaultToGlobal=true",
+          "https://registry.example.com/base/subjects/source-inventory-value/versions",
+          "https://registry.example.com/base/subjects/source-inventory-value/versions?deleted=true",
+          "https://registry.example.com/base/subjects/source-inventory-value/versions/1?deleted=true&format=serialized",
+        ],
+      });
+    }),
+  );
+
+  it.effect("accumulates key and value startup issues when Registry TLS setup fails", () =>
+    Effect.gen(function* () {
+      platformatic.state.failNextDispatcherConstruction = true;
+      const config = makeSchemaRegistryKeyValueConfig();
+      const failure = yield* Effect.scoped(
+        EffectLayer.build(
+          layer(config, {
+            consumerGroupPrefix: "replica",
+            regions: {
+              eu: {
+                bootstrapServers: "eu:9092",
+                schemaRegistry: {
+                  url: "https://registry.example.com",
+                  tls: {},
+                },
+              },
+            },
+          }),
+        ),
+      ).pipe(Effect.flip);
+
+      expect(failure).toStrictEqual({
+        _tag: "KafkaSchemaRegistryContractValidationFailure",
+        message: "Kafka Schema Registry Protobuf validation failed before runtime startup.",
+        issues: [
+          {
+            _tag: "KafkaSchemaRegistryContractIssue",
+            region: "eu",
+            viewServerTopic: "orders",
+            sourceTopic: "source-orders",
+            side: "key",
+            subject: "source-orders-key",
+            code: "RegistryUnavailable",
+            version: null,
+            schemaId: null,
+            message: "Schema Registry TLS dispatcher creation failed.",
+          },
+          {
+            _tag: "KafkaSchemaRegistryContractIssue",
+            region: "eu",
+            viewServerTopic: "orders",
+            sourceTopic: "source-orders",
+            side: "value",
+            subject: "source-orders-value",
+            code: "RegistryUnavailable",
+            version: null,
+            schemaId: null,
+            message: "Schema Registry TLS dispatcher creation failed.",
+          },
+        ],
+      });
+      expect(platformatic.state.consumers).toStrictEqual([]);
+    }),
+  );
+
   it.effect(
     "crashes composed production runtime startup before every listener and consumer on batched broker violations",
     () =>
@@ -2703,6 +3000,171 @@ describe("Kafka Node Adapter", () => {
     );
   });
 
+  it("validates and snapshots every Schema Registry Node option boundary", () => {
+    const bearer = kafkaNodeInternals.snapshotSchemaRegistry({
+      url: "https://registry.example.com/base",
+      auth: { token: "bearer-token" },
+      headers: { "X-Tenant": "commerce" },
+      timeout: 100,
+      retries: 2,
+      retryDelay: 3,
+      monitorInterval: "4 seconds",
+      tls: { serverName: "registry.internal" },
+    });
+    const basic = kafkaNodeInternals.snapshotSchemaRegistry({
+      url: "https://registry.example.com",
+      auth: { username: "orders", password: "" },
+    });
+    expect({
+      bearer: { ...bearer, headers: { ...bearer.headers } },
+      bearerHttp: {
+        ...kafkaNodeInternals.schemaRegistryHttpOptions(bearer),
+        headers: { ...bearer.headers },
+      },
+      basic: { ...basic, headers: { ...basic.headers } },
+      basicHttp: {
+        ...kafkaNodeInternals.schemaRegistryHttpOptions(basic),
+        headers: { ...basic.headers },
+      },
+      defaults: (() => {
+        const captured = kafkaNodeInternals.snapshotSchemaRegistry({
+          url: "http://registry.example.com",
+        });
+        return { ...captured, headers: { ...captured.headers } };
+      })(),
+    }).toStrictEqual({
+      bearer: {
+        url: "https://registry.example.com/base/",
+        auth: { token: "bearer-token" },
+        headers: { "x-tenant": "commerce" },
+        timeout: 100,
+        retries: 2,
+        retryDelay: 3,
+        monitorInterval: Duration.seconds(4),
+        tls: { serverName: "registry.internal" },
+      },
+      bearerHttp: {
+        url: "https://registry.example.com/base/",
+        auth: { _tag: "Bearer", token: "bearer-token" },
+        headers: { "x-tenant": "commerce" },
+        timeout: 100,
+        retries: 2,
+        retryDelay: 3,
+        tls: { servername: "registry.internal" },
+      },
+      basic: {
+        url: "https://registry.example.com/",
+        auth: { username: "orders", password: "" },
+        headers: {},
+        timeout: 5_000,
+        retries: 3,
+        retryDelay: 1_000,
+        monitorInterval: Duration.seconds(30),
+      },
+      basicHttp: {
+        url: "https://registry.example.com/",
+        auth: { _tag: "Basic", username: "orders", password: "" },
+        headers: {},
+        timeout: 5_000,
+        retries: 3,
+        retryDelay: 1_000,
+      },
+      defaults: {
+        url: "http://registry.example.com/",
+        headers: {},
+        timeout: 5_000,
+        retries: 3,
+        retryDelay: 1_000,
+        monitorInterval: Duration.seconds(30),
+      },
+    });
+
+    const malformedAuth = [
+      null,
+      [],
+      {},
+      { token: "" },
+      { token: "token", extra: true },
+      { username: "", password: "secret" },
+      { username: 1, password: "secret" },
+      { username: "orders" },
+      { username: "orders", password: 1 },
+      { username: "orders", password: "secret", extra: true },
+    ];
+    for (const auth of malformedAuth) {
+      expect(() =>
+        kafkaNodeInternals.snapshotSchemaRegistry({
+          url: "https://registry.example.com",
+          auth,
+        }),
+      ).toThrowError("Kafka Schema Registry auth options are invalid.");
+    }
+
+    const malformedHeaders = [
+      null,
+      [],
+      { "": "value" },
+      { "x-tenant": 1 },
+      { "X-Tenant": "one", "x-tenant": "two" },
+    ];
+    for (const headers of malformedHeaders) {
+      expect(() =>
+        kafkaNodeInternals.snapshotSchemaRegistry({
+          url: "https://registry.example.com",
+          headers,
+        }),
+      ).toThrowError("Kafka Schema Registry headers are invalid.");
+    }
+    expect(() =>
+      kafkaNodeInternals.snapshotSchemaRegistry({
+        url: "https://registry.example.com",
+        auth: { token: "token" },
+        headers: { Authorization: "custom" },
+      }),
+    ).toThrowError("Kafka Schema Registry headers are invalid.");
+
+    const malformedOptions = [
+      null,
+      [],
+      { url: "https://registry.example.com", extra: true },
+      { url: "" },
+      { url: 1 },
+      { url: "https://registry.example.com", timeout: "100" },
+      { url: "https://registry.example.com", timeout: Number.POSITIVE_INFINITY },
+      { url: "https://registry.example.com", timeout: 0 },
+      { url: "https://registry.example.com", retries: "2" },
+      { url: "https://registry.example.com", retries: 1.5 },
+      { url: "https://registry.example.com", retries: -1 },
+      { url: "https://registry.example.com", retryDelay: "3" },
+      { url: "https://registry.example.com", retryDelay: Number.POSITIVE_INFINITY },
+      { url: "https://registry.example.com", retryDelay: -1 },
+      { url: "https://registry.example.com", tls: "yes" },
+      { url: "https://registry.example.com", tls: null },
+      { url: "not a URL" },
+      { url: "ftp://registry.example.com" },
+      { url: "http://registry.example.com", tls: {} },
+      { url: "https://user@registry.example.com" },
+      { url: "https://user:secret@registry.example.com" },
+      { url: "https://registry.example.com?tenant=orders" },
+      { url: "https://registry.example.com#fragment" },
+    ];
+    for (const malformed of malformedOptions) {
+      expect(() =>
+        Reflect.apply(kafkaNodeInternals.snapshotSchemaRegistry, undefined, [malformed]),
+      ).toThrowError("Kafka Schema Registry options are invalid.");
+    }
+    for (const monitorInterval of [0, "Infinity", {}]) {
+      expect(() =>
+        kafkaNodeInternals.snapshotSchemaRegistry({
+          url: "https://registry.example.com",
+          monitorInterval,
+        }),
+      ).toThrowError(
+        "Kafka Schema Registry monitorInterval must be a positive finite Effect Duration.",
+      );
+    }
+  });
+
   it("validates discovered Kafka bindings and snapshots pure diagnostics", () => {
     const validConfig = makeConfig("earliest");
     let propertyReads = 0;
@@ -2779,6 +3241,25 @@ describe("Kafka Node Adapter", () => {
       ]),
     ).toThrowError("Kafka Region options are invalid.");
     expect(kafkaNodeInternals.kafkaSourceRegions(validConfig)).toStrictEqual(new Set(["eu"]));
+    const registryDeclarations = kafkaNodeInternals.kafkaSchemaRegistryDeclarations(
+      makeSchemaRegistryConfig(),
+    );
+    expect(
+      registryDeclarations.map(({ descriptor, ...candidate }) => ({
+        ...candidate,
+        descriptor: descriptor.typeName,
+      })),
+    ).toStrictEqual([
+      {
+        region: "eu",
+        viewServerTopic: "orders",
+        sourceTopic: "source-orders",
+        side: "value",
+        subject: "source-orders-value",
+        descriptor: "viewserver.runtime.test.OrderValue",
+      },
+    ]);
+    expect(kafkaNodeInternals.kafkaSchemaRegistryDeclarations(validConfig)).toStrictEqual([]);
     expect(
       kafkaNodeInternals.makeNodeRegion({
         bootstrapServers: ["one:9092", "two:9092"],
@@ -2829,6 +3310,17 @@ describe("Kafka Node Adapter", () => {
     ).toThrowError("Kafka Node Region eu options are invalid.");
     expect(() =>
       Reflect.apply(kafkaNodeInternals.snapshotLayerOptions, undefined, [
+        makeSchemaRegistryConfig(),
+        {
+          consumerGroupPrefix: "replica",
+          regions: { eu: { bootstrapServers: "one:9092" } },
+        },
+      ]),
+    ).toThrowError(
+      "Kafka Region eu requires one Schema Registry configuration because a Source uses kafka.schemaRegistry.protobuf(...).",
+    );
+    expect(() =>
+      Reflect.apply(kafkaNodeInternals.snapshotLayerOptions, undefined, [
         validConfig,
         { consumerGroupPrefix: "replica" },
       ]),
@@ -2838,6 +3330,67 @@ describe("Kafka Node Adapter", () => {
         Reflect.apply(kafkaNodeInternals.snapshotLayerOptions, undefined, [validConfig, malformed]),
       ).toThrowError("Kafka Node Layer requires exactly consumerGroupPrefix and regions.");
     }
+
+    const registryCodec = kafka.schemaRegistry.protobuf(OrderValueSchema);
+    const malformedRegistryConfigs = [
+      {
+        topics: {
+          orders: {
+            source: { adapter: KafkaSourceAdapter, options: null },
+          },
+        },
+      },
+      {
+        topics: {
+          orders: {
+            source: {
+              adapter: KafkaSourceAdapter,
+              options: { topic: "", regions: ["eu"], value: registryCodec },
+            },
+          },
+        },
+      },
+      {
+        topics: {
+          orders: {
+            source: {
+              adapter: KafkaSourceAdapter,
+              options: { topic: "source-orders", regions: [], value: registryCodec },
+            },
+          },
+        },
+      },
+      {
+        topics: {
+          orders: {
+            source: {
+              adapter: KafkaSourceAdapter,
+              options: { topic: "source-orders", regions: [1], value: registryCodec },
+            },
+          },
+        },
+      },
+    ];
+    expect(() =>
+      Reflect.apply(kafkaNodeInternals.kafkaSchemaRegistryDeclarations, undefined, [
+        malformedRegistryConfigs[0],
+      ]),
+    ).toThrowError("Kafka source for Topic orders contains invalid options.");
+    expect(() =>
+      Reflect.apply(kafkaNodeInternals.kafkaSchemaRegistryDeclarations, undefined, [
+        malformedRegistryConfigs[1],
+      ]),
+    ).toThrowError("Kafka source for Topic orders contains invalid Schema Registry options.");
+    expect(() =>
+      Reflect.apply(kafkaNodeInternals.kafkaSchemaRegistryDeclarations, undefined, [
+        malformedRegistryConfigs[2],
+      ]),
+    ).toThrowError("Kafka source for Topic orders contains invalid Schema Registry options.");
+    expect(() =>
+      Reflect.apply(kafkaNodeInternals.kafkaSchemaRegistryDeclarations, undefined, [
+        malformedRegistryConfigs[3],
+      ]),
+    ).toThrowError("Kafka source for Topic orders contains invalid Regions.");
 
     expect([
       kafkaNodeInternals.capturedRetentionPolicy({ _tag: "MatchKafkaRetention" }),

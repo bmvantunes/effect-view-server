@@ -28,7 +28,10 @@ const Row = Schema.Struct({
 
 const materializedTarget: SourceFixtureTarget = { _tag: "Materialized" };
 
-const hostileTarget = (property: "target" | "endpoints", value: unknown): SourceDependencyTarget =>
+const hostileTarget = (
+  property: "dependency" | "target" | "endpoints",
+  value: unknown,
+): SourceDependencyTarget =>
   new Proxy(
     { target: "orders", endpoints: ["fixture://orders"] },
     {
@@ -81,12 +84,14 @@ describe("Runtime Core Source reporting integration", () => {
             target: "orders",
             endpoints: ["fixture://orders"],
             status: "Ready",
+            issues: [],
           },
           {
             dependency: "controllable-fixture",
             target: "regional-orders",
             endpoints: ["fixture://regional-orders"],
             status: "Inactive",
+            issues: [],
           },
         ],
       });
@@ -114,12 +119,14 @@ describe("Runtime Core Source reporting integration", () => {
             target: "orders",
             endpoints: ["fixture://orders"],
             status: "Degraded",
+            issues: [],
           },
           {
             dependency: "controllable-fixture",
             target: "regional-orders",
             endpoints: ["fixture://regional-orders"],
             status: "Inactive",
+            issues: [],
           },
         ],
       });
@@ -143,6 +150,8 @@ describe("Runtime Core Source reporting integration", () => {
     { label: "a null target entry", targets: malformedTargets([null]) },
     { label: "a primitive target entry", targets: malformedTargets(["orders"]) },
     { label: "a throwing target getter", targets: throwingTarget },
+    { label: "a non-string dependency", targets: [hostileTarget("dependency", 1)] },
+    { label: "an empty dependency", targets: [hostileTarget("dependency", "")] },
     { label: "a non-string target", targets: [hostileTarget("target", 1)] },
     { label: "an empty target", targets: [{ target: "", endpoints: ["fixture://orders"] }] },
     { label: "non-array endpoints", targets: [hostileTarget("endpoints", null)] },

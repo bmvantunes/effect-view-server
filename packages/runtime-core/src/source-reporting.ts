@@ -21,6 +21,17 @@ export type RuntimeDependency = {
   readonly target: string;
   readonly endpoints: ReadonlyArray<string>;
   readonly status: RuntimeDependencyStatus;
+  readonly issues: ReadonlyArray<RuntimeDependencyIssue>;
+};
+
+export type RuntimeDependencyIssue = {
+  readonly source: string;
+  readonly code: string;
+  readonly message: string;
+  readonly attributes: ReadonlyArray<{
+    readonly name: string;
+    readonly value: string;
+  }>;
 };
 
 export type RuntimeSourceReportingSnapshot = {
@@ -29,6 +40,7 @@ export type RuntimeSourceReportingSnapshot = {
 };
 
 export type RuntimeSourceReportingDefinition = {
+  readonly source: string;
   readonly dependency: string;
   readonly lifecycle: "materialized" | "leased";
   readonly targets: ReadonlyArray<SourceDependencyTarget>;
@@ -38,18 +50,37 @@ export type RuntimeSourceReportingDefinition = {
 export type RuntimeSourceReportingState = {
   readonly definition: RuntimeSourceReportingDefinition;
   readonly dependencyStatuses: Map<string, RuntimeHeartbeatStatus>;
+  readonly dependencyIssues: Map<string, RuntimeDependencyIssue>;
+  dependencyBaselineStatus: Extract<RuntimeHeartbeatStatus, "Ready" | "Starting" | "Stopping">;
   status: SourceStatus<unknown, unknown>;
 };
 
 type StatusEvidence = {
   readonly problems: ReadonlyArray<SourceProblem>;
   readonly dependencyTargets: ReadonlySet<string>;
+  readonly dependencyIssues: ReadonlyMap<string, RuntimeDependencyIssue>;
 };
 
 const emptyEvidence: StatusEvidence = {
   problems: [],
   dependencyTargets: new Set(),
+  dependencyIssues: new Map(),
 };
+
+const dependencyTargetKey = (dependency: string, target: string): string =>
+  JSON.stringify([dependency, target]);
+
+const targetDependency = (
+  definition: RuntimeSourceReportingDefinition,
+  target: SourceDependencyTarget,
+): string => target.dependency ?? definition.dependency;
+
+const definitionTargetKeys = (
+  definition: RuntimeSourceReportingDefinition,
+): ReadonlyArray<string> =>
+  definition.targets.map((target) =>
+    dependencyTargetKey(targetDependency(definition, target), target.target),
+  );
 
 const classification = (
   classifyFailure: RuntimeSourceReportingDefinition["classifyFailure"],
@@ -69,22 +100,73 @@ const classification = (
         throw new TypeError("Source failure classification has an invalid problem.");
       }
       const targets: unknown = Reflect.get(candidate, "targets");
-      if (targets === undefined) {
-        return { problem: "dependency" };
-      }
-      if (!Array.isArray(targets)) {
+      if (targets !== undefined && !Array.isArray(targets)) {
         throw new TypeError("Source failure classification has invalid dependency targets.");
       }
-      const capturedTargets: Array<string> = [];
-      for (const target of targets) {
-        if (typeof target !== "string" || target.length === 0) {
+      const capturedTargets: Array<
+        string | { readonly dependency: string; readonly target: string }
+      > = [];
+      for (const target of targets ?? []) {
+        if (typeof target === "string" && target.length > 0) {
+          capturedTargets.push(target);
+          continue;
+        }
+        if (typeof target !== "object" || target === null || Array.isArray(target)) {
           throw new TypeError("Source failure classification has invalid dependency targets.");
         }
-        capturedTargets.push(target);
+        const dependency = Reflect.get(target, "dependency");
+        const targetName = Reflect.get(target, "target");
+        if (
+          typeof dependency !== "string" ||
+          dependency.length === 0 ||
+          typeof targetName !== "string" ||
+          targetName.length === 0
+        ) {
+          throw new TypeError("Source failure classification has invalid dependency targets.");
+        }
+        capturedTargets.push(Object.freeze({ dependency, target: targetName }));
+      }
+      const issue: unknown = Reflect.get(candidate, "issue");
+      if (issue === undefined) {
+        return {
+          problem: "dependency",
+          targets: Object.freeze(capturedTargets),
+        };
+      }
+      if (typeof issue !== "object" || issue === null || Array.isArray(issue)) {
+        throw new TypeError("Source failure classification has an invalid dependency issue.");
+      }
+      const code = Reflect.get(issue, "code");
+      const message = Reflect.get(issue, "message");
+      const attributes = Reflect.get(issue, "attributes");
+      if (
+        typeof code !== "string" ||
+        code.length === 0 ||
+        typeof message !== "string" ||
+        !Array.isArray(attributes)
+      ) {
+        throw new TypeError("Source failure classification has an invalid dependency issue.");
+      }
+      const capturedAttributes: Array<{ readonly name: string; readonly value: string }> = [];
+      for (const attribute of attributes) {
+        if (typeof attribute !== "object" || attribute === null || Array.isArray(attribute)) {
+          throw new TypeError("Source failure classification has invalid dependency attributes.");
+        }
+        const name = Reflect.get(attribute, "name");
+        const value = Reflect.get(attribute, "value");
+        if (typeof name !== "string" || name.length === 0 || typeof value !== "string") {
+          throw new TypeError("Source failure classification has invalid dependency attributes.");
+        }
+        capturedAttributes.push(Object.freeze({ name, value }));
       }
       return {
         problem: "dependency",
         targets: Object.freeze(capturedTargets),
+        issue: Object.freeze({
+          code,
+          message,
+          attributes: Object.freeze(capturedAttributes),
+        }),
       };
     }),
     {
@@ -96,18 +178,42 @@ const classification = (
 const classifiedDependencyTargets = (
   classified: {
     readonly problem: "dependency";
-    readonly targets?: ReadonlyArray<string>;
+    readonly targets?: ReadonlyArray<
+      string | { readonly dependency: string; readonly target: string }
+    >;
   },
   definition: RuntimeSourceReportingDefinition,
 ): ReadonlySet<string> => {
-  const allTargets = definition.targets.map(({ target }) => target);
+  const allTargets = definitionTargetKeys(definition);
   if (classified.targets === undefined || classified.targets.length === 0) {
     return new Set(allTargets);
   }
+  const selected = classified.targets.map((target) =>
+    typeof target === "string"
+      ? dependencyTargetKey(definition.dependency, target)
+      : dependencyTargetKey(target.dependency, target.target),
+  );
   const knownTargets = new Set(allTargets);
-  return classified.targets.every((target) => knownTargets.has(target))
-    ? new Set(classified.targets)
+  return selected.every((target) => knownTargets.has(target))
+    ? new Set(selected)
     : new Set(allTargets);
+};
+
+const classifiedDependencyIssues = (
+  classified: Extract<SourceFailureClassification, { readonly problem: "dependency" }>,
+  targets: ReadonlySet<string>,
+  definition: RuntimeSourceReportingDefinition,
+): ReadonlyMap<string, RuntimeDependencyIssue> => {
+  if (classified.issue === undefined) {
+    return new Map();
+  }
+  const dependencyIssue: RuntimeDependencyIssue = Object.freeze({
+    source: definition.source,
+    code: classified.issue.code,
+    message: classified.issue.message,
+    attributes: classified.issue.attributes,
+  });
+  return new Map([...targets].map((target) => [target, dependencyIssue]));
 };
 
 const terminationEvidence = (
@@ -117,22 +223,29 @@ const terminationEvidence = (
   if (termination._tag === "UnexpectedCompletion") {
     return {
       problems: ["dependency"],
-      dependencyTargets: new Set(definition.targets.map(({ target }) => target)),
+      dependencyTargets: new Set(definitionTargetKeys(definition)),
+      dependencyIssues: new Map(),
     };
   }
   if (termination.failure._tag === "RuntimeFailure") {
     return {
       problems: ["self"],
       dependencyTargets: new Set(),
+      dependencyIssues: new Map(),
     };
   }
   const classified = classification(definition.classifyFailure, termination.failure.failure);
+  const dependencyTargets =
+    classified.problem === "dependency"
+      ? classifiedDependencyTargets(classified, definition)
+      : new Set<string>();
   return {
     problems: [classified.problem],
-    dependencyTargets:
+    dependencyTargets,
+    dependencyIssues:
       classified.problem === "dependency"
-        ? classifiedDependencyTargets(classified, definition)
-        : new Set(),
+        ? classifiedDependencyIssues(classified, dependencyTargets, definition)
+        : new Map(),
   };
 };
 
@@ -154,6 +267,7 @@ const statusEvidence = (
   }
   const problems = new Set<SourceProblem>();
   const dependencyTargets = new Set<string>();
+  const dependencyIssues = new Map<string, RuntimeDependencyIssue>();
   for (const reason of status.reasons) {
     if (reason._tag === "AdapterMaintenanceFailure") {
       problems.add("self");
@@ -167,14 +281,23 @@ const statusEvidence = (
     const classified = classification(definition.classifyFailure, rejection.failure);
     problems.add(classified.problem);
     if (classified.problem === "dependency") {
-      for (const target of classifiedDependencyTargets(classified, definition)) {
+      const classifiedTargets = classifiedDependencyTargets(classified, definition);
+      for (const target of classifiedTargets) {
         dependencyTargets.add(target);
+      }
+      for (const [target, dependencyIssue] of classifiedDependencyIssues(
+        classified,
+        classifiedTargets,
+        definition,
+      )) {
+        dependencyIssues.set(target, dependencyIssue);
       }
     }
   }
   return {
     problems: orderedProblems(problems),
     dependencyTargets,
+    dependencyIssues,
   };
 };
 
@@ -190,27 +313,59 @@ const updateDependencyStatuses = (
 ): boolean => {
   let changed = false;
   if (status._tag === "Starting" || status._tag === "Ready" || status._tag === "Stopping") {
-    for (const { target } of state.definition.targets) {
-      changed ||= state.dependencyStatuses.get(target) !== status._tag;
+    state.dependencyBaselineStatus = status._tag;
+    for (const target of definitionTargetKeys(state.definition)) {
+      const statusChanged = state.dependencyStatuses.get(target) !== status._tag;
+      const issueDeleted = state.dependencyIssues.delete(target);
+      changed = changed || statusChanged || issueDeleted;
       state.dependencyStatuses.set(target, status._tag);
     }
     return changed;
   }
   const evidence = statusEvidence(status, state.definition);
-  if (!evidence.problems.includes("dependency")) {
-    return false;
-  }
-  for (const target of evidence.dependencyTargets) {
-    changed ||= state.dependencyStatuses.get(target) !== status._tag;
-    state.dependencyStatuses.set(target, status._tag);
+  for (const target of definitionTargetKeys(state.definition)) {
+    const nextStatus = evidence.dependencyTargets.has(target)
+      ? status._tag
+      : state.dependencyBaselineStatus;
+    changed ||= state.dependencyStatuses.get(target) !== nextStatus;
+    state.dependencyStatuses.set(target, nextStatus);
+    const nextIssue = evidence.dependencyIssues.get(target);
+    const previousIssue = state.dependencyIssues.get(target);
+    changed ||= !sameDependencyIssue(previousIssue, nextIssue);
+    if (nextIssue === undefined) {
+      state.dependencyIssues.delete(target);
+    } else {
+      state.dependencyIssues.set(target, nextIssue);
+    }
   }
   return changed;
 };
 
+const sameDependencyIssue = (
+  left: RuntimeDependencyIssue | undefined,
+  right: RuntimeDependencyIssue | undefined,
+): boolean =>
+  left === right ||
+  (left !== undefined &&
+    right !== undefined &&
+    left.source === right.source &&
+    left.code === right.code &&
+    left.message === right.message &&
+    left.attributes.length === right.attributes.length &&
+    left.attributes.every(
+      (attribute, index) =>
+        attribute.name === right.attributes[index]?.name &&
+        attribute.value === right.attributes[index]?.value,
+    ));
+
 const sameStatusEvidence = (left: StatusEvidence, right: StatusEvidence): boolean =>
   left.problems.join("\u0000") === right.problems.join("\u0000") &&
   left.dependencyTargets.size === right.dependencyTargets.size &&
-  [...left.dependencyTargets].every((target) => right.dependencyTargets.has(target));
+  [...left.dependencyTargets].every((target) => right.dependencyTargets.has(target)) &&
+  left.dependencyIssues.size === right.dependencyIssues.size &&
+  [...left.dependencyIssues].every(([target, dependencyIssue]) =>
+    sameDependencyIssue(dependencyIssue, right.dependencyIssues.get(target)),
+  );
 
 export const makeRuntimeSourceReportingState = (
   definition: RuntimeSourceReportingDefinition,
@@ -219,8 +374,10 @@ export const makeRuntimeSourceReportingState = (
   const state: RuntimeSourceReportingState = {
     definition,
     dependencyStatuses: new Map(
-      definition.targets.map(({ target }) => [target, "Starting"] as const),
+      definitionTargetKeys(definition).map((target) => [target, "Starting"] as const),
     ),
+    dependencyIssues: new Map(),
+    dependencyBaselineStatus: "Starting",
     status,
   };
   updateDependencyStatuses(state, status);
@@ -281,6 +438,7 @@ type MutableDependency = {
   readonly target: string;
   readonly endpoints: Set<string>;
   readonly statuses: Array<RuntimeDependencyStatus>;
+  readonly issues: Array<RuntimeDependencyIssue>;
   hasMaterializedDefinition: boolean;
 };
 
@@ -290,20 +448,24 @@ export const runtimeSourceReportingSnapshot = (
 ): RuntimeSourceReportingSnapshot => {
   const capturedStates = Array.from(states);
   const dependencies = new Map<string, Map<string, MutableDependency>>();
+  const dependenciesByKey = new Map<string, MutableDependency>();
   for (const definition of definitions) {
     for (const target of definition.targets) {
-      const targets = dependencies.get(definition.dependency);
+      const dependencyName = targetDependency(definition, target);
+      const targets = dependencies.get(dependencyName);
       const current = targets?.get(target.target);
       if (current === undefined) {
         const dependency = {
-          dependency: definition.dependency,
+          dependency: dependencyName,
           target: target.target,
           endpoints: new Set(target.endpoints),
           statuses: [],
+          issues: [],
           hasMaterializedDefinition: definition.lifecycle === "materialized",
         } satisfies MutableDependency;
+        dependenciesByKey.set(dependencyTargetKey(dependencyName, target.target), dependency);
         if (targets === undefined) {
-          dependencies.set(definition.dependency, new Map([[target.target, dependency]]));
+          dependencies.set(dependencyName, new Map([[target.target, dependency]]));
         } else {
           targets.set(target.target, dependency);
         }
@@ -316,8 +478,17 @@ export const runtimeSourceReportingSnapshot = (
     }
   }
   for (const state of capturedStates) {
-    for (const [target, status] of state.dependencyStatuses) {
-      dependencies.get(state.definition.dependency)?.get(target)?.statuses.push(status);
+    for (const [key, status] of state.dependencyStatuses) {
+      dependenciesByKey.get(key)?.statuses.push(status);
+    }
+    for (const [key, dependencyIssue] of state.dependencyIssues) {
+      const mutable = dependenciesByKey.get(key);
+      if (
+        mutable !== undefined &&
+        !mutable.issues.some((candidate) => sameDependencyIssue(candidate, dependencyIssue))
+      ) {
+        mutable.issues.push(dependencyIssue);
+      }
     }
   }
   const snapshot = Array.from(dependencies.values())
@@ -334,6 +505,13 @@ export const runtimeSourceReportingSnapshot = (
         target: dependency.target,
         endpoints: Object.freeze([...dependency.endpoints]),
         status,
+        issues: Object.freeze(
+          [...dependency.issues].sort((left, right) =>
+            left.source === right.source
+              ? left.code.localeCompare(right.code)
+              : left.source.localeCompare(right.source),
+          ),
+        ),
       });
     })
     .sort((left, right) =>
@@ -347,19 +525,15 @@ export const runtimeSourceReportingSnapshot = (
   });
 };
 
-export const sameRuntimeSourceReportingSnapshot = (
-  left: RuntimeSourceReportingSnapshot,
-  right: RuntimeSourceReportingSnapshot,
+export const sameRuntimeDependencies = (
+  left: ReadonlyArray<RuntimeDependency>,
+  right: ReadonlyArray<RuntimeDependency>,
 ): boolean => {
-  if (
-    left.heartbeat.status !== right.heartbeat.status ||
-    left.heartbeat.problems.join("\u0000") !== right.heartbeat.problems.join("\u0000") ||
-    left.dependencies.length !== right.dependencies.length
-  ) {
+  if (left.length !== right.length) {
     return false;
   }
-  return left.dependencies.every((dependency, index) => {
-    const candidate = right.dependencies[index];
+  return left.every((dependency, index) => {
+    const candidate = right[index];
     return (
       candidate !== undefined &&
       dependency.dependency === candidate.dependency &&
@@ -368,7 +542,19 @@ export const sameRuntimeSourceReportingSnapshot = (
       dependency.endpoints.length === candidate.endpoints.length &&
       dependency.endpoints.every(
         (endpoint, endpointIndex) => endpoint === candidate.endpoints[endpointIndex],
+      ) &&
+      dependency.issues.length === candidate.issues.length &&
+      dependency.issues.every((dependencyIssue, issueIndex) =>
+        sameDependencyIssue(dependencyIssue, candidate.issues[issueIndex]),
       )
     );
   });
 };
+
+export const sameRuntimeSourceReportingSnapshot = (
+  left: RuntimeSourceReportingSnapshot,
+  right: RuntimeSourceReportingSnapshot,
+): boolean =>
+  left.heartbeat.status === right.heartbeat.status &&
+  left.heartbeat.problems.join("\u0000") === right.heartbeat.problems.join("\u0000") &&
+  sameRuntimeDependencies(left.dependencies, right.dependencies);

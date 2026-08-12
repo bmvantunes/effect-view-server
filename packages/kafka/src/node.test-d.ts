@@ -13,7 +13,10 @@ import {
   layerConfig,
   type KafkaBrokerContractValidationFailure,
   type KafkaRequiredRegion,
+  type KafkaSchemaRegistryContractValidationFailure,
+  type KafkaSchemaRegistryRequiredRegion,
 } from "./node";
+import { OrderValueSchema } from "./test-fixtures/orders_pb";
 import type {
   KafkaServerRecord,
   KafkaServerRegion,
@@ -60,6 +63,28 @@ const sourceFreeConfig = defineViewServerConfig({
   topics: {
     orders: {
       schema: Row,
+    },
+  },
+});
+
+const schemaRegistryConfig = defineViewServerConfig({
+  topics: {
+    orders: {
+      schema: Row,
+      source: kafka.source({
+        cleanupPolicy: "delete",
+        retentionPolicy: "Infinity",
+        topic: "source-orders",
+        regions: ["eu"],
+        key: kafka.string(),
+        value: kafka.schemaRegistry.protobuf(OrderValueSchema),
+        localRowKey: ({ key }) => key,
+        map: ({ value, region }) => ({
+          price: value.price,
+          region: String(region),
+        }),
+        startFrom: "earliest",
+      }),
     },
   },
 });
@@ -126,7 +151,7 @@ describe("Kafka Node type contract", () => {
     expectTypeOf(runtimeLayer).toEqualTypeOf<
       Layer.Layer<
         import("effect").Context.Service.Identifier<typeof KafkaSourceAdapter.runtimeService>,
-        KafkaBrokerContractValidationFailure
+        KafkaBrokerContractValidationFailure | KafkaSchemaRegistryContractValidationFailure
       >
     >();
     const securedLayer = layer(config, {
@@ -310,6 +335,87 @@ describe("Kafka Node type contract", () => {
     });
   });
 
+  it("requires exactly one Schema Registry resource in Regions whose Sources opt in", () => {
+    expectTypeOf<KafkaSchemaRegistryRequiredRegion<typeof config>>().toEqualTypeOf<never>();
+    expectTypeOf<
+      KafkaSchemaRegistryRequiredRegion<typeof schemaRegistryConfig>
+    >().toEqualTypeOf<"eu">();
+
+    const registryLayer = layer(schemaRegistryConfig, {
+      consumerGroupPrefix: "replica",
+      regions: {
+        eu: {
+          bootstrapServers: "eu:9092",
+          schemaRegistry: {
+            url: "https://registry.example.com",
+            auth: { token: "secret" },
+            headers: { "x-tenant": "orders" },
+            timeout: 5_000,
+            retries: 3,
+            retryDelay: 250,
+            monitorInterval: "30 seconds",
+            tls: { serverName: "registry.example.com" },
+          },
+        },
+      },
+    });
+    expectTypeOf(registryLayer).toEqualTypeOf<
+      Layer.Layer<
+        import("effect").Context.Service.Identifier<typeof KafkaSourceAdapter.runtimeService>,
+        KafkaBrokerContractValidationFailure | KafkaSchemaRegistryContractValidationFailure
+      >
+    >();
+
+    layer(schemaRegistryConfig, {
+      consumerGroupPrefix: "replica",
+      regions: {
+        // @ts-expect-error Registry-backed Sources require a Region Schema Registry resource.
+        eu: { bootstrapServers: "eu:9092" },
+      },
+    });
+    // @ts-expect-error Registry auth is an exact basic-or-token union.
+    layer(schemaRegistryConfig, {
+      consumerGroupPrefix: "replica",
+      regions: {
+        eu: {
+          bootstrapServers: "eu:9092",
+          schemaRegistry: {
+            url: "https://registry.example.com",
+            auth: { token: "secret", username: "user" },
+          },
+        },
+      },
+    });
+    const registryWithExtra = {
+      consumerGroupPrefix: "replica",
+      regions: {
+        eu: {
+          bootstrapServers: "eu:9092",
+          schemaRegistry: {
+            url: "https://registry.example.com",
+            extra: true,
+          },
+        },
+      },
+    };
+    // @ts-expect-error nested Schema Registry options remain exact through variables.
+    layer(schemaRegistryConfig, registryWithExtra);
+    const registryWithAnyHeader = {
+      consumerGroupPrefix: "replica",
+      regions: {
+        eu: {
+          bootstrapServers: "eu:9092",
+          schemaRegistry: {
+            url: "https://registry.example.com",
+            headers: { "x-tenant": unsafeAny },
+          },
+        },
+      },
+    };
+    // @ts-expect-error nested Schema Registry header values cannot be any.
+    layer(schemaRegistryConfig, registryWithAnyHeader);
+  });
+
   it("preserves Config errors for aggregate Layer config", () => {
     const configured = layerConfig(config, {
       consumerGroupPrefix: Config.succeed("replica"),
@@ -326,9 +432,65 @@ describe("Kafka Node type contract", () => {
     expectTypeOf(configured).toEqualTypeOf<
       Layer.Layer<
         import("effect").Context.Service.Identifier<typeof KafkaSourceAdapter.runtimeService>,
-        Config.ConfigError | KafkaBrokerContractValidationFailure
+        | Config.ConfigError
+        | KafkaBrokerContractValidationFailure
+        | KafkaSchemaRegistryContractValidationFailure
       >
     >();
+    const configuredRegistry = layerConfig(schemaRegistryConfig, {
+      consumerGroupPrefix: Config.succeed("replica"),
+      regions: {
+        eu: {
+          bootstrapServers: Config.succeed("eu:9092"),
+          schemaRegistry: {
+            url: Config.succeed("https://registry.example.com"),
+            auth: Config.succeed({ token: "secret" }),
+            monitorInterval: Config.succeed("30 seconds"),
+          },
+        },
+      },
+    });
+    expectTypeOf(configuredRegistry).toEqualTypeOf<
+      Layer.Layer<
+        import("effect").Context.Service.Identifier<typeof KafkaSourceAdapter.runtimeService>,
+        | Config.ConfigError
+        | KafkaBrokerContractValidationFailure
+        | KafkaSchemaRegistryContractValidationFailure
+      >
+    >();
+    // @ts-expect-error Config-wrapped Registry-backed Regions still require Registry options.
+    layerConfig(schemaRegistryConfig, {
+      consumerGroupPrefix: Config.succeed("replica"),
+      regions: { eu: { bootstrapServers: Config.succeed("eu:9092") } },
+    });
+    const configuredRegistryWithExtra = {
+      consumerGroupPrefix: Config.succeed("replica"),
+      regions: {
+        eu: {
+          bootstrapServers: Config.succeed("eu:9092"),
+          schemaRegistry: Config.succeed({
+            url: "https://registry.example.com",
+            extra: true,
+          }),
+        },
+      },
+    };
+    // @ts-expect-error Config wrappers cannot hide extra Schema Registry fields.
+    layerConfig(schemaRegistryConfig, configuredRegistryWithExtra);
+    const configuredRegistryWithAnyHeader = {
+      consumerGroupPrefix: Config.succeed("replica"),
+      regions: {
+        eu: {
+          bootstrapServers: Config.succeed("eu:9092"),
+          schemaRegistry: Config.succeed({
+            url: "https://registry.example.com",
+            headers: { "x-tenant": unsafeAny },
+          }),
+        },
+      },
+    };
+    // @ts-expect-error Config wrappers cannot hide any-typed Registry header values.
+    layerConfig(schemaRegistryConfig, configuredRegistryWithAnyHeader);
     // @ts-expect-error aggregate Config Layer options cannot be any.
     layerConfig(config, unsafeAny);
 

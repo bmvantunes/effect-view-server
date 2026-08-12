@@ -1,5 +1,6 @@
 import { create, createFileRegistry, fromBinary, toBinary } from "@bufbuild/protobuf";
 import type { DescFile, DescMessage, MessageShape } from "@bufbuild/protobuf";
+import type { GenMessage } from "@bufbuild/protobuf/codegenv2";
 import { FileDescriptorSetSchema } from "@bufbuild/protobuf/wkt";
 import { Duration, Effect, Option, Result, Schedule, Schema } from "effect";
 import type {
@@ -10,6 +11,7 @@ import type {
   SourceTermination,
 } from "effect-view-server/source-adapter";
 import { SourceAdapter } from "effect-view-server/source-adapter";
+import { parseKafkaSchemaRegistryProtobufFrame } from "./schema-registry-frame";
 
 const KafkaCodecTypeId: unique symbol = Symbol("@effect-view-server/kafka/KafkaCodec");
 const KafkaCodecDecodeTypeId: unique symbol = Symbol("@effect-view-server/kafka/KafkaCodecDecode");
@@ -18,6 +20,9 @@ const KafkaCompactionKeyCodecTypeId: unique symbol = Symbol(
 );
 const KafkaCompactionKeyCodecDecodeTypeId: unique symbol = Symbol(
   "@effect-view-server/kafka/KafkaCompactionKeyCodecDecode",
+);
+const KafkaSchemaRegistryProtobufCodecTypeId: unique symbol = Symbol(
+  "@effect-view-server/kafka/KafkaSchemaRegistryProtobufCodec",
 );
 declare const KafkaCapturedDefinitionRowTypeId: unique symbol;
 
@@ -33,6 +38,12 @@ type IsUnknown<Value> =
       : false;
 
 type IsNever<Value> = [Value] extends [never] ? true : false;
+
+type IsUnion<Value, Whole = Value> = Value extends unknown
+  ? [Whole] extends [Value]
+    ? false
+    : true
+  : false;
 
 type RejectAny<Value> =
   IsAny<Value> extends true
@@ -132,6 +143,33 @@ export type KafkaProtobufCodec<Descriptor extends DescMessage = DescMessage> = K
 > & {
   readonly descriptor: Descriptor;
   readonly format: "protobuf";
+};
+
+export type KafkaSchemaRegistryProtobufCodec<Descriptor extends DescMessage = DescMessage> =
+  KafkaCodec<MessageShape<Descriptor>, KafkaCodecError> &
+    KafkaCompactionKeyCodec<MessageShape<Descriptor>, KafkaCodecError> & {
+      readonly [KafkaSchemaRegistryProtobufCodecTypeId]: () => KafkaSchemaRegistryProtobufCodec<Descriptor>;
+      readonly descriptor: Descriptor;
+      readonly format: "schema-registry-protobuf";
+    };
+
+export const isKafkaSchemaRegistryProtobufCodec = (
+  value: unknown,
+): value is KafkaSchemaRegistryProtobufCodec => {
+  if (!isKafkaCodec(value) || !isKafkaCompactionKeyCodec(value)) {
+    return false;
+  }
+  const brand = Result.try(() => Reflect.get(value, KafkaSchemaRegistryProtobufCodecTypeId));
+  return (
+    Result.isSuccess(brand) &&
+    typeof brand.success === "function" &&
+    Result.try(() => Reflect.apply(brand.success, undefined, [])).pipe(
+      Result.match({
+        onFailure: () => false,
+        onSuccess: (branded) => branded === value,
+      }),
+    )
+  );
 };
 
 export type KafkaCustomCodec<Value, Error> = KafkaCodec<Value, Error> & {
@@ -359,6 +397,29 @@ type KafkaProtobufAdditionalArguments<Descriptor> =
           ? readonly []
           : readonly [never];
 
+type KafkaSchemaRegistryGeneratedDescriptor<Descriptor> =
+  true extends IsUnion<Descriptor>
+    ? {
+        readonly __kafkaSchemaRegistryRequiresOneGeneratedDescriptor: never;
+      }
+    : [Descriptor] extends [DescMessage]
+      ? true extends IsUnion<Descriptor["typeName"]>
+        ? {
+            readonly __kafkaSchemaRegistryRequiresOneGeneratedDescriptor: never;
+          }
+        : string extends Descriptor["typeName"]
+          ? {
+              readonly __kafkaSchemaRegistryRequiresGeneratedDescriptor: never;
+            }
+          : [Descriptor] extends [GenMessage<MessageShape<Descriptor>>]
+            ? unknown
+            : {
+                readonly __kafkaSchemaRegistryRequiresGeneratedDescriptor: never;
+              }
+      : {
+          readonly __kafkaSchemaRegistryRequiresGeneratedDescriptor: never;
+        };
+
 const freezeDescriptorGraph = (value: unknown, visited = new WeakSet<object>()): void => {
   if (
     (typeof value !== "object" && typeof value !== "function") ||
@@ -436,6 +497,40 @@ function protobufCodec(descriptor: DescMessage): KafkaProtobufCodec<DescMessage>
   };
   return SourceAdapter.executable(protobuf);
 }
+
+function schemaRegistryProtobufCodec<const Descriptor>(
+  descriptor: Descriptor & KafkaSchemaRegistryGeneratedDescriptor<NoInfer<Descriptor>>,
+  ..._unsupported: KafkaProtobufAdditionalArguments<NoInfer<Descriptor>>
+): KafkaSchemaRegistryProtobufCodec<Extract<Descriptor, DescMessage>>;
+function schemaRegistryProtobufCodec(
+  descriptor: DescMessage,
+): KafkaSchemaRegistryProtobufCodec<DescMessage> {
+  const capturedDescriptor = captureProtobufDescriptor(descriptor);
+  const decode = (bytes: Uint8Array): Effect.Effect<MessageShape<DescMessage>, KafkaCodecError> => {
+    const frame = parseKafkaSchemaRegistryProtobufFrame(bytes);
+    if (frame._tag === "KafkaSchemaRegistryFrameParseFailure") {
+      return Effect.fail(codecError(frame.message));
+    }
+    return Effect.try({
+      try: () => fromBinary(capturedDescriptor, frame.payload),
+      catch: () => codecError("Kafka Schema Registry protobuf payload could not be decoded."),
+    });
+  };
+  const codec: KafkaSchemaRegistryProtobufCodec<DescMessage> = {
+    [KafkaCodecTypeId]: () => codec,
+    [KafkaCodecDecodeTypeId]: (input) => decode(input.bytes),
+    [KafkaCompactionKeyCodecTypeId]: () => codec,
+    [KafkaCompactionKeyCodecDecodeTypeId]: (input) => decode(input.bytes),
+    [KafkaSchemaRegistryProtobufCodecTypeId]: () => codec,
+    descriptor: capturedDescriptor,
+    format: "schema-registry-protobuf",
+  };
+  return SourceAdapter.executable(codec);
+}
+
+export const KafkaSchemaRegistry = Object.freeze({
+  protobuf: schemaRegistryProtobufCodec,
+});
 
 type KafkaCustomDecodeResult = Effect.Effect<unknown, unknown>;
 
@@ -886,6 +981,30 @@ export const KafkaAdapterFailure = Schema.Union([
   Schema.TaggedStruct("KafkaReleaseFailure", {
     region: Schema.NonEmptyString,
     topic: Schema.NonEmptyString,
+    message: Schema.String,
+  }),
+  Schema.TaggedStruct("KafkaSchemaRegistryUnavailable", {
+    region: Schema.NonEmptyString,
+    topic: Schema.NonEmptyString,
+    subject: Schema.NonEmptyString,
+    side: Schema.Literals(["key", "value"]),
+    schemaId: Schema.NullOr(Schema.Int),
+    message: Schema.String,
+  }),
+  Schema.TaggedStruct("KafkaSchemaRegistryPolicyMismatch", {
+    region: Schema.NonEmptyString,
+    topic: Schema.NonEmptyString,
+    subject: Schema.NonEmptyString,
+    side: Schema.Literals(["key", "value"]),
+    schemaId: Schema.NullOr(Schema.Int),
+    message: Schema.String,
+  }),
+  Schema.TaggedStruct("KafkaSchemaRegistrySchemaMismatch", {
+    region: Schema.NonEmptyString,
+    topic: Schema.NonEmptyString,
+    subject: Schema.NonEmptyString,
+    side: Schema.Literals(["key", "value"]),
+    schemaId: Schema.NullOr(Schema.Int),
     message: Schema.String,
   }),
 ]);
@@ -2937,6 +3056,7 @@ type KafkaContractApi = {
   readonly compactionRowId: typeof kafkaCompactionRowId;
   readonly json: typeof jsonCodec;
   readonly protobuf: typeof protobufCodec;
+  readonly schemaRegistry: typeof KafkaSchemaRegistry;
   readonly rowId: typeof kafkaRowId;
   readonly source: KafkaSourceApi;
   readonly string: typeof stringCodec;
@@ -2947,6 +3067,7 @@ export const kafka: KafkaContractApi = Object.freeze({
   string: stringCodec,
   json: jsonCodec,
   protobuf: protobufCodec,
+  schemaRegistry: KafkaSchemaRegistry,
   codec: customCodec,
   compactionKey: KafkaCompactionKey,
   source: makeKafkaSource,

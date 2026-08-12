@@ -22,7 +22,11 @@ export type {
   ViewServerRuntimeOptionsInput,
   ViewServerRuntimeReportingOptions,
 };
-export type { RuntimeDependency, RuntimeHeartbeat } from "./runtime-reporting";
+export type {
+  RuntimeDependency,
+  RuntimeDependencyIssue,
+  RuntimeHeartbeat,
+} from "./runtime-reporting";
 export type { ViewServerTcpPublishIngressError } from "./tcp-publish-ingress";
 
 const makeViewServerRuntimeEffect = Effect.fn("ViewServerRuntime.make")(function* <

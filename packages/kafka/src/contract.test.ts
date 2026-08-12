@@ -17,6 +17,7 @@ import {
   decodeKafkaRowId,
   isKafkaCompactionKeyCodec,
   isKafkaCodec,
+  isKafkaSchemaRegistryProtobufCodec,
   kafka,
   kafkaCompactionRowId,
   kafkaConsumerGroupId,
@@ -68,6 +69,40 @@ const contractFileBytes = toBinary(
 const makeContractMessage = () =>
   messageDesc<ContractMessage>(fileDesc(base64FromBytes(contractFileBytes)), 0);
 const contractMessage = makeContractMessage();
+
+const encodeConfluentSignedVarint = (value: number): ReadonlyArray<number> => {
+  let remaining = value * 2;
+  const encoded: Array<number> = [];
+  do {
+    const next = remaining % 128;
+    remaining = Math.floor(remaining / 128);
+    encoded.push(remaining === 0 ? next : next | 0x80);
+  } while (remaining !== 0);
+  return encoded;
+};
+
+const confluentProtobufFrame = (
+  schemaId: number,
+  messageIndexes: readonly [number, ...ReadonlyArray<number>],
+  payload: Uint8Array,
+): Uint8Array => {
+  const encodedIndexes =
+    messageIndexes.length === 1 && messageIndexes[0] === 0
+      ? [0]
+      : [
+          ...encodeConfluentSignedVarint(messageIndexes.length),
+          ...messageIndexes.flatMap(encodeConfluentSignedVarint),
+        ];
+  return Uint8Array.from([
+    0,
+    Math.floor(schemaId / 0x1_00_00_00) % 0x100,
+    Math.floor(schemaId / 0x1_00_00) % 0x100,
+    Math.floor(schemaId / 0x1_00) % 0x100,
+    schemaId % 0x100,
+    ...encodedIndexes,
+    ...payload,
+  ]);
+};
 
 const validSourceInput = () => ({
   cleanupPolicy: "delete" as const,
@@ -385,6 +420,169 @@ describe("Kafka Source Adapter contract", () => {
         _tag: "KafkaCodecError",
         message: "Kafka custom codec threw synchronously.",
       });
+    }),
+  );
+
+  it.effect(
+    "decodes Confluent-framed protobuf with one codec for ordinary and compaction keys",
+    () =>
+      Effect.gen(function* () {
+        const codec = kafka.schemaRegistry.protobuf(contractMessage);
+        const payload = toBinary(contractMessage, create(contractMessage, { label: "registered" }));
+        const framed = confluentProtobufFrame(42, [1, 0], payload);
+
+        const ordinary = yield* decodeKafkaCodec(codec, {
+          bytes: framed,
+          metadata,
+        });
+        const compaction = yield* decodeKafkaCompactionKeyCodec(codec, { bytes: framed });
+
+        expect({
+          ordinary,
+          compaction,
+          codec: isKafkaCodec(codec),
+          compactionKeyCodec: isKafkaCompactionKeyCodec(codec),
+          format: codec.format,
+        }).toStrictEqual({
+          ordinary: {
+            $typeName: "kafka.contract.Value",
+            label: "registered",
+          },
+          compaction: {
+            $typeName: "kafka.contract.Value",
+            label: "registered",
+          },
+          codec: true,
+          compactionKeyCodec: true,
+          format: "schema-registry-protobuf",
+        });
+      }),
+  );
+
+  it.effect("rejects malformed Confluent protobuf framing before Buf decoding", () =>
+    Effect.gen(function* () {
+      const codec = kafka.schemaRegistry.protobuf(contractMessage);
+      const malformedFrames = [
+        Uint8Array.from([]),
+        Uint8Array.from([1, 0, 0, 0, 42, 0]),
+        Uint8Array.from([0, 0, 0, 0, 42, 0x80]),
+        Uint8Array.from([0, 0, 0, 0, 42, 2]),
+        Uint8Array.from([0, 0, 0, 0, 42, 4, 1, 0]),
+        Uint8Array.from([0, 0, 0, 0, 0, 0]),
+        Uint8Array.from([0, 0x80, 0, 0, 0, 0]),
+        Uint8Array.from([0, 0, 0, 0, 42, 0xff, 0xff, 0xff, 0xff, 0x1f]),
+        Uint8Array.from([0, 0, 0, 0, 42, 0x80, 0x80, 0x80, 0x80, 0x80]),
+        Uint8Array.from([0, 0, 0, 0, 42, 1]),
+        Uint8Array.from([0, 0, 0, 0, 42, 6, 0]),
+        Uint8Array.from([0, 0, 0, 0, 42, 2, 0x80]),
+        Uint8Array.from([0, 0, 0, 0, 42, 2, 0xff, 0xff, 0xff, 0xff, 0x1f]),
+      ];
+
+      const failures = yield* Effect.forEach(malformedFrames, (bytes) =>
+        decodeKafkaCodec(codec, { bytes, metadata }).pipe(Effect.flip),
+      );
+
+      expect(failures).toStrictEqual([
+        {
+          _tag: "KafkaCodecError",
+          message:
+            "Confluent Schema Registry Protobuf frame is shorter than its six-byte minimum prefix.",
+        },
+        {
+          _tag: "KafkaCodecError",
+          message:
+            "Confluent Schema Registry Protobuf frame uses unsupported payload-prefix version 1.",
+        },
+        {
+          _tag: "KafkaCodecError",
+          message:
+            "Confluent Schema Registry Protobuf frame contains a truncated message-index varint.",
+        },
+        {
+          _tag: "KafkaCodecError",
+          message:
+            "Confluent Schema Registry Protobuf frame declares more message indexes than the payload contains.",
+        },
+        {
+          _tag: "KafkaCodecError",
+          message: "Confluent Schema Registry Protobuf frame contains a negative message index.",
+        },
+        {
+          _tag: "KafkaCodecError",
+          message: "Confluent Schema Registry Protobuf frame contains an invalid schema ID.",
+        },
+        {
+          _tag: "KafkaCodecError",
+          message: "Confluent Schema Registry Protobuf frame contains an invalid schema ID.",
+        },
+        {
+          _tag: "KafkaCodecError",
+          message:
+            "Confluent Schema Registry Protobuf frame contains an overflowing message-index varint.",
+        },
+        {
+          _tag: "KafkaCodecError",
+          message:
+            "Confluent Schema Registry Protobuf frame contains a message-index varint longer than five bytes.",
+        },
+        {
+          _tag: "KafkaCodecError",
+          message:
+            "Confluent Schema Registry Protobuf frame contains a negative message-index count.",
+        },
+        {
+          _tag: "KafkaCodecError",
+          message:
+            "Confluent Schema Registry Protobuf frame declares more message indexes than the payload contains.",
+        },
+        {
+          _tag: "KafkaCodecError",
+          message:
+            "Confluent Schema Registry Protobuf frame contains a truncated message-index varint.",
+        },
+        {
+          _tag: "KafkaCodecError",
+          message:
+            "Confluent Schema Registry Protobuf frame contains an overflowing message-index varint.",
+        },
+      ]);
+    }),
+  );
+
+  it.effect("rejects malformed framed protobuf payloads and hostile Registry codec brands", () =>
+    Effect.gen(function* () {
+      const codec = kafka.schemaRegistry.protobuf(contractMessage);
+      const payloadFailure = yield* decodeKafkaCodec(codec, {
+        bytes: confluentProtobufFrame(42, [0], Uint8Array.from([0x0a])),
+        metadata,
+      }).pipe(Effect.flip);
+      const registryBrand = Reflect.ownKeys(codec).find(
+        (key) => typeof key === "symbol" && String(key).includes("SchemaRegistryProtobufCodec"),
+      );
+      if (registryBrand === undefined) {
+        throw new Error("Schema Registry codec brand missing");
+      }
+      const hostile: object = {};
+      for (const key of Reflect.ownKeys(codec)) {
+        if (typeof key === "symbol") {
+          Object.defineProperty(hostile, key, {
+            value:
+              key === registryBrand
+                ? () => {
+                    throw new Error("hostile Registry brand");
+                  }
+                : () => hostile,
+          });
+        }
+      }
+
+      expect(payloadFailure).toStrictEqual({
+        _tag: "KafkaCodecError",
+        message: "Kafka Schema Registry protobuf payload could not be decoded.",
+      });
+      expect(isKafkaCodec(hostile)).toBe(true);
+      expect(isKafkaCompactionKeyCodec(hostile)).toBe(true);
+      expect(isKafkaSchemaRegistryProtobufCodec(hostile)).toBe(false);
     }),
   );
 

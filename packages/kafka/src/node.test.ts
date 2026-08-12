@@ -970,16 +970,17 @@ describe("Kafka Node Adapter", () => {
         toBinary(FileDescriptorProtoSchema, OrderValueSchema.file.proto),
       ).toString("base64");
       vi.stubGlobal("fetch", (input: string | URL | Request) => {
-        const url =
-          typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-        requests.push(url);
-        const region = url.includes("registry.eu.example.com") ? "eu" : "us";
-        if (url.includes("/config/")) {
+        const url = new URL(
+          typeof input === "string" ? input : input instanceof URL ? input.href : input.url,
+        );
+        requests.push(url.href);
+        const region = url.hostname === "registry.eu.example.com" ? "eu" : "us";
+        if (url.pathname.includes("/config/")) {
           return Promise.resolve(
             new Response(JSON.stringify({ compatibilityLevel: "FULL_TRANSITIVE" })),
           );
         }
-        if (url.includes("/versions/1")) {
+        if (url.pathname.includes("/versions/1")) {
           return Promise.resolve(
             new Response(
               JSON.stringify({

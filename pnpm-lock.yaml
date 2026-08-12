@@ -31,8 +31,8 @@ catalogs:
       specifier: 4.0.0-beta.106
       version: 4.0.0-beta.106
     '@platformatic/kafka':
-      specifier: 2.2.3
-      version: 2.2.3
+      specifier: 2.9.0
+      version: 2.9.0
     '@tailwindcss/vite':
       specifier: 4.3.1
       version: 4.3.1
@@ -264,7 +264,7 @@ importers:
         version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d))(ioredis@5.10.1)
       '@platformatic/kafka':
         specifier: 'catalog:'
-        version: 2.2.3
+        version: 2.9.0
       '@tanstack/react-router':
         specifier: 'catalog:'
         version: 1.170.16(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
@@ -592,7 +592,7 @@ importers:
         version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d))(ioredis@5.10.1)
       '@platformatic/kafka':
         specifier: 'catalog:'
-        version: 2.2.3
+        version: 2.9.0
       '@tanstack/react-router':
         specifier: 'catalog:'
         version: 1.170.16(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
@@ -952,8 +952,8 @@ importers:
         specifier: 4.0.0-beta.106
         version: 4.0.0-beta.106(effect@4.0.0-beta.106(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d))(ioredis@5.10.1)
       '@platformatic/kafka':
-        specifier: 2.2.3
-        version: 2.2.3
+        specifier: 2.9.0
+        version: 2.9.0
       react:
         specifier: 19.2.7
         version: 19.2.7
@@ -1127,7 +1127,7 @@ importers:
         version: 2.12.0
       '@platformatic/kafka':
         specifier: 'catalog:'
-        version: 2.2.3
+        version: 2.9.0
     devDependencies:
       '@effect-view-server/config':
         specifier: workspace:*
@@ -2384,8 +2384,8 @@ packages:
     resolution: {integrity: sha512-xQD5JSkQc4D15suOk7FezGDmh6Vb5e4phDoFZ/ASpa3Ft+3fOVwFOENmHtC1561zm/xHnKwI91NbMF8inpbk0Q==}
     engines: {node: '>= 22.19.0'}
 
-  '@platformatic/kafka@2.2.3':
-    resolution: {integrity: sha512-gtBlwncPkj6rvE7Qnq68rWe33gm2gObvV1hgwI3rIRn8h4FTCZIeNZzy30Mg6HB80It/7+OjE2yztp7G1KqcrQ==}
+  '@platformatic/kafka@2.9.0':
+    resolution: {integrity: sha512-sVX2aww2RE5fA5AFJ4Bl4DQ3mZAqBnm5kDx2nd54N2hMee+kVNR0KXOmTQ7cmeufp6Kqn1XukZ6XqA7tJoKztg==}
     engines: {node: '>= 22.22.0 || >= 24.6.0'}
 
   '@platformatic/wasm-utils@0.2.1':
@@ -2959,6 +2959,14 @@ packages:
     engines: {node: ^20.19.0 || ^22.18.0 || >=24.11.0}
     cpu: [x64]
     os: [win32]
+
+  ajv-draft-04@1.0.0:
+    resolution: {integrity: sha512-mv00Te6nmYbRp5DCwclxtt7yV/joXJPGS7nM+97GdxvuttCOfgI3K4U25zboyeX0O+myI8ERluxQe5wljMmVIw==}
+    peerDependencies:
+      ajv: ^8.5.0
+    peerDependenciesMeta:
+      ajv:
+        optional: true
 
   ajv@8.20.0:
     resolution: {integrity: sha512-Thbli+OlOj+iMPYFBVBfJ3OmCAnaSyNn4M1vz9T6Gka5Jt9ba/HIR56joy65tY6kx/FCF5VXNB819Y7/GUrBGA==}
@@ -4849,11 +4857,12 @@ snapshots:
 
   '@platformatic/dynamic-buffer@0.3.1': {}
 
-  '@platformatic/kafka@2.2.3':
+  '@platformatic/kafka@2.9.0':
     dependencies:
       '@platformatic/dynamic-buffer': 0.3.1
       '@platformatic/wasm-utils': 0.2.1
       ajv: 8.20.0
+      ajv-draft-04: 1.0.0(ajv@8.20.0)
       avsc: 5.7.9
       debug: 4.4.3
       fastq: 1.20.1
@@ -5421,6 +5430,10 @@ snapshots:
 
   '@voidzero-dev/vite-plus-win32-x64-msvc@0.2.1':
     optional: true
+
+  ajv-draft-04@1.0.0(ajv@8.20.0):
+    optionalDependencies:
+      ajv: 8.20.0
 
   ajv@8.20.0:
     dependencies:

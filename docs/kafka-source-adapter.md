@@ -121,6 +121,122 @@ missing, extra, or incorrectly typed field is rejected by the public type.
 Runtime Core also decodes the complete adapter-injected row through the Topic
 Schema before applying it.
 
+## Schema Registry Protobuf
+
+`kafka.schemaRegistry.protobuf(MessageSchema)` accepts exactly one
+Buf-generated message descriptor and preserves its generated TypeScript type
+through key/value decoding and Mapping. It is valid as an ordinary key, value,
+or compaction key; keys and values opt in independently. Dynamic descriptors,
+descriptor unions, Avro, JSON Schema, and reflection-based fallback are not
+supported.
+
+Version one uses Confluent's default Topic Name Strategy:
+`<source-topic>-key` and `<source-topic>-value`. Each Kafka Region whose Sources
+use a Registry codec must provide exactly one `schemaRegistry` connection. That
+connection is shared only within the Region:
+
+```ts
+import { Schema } from "effect";
+import { ViewServerId } from "effect-view-server/config";
+import { OrderKeySchema, OrderValueSchema } from "./gen/orders_pb";
+
+const Order = Schema.Struct({
+  id: ViewServerId,
+  orderId: Schema.String,
+  total: Schema.Number,
+});
+
+const orderKey = kafka.schemaRegistry.protobuf(OrderKeySchema);
+const orderValue = kafka.schemaRegistry.protobuf(OrderValueSchema);
+```
+
+Use those codecs in the Source Definition like any other typed codec:
+
+```ts
+const viewServer = defineViewServerConfig({
+  topics: {
+    orders: {
+      schema: Order,
+      source: kafka.source({
+        cleanupPolicy: "compact",
+        retentionPolicy: "match-kafka-retention",
+        topic: "orders.v1",
+        regions: ["primary"],
+        key: orderKey,
+        value: orderValue,
+        map: ({ key, value }) => ({
+          orderId: key.orderId,
+          total: value.total,
+        }),
+        startFrom: "earliest",
+      }),
+    },
+  },
+});
+```
+
+Configure the shared Registry connection on the Region:
+
+```ts
+const KafkaLive = kafkaNode.layer(viewServer, {
+  consumerGroupPrefix: "orders-view-v1",
+  regions: {
+    primary: {
+      bootstrapServers: "kafka-primary.internal:9092",
+      schemaRegistry: {
+        url: "https://schema-registry-primary.internal",
+        auth: { token: "your_access_token_here" },
+        monitorInterval: "1 minute",
+      },
+    },
+  },
+});
+```
+
+The adapter never mutates Schema Registry. Operators own schema publication,
+compatibility settings, and deletion policy. Configure every used subject and
+recursive custom reference subject with effective `FULL_TRANSITIVE`
+compatibility. A stricter producer-side Buf `FILE` check is compatible with
+this consumer contract and is recommended.
+
+### Validation contract
+
+Validation is fail-early and wire-compatible, not descriptor-equality based.
+Before any Kafka consumer, listener, or server port starts, the Node Layer:
+
+1. requires effective `FULL_TRANSITIVE` compatibility;
+2. loads every active Protobuf version and recursive reference;
+3. rejects soft deletion, detectable version gaps, and unsupported schema
+   types;
+4. requires one active registered anchor mutually wire-compatible with the
+   generated descriptor;
+5. proves the generated code can read every active reachable message graph;
+6. checks the complete active history using Buf `WIRE` rules.
+
+Buf `WIRE` permits additive fresh-tag fields and permits field deletion when
+the old number is reserved. Reusing or deleting an unreserved field number,
+removing a reservation, or making another wire-incompatible change fails
+validation. Renames and default values follow Buf's binary-wire semantics,
+including equivalent numeric and string/bytes default representations. Publish
+an incompatible contract under a new topic/subject name such as `orders.v2`.
+
+The record path validates Confluent framing, schema ID, and message-index
+selection before Buf decodes the payload. Key and value are checked as one
+record-level barrier against the same Registry revision, including tombstones:
+
+| Condition                                                  | Result                                                     |
+| ---------------------------------------------------------- | ---------------------------------------------------------- |
+| Unknown, deleted, wrong-subject, or incompatible schema ID | Fatal Source failure before Mapping, settlement, or commit |
+| Registry policy/history drift                              | Affected Source fails; unrelated Sources continue          |
+| Known compatible schema ID with malformed protobuf bytes   | Ordinary item Rejection; no Mapping or row mutation        |
+| Compatible first-seen schema ID                            | One Region refresh, cache warm-up, then decoding continues |
+
+One Region-shared monitor detects later drift. Failures keep the ordinary Source
+heartbeat lifecycle and add a detailed `schema-registry` dependency issue with
+the affected Source, Region, subject side, stable failure code, and redacted
+message. A multi-Region Source remains one Source Attempt: failure of one Region
+reacquires that whole Source attempt, while unrelated Sources remain isolated.
+
 Every executable codec and Mapping callback receives a detached, frozen
 metadata envelope and header collection. Header byte arrays are copied once
 into that snapshot. Custom codec names are quoted in safe rejection diagnostics;

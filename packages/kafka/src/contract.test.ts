@@ -17,6 +17,7 @@ import {
   decodeKafkaRowId,
   isKafkaCompactionKeyCodec,
   isKafkaCodec,
+  isKafkaSchemaRegistryProtobufCodec,
   kafka,
   kafkaCompactionRowId,
   kafkaConsumerGroupId,
@@ -62,12 +63,25 @@ const contractFileBytes = toBinary(
           },
         ],
       },
+      {
+        name: "Sibling",
+        field: [
+          {
+            name: "label",
+            number: 1,
+            type: FieldDescriptorProto_Type.STRING,
+          },
+        ],
+      },
     ],
   }),
 );
 const makeContractMessage = () =>
   messageDesc<ContractMessage>(fileDesc(base64FromBytes(contractFileBytes)), 0);
 const contractMessage = makeContractMessage();
+const hostileRegistryBrand = (): never => {
+  throw new Error("hostile Registry brand");
+};
 
 const validSourceInput = () => ({
   cleanupPolicy: "delete" as const,
@@ -385,6 +399,110 @@ describe("Kafka Source Adapter contract", () => {
         _tag: "KafkaCodecError",
         message: "Kafka custom codec threw synchronously.",
       });
+    }),
+  );
+
+  it("rejects ordinary and compaction codec brands that throw when invoked", () => {
+    const ordinary = kafka.string();
+    const compaction = kafka.compactionKey.string();
+    const throwingBrand = (codec: object, description: string) => {
+      const brand = Option.getOrThrow(
+        Option.fromUndefinedOr(
+          Reflect.ownKeys(codec).find(
+            (key) => typeof key === "symbol" && key.description === description,
+          ),
+        ),
+      );
+      const forged = { ...codec };
+      Object.defineProperty(forged, brand, {
+        value: () => {
+          throw new Error("hostile");
+        },
+      });
+      return forged;
+    };
+
+    expect(isKafkaCodec(throwingBrand(ordinary, "@effect-view-server/kafka/KafkaCodec"))).toBe(
+      false,
+    );
+    expect(
+      isKafkaCompactionKeyCodec(
+        throwingBrand(compaction, "@effect-view-server/kafka/KafkaCompactionKeyCodec"),
+      ),
+    ).toBe(false);
+  });
+
+  it.effect("requires Registry contract validation before invoking embedded decoders", () =>
+    Effect.gen(function* () {
+      const codec = kafka.schemaRegistry.protobuf(contractMessage);
+      const decoder = (description: string) => {
+        const key = Option.getOrThrow(
+          Option.fromUndefinedOr(
+            Reflect.ownKeys(codec).find(
+              (candidate) => typeof candidate === "symbol" && candidate.description === description,
+            ),
+          ),
+        );
+        return Option.getOrThrow(
+          Option.liftPredicate(
+            Reflect.get(codec, key),
+            (candidate): candidate is (...args: ReadonlyArray<unknown>) => unknown =>
+              typeof candidate === "function",
+          ),
+        );
+      };
+      const invoke = (description: string, input: unknown) =>
+        Option.getOrThrow(
+          Option.liftPredicate(
+            Reflect.apply(decoder(description), codec, [input]),
+            Effect.isEffect,
+          ),
+        );
+      const failures = yield* Effect.all([
+        invoke("@effect-view-server/kafka/KafkaCodecDecode", {
+          bytes: Uint8Array.from([]),
+          metadata,
+        }).pipe(Effect.flip),
+        invoke("@effect-view-server/kafka/KafkaCompactionKeyCodecDecode", {
+          bytes: Uint8Array.from([]),
+        }).pipe(Effect.flip),
+      ]);
+      const registryBrand = Option.getOrThrow(
+        Option.fromUndefinedOr(
+          Reflect.ownKeys(codec).find(
+            (key) => typeof key === "symbol" && String(key).includes("SchemaRegistryProtobufCodec"),
+          ),
+        ),
+      );
+      const hostile: object = {};
+      for (const key of Reflect.ownKeys(codec)) {
+        if (typeof key === "symbol") {
+          Object.defineProperty(hostile, key, {
+            value:
+              key.description === "@effect-view-server/kafka/KafkaSchemaRegistryRequirement"
+                ? true
+                : key === registryBrand
+                  ? hostileRegistryBrand
+                  : () => hostile,
+          });
+        }
+      }
+
+      expect(failures).toStrictEqual([
+        {
+          _tag: "KafkaCodecError",
+          message:
+            "Schema Registry contract validation is required before decoding Kafka protobuf.",
+        },
+        {
+          _tag: "KafkaCodecError",
+          message:
+            "Schema Registry contract validation is required before decoding Kafka protobuf.",
+        },
+      ]);
+      expect(isKafkaCodec(hostile)).toBe(true);
+      expect(isKafkaCompactionKeyCodec(hostile)).toBe(true);
+      expect(isKafkaSchemaRegistryProtobufCodec(hostile)).toBe(false);
     }),
   );
 
@@ -1635,6 +1753,55 @@ describe("Kafka Source Adapter contract", () => {
         throw new Error("Region descriptor escaped");
       },
     });
+    const directDecodeDescription = "@effect-view-server/kafka/KafkaDirectDecode";
+    const codecBrandDescription = "@effect-view-server/kafka/KafkaCodec";
+    const compactionCodecBrandDescription = "@effect-view-server/kafka/KafkaCompactionKeyCodec";
+    const ordinaryCodec = kafka.string();
+    const hostileDirectCodec: object = {};
+    Object.defineProperties(hostileDirectCodec, {
+      ...Object.getOwnPropertyDescriptors(ordinaryCodec),
+      [Option.getOrThrow(
+        Option.fromUndefinedOr(
+          Reflect.ownKeys(ordinaryCodec).find(
+            (key) => typeof key === "symbol" && key.description === codecBrandDescription,
+          ),
+        ),
+      )]: { value: () => hostileDirectCodec },
+      [Option.getOrThrow(
+        Option.fromUndefinedOr(
+          Reflect.ownKeys(ordinaryCodec).find(
+            (key) => typeof key === "symbol" && key.description === directDecodeDescription,
+          ),
+        ),
+      )]: {
+        get: () => {
+          throw new Error("direct codec brand escaped");
+        },
+      },
+    });
+    const compactionCodec = kafka.compactionKey.string();
+    const hostileDirectCompactionKeyCodec: object = {};
+    Object.defineProperties(hostileDirectCompactionKeyCodec, {
+      ...Object.getOwnPropertyDescriptors(compactionCodec),
+      [Option.getOrThrow(
+        Option.fromUndefinedOr(
+          Reflect.ownKeys(compactionCodec).find(
+            (key) => typeof key === "symbol" && key.description === compactionCodecBrandDescription,
+          ),
+        ),
+      )]: { value: () => hostileDirectCompactionKeyCodec },
+      [Option.getOrThrow(
+        Option.fromUndefinedOr(
+          Reflect.ownKeys(compactionCodec).find(
+            (key) => typeof key === "symbol" && key.description === directDecodeDescription,
+          ),
+        ),
+      )]: {
+        get: () => {
+          throw new Error("direct compaction codec brand escaped");
+        },
+      },
+    });
     const invalidInputs: ReadonlyArray<object> = [
       {},
       { ...validSourceInput(), topic: "" },
@@ -1648,6 +1815,18 @@ describe("Kafka Source Adapter contract", () => {
       { ...validSourceInput(), regions: hostileRegions },
       { ...validSourceInput(), key: {} },
       { ...validSourceInput(), value: {} },
+      { ...validSourceInput(), key: hostileDirectCodec },
+      { ...validSourceInput(), value: hostileDirectCodec },
+      {
+        cleanupPolicy: "compact",
+        retentionPolicy: "match-kafka-retention",
+        topic: "orders",
+        regions: ["eu"],
+        key: hostileDirectCompactionKeyCodec,
+        value: kafka.string(),
+        map: () => ({}),
+        startFrom: "earliest",
+      },
       { ...validSourceInput(), localRowKey: true },
       { ...validSourceInput(), map: true },
       { ...validSourceInput(), extra: true },

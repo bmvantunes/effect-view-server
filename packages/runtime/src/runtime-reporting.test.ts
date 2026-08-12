@@ -30,6 +30,7 @@ const healthy: RuntimeSourceReportingSnapshot = {
       target: "tokyo",
       endpoints: ["b-1.kafka-tky.com", "b-2.kafka-tky.com"],
       status: "Ready",
+      issues: [],
     },
   ],
 };
@@ -42,9 +43,33 @@ const unhealthy: RuntimeSourceReportingSnapshot = {
       target: "tokyo",
       endpoints: ["b-1.kafka-tky.com", "b-2.kafka-tky.com"],
       status: "WaitingToRetry",
+      issues: [],
     },
   ],
 };
+
+const detailed = (schemaId: string): RuntimeSourceReportingSnapshot => ({
+  heartbeat: { status: "WaitingToRetry", problems: ["dependency"] },
+  dependencies: [
+    {
+      dependency: "schema-registry",
+      target: "tokyo",
+      endpoints: ["https://registry.kafka-tky.com"],
+      status: "WaitingToRetry",
+      issues: [
+        {
+          source: "orders",
+          code: "KafkaSchemaRegistrySchemaMismatch",
+          message: `Schema ID ${schemaId} is incompatible.`,
+          attributes: [
+            { name: "subject", value: "source-orders-value" },
+            { name: "schemaId", value: schemaId },
+          ],
+        },
+      ],
+    },
+  ],
+});
 
 describe("Runtime reporting", () => {
   it.effect("preserves callback interruption", () =>
@@ -262,6 +287,45 @@ describe("Runtime reporting", () => {
     }),
   );
 
+  it.effect("coalesces rebuilt dependency issues and emits semantic issue changes", () =>
+    Effect.gen(function* () {
+      const heartbeats = yield* Queue.unbounded<RuntimeHeartbeat>();
+      const dependencies = yield* Queue.unbounded<ReadonlyArray<RuntimeDependency>>();
+      const source = yield* SubscriptionRef.make(detailed("42"));
+      const scope = yield* Scope.make("sequential");
+      yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
+      yield* makeRuntimeReporting(
+        scope,
+        {
+          heartbeatInterval: Duration.hours(1),
+          dependenciesInterval: Duration.hours(1),
+          changeInterval: Duration.millis(300),
+          onHeartbeat: (heartbeat) => Queue.offer(heartbeats, heartbeat).pipe(Effect.asVoid),
+          onDependenciesUpdate: (snapshot) =>
+            Queue.offer(dependencies, snapshot).pipe(Effect.asVoid),
+        },
+        {
+          snapshot: SubscriptionRef.get(source),
+          changes: SubscriptionRef.changes(source),
+        },
+      );
+      yield* Effect.yieldNow;
+      expect(yield* Queue.take(heartbeats)).toStrictEqual(detailed("42").heartbeat);
+
+      yield* SubscriptionRef.set(source, detailed("42"));
+      yield* TestClock.adjust("300 millis");
+      yield* Effect.yieldNow;
+      expect(Option.isNone(yield* Queue.poll(heartbeats))).toBe(true);
+      expect(Option.isNone(yield* Queue.poll(dependencies))).toBe(true);
+
+      yield* SubscriptionRef.set(source, detailed("43"));
+      yield* TestClock.adjust("300 millis");
+      yield* Effect.yieldNow;
+      expect(yield* Queue.take(heartbeats)).toStrictEqual(detailed("43").heartbeat);
+      expect(yield* Queue.take(dependencies)).toStrictEqual(detailed("43").dependencies);
+    }).pipe(Effect.scoped),
+  );
+
   it.effect("logs callback defects and keeps later emissions alive", () => {
     const logs: Array<{ readonly logLevel: unknown; readonly message: unknown }> = [];
     const logger = Logger.make<unknown, void>((options) => {
@@ -341,12 +405,14 @@ describe("Runtime reporting", () => {
             target: "oregon",
             endpoints: ["b-1.kafka-oregon.com"],
             status: "Ready",
+            issues: [],
           },
           {
             dependency: "kafka",
             target: "tokyo",
             endpoints: ["b-1.kafka-tky.com", "b-2.kafka-tky.com"],
             status: "WaitingToRetry",
+            issues: [],
           },
         ],
       };
@@ -358,12 +424,14 @@ describe("Runtime reporting", () => {
             target: "oregon",
             endpoints: ["b-1.kafka-oregon.com"],
             status: "WaitingToRetry",
+            issues: [],
           },
           {
             dependency: "kafka",
             target: "tokyo",
             endpoints: ["b-1.kafka-tky.com", "b-2.kafka-tky.com"],
             status: "Ready",
+            issues: [],
           },
         ],
       };

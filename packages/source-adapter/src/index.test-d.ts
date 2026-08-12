@@ -19,6 +19,9 @@ import {
   type SourceDefinitionRouteFields,
   type SourceDefinitionRetryServices,
   type SourceExecutionFailure,
+  type SourceDependencyFailureTarget,
+  type SourceDependencyIssue,
+  type SourceFailureClassification,
   type SourceHealthForDefinition,
   type SourceLifecycleDeclaration,
   type SourceLifecycleMetricsInput,
@@ -274,6 +277,34 @@ const invalidSelfTargets: ReportingImplementation = {
   dependencies: reportingImplementation.dependencies,
   // @ts-expect-error self provenance cannot carry dependency targets.
   classifyFailure: () => ({ problem: "self", targets: ["orders"] }),
+};
+
+const structuredDependencyTarget: SourceDependencyFailureTarget = {
+  dependency: "schema-registry",
+  target: "orders",
+};
+const structuredDependencyIssue: SourceDependencyIssue = {
+  code: "SchemaMismatch",
+  message: "Schema Registry contract drifted.",
+  attributes: [{ name: "subject", value: "orders-value" }],
+};
+const structuredDependencyClassification = {
+  problem: "dependency",
+  targets: [structuredDependencyTarget],
+  issue: structuredDependencyIssue,
+} as const;
+expectTypeOf(structuredDependencyClassification).toExtend<SourceFailureClassification>();
+
+// @ts-expect-error self provenance cannot carry a dependency issue.
+const _invalidSelfIssue: SourceFailureClassification = {
+  problem: "self",
+  issue: structuredDependencyIssue,
+};
+
+// @ts-expect-error self provenance cannot carry dependency targets.
+const _invalidSelfTargetsClassification: SourceFailureClassification = {
+  problem: "self",
+  targets: [structuredDependencyTarget],
 };
 
 const invalidReportingDescriptor: ReportingImplementation = {

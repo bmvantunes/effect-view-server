@@ -110,6 +110,84 @@ runViewServerRuntime(viewServer, {
 Use `Effect.provide([KafkaLive, GrpcLive])` when an application uses both
 first-party adapters.
 
+## Kafka Schema Registry Protobuf
+
+Schema Registry decoding is opt-in per key or value and requires a
+Buf-generated message descriptor. The Registry connection itself belongs to
+the Kafka Region, so every Source in one cluster/Region shares one scoped
+client, cache, and drift monitor:
+
+```ts
+import { OrderKeySchema, OrderValueSchema } from "./gen/orders_pb";
+
+const registrySource = kafka.source({
+  cleanupPolicy: "compact",
+  retentionPolicy: "match-kafka-retention",
+  topic: "orders.v1",
+  regions: ["primary"],
+  key: kafka.schemaRegistry.protobuf(OrderKeySchema),
+  value: kafka.schemaRegistry.protobuf(OrderValueSchema),
+  map: ({ key, value }) => ({
+    orderId: key.orderId,
+    total: value.total,
+  }),
+  startFrom: "earliest",
+});
+```
+
+Attach `registrySource` to the Topic's `source` property, then configure that
+View Server with the Region-scoped Registry connection:
+
+```ts
+const RegistryOrder = Schema.Struct({
+  id: ViewServerId,
+  orderId: Schema.String,
+  total: Schema.Number,
+});
+
+const registryViewServer = defineViewServerConfig({
+  topics: {
+    orders: { schema: RegistryOrder, source: registrySource },
+  },
+});
+
+const KafkaLive = kafkaNode.layer(registryViewServer, {
+  consumerGroupPrefix: "orders-view",
+  regions: {
+    primary: {
+      bootstrapServers: "kafka.internal:9092",
+      schemaRegistry: {
+        url: "https://schema-registry.internal",
+        auth: { username: "view-server", password: "your_password_here" },
+      },
+    },
+  },
+});
+```
+
+The adapter is a read-only Registry consumer: it never registers schemas,
+changes compatibility settings, or deletes versions. It supports Protobuf and
+the default Topic Name Strategy only (`<topic>-key` and `<topic>-value`); there
+is no dynamic-schema fallback, Avro, or JSON Schema path.
+
+Before any Kafka consumer starts, the Layer requires effective
+`FULL_TRANSITIVE` compatibility for every used subject and recursive reference,
+loads the complete active history, and checks it against the configured
+generated descriptor using Buf `WIRE` semantics. Compatibility is directional
+and wire-level, not exact descriptor equality: adding a fresh-tag field is
+accepted, and deleting a field is accepted only when its number is reserved.
+Use a new topic/subject version for an incompatible change.
+
+At runtime, an unknown, deleted, or incompatible schema ID is a fatal Source
+failure before Mapping, settlement, or offset commit. A known compatible ID
+whose payload is malformed is an ordinary item Rejection and may be settled and
+committed according to the normal rejected-record policy. Key and value are
+validated together against one Registry revision, including tombstones. Drift
+is reported as a detailed `schema-registry` dependency issue while the existing
+Source heartbeat lifecycle (`WaitingToRetry`, `Exhausted`, and so on) remains
+authoritative. See the [Kafka Source Adapter guide](./docs/kafka-source-adapter.md#schema-registry-protobuf)
+for the complete contract.
+
 ## React diagnostics
 
 `createViewServerReact(viewServer)` exposes transport-neutral Live Query hooks,

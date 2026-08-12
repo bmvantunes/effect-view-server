@@ -1,7 +1,12 @@
 import type {
   RuntimeDependency,
+  RuntimeDependencyIssue,
   RuntimeHeartbeat,
   RuntimeSourceReportingSnapshot,
+} from "@effect-view-server/runtime-core";
+import {
+  sameRuntimeDependencies,
+  sameRuntimeSourceReportingSnapshot,
 } from "@effect-view-server/runtime-core";
 import {
   Cause,
@@ -143,33 +148,6 @@ const makeEmitter = Effect.fn("ViewServerRuntime.reporting.emitter.make")(functi
   };
 });
 
-const sameDependencies = (
-  left: ReadonlyArray<RuntimeDependency>,
-  right: ReadonlyArray<RuntimeDependency>,
-): boolean =>
-  left.length === right.length &&
-  left.every((dependency, index) => {
-    const candidate = right[index];
-    return (
-      candidate !== undefined &&
-      dependency.dependency === candidate.dependency &&
-      dependency.target === candidate.target &&
-      dependency.status === candidate.status &&
-      dependency.endpoints.length === candidate.endpoints.length &&
-      dependency.endpoints.every(
-        (endpoint, endpointIndex) => endpoint === candidate.endpoints[endpointIndex],
-      )
-    );
-  });
-
-const sameSnapshot = (
-  left: RuntimeSourceReportingSnapshot,
-  right: RuntimeSourceReportingSnapshot,
-): boolean =>
-  left.heartbeat.status === right.heartbeat.status &&
-  left.heartbeat.problems.join("\u0000") === right.heartbeat.problems.join("\u0000") &&
-  sameDependencies(left.dependencies, right.dependencies);
-
 const lifecycleHeartbeat = (
   scope: Scope.Scope,
   options: ReportingOptions,
@@ -228,11 +206,11 @@ export const makeRuntimeReporting = Effect.fn("ViewServerRuntime.reporting.make"
       Stream.runForEach((next) =>
         Effect.gen(function* () {
           const prior = yield* Ref.getAndSet(previous, next);
-          if (sameSnapshot(prior, next)) {
+          if (sameRuntimeSourceReportingSnapshot(prior, next)) {
             return;
           }
           yield* heartbeat.signal;
-          if (!sameDependencies(prior.dependencies, next.dependencies)) {
+          if (!sameRuntimeDependencies(prior.dependencies, next.dependencies)) {
             yield* dependencies.signal;
           }
         }),
@@ -259,4 +237,4 @@ export const makeRuntimeReporting = Effect.fn("ViewServerRuntime.reporting.make"
   };
 });
 
-export type { RuntimeDependency, RuntimeHeartbeat };
+export type { RuntimeDependency, RuntimeDependencyIssue, RuntimeHeartbeat };

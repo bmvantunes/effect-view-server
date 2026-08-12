@@ -2,6 +2,7 @@ import { describe, expectTypeOf, it } from "@effect/vitest";
 import { Context, Effect } from "effect";
 import {
   makeViewServerRuntime,
+  type RuntimeDependency,
   type ViewServerRuntime,
   type ViewServerRuntimeOptions,
   type ViewServerRuntimeReportingOptions,
@@ -113,20 +114,7 @@ describe("Runtime server and TCP option contracts", () => {
           return Effect.void;
         },
         onDependenciesUpdate: (dependencies) => {
-          expectTypeOf<(typeof dependencies)[number]>().toEqualTypeOf<{
-            readonly dependency: string;
-            readonly target: string;
-            readonly endpoints: ReadonlyArray<string>;
-            readonly status:
-              | "Inactive"
-              | "Starting"
-              | "Ready"
-              | "Degraded"
-              | "WaitingToRetry"
-              | "Reacquiring"
-              | "Exhausted"
-              | "Stopping";
-          }>();
+          expectTypeOf<(typeof dependencies)[number]>().toEqualTypeOf<RuntimeDependency>();
           return Effect.void;
         },
       },

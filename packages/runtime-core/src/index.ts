@@ -5,6 +5,7 @@ import type {
 } from "@effect-view-server/config";
 import { Effect } from "effect";
 import { makeViewServerRuntimeCoreInternal } from "./internal";
+export { sameRuntimeDependencies, sameRuntimeSourceReportingSnapshot } from "./source-reporting";
 import type {
   ViewServerRuntimeCoreInstance,
   ViewServerRuntimeCoreOptionsFor,
@@ -28,6 +29,7 @@ export type {
 export type { ViewServerSourceRequirements } from "./source-runtime";
 export type {
   RuntimeDependency,
+  RuntimeDependencyIssue,
   RuntimeDependencyStatus,
   RuntimeHeartbeat,
   RuntimeHeartbeatStatus,

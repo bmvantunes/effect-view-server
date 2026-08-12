@@ -19,6 +19,7 @@ type Failure = {
 };
 
 const kafka: RuntimeSourceReportingDefinition = {
+  source: "orders",
   dependency: "kafka",
   lifecycle: "materialized",
   targets: [
@@ -41,6 +42,7 @@ const kafka: RuntimeSourceReportingDefinition = {
 };
 
 const grpc: RuntimeSourceReportingDefinition = {
+  source: "orders",
   dependency: "grpc",
   lifecycle: "leased",
   targets: [{ target: "orders", endpoints: ["https://orders.grpc-tky.com"] }],
@@ -84,12 +86,14 @@ const throwingClassification = malformedClassification(
 describe("Runtime Source reporting", () => {
   it("keeps delimiter-containing dependency identities distinct", () => {
     const left: RuntimeSourceReportingDefinition = {
+      source: "left",
       dependency: "a\u0000b",
       lifecycle: "materialized",
       targets: [{ target: "c", endpoints: ["left"] }],
       classifyFailure: () => ({ problem: "dependency" }),
     };
     const right: RuntimeSourceReportingDefinition = {
+      source: "right",
       dependency: "a",
       lifecycle: "materialized",
       targets: [{ target: "b\u0000c", endpoints: ["right"] }],
@@ -102,12 +106,14 @@ describe("Runtime Source reporting", () => {
         target: "b\u0000c",
         endpoints: ["right"],
         status: "Starting",
+        issues: [],
       },
       {
         dependency: "a\u0000b",
         target: "c",
         endpoints: ["left"],
         status: "Starting",
+        issues: [],
       },
     ]);
   });
@@ -123,18 +129,21 @@ describe("Runtime Source reporting", () => {
           target: "orders",
           endpoints: ["https://orders.grpc-tky.com"],
           status: "Inactive",
+          issues: [],
         },
         {
           dependency: "kafka",
           target: "oregon",
           endpoints: ["b-1.kafka-oregon.com"],
           status: "Starting",
+          issues: [],
         },
         {
           dependency: "kafka",
           target: "tokyo",
           endpoints: ["b-1.kafka-tky.com", "b-2.kafka-tky.com"],
           status: "Starting",
+          issues: [],
         },
       ],
     });
@@ -186,6 +195,360 @@ describe("Runtime Source reporting", () => {
     ]);
   });
 
+  it("keeps broker and Schema Registry health separate and clears detailed issues on recovery", () => {
+    const definition: RuntimeSourceReportingDefinition = {
+      source: "orders",
+      dependency: "kafka",
+      lifecycle: "materialized",
+      targets: [
+        {
+          dependency: "kafka",
+          target: "tokyo",
+          endpoints: ["b-1.kafka-tky.com"],
+        },
+        {
+          dependency: "schema-registry",
+          target: "tokyo",
+          endpoints: ["https://registry.kafka-tky.com"],
+        },
+      ],
+      classifyFailure: (failure) => {
+        const tag =
+          typeof failure === "object" && failure !== null
+            ? Reflect.get(failure, "_tag")
+            : undefined;
+        if (tag === "Registry") {
+          return {
+            problem: "dependency",
+            targets: [{ dependency: "schema-registry", target: "tokyo" }],
+            issue: {
+              code: "KafkaSchemaRegistrySchemaMismatch",
+              message: "Schema ID 42 is incompatible.",
+              attributes: [
+                { name: "subject", value: "source-orders-value" },
+                { name: "side", value: "value" },
+                { name: "schemaId", value: "42" },
+              ],
+            },
+          };
+        }
+        return tag === "Kafka"
+          ? {
+              problem: "dependency",
+              targets: [{ dependency: "kafka", target: "tokyo" }],
+            }
+          : { problem: "self" };
+      },
+    };
+    const state = makeRuntimeSourceReportingState(definition, ready);
+
+    updateRuntimeSourceReportingState(
+      state,
+      waiting({
+        _tag: "AdapterFailure",
+        failure: { _tag: "Registry" },
+      }),
+    );
+    expect(runtimeSourceReportingSnapshot([definition], [state])).toStrictEqual({
+      heartbeat: {
+        status: "WaitingToRetry",
+        problems: ["dependency"],
+      },
+      dependencies: [
+        {
+          dependency: "kafka",
+          target: "tokyo",
+          endpoints: ["b-1.kafka-tky.com"],
+          status: "Ready",
+          issues: [],
+        },
+        {
+          dependency: "schema-registry",
+          target: "tokyo",
+          endpoints: ["https://registry.kafka-tky.com"],
+          status: "WaitingToRetry",
+          issues: [
+            {
+              source: "orders",
+              code: "KafkaSchemaRegistrySchemaMismatch",
+              message: "Schema ID 42 is incompatible.",
+              attributes: [
+                { name: "subject", value: "source-orders-value" },
+                { name: "side", value: "value" },
+                { name: "schemaId", value: "42" },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+
+    updateRuntimeSourceReportingState(
+      state,
+      waiting({
+        _tag: "AdapterFailure",
+        failure: { _tag: "Kafka" },
+      }),
+    );
+    expect(runtimeSourceReportingSnapshot([definition], [state])).toStrictEqual({
+      heartbeat: {
+        status: "WaitingToRetry",
+        problems: ["dependency"],
+      },
+      dependencies: [
+        {
+          dependency: "kafka",
+          target: "tokyo",
+          endpoints: ["b-1.kafka-tky.com"],
+          status: "WaitingToRetry",
+          issues: [],
+        },
+        {
+          dependency: "schema-registry",
+          target: "tokyo",
+          endpoints: ["https://registry.kafka-tky.com"],
+          status: "Ready",
+          issues: [],
+        },
+      ],
+    });
+
+    updateRuntimeSourceReportingState(
+      state,
+      waiting({
+        _tag: "AdapterFailure",
+        failure: { _tag: "Self" },
+      }),
+    );
+    expect(runtimeSourceReportingSnapshot([definition], [state])).toStrictEqual({
+      heartbeat: {
+        status: "WaitingToRetry",
+        problems: ["self"],
+      },
+      dependencies: [
+        {
+          dependency: "kafka",
+          target: "tokyo",
+          endpoints: ["b-1.kafka-tky.com"],
+          status: "Ready",
+          issues: [],
+        },
+        {
+          dependency: "schema-registry",
+          target: "tokyo",
+          endpoints: ["https://registry.kafka-tky.com"],
+          status: "Ready",
+          issues: [],
+        },
+      ],
+    });
+
+    updateRuntimeSourceReportingState(state, ready);
+    expect(runtimeSourceReportingSnapshot([definition], [state]).dependencies).toStrictEqual([
+      {
+        dependency: "kafka",
+        target: "tokyo",
+        endpoints: ["b-1.kafka-tky.com"],
+        status: "Ready",
+        issues: [],
+      },
+      {
+        dependency: "schema-registry",
+        target: "tokyo",
+        endpoints: ["https://registry.kafka-tky.com"],
+        status: "Ready",
+        issues: [],
+      },
+    ]);
+  });
+
+  it("applies a detailed dependency issue to every target when no targets are classified", () => {
+    const definition: RuntimeSourceReportingDefinition = {
+      ...grpc,
+      classifyFailure: () => ({
+        problem: "dependency",
+        issue: {
+          code: "GrpcUnavailable",
+          message: "The gRPC dependency is unavailable.",
+          attributes: [],
+        },
+      }),
+    };
+    const state = makeRuntimeSourceReportingState(
+      definition,
+      waiting(adapterFailure({ _tag: "Dependency" })),
+    );
+
+    expect(runtimeSourceReportingSnapshot([definition], [state]).dependencies).toStrictEqual([
+      {
+        dependency: "grpc",
+        target: "orders",
+        endpoints: ["https://orders.grpc-tky.com"],
+        status: "WaitingToRetry",
+        issues: [
+          {
+            source: "orders",
+            code: "GrpcUnavailable",
+            message: "The gRPC dependency is unavailable.",
+            attributes: [],
+          },
+        ],
+      },
+    ]);
+  });
+
+  it("deduplicates, orders, and semantically compares detailed dependency issues", () => {
+    const issueDefinition = (
+      source: string,
+      code: string,
+      message = `${source}:${code}`,
+      attributes: ReadonlyArray<{ readonly name: string; readonly value: string }> = [
+        { name: "subject", value: `${source}-value` },
+      ],
+    ): RuntimeSourceReportingDefinition => ({
+      source,
+      dependency: "schema-registry",
+      lifecycle: "materialized",
+      targets: [
+        {
+          dependency: "schema-registry",
+          target: "tokyo",
+          endpoints: ["https://registry.kafka-tky.com"],
+        },
+      ],
+      classifyFailure: () => ({
+        problem: "dependency",
+        targets: [{ dependency: "schema-registry", target: "tokyo" }],
+        issue: {
+          code,
+          message,
+          attributes,
+        },
+      }),
+    });
+    const degraded = (rejectedAtNanos: bigint): SourceStatus<unknown, unknown> => ({
+      _tag: "Degraded",
+      attempt: 1n,
+      degradedAtNanos: rejectedAtNanos,
+      reasons: [
+        {
+          _tag: "SourceItemRejection",
+          latestRejection: {
+            failure: adapterFailure({ _tag: "Dependency" }),
+            location: `record-${String(rejectedAtNanos)}`,
+            rejectedAtNanos,
+          },
+        },
+      ],
+    });
+    const inventory = issueDefinition("inventory", "A");
+    const ordersAFirst = issueDefinition("orders", "A", "orders:A:first");
+    const ordersASecond = issueDefinition("orders", "A", "orders:A:second");
+    const ordersB = issueDefinition("orders", "B");
+    const ordersCSubjectZulu = issueDefinition("orders", "C", "orders:C", [
+      { name: "subject", value: "zulu" },
+    ]);
+    const ordersCSubjectAlphaAndVersion = issueDefinition("orders", "C", "orders:C", [
+      { name: "subject", value: "alpha" },
+      { name: "version", value: "1" },
+    ]);
+    const ordersCSubjectAlpha = issueDefinition("orders", "C", "orders:C", [
+      { name: "subject", value: "alpha" },
+    ]);
+    const ordersCRegion = issueDefinition("orders", "C", "orders:C", [
+      { name: "region", value: "zulu" },
+    ]);
+    const definitions = [
+      ordersASecond,
+      ordersB,
+      ordersCSubjectZulu,
+      ordersCSubjectAlphaAndVersion,
+      inventory,
+      ordersCSubjectAlpha,
+      ordersAFirst,
+      ordersCRegion,
+    ];
+    const makeStates = () =>
+      definitions.map((definition) => makeRuntimeSourceReportingState(definition, degraded(1n)));
+    const firstStates = makeStates();
+    const ordersASecondDuplicateState = Option.getOrThrow(Option.fromUndefinedOr(firstStates[0]));
+
+    expect(updateRuntimeSourceReportingState(ordersASecondDuplicateState, degraded(2n))).toBe(
+      false,
+    );
+    const first = runtimeSourceReportingSnapshot(definitions, [
+      ...firstStates,
+      ordersASecondDuplicateState,
+    ]);
+    const second = runtimeSourceReportingSnapshot(definitions, [...makeStates()].reverse());
+
+    expect(first).toStrictEqual({
+      heartbeat: { status: "Degraded", problems: ["dependency"] },
+      dependencies: [
+        {
+          dependency: "schema-registry",
+          target: "tokyo",
+          endpoints: ["https://registry.kafka-tky.com"],
+          status: "Degraded",
+          issues: [
+            {
+              source: "inventory",
+              code: "A",
+              message: "inventory:A",
+              attributes: [{ name: "subject", value: "inventory-value" }],
+            },
+            {
+              source: "orders",
+              code: "A",
+              message: "orders:A:first",
+              attributes: [{ name: "subject", value: "orders-value" }],
+            },
+            {
+              source: "orders",
+              code: "A",
+              message: "orders:A:second",
+              attributes: [{ name: "subject", value: "orders-value" }],
+            },
+            {
+              source: "orders",
+              code: "B",
+              message: "orders:B",
+              attributes: [{ name: "subject", value: "orders-value" }],
+            },
+            {
+              source: "orders",
+              code: "C",
+              message: "orders:C",
+              attributes: [{ name: "region", value: "zulu" }],
+            },
+            {
+              source: "orders",
+              code: "C",
+              message: "orders:C",
+              attributes: [
+                { name: "subject", value: "alpha" },
+                { name: "version", value: "1" },
+              ],
+            },
+            {
+              source: "orders",
+              code: "C",
+              message: "orders:C",
+              attributes: [{ name: "subject", value: "alpha" }],
+            },
+            {
+              source: "orders",
+              code: "C",
+              message: "orders:C",
+              attributes: [{ name: "subject", value: "zulu" }],
+            },
+          ],
+        },
+      ],
+    });
+    expect(sameRuntimeSourceReportingSnapshot(first, second)).toBe(true);
+  });
+
   it("aggregates canonical status precedence and ordered problem provenance", () => {
     const selfState = makeRuntimeSourceReportingState(
       kafka,
@@ -213,6 +576,7 @@ describe("Runtime Source reporting", () => {
       target: "orders",
       endpoints: ["https://orders.grpc-tky.com"],
       status: "Exhausted",
+      issues: [],
     });
   });
 
@@ -312,23 +676,123 @@ describe("Runtime Source reporting", () => {
   });
 
   it.each([
-    { label: "undefined", value: malformedClassification(undefined) },
-    { label: "a primitive", value: malformedClassification("dependency") },
-    { label: "an invalid problem", value: malformedClassification({ problem: "upstream" }) },
+    {
+      label: "undefined",
+      value: malformedClassification(undefined),
+      reason: "Source failure classification must be an object.",
+    },
+    {
+      label: "a primitive",
+      value: malformedClassification("dependency"),
+      reason: "Source failure classification must be an object.",
+    },
+    {
+      label: "an invalid problem",
+      value: malformedClassification({ problem: "upstream" }),
+      reason: "Source failure classification has an invalid problem.",
+    },
+    {
+      label: "dependency targets on self provenance",
+      value: malformedClassification({ problem: "self", targets: ["tokyo"] }),
+      reason: "Self failure classification cannot contain dependency fields.",
+    },
+    {
+      label: "a dependency issue on self provenance",
+      value: malformedClassification({ problem: "self", issue: { code: "Failure" } }),
+      reason: "Self failure classification cannot contain dependency fields.",
+    },
+    {
+      label: "an explicit undefined dependency target on self provenance",
+      value: malformedClassification({ problem: "self", targets: undefined }),
+      reason: "Self failure classification cannot contain dependency fields.",
+    },
+    {
+      label: "an explicit undefined dependency issue on self provenance",
+      value: malformedClassification({ problem: "self", issue: undefined }),
+      reason: "Self failure classification cannot contain dependency fields.",
+    },
     {
       label: "non-array targets",
       value: malformedClassification({ problem: "dependency", targets: "tokyo" }),
+      reason: "Source failure classification has invalid dependency targets.",
     },
     {
       label: "non-string targets",
       value: malformedClassification({ problem: "dependency", targets: [1] }),
+      reason: "Source failure classification has invalid dependency targets.",
     },
     {
       label: "empty targets",
       value: malformedClassification({ problem: "dependency", targets: [""] }),
+      reason: "Source failure classification has invalid dependency targets.",
     },
-    { label: "a throwing getter", value: throwingClassification },
-  ])("conservatively treats $label classification as self provenance", ({ value }) => {
+    {
+      label: "an invalid structured target",
+      value: malformedClassification({
+        problem: "dependency",
+        targets: [{ dependency: "schema-registry", target: "" }],
+      }),
+      reason: "Source failure classification has invalid dependency targets.",
+    },
+    {
+      label: "a primitive dependency issue",
+      value: malformedClassification({ problem: "dependency", issue: "invalid" }),
+      reason: "Source failure classification has an invalid dependency issue.",
+    },
+    {
+      label: "invalid dependency issue fields",
+      value: malformedClassification({
+        problem: "dependency",
+        issue: { code: "Failure", message: "invalid", attributes: "invalid" },
+      }),
+      reason: "Source failure classification has an invalid dependency issue.",
+    },
+    {
+      label: "an empty dependency issue code",
+      value: malformedClassification({
+        problem: "dependency",
+        issue: { code: "", message: "invalid", attributes: [] },
+      }),
+      reason: "Source failure classification has an invalid dependency issue.",
+    },
+    {
+      label: "a primitive dependency attribute",
+      value: malformedClassification({
+        problem: "dependency",
+        issue: { code: "Failure", message: "invalid", attributes: [1] },
+      }),
+      reason: "Source failure classification has invalid dependency attributes.",
+    },
+    {
+      label: "invalid dependency attribute fields",
+      value: malformedClassification({
+        problem: "dependency",
+        issue: {
+          code: "Failure",
+          message: "invalid",
+          attributes: [{ name: "subject", value: 1 }],
+        },
+      }),
+      reason: "Source failure classification has invalid dependency attributes.",
+    },
+    {
+      label: "an empty dependency attribute name",
+      value: malformedClassification({
+        problem: "dependency",
+        issue: {
+          code: "Failure",
+          message: "invalid",
+          attributes: [{ name: "", value: "x" }],
+        },
+      }),
+      reason: "Source failure classification has invalid dependency attributes.",
+    },
+    {
+      label: "a throwing getter",
+      value: throwingClassification,
+      reason: "hostile classification getter",
+    },
+  ])("diagnoses $label classification as self provenance", ({ value, reason }) => {
     const malformed: RuntimeSourceReportingDefinition = {
       ...kafka,
       classifyFailure: () => value,
@@ -343,9 +807,59 @@ describe("Runtime Source reporting", () => {
       status: "WaitingToRetry",
       problems: ["self"],
     });
-    expect(snapshot.dependencies.map(({ target, status }) => ({ target, status }))).toStrictEqual([
-      { target: "oregon", status: "Starting" },
-      { target: "tokyo", status: "Starting" },
+    expect(snapshot.dependencies).toStrictEqual([
+      {
+        dependency: "kafka",
+        target: "oregon",
+        endpoints: ["b-1.kafka-oregon.com"],
+        status: "Starting",
+        issues: [
+          {
+            source: "orders",
+            code: "InvalidSourceFailureClassification",
+            message: "The Source Adapter returned an invalid failure classification.",
+            attributes: [{ name: "reason", value: reason }],
+          },
+        ],
+      },
+      {
+        dependency: "kafka",
+        target: "tokyo",
+        endpoints: ["b-1.kafka-tky.com", "b-2.kafka-tky.com"],
+        status: "Starting",
+        issues: [
+          {
+            source: "orders",
+            code: "InvalidSourceFailureClassification",
+            message: "The Source Adapter returned an invalid failure classification.",
+            attributes: [{ name: "reason", value: reason }],
+          },
+        ],
+      },
+    ]);
+  });
+
+  it("diagnoses classifiers that fail with non-Error values", () => {
+    const malformed: RuntimeSourceReportingDefinition = {
+      ...kafka,
+      classifyFailure: () => {
+        throw "classifier defect";
+      },
+    };
+    const state = makeRuntimeSourceReportingState(
+      malformed,
+      waiting(adapterFailure({ _tag: "Dependency", target: "tokyo" })),
+    );
+
+    expect(
+      runtimeSourceReportingSnapshot([malformed], [state]).dependencies[0]?.issues,
+    ).toStrictEqual([
+      {
+        source: "orders",
+        code: "InvalidSourceFailureClassification",
+        message: "The Source Adapter returned an invalid failure classification.",
+        attributes: [{ name: "reason", value: "The classifier failed with a non-Error value." }],
+      },
     ]);
   });
 
@@ -364,6 +878,7 @@ describe("Runtime Source reporting", () => {
       target: "tokyo",
       endpoints: ["b-1.kafka-tky.com", "b-2.kafka-tky.com", "b-3.kafka-tky.com"],
       status: "Starting",
+      issues: [],
     });
     expect(sameRuntimeSourceReportingSnapshot(first, second)).toBe(true);
     expect(sameRuntimeSourceReportingSnapshot(first, changed)).toBe(false);
@@ -378,12 +893,14 @@ describe("Runtime Source reporting", () => {
         target: "oregon",
         endpoints: ["b-1.kafka-oregon.com"],
         status: "WaitingToRetry",
+        issues: [],
       },
       {
         dependency: "kafka",
         target: "tokyo",
         endpoints: ["b-1.kafka-tky.com", "b-2.kafka-tky.com"],
         status: "WaitingToRetry",
+        issues: [],
       },
     ]);
 
@@ -397,12 +914,14 @@ describe("Runtime Source reporting", () => {
         target: "oregon",
         endpoints: ["b-1.kafka-oregon.com"],
         status: "WaitingToRetry",
+        issues: [],
       },
       {
         dependency: "kafka",
         target: "tokyo",
         endpoints: ["b-1.kafka-tky.com", "b-2.kafka-tky.com"],
         status: "WaitingToRetry",
+        issues: [],
       },
     ]);
 
@@ -426,12 +945,14 @@ describe("Runtime Source reporting", () => {
         target: "oregon",
         endpoints: ["b-1.kafka-oregon.com"],
         status: "WaitingToRetry",
+        issues: [],
       },
       {
         dependency: "kafka",
         target: "tokyo",
         endpoints: ["b-1.kafka-tky.com", "b-2.kafka-tky.com"],
         status: "WaitingToRetry",
+        issues: [],
       },
     ]);
   });

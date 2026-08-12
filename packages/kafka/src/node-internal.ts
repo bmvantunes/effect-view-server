@@ -25,7 +25,9 @@ import {
   KafkaSourceConfigurationError,
   decodeKafkaDurationInput,
   kafkaConsumerGroupId,
+  isKafkaSchemaRegistryProtobufCodec,
   type KafkaAdapterFailure,
+  type KafkaCodecSchemaRegistryRequirement,
   type KafkaRegionMetrics,
 } from "./contract";
 import {
@@ -43,6 +45,21 @@ import {
   type KafkaServerRegionAcquireInput,
   type KafkaServerRegionMetricsInput,
 } from "./server";
+import {
+  type KafkaSchemaRegistryContractValidationFailure as KafkaSchemaRegistryContractValidationFailureType,
+  type KafkaSchemaRegistryDeclaration,
+} from "./schema-registry-contract";
+import {
+  kafkaSchemaRegistryHttpDefaults,
+  makeKafkaSchemaRegistryReader,
+  type KafkaSchemaRegistryHttpAuth,
+  type KafkaSchemaRegistryHttpOptions,
+} from "./schema-registry-node";
+import {
+  makeKafkaSchemaRegistryRuntime,
+  makeKafkaServerSchemaRegistry,
+  type KafkaServerSchemaRegistry,
+} from "./schema-registry-runtime";
 
 type KafkaNodeViewServer = {
   readonly topics: Readonly<Record<string, object>>;
@@ -69,9 +86,33 @@ type KafkaRegionsForTopic<Topic> = [KafkaDefinitionForTopic<Topic>] extends [nev
     ? Region
     : never;
 
+type KafkaSchemaRegistryRegionsForTopic<Topic> = [KafkaDefinitionForTopic<Topic>] extends [never]
+  ? never
+  : SourceDefinitionOptions<KafkaDefinitionForTopic<Topic>> extends {
+        readonly regions: readonly [
+          infer Region extends string,
+          ...ReadonlyArray<infer Region extends string>,
+        ];
+        readonly key: infer Key;
+        readonly value: infer Value;
+      }
+    ? true extends KafkaCodecSchemaRegistryRequirement<Key | Value>
+      ? Region
+      : never
+    : never;
+
 export type KafkaRequiredRegion<ViewServer extends KafkaNodeViewServer> = Extract<
   {
     readonly [Topic in keyof ViewServer["topics"]]: KafkaRegionsForTopic<
+      ViewServer["topics"][Topic]
+    >;
+  }[keyof ViewServer["topics"]],
+  string
+>;
+
+export type KafkaSchemaRegistryRequiredRegion<ViewServer extends KafkaNodeViewServer> = Extract<
+  {
+    readonly [Topic in keyof ViewServer["topics"]]: KafkaSchemaRegistryRegionsForTopic<
       ViewServer["topics"][Topic]
     >;
   }[keyof ViewServer["topics"]],
@@ -97,6 +138,29 @@ export type KafkaNodeSaslOptions =
       readonly token: string;
     };
 
+export type KafkaNodeSchemaRegistryAuthOptions =
+  | {
+      readonly username: string;
+      readonly password: string;
+      readonly token?: never;
+    }
+  | {
+      readonly token: string;
+      readonly username?: never;
+      readonly password?: never;
+    };
+
+export type KafkaNodeSchemaRegistryOptions = {
+  readonly url: string;
+  readonly auth?: KafkaNodeSchemaRegistryAuthOptions;
+  readonly headers?: Readonly<Record<string, string>>;
+  readonly timeout?: number;
+  readonly retries?: number;
+  readonly retryDelay?: number;
+  readonly monitorInterval?: Duration.Input;
+  readonly tls?: KafkaNodeTlsOptions;
+};
+
 export type KafkaNodeRegionOptions = {
   readonly bootstrapServers: string | readonly [string, ...ReadonlyArray<string>];
   readonly clientId?: string;
@@ -107,10 +171,23 @@ export type KafkaNodeRegionOptions = {
   readonly metadataMaxAge?: number;
   readonly sasl?: KafkaNodeSaslOptions;
   readonly tls?: KafkaNodeTlsOptions;
+  readonly schemaRegistry?: KafkaNodeSchemaRegistryOptions;
 };
 
-type KafkaNodeRegionSnapshot = Omit<KafkaNodeRegionOptions, "bootstrapServers"> & {
+type KafkaNodeSchemaRegistrySnapshot = Omit<KafkaNodeSchemaRegistryOptions, "monitorInterval"> & {
+  readonly headers: Readonly<Record<string, string>>;
+  readonly timeout: number;
+  readonly retries: number;
+  readonly retryDelay: number;
+  readonly monitorInterval: Duration.Duration;
+};
+
+type KafkaNodeRegionSnapshot = Omit<
+  KafkaNodeRegionOptions,
+  "bootstrapServers" | "schemaRegistry"
+> & {
   readonly bootstrapServers: readonly [string, ...ReadonlyArray<string>];
+  readonly schemaRegistry?: KafkaNodeSchemaRegistrySnapshot;
 };
 
 export type KafkaNodeLayerOptions<ViewServer extends KafkaNodeViewServer> = [
@@ -120,7 +197,10 @@ export type KafkaNodeLayerOptions<ViewServer extends KafkaNodeViewServer> = [
   : {
       readonly consumerGroupPrefix: string;
       readonly regions: {
-        readonly [Region in KafkaRequiredRegion<ViewServer>]: KafkaNodeRegionOptions;
+        readonly [Region in KafkaRequiredRegion<ViewServer>]: KafkaNodeRegionOptions &
+          (Region extends KafkaSchemaRegistryRequiredRegion<ViewServer>
+            ? { readonly schemaRegistry: KafkaNodeSchemaRegistryOptions }
+            : unknown);
       };
       readonly retentionSweepInterval?: Duration.Input;
     };
@@ -135,7 +215,7 @@ type IsConfigPlainObject<Value> = [Value] extends [object]
 
 type KafkaNodeConfigValue<Value> = Value extends object
   ? {
-      readonly [Key in keyof Value]: Key extends "retentionSweepInterval"
+      readonly [Key in keyof Value]: Key extends "retentionSweepInterval" | "monitorInterval"
         ? NonNullable<Value[Key]> | string
         : Value[Key];
     }
@@ -146,7 +226,7 @@ type KafkaNodeConfigWrap<Value> = [NonNullable<Value>] extends [infer NonNullVal
     ?
         | {
             readonly [Key in keyof NonNullValue]: KafkaNodeConfigWrap<
-              Key extends "retentionSweepInterval"
+              Key extends "retentionSweepInterval" | "monitorInterval"
                 ? NonNullable<NonNullValue[Key]> | string
                 : NonNullValue[Key]
             >;
@@ -171,6 +251,25 @@ type IsUnknown<Value> =
       : false;
 
 type IsNever<Value> = [Value] extends [never] ? true : false;
+
+type ContainsAny<Value, Seen = never> =
+  IsAny<Value> extends true
+    ? true
+    : Value extends Config.Config<infer ConfigValue>
+      ? ContainsAny<ConfigValue, Seen | Value>
+      : Value extends (...arguments_: ReadonlyArray<never>) => unknown
+        ? false
+        : Value extends Seen
+          ? false
+          : Value extends ReadonlyArray<infer Item>
+            ? ContainsAny<Item, Seen | Value>
+            : Value extends object
+              ? true extends {
+                  readonly [Key in keyof Value]-?: ContainsAny<Value[Key], Seen | Value>;
+                }[keyof Value]
+                ? true
+                : false
+              : false;
 
 type NodeCandidateField<Candidate, Key extends PropertyKey> = Candidate extends unknown
   ? Key extends keyof Candidate
@@ -216,6 +315,34 @@ type ExactTlsOptions<Candidate> =
         : Candidate & RejectExtraKeys<Candidate, KafkaNodeTlsOptions>
       : never;
 
+type ExactSchemaRegistryAuthOptions<Candidate> =
+  IsAny<Candidate> extends true
+    ? never
+    : Candidate extends KafkaNodeSchemaRegistryAuthOptions
+      ? IsAny<Candidate[keyof Candidate]> extends true
+        ? never
+        : Candidate extends { readonly token: string }
+          ? Candidate & RejectExtraKeys<Candidate, { readonly token: string }>
+          : Candidate &
+              RejectExtraKeys<Candidate, { readonly username: string; readonly password: string }>
+      : never;
+
+type ExactSchemaRegistryOptions<Candidate> =
+  IsAny<Candidate> extends true
+    ? never
+    : Candidate extends KafkaNodeSchemaRegistryOptions
+      ? IsAny<Candidate[keyof Candidate]> extends true
+        ? never
+        : Candidate &
+            RejectExtraKeys<Candidate, KafkaNodeSchemaRegistryOptions> &
+            (Candidate extends { readonly auth: infer Auth }
+              ? { readonly auth: ExactSchemaRegistryAuthOptions<Auth> }
+              : unknown) &
+            (Candidate extends { readonly tls: infer Tls }
+              ? { readonly tls: ExactTlsOptions<Tls> }
+              : unknown)
+      : never;
+
 type ExactRegionOptions<Candidate> =
   IsAny<Candidate> extends true
     ? never
@@ -229,6 +356,9 @@ type ExactRegionOptions<Candidate> =
               : unknown) &
             (Candidate extends { readonly tls: infer Tls }
               ? { readonly tls: ExactTlsOptions<Tls> }
+              : unknown) &
+            (Candidate extends { readonly schemaRegistry: infer Registry }
+              ? { readonly schemaRegistry: ExactSchemaRegistryOptions<Registry> }
               : unknown)
       : never;
 
@@ -260,7 +390,7 @@ type KafkaNodeOptionsGuard<ViewServer, Options> =
               : never
             : never;
 
-type UnwrapRetentionSweepIntervalCandidate<Candidate> =
+type UnwrapDurationCandidate<Candidate> =
   IsAny<Candidate> extends true
     ? Candidate
     : Candidate extends Config.Config<infer Value>
@@ -278,8 +408,10 @@ type UnwrapConfigCandidate<Candidate> =
       ? NonNullable<Value>
       : Candidate extends object
         ? {
-            readonly [Key in keyof Candidate]: Key extends "retentionSweepInterval"
-              ? UnwrapRetentionSweepIntervalCandidate<Candidate[Key]>
+            readonly [Key in keyof Candidate]: Key extends
+              | "retentionSweepInterval"
+              | "monitorInterval"
+              ? UnwrapDurationCandidate<Candidate[Key]>
               : UnwrapConfigCandidate<Candidate[Key]>;
           }
         : Candidate;
@@ -347,6 +479,7 @@ const allowedRegionOptionKeys = [
   "metadataMaxAge",
   "sasl",
   "tls",
+  "schemaRegistry",
 ] as const;
 
 const allowedRegionOptions = new Set<string>(allowedRegionOptionKeys);
@@ -379,6 +512,32 @@ const ownDataKeys = (value: object): ReadonlyArray<string> =>
       "Kafka Node options must contain enumerable string data fields.",
     ).keys(),
   );
+
+type CapturedKafkaSource = {
+  readonly viewServerTopic: string;
+  readonly source: object;
+};
+
+const captureKafkaSources = (
+  viewServer: KafkaNodeViewServer,
+): ReadonlyArray<CapturedKafkaSource> => {
+  const sources: Array<CapturedKafkaSource> = [];
+  for (const viewServerTopic of Object.keys(viewServer.topics)) {
+    const configured = viewServer.topics[viewServerTopic];
+    const source =
+      typeof configured === "object" && configured !== null && Object.hasOwn(configured, "source")
+        ? Reflect.get(configured, "source")
+        : undefined;
+    if (
+      typeof source === "object" &&
+      source !== null &&
+      Reflect.get(source, "adapter") === KafkaSourceAdapter
+    ) {
+      sources.push(Object.freeze({ viewServerTopic, source }));
+    }
+  }
+  return Object.freeze(sources);
+};
 
 const captureDenseDataArray = (value: unknown, message: string): ReadonlyArray<unknown> => {
   const captured = Result.try(() => {
@@ -560,8 +719,168 @@ const nodeTlsOptions = (tls: KafkaNodeTlsOptions): NodeTlsConnectionOptions => (
   ...(tls.serverName === undefined ? {} : { servername: tls.serverName }),
 });
 
+const schemaRegistryHttpAuth = (
+  auth: KafkaNodeSchemaRegistryAuthOptions,
+): KafkaSchemaRegistryHttpAuth =>
+  "token" in auth
+    ? {
+        _tag: "Bearer",
+        token: auth.token,
+      }
+    : {
+        _tag: "Basic",
+        username: auth.username,
+        password: auth.password,
+      };
+
+const schemaRegistryHttpOptions = (
+  options: KafkaNodeSchemaRegistrySnapshot,
+): KafkaSchemaRegistryHttpOptions => ({
+  url: options.url,
+  ...(options.auth === undefined ? {} : { auth: schemaRegistryHttpAuth(options.auth) }),
+  headers: options.headers,
+  timeout: options.timeout,
+  retries: options.retries,
+  retryDelay: options.retryDelay,
+  ...(options.tls === undefined ? {} : { tls: nodeTlsOptions(options.tls) }),
+});
+
 const finiteNonNegative = (value: number | undefined): boolean =>
   value === undefined || (Number.isFinite(value) && value >= 0);
+
+const positiveDuration = (value: unknown, message: string): Duration.Duration => {
+  const duration = decodeKafkaDurationInput(value);
+  const nanos = Option.flatMap(duration, Duration.toNanos);
+  if (Option.isNone(nanos) || nanos.value <= 0n) {
+    throw new KafkaSourceConfigurationError(message);
+  }
+  return Option.getOrThrow(duration);
+};
+
+const snapshotSchemaRegistryAuth = (value: unknown): KafkaNodeSchemaRegistryAuthOptions => {
+  const message = "Kafka Schema Registry auth options are invalid.";
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new KafkaSourceConfigurationError(message);
+  }
+  const fields = captureDataFields(value, message);
+  const token = fields.get("token");
+  if (fields.size === 1 && typeof token === "string" && token.length > 0) {
+    return Object.freeze({ token });
+  }
+  const username = fields.get("username");
+  const password = fields.get("password");
+  if (
+    fields.size !== 2 ||
+    typeof username !== "string" ||
+    username.length === 0 ||
+    typeof password !== "string"
+  ) {
+    throw new KafkaSourceConfigurationError(message);
+  }
+  return Object.freeze({ username, password });
+};
+
+const snapshotSchemaRegistryHeaders = (
+  value: unknown,
+  hasAuth: boolean,
+): Readonly<Record<string, string>> => {
+  const message = "Kafka Schema Registry headers are invalid.";
+  if (value === undefined) {
+    return Object.freeze({});
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new KafkaSourceConfigurationError(message);
+  }
+  const snapshot: Record<string, string> = Object.create(null);
+  for (const [name, header] of captureDataFields(value, message)) {
+    const normalized = name.toLowerCase();
+    if (
+      !/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/.test(name) ||
+      typeof header !== "string" ||
+      !/^[\t\x20-\x7e\x80-\xff]*$/.test(header) ||
+      Object.hasOwn(snapshot, normalized) ||
+      (hasAuth && normalized === "authorization")
+    ) {
+      throw new KafkaSourceConfigurationError(message);
+    }
+    snapshot[normalized] = header;
+  }
+  return Object.freeze(snapshot);
+};
+
+const snapshotSchemaRegistry = (value: unknown): KafkaNodeSchemaRegistrySnapshot => {
+  const message = "Kafka Schema Registry options are invalid.";
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new KafkaSourceConfigurationError(message);
+  }
+  const fields = captureDataFields(value, message);
+  const allowed = new Set([
+    "url",
+    "auth",
+    "headers",
+    "timeout",
+    "retries",
+    "retryDelay",
+    "monitorInterval",
+    "tls",
+  ]);
+  const url = fields.get("url");
+  const auth = fields.get("auth");
+  const timeout = fields.get("timeout") ?? kafkaSchemaRegistryHttpDefaults.timeout;
+  const retries = fields.get("retries") ?? kafkaSchemaRegistryHttpDefaults.retries;
+  const retryDelay = fields.get("retryDelay") ?? kafkaSchemaRegistryHttpDefaults.retryDelay;
+  const monitorInterval = fields.get("monitorInterval") ?? Duration.seconds(30);
+  const tls = fields.get("tls");
+  if (
+    Array.from(fields.keys()).some((name) => !allowed.has(name)) ||
+    typeof url !== "string" ||
+    url.length === 0 ||
+    typeof timeout !== "number" ||
+    !Number.isFinite(timeout) ||
+    timeout <= 0 ||
+    typeof retries !== "number" ||
+    !Number.isSafeInteger(retries) ||
+    retries < 0 ||
+    typeof retryDelay !== "number" ||
+    !Number.isFinite(retryDelay) ||
+    retryDelay < 0 ||
+    (tls !== undefined && (typeof tls !== "object" || tls === null))
+  ) {
+    throw new KafkaSourceConfigurationError(message);
+  }
+  const normalizedUrl = Result.try(() => {
+    const parsed = new URL(url);
+    if (
+      (parsed.protocol !== "http:" && parsed.protocol !== "https:") ||
+      (tls !== undefined && parsed.protocol !== "https:") ||
+      parsed.username.length > 0 ||
+      parsed.password.length > 0 ||
+      parsed.search.length > 0 ||
+      parsed.hash.length > 0
+    ) {
+      throw new Error("invalid URL");
+    }
+    parsed.pathname = parsed.pathname.endsWith("/") ? parsed.pathname : `${parsed.pathname}/`;
+    return parsed.toString();
+  });
+  if (Result.isFailure(normalizedUrl)) {
+    throw new KafkaSourceConfigurationError(message);
+  }
+  const authSnapshot = auth === undefined ? undefined : snapshotSchemaRegistryAuth(auth);
+  return Object.freeze({
+    url: normalizedUrl.success,
+    ...(authSnapshot === undefined ? {} : { auth: authSnapshot }),
+    headers: snapshotSchemaRegistryHeaders(fields.get("headers"), authSnapshot !== undefined),
+    timeout,
+    retries,
+    retryDelay,
+    monitorInterval: positiveDuration(
+      monitorInterval,
+      "Kafka Schema Registry monitorInterval must be a positive finite Effect Duration.",
+    ),
+    ...(tls === undefined ? {} : { tls: snapshotTls(tls) }),
+  });
+};
 
 const snapshotRegionOptions = (options: unknown): KafkaNodeRegionSnapshot => {
   if (typeof options !== "object" || options === null || Array.isArray(options)) {
@@ -577,6 +896,7 @@ const snapshotRegionOptions = (options: unknown): KafkaNodeRegionSnapshot => {
   const metadataMaxAge = fields.get("metadataMaxAge");
   const sasl = fields.get("sasl");
   const tls = fields.get("tls");
+  const schemaRegistry = fields.get("schemaRegistry");
   if (
     !fields.has("bootstrapServers") ||
     Array.from(fields.keys()).some((key) => !allowedRegionOptions.has(key)) ||
@@ -592,7 +912,9 @@ const snapshotRegionOptions = (options: unknown): KafkaNodeRegionSnapshot => {
       (typeof retries !== "number" || !Number.isSafeInteger(retries) || retries < 0)) ||
     (clientId !== undefined && (typeof clientId !== "string" || clientId.length === 0)) ||
     (sasl !== undefined && (typeof sasl !== "object" || sasl === null)) ||
-    (tls !== undefined && (typeof tls !== "object" || tls === null))
+    (tls !== undefined && (typeof tls !== "object" || tls === null)) ||
+    (schemaRegistry !== undefined &&
+      (typeof schemaRegistry !== "object" || schemaRegistry === null))
   ) {
     throw new KafkaSourceConfigurationError("Kafka Region options are invalid.");
   }
@@ -606,32 +928,18 @@ const snapshotRegionOptions = (options: unknown): KafkaNodeRegionSnapshot => {
     ...(metadataMaxAge === undefined ? {} : { metadataMaxAge }),
     ...(sasl === undefined ? {} : { sasl: snapshotSasl(sasl) }),
     ...(tls === undefined ? {} : { tls: snapshotTls(tls) }),
+    ...(schemaRegistry === undefined
+      ? {}
+      : { schemaRegistry: snapshotSchemaRegistry(schemaRegistry) }),
   });
 };
 
-const kafkaSourceRegions = (viewServer: KafkaNodeViewServer): ReadonlySet<string> => {
-  if (
-    typeof viewServer !== "object" ||
-    viewServer === null ||
-    typeof viewServer.topics !== "object" ||
-    viewServer.topics === null
-  ) {
-    throw new KafkaSourceConfigurationError("Kafka Node Layer requires a View Server Config.");
-  }
+const kafkaSourceRegionsFrom = (
+  sources: ReadonlyArray<CapturedKafkaSource>,
+): ReadonlySet<string> => {
   const regions = new Set<string>();
-  for (const topic of Object.keys(viewServer.topics)) {
-    const definition = viewServer.topics[topic];
-    const source =
-      typeof definition === "object" && definition !== null && Object.hasOwn(definition, "source")
-        ? Reflect.get(definition, "source")
-        : undefined;
-    if (
-      typeof source !== "object" ||
-      source === null ||
-      Reflect.get(source, "adapter") !== KafkaSourceAdapter
-    ) {
-      continue;
-    }
+  for (const captured of sources) {
+    const { source, viewServerTopic: topic } = captured;
     const options = Reflect.get(source, "options");
     const sourceRegions =
       typeof options === "object" && options !== null && Object.hasOwn(options, "regions")
@@ -653,12 +961,86 @@ const kafkaSourceRegions = (viewServer: KafkaNodeViewServer): ReadonlySet<string
       regions.add(region);
     }
   }
+  return regions;
+};
+
+const kafkaSourceRegions = (viewServer: KafkaNodeViewServer): ReadonlySet<string> => {
+  if (
+    typeof viewServer !== "object" ||
+    viewServer === null ||
+    typeof viewServer.topics !== "object" ||
+    viewServer.topics === null
+  ) {
+    throw new KafkaSourceConfigurationError("Kafka Node Layer requires a View Server Config.");
+  }
+  const regions = kafkaSourceRegionsFrom(captureKafkaSources(viewServer));
   if (regions.size === 0) {
     throw new KafkaSourceConfigurationError(
       "Kafka Node Layer requires at least one Kafka Source Definition.",
     );
   }
   return regions;
+};
+
+const kafkaSchemaRegistryDeclarations = (
+  viewServer: KafkaNodeViewServer,
+): ReadonlyArray<KafkaSchemaRegistryDeclaration> =>
+  kafkaSchemaRegistryDeclarationsFrom(captureKafkaSources(viewServer));
+
+const kafkaSchemaRegistryDeclarationsFrom = (
+  sources: ReadonlyArray<CapturedKafkaSource>,
+): ReadonlyArray<KafkaSchemaRegistryDeclaration> => {
+  const declarations: Array<KafkaSchemaRegistryDeclaration> = [];
+  for (const captured of sources) {
+    const { source, viewServerTopic } = captured;
+    const options = Reflect.get(source, "options");
+    if (typeof options !== "object" || options === null) {
+      throw new KafkaSourceConfigurationError(
+        `Kafka source for Topic ${viewServerTopic} contains invalid options.`,
+      );
+    }
+    const sourceTopic = Reflect.get(options, "topic");
+    const regions = Reflect.get(options, "regions");
+    const key = Reflect.get(options, "key");
+    const value = Reflect.get(options, "value");
+    if (
+      typeof sourceTopic !== "string" ||
+      sourceTopic.length === 0 ||
+      !Array.isArray(regions) ||
+      regions.length === 0
+    ) {
+      throw new KafkaSourceConfigurationError(
+        `Kafka source for Topic ${viewServerTopic} contains invalid Schema Registry options.`,
+      );
+    }
+    const codecs = [
+      ["key", key],
+      ["value", value],
+    ] as const;
+    for (const [side, codec] of codecs) {
+      if (!isKafkaSchemaRegistryProtobufCodec(codec)) {
+        continue;
+      }
+      for (const region of regions) {
+        if (typeof region !== "string" || region.length === 0) {
+          throw new KafkaSourceConfigurationError(
+            `Kafka source for Topic ${viewServerTopic} contains invalid Regions.`,
+          );
+        }
+        declarations.push(
+          Object.freeze({
+            region,
+            viewServerTopic,
+            sourceTopic,
+            side,
+            subject: `${sourceTopic}-${side}`,
+            descriptor: codec.descriptor,
+          }),
+        );
+      }
+    }
+  }
+  return Object.freeze(declarations);
 };
 
 const capturedRetentionPolicy = (
@@ -690,21 +1072,15 @@ const capturedRetentionPolicy = (
 
 const kafkaBrokerDeclarations = (
   viewServer: KafkaNodeViewServer,
+): ReadonlyArray<KafkaBrokerContractDeclaration> =>
+  kafkaBrokerDeclarationsFrom(captureKafkaSources(viewServer));
+
+const kafkaBrokerDeclarationsFrom = (
+  sources: ReadonlyArray<CapturedKafkaSource>,
 ): ReadonlyArray<KafkaBrokerContractDeclaration> => {
   const declarations: Array<KafkaBrokerContractDeclaration> = [];
-  for (const topic of Object.keys(viewServer.topics)) {
-    const configured = viewServer.topics[topic];
-    const source =
-      typeof configured === "object" && configured !== null && Object.hasOwn(configured, "source")
-        ? Reflect.get(configured, "source")
-        : undefined;
-    if (
-      typeof source !== "object" ||
-      source === null ||
-      Reflect.get(source, "adapter") !== KafkaSourceAdapter
-    ) {
-      continue;
-    }
+  for (const captured of sources) {
+    const { source, viewServerTopic: topic } = captured;
     const options = Reflect.get(source, "options");
     if (typeof options !== "object" || options === null) {
       throw new KafkaSourceConfigurationError(
@@ -762,34 +1138,35 @@ const retentionSweepIntervalNanos = (input: unknown): bigint => {
   return nanos.value;
 };
 
-const validateConsumerGroupIds = (
-  viewServer: KafkaNodeViewServer,
+const validateConsumerGroupIdsFrom = (
+  sources: ReadonlyArray<CapturedKafkaSource>,
   consumerGroupPrefix: string,
 ): void => {
-  for (const topic of Object.keys(viewServer.topics)) {
-    const definition = viewServer.topics[topic];
-    const source =
-      typeof definition === "object" && definition !== null && Object.hasOwn(definition, "source")
-        ? Reflect.get(definition, "source")
-        : undefined;
-    if (
-      typeof source === "object" &&
-      source !== null &&
-      Reflect.get(source, "adapter") === KafkaSourceAdapter
-    ) {
-      kafkaConsumerGroupId(consumerGroupPrefix, topic);
-    }
+  for (const source of sources) {
+    kafkaConsumerGroupId(consumerGroupPrefix, source.viewServerTopic);
   }
+};
+
+type KafkaLayerSnapshot = {
+  readonly consumerGroupPrefix: string;
+  readonly regions: ReadonlyMap<string, KafkaNodeRegionSnapshot>;
+  readonly retentionSweepIntervalNanos: bigint;
+  readonly brokerDeclarations: ReadonlyArray<KafkaBrokerContractDeclaration>;
+  readonly schemaRegistryDeclarations: ReadonlyArray<KafkaSchemaRegistryDeclaration>;
 };
 
 const snapshotLayerOptions = <ViewServer extends KafkaNodeViewServer>(
   viewServer: ViewServer,
   options: unknown,
-): {
-  readonly consumerGroupPrefix: string;
-  readonly regions: ReadonlyMap<string, KafkaNodeRegionSnapshot>;
-  readonly retentionSweepIntervalNanos: bigint;
-} => {
+): KafkaLayerSnapshot => {
+  if (
+    typeof viewServer !== "object" ||
+    viewServer === null ||
+    typeof viewServer.topics !== "object" ||
+    viewServer.topics === null
+  ) {
+    throw new KafkaSourceConfigurationError("Kafka Node Layer requires a View Server Config.");
+  }
   if (typeof options !== "object" || options === null || Array.isArray(options)) {
     throw new KafkaSourceConfigurationError(
       "Kafka Node Layer requires exactly consumerGroupPrefix and regions.",
@@ -820,8 +1197,14 @@ const snapshotLayerOptions = <ViewServer extends KafkaNodeViewServer>(
       "Kafka Node Layer requires exactly consumerGroupPrefix and regions.",
     );
   }
-  const required = kafkaSourceRegions(viewServer);
-  validateConsumerGroupIds(viewServer, consumerGroupPrefix);
+  const sources = captureKafkaSources(viewServer);
+  const required = kafkaSourceRegionsFrom(sources);
+  if (required.size === 0) {
+    throw new KafkaSourceConfigurationError(
+      "Kafka Node Layer requires at least one Kafka Source Definition.",
+    );
+  }
+  validateConsumerGroupIdsFrom(sources, consumerGroupPrefix);
   const provided = captureDataFields(
     regionOptions,
     "Kafka Node Layer regions must contain all and only referenced Regions.",
@@ -841,10 +1224,23 @@ const snapshotLayerOptions = <ViewServer extends KafkaNodeViewServer>(
     }
     regions.set(region, snapshotRegionOptions(value));
   }
+  const schemaRegistryDeclarations = kafkaSchemaRegistryDeclarationsFrom(sources);
+  const registryRegions = new Set(
+    schemaRegistryDeclarations.map((declaration) => declaration.region),
+  );
+  for (const region of registryRegions) {
+    if (regions.get(region)?.schemaRegistry === undefined) {
+      throw new KafkaSourceConfigurationError(
+        `Kafka Region ${region} requires one Schema Registry configuration because a Source uses kafka.schemaRegistry.protobuf(...).`,
+      );
+    }
+  }
   return Object.freeze({
     consumerGroupPrefix,
     regions,
     retentionSweepIntervalNanos: retentionSweepIntervalNanos(sweepInterval),
+    brokerDeclarations: kafkaBrokerDeclarationsFrom(sources),
+    schemaRegistryDeclarations,
   });
 };
 
@@ -1704,20 +2100,13 @@ const discoverKafkaBrokerRegion = Effect.fn("KafkaNode.brokerContract.discoverRe
       };
 });
 
-type KafkaLayerSnapshot = {
-  readonly consumerGroupPrefix: string;
-  readonly regions: ReadonlyMap<string, KafkaNodeRegionSnapshot>;
-  readonly retentionSweepIntervalNanos: bigint;
-};
-
 const validateKafkaBrokerContracts = Effect.fn("KafkaNode.brokerContract.validate")(function* (
-  viewServer: KafkaNodeViewServer,
   snapshot: KafkaLayerSnapshot,
 ): Effect.fn.Return<
   ReadonlyArray<KafkaResolvedBrokerContract>,
   KafkaBrokerContractValidationFailureType
 > {
-  const declarations = kafkaBrokerDeclarations(viewServer);
+  const declarations = snapshot.brokerDeclarations;
   const topicsByRegion = new Map<string, Set<string>>();
   for (const declaration of declarations) {
     const topics = topicsByRegion.get(declaration.region) ?? new Set<string>();
@@ -1738,22 +2127,105 @@ const validateKafkaBrokerContracts = Effect.fn("KafkaNode.brokerContract.validat
   return resolution._tag === "Resolved" ? resolution.contracts : yield* Effect.fail(resolution);
 });
 
-const makeLayerFromSnapshot = (viewServer: KafkaNodeViewServer, snapshot: KafkaLayerSnapshot) =>
-  Layer.unwrap(
-    validateKafkaBrokerContracts(viewServer, snapshot).pipe(
-      Effect.map((contracts) => {
-        const regions = new Map<string, KafkaServerRegion>();
-        for (const [region, options] of snapshot.regions) {
-          regions.set(region, makeNodeRegion(options));
-        }
-        return makeKafkaServerLayer({
-          consumerGroupPrefix: snapshot.consumerGroupPrefix,
-          regions,
-          brokerContracts: contracts,
-          retentionSweepIntervalNanos: snapshot.retentionSweepIntervalNanos,
+const schemaRegistryStartupFailure = (
+  declarations: readonly [
+    KafkaSchemaRegistryDeclaration,
+    ...ReadonlyArray<KafkaSchemaRegistryDeclaration>,
+  ],
+  message: string,
+): KafkaSchemaRegistryContractValidationFailureType => {
+  const startupIssue = (declaration: KafkaSchemaRegistryDeclaration) =>
+    ({
+      _tag: "KafkaSchemaRegistryContractIssue",
+      region: declaration.region,
+      viewServerTopic: declaration.viewServerTopic,
+      sourceTopic: declaration.sourceTopic,
+      side: declaration.side,
+      subject: declaration.subject,
+      code: "RegistryUnavailable",
+      version: null,
+      schemaId: null,
+      message,
+    }) satisfies import("./schema-registry-contract").KafkaSchemaRegistryContractIssue;
+  const [first, ...remaining] = declarations;
+  return {
+    _tag: "KafkaSchemaRegistryContractValidationFailure",
+    message: "Kafka Schema Registry Protobuf validation failed before runtime startup.",
+    issues: [startupIssue(first), ...remaining.map(startupIssue)],
+  };
+};
+
+const makeManagedKafkaSchemaRegistry = Effect.fn("KafkaNode.schemaRegistry.managed")(
+  function* (input: {
+    readonly region: string;
+    readonly layerScope: Scope.Scope;
+    readonly options: KafkaNodeSchemaRegistrySnapshot;
+    readonly declarations: readonly [
+      KafkaSchemaRegistryDeclaration,
+      ...ReadonlyArray<KafkaSchemaRegistryDeclaration>,
+    ];
+  }): Effect.fn.Return<
+    KafkaServerSchemaRegistry,
+    KafkaSchemaRegistryContractValidationFailureType
+  > {
+    return yield* makeKafkaServerSchemaRegistry({
+      layerScope: input.layerScope,
+      acquire: Effect.gen(function* () {
+        const reader = yield* makeKafkaSchemaRegistryReader(
+          schemaRegistryHttpOptions(input.options),
+        ).pipe(
+          Effect.mapError((failure) =>
+            schemaRegistryStartupFailure(input.declarations, failure.message),
+          ),
+        );
+        return yield* makeKafkaSchemaRegistryRuntime({
+          region: input.region,
+          endpoint: input.options.url,
+          declarations: input.declarations,
+          reader,
+          monitorInterval: input.options.monitorInterval,
         });
       }),
-    ),
+    });
+  },
+);
+
+const makeLayerFromSnapshot = (snapshot: KafkaLayerSnapshot) =>
+  Layer.unwrap(
+    Effect.gen(function* () {
+      const layerScope = yield* Effect.scope;
+      const contracts = yield* validateKafkaBrokerContracts(snapshot);
+      const declarations = snapshot.schemaRegistryDeclarations;
+      const schemaRegistries = new Map<string, KafkaServerSchemaRegistry>();
+      for (const [region, options] of snapshot.regions) {
+        const regionDeclarations = declarations.filter(
+          (declaration) => declaration.region === region,
+        );
+        const firstDeclaration = regionDeclarations[0];
+        if (firstDeclaration === undefined) {
+          continue;
+        }
+        const registryOptions = Option.getOrThrow(Option.fromUndefinedOr(options.schemaRegistry));
+        const registry = yield* makeManagedKafkaSchemaRegistry({
+          region,
+          layerScope,
+          options: registryOptions,
+          declarations: [firstDeclaration, ...regionDeclarations.slice(1)],
+        });
+        schemaRegistries.set(region, registry);
+      }
+      const regions = new Map<string, KafkaServerRegion>();
+      for (const [region, options] of snapshot.regions) {
+        regions.set(region, makeNodeRegion(options));
+      }
+      return makeKafkaServerLayer({
+        consumerGroupPrefix: snapshot.consumerGroupPrefix,
+        regions,
+        schemaRegistries,
+        brokerContracts: contracts,
+        retentionSweepIntervalNanos: snapshot.retentionSweepIntervalNanos,
+      });
+    }),
   );
 
 export const layer = <
@@ -1763,11 +2235,12 @@ export const layer = <
   viewServer: ViewServer,
   options: Options &
     ([KafkaRequiredRegion<ViewServer>] extends [never] ? never : unknown) &
-    KafkaNodeOptionsGuard<NoInfer<ViewServer>, Options>,
+    KafkaNodeOptionsGuard<NoInfer<ViewServer>, Options> &
+    (true extends ContainsAny<NoInfer<Options>> ? never : unknown),
 ): Layer.Layer<
   import("effect").Context.Service.Identifier<typeof KafkaSourceAdapter.runtimeService>,
-  KafkaBrokerContractValidationFailureType
-> => makeLayerFromSnapshot(viewServer, snapshotLayerOptions(viewServer, options));
+  KafkaBrokerContractValidationFailureType | KafkaSchemaRegistryContractValidationFailureType
+> => makeLayerFromSnapshot(snapshotLayerOptions(viewServer, options));
 
 export const layerConfig = <
   const ViewServer extends KafkaNodeViewServer,
@@ -1776,10 +2249,13 @@ export const layerConfig = <
   viewServer: ViewServer,
   options: Options &
     ([KafkaRequiredRegion<ViewServer>] extends [never] ? never : unknown) &
-    KafkaNodeOptionsGuard<NoInfer<ViewServer>, UnwrapConfigCandidate<Options>>,
+    KafkaNodeOptionsGuard<NoInfer<ViewServer>, UnwrapConfigCandidate<Options>> &
+    (true extends ContainsAny<NoInfer<Options>> ? never : unknown),
 ): Layer.Layer<
   import("effect").Context.Service.Identifier<typeof KafkaSourceAdapter.runtimeService>,
-  Config.ConfigError | KafkaBrokerContractValidationFailureType
+  | Config.ConfigError
+  | KafkaBrokerContractValidationFailureType
+  | KafkaSchemaRegistryContractValidationFailureType
 > =>
   Layer.unwrap(
     Config.unwrap(options).pipe(
@@ -1789,7 +2265,7 @@ export const layerConfig = <
           catch: configValidationFailure,
         }),
       ),
-      Effect.map((snapshot) => makeLayerFromSnapshot(viewServer, snapshot)),
+      Effect.map(makeLayerFromSnapshot),
     ),
   );
 
@@ -1815,6 +2291,7 @@ export const kafkaNodeInternals = Object.freeze({
   finiteNonNegative,
   headersFromMessage,
   kafkaBrokerDeclarations,
+  kafkaSchemaRegistryDeclarations,
   kafkaSourceRegions,
   nodeTlsOptions,
   nodeTlsValue,
@@ -1824,6 +2301,9 @@ export const kafkaNodeInternals = Object.freeze({
   releaseFailure,
   retentionSweepIntervalNanos,
   snapshotAdminResponse,
+  schemaRegistryHttpAuth,
+  schemaRegistryHttpOptions,
+  snapshotSchemaRegistry,
   snapshotLayerOptions,
   snapshotMetrics,
   settleCommittedRecord,

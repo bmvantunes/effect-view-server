@@ -1,4 +1,6 @@
 import type {
+  SourceDependencyFailureTarget,
+  SourceDependencyIssue,
   SourceDependencyTarget,
   SourceFailureClassification,
   SourceProblem,
@@ -82,6 +84,72 @@ const definitionTargetKeys = (
     dependencyTargetKey(targetDependency(definition, target), target.target),
   );
 
+const captureClassificationTargets = (targets: unknown): SourceFailureClassification["targets"] => {
+  if (targets === undefined) {
+    return undefined;
+  }
+  if (!Array.isArray(targets)) {
+    throw new TypeError("Source failure classification has invalid dependency targets.");
+  }
+  const captured: Array<string | { readonly dependency: string; readonly target: string }> = [];
+  for (const target of targets) {
+    if (typeof target === "string" && target.length > 0) {
+      captured.push(target);
+      continue;
+    }
+    if (typeof target !== "object" || target === null || Array.isArray(target)) {
+      throw new TypeError("Source failure classification has invalid dependency targets.");
+    }
+    const dependency = Reflect.get(target, "dependency");
+    const targetName = Reflect.get(target, "target");
+    if (
+      typeof dependency !== "string" ||
+      dependency.length === 0 ||
+      typeof targetName !== "string" ||
+      targetName.length === 0
+    ) {
+      throw new TypeError("Source failure classification has invalid dependency targets.");
+    }
+    captured.push(Object.freeze({ dependency, target: targetName }));
+  }
+  return Object.freeze(captured);
+};
+
+const captureClassificationIssue = (
+  issue: unknown,
+): Extract<SourceFailureClassification, { readonly problem: "dependency" }>["issue"] => {
+  if (issue === undefined) {
+    return undefined;
+  }
+  if (typeof issue !== "object" || issue === null || Array.isArray(issue)) {
+    throw new TypeError("Source failure classification has an invalid dependency issue.");
+  }
+  const code = Reflect.get(issue, "code");
+  const message = Reflect.get(issue, "message");
+  const attributes = Reflect.get(issue, "attributes");
+  if (
+    typeof code !== "string" ||
+    code.length === 0 ||
+    typeof message !== "string" ||
+    !Array.isArray(attributes)
+  ) {
+    throw new TypeError("Source failure classification has an invalid dependency issue.");
+  }
+  const capturedAttributes: Array<{ readonly name: string; readonly value: string }> = [];
+  for (const attribute of attributes) {
+    if (typeof attribute !== "object" || attribute === null || Array.isArray(attribute)) {
+      throw new TypeError("Source failure classification has invalid dependency attributes.");
+    }
+    const name = Reflect.get(attribute, "name");
+    const value = Reflect.get(attribute, "value");
+    if (typeof name !== "string" || name.length === 0 || typeof value !== "string") {
+      throw new TypeError("Source failure classification has invalid dependency attributes.");
+    }
+    capturedAttributes.push(Object.freeze({ name, value }));
+  }
+  return Object.freeze({ code, message, attributes: Object.freeze(capturedAttributes) });
+};
+
 const classification = (
   classifyFailure: RuntimeSourceReportingDefinition["classifyFailure"],
   failure: unknown,
@@ -99,75 +167,20 @@ const classification = (
       if (problem !== "dependency") {
         throw new TypeError("Source failure classification has an invalid problem.");
       }
-      const targets: unknown = Reflect.get(candidate, "targets");
-      if (targets !== undefined && !Array.isArray(targets)) {
-        throw new TypeError("Source failure classification has invalid dependency targets.");
+      const targets = captureClassificationTargets(Reflect.get(candidate, "targets"));
+      const issue = captureClassificationIssue(Reflect.get(candidate, "issue"));
+      const captured: {
+        readonly problem: "dependency";
+        targets?: ReadonlyArray<SourceDependencyFailureTarget>;
+        issue?: SourceDependencyIssue;
+      } = { problem: "dependency" };
+      if (targets !== undefined) {
+        captured.targets = targets;
       }
-      const capturedTargets: Array<
-        string | { readonly dependency: string; readonly target: string }
-      > = [];
-      for (const target of targets ?? []) {
-        if (typeof target === "string" && target.length > 0) {
-          capturedTargets.push(target);
-          continue;
-        }
-        if (typeof target !== "object" || target === null || Array.isArray(target)) {
-          throw new TypeError("Source failure classification has invalid dependency targets.");
-        }
-        const dependency = Reflect.get(target, "dependency");
-        const targetName = Reflect.get(target, "target");
-        if (
-          typeof dependency !== "string" ||
-          dependency.length === 0 ||
-          typeof targetName !== "string" ||
-          targetName.length === 0
-        ) {
-          throw new TypeError("Source failure classification has invalid dependency targets.");
-        }
-        capturedTargets.push(Object.freeze({ dependency, target: targetName }));
+      if (issue !== undefined) {
+        captured.issue = issue;
       }
-      const issue: unknown = Reflect.get(candidate, "issue");
-      if (issue === undefined) {
-        return {
-          problem: "dependency",
-          targets: Object.freeze(capturedTargets),
-        };
-      }
-      if (typeof issue !== "object" || issue === null || Array.isArray(issue)) {
-        throw new TypeError("Source failure classification has an invalid dependency issue.");
-      }
-      const code = Reflect.get(issue, "code");
-      const message = Reflect.get(issue, "message");
-      const attributes = Reflect.get(issue, "attributes");
-      if (
-        typeof code !== "string" ||
-        code.length === 0 ||
-        typeof message !== "string" ||
-        !Array.isArray(attributes)
-      ) {
-        throw new TypeError("Source failure classification has an invalid dependency issue.");
-      }
-      const capturedAttributes: Array<{ readonly name: string; readonly value: string }> = [];
-      for (const attribute of attributes) {
-        if (typeof attribute !== "object" || attribute === null || Array.isArray(attribute)) {
-          throw new TypeError("Source failure classification has invalid dependency attributes.");
-        }
-        const name = Reflect.get(attribute, "name");
-        const value = Reflect.get(attribute, "value");
-        if (typeof name !== "string" || name.length === 0 || typeof value !== "string") {
-          throw new TypeError("Source failure classification has invalid dependency attributes.");
-        }
-        capturedAttributes.push(Object.freeze({ name, value }));
-      }
-      return {
-        problem: "dependency",
-        targets: Object.freeze(capturedTargets),
-        issue: Object.freeze({
-          code,
-          message,
-          attributes: Object.freeze(capturedAttributes),
-        }),
-      };
+      return captured;
     }),
     {
       onFailure: () => ({ problem: "self" }),
@@ -507,9 +520,11 @@ export const runtimeSourceReportingSnapshot = (
         status,
         issues: Object.freeze(
           [...dependency.issues].sort((left, right) =>
-            left.source === right.source
-              ? left.code.localeCompare(right.code)
-              : left.source.localeCompare(right.source),
+            left.source !== right.source
+              ? left.source.localeCompare(right.source)
+              : left.code !== right.code
+                ? left.code.localeCompare(right.code)
+                : left.message.localeCompare(right.message),
           ),
         ),
       });

@@ -276,7 +276,7 @@ describe("Kafka Schema Registry HTTP reader", () => {
       ).pipe(Effect.flip, Effect.forkChild({ startImmediately: true }));
       yield* TestClock.adjust(Duration.millis(1));
       expect(yield* Fiber.join(timeoutFiber)).toStrictEqual({
-        message: "Schema Registry request to https://registry.example.com timed out.",
+        message: "Schema Registry request timed out.",
       });
       expect(stalledBodyCancellations).toBe(1);
 
@@ -317,6 +317,27 @@ describe("Kafka Schema Registry HTTP reader", () => {
         compatibility: "FULL_TRANSITIVE",
         retriedBodyCancellations: 1,
         retryAttempts: 2,
+      });
+
+      let bodyAttempts = 0;
+      vi.stubGlobal("fetch", () => {
+        bodyAttempts += 1;
+        return bodyAttempts === 2
+          ? Promise.resolve(jsonResponse({ compatibilityLevel: "FULL_TRANSITIVE" }))
+          : Promise.resolve({
+              ok: true,
+              status: 200,
+              text: () => Promise.reject(new Error("body failed")),
+            });
+      });
+      const recoveredBody = yield* Effect.scoped(
+        makeKafkaSchemaRegistryReader(options({ retries: 1 })).pipe(
+          Effect.flatMap((reader) => reader.effectiveCompatibility("orders-value")),
+        ),
+      );
+      expect({ bodyAttempts, recoveredBody }).toStrictEqual({
+        bodyAttempts: 2,
+        recoveredBody: "FULL_TRANSITIVE",
       });
 
       vi.stubGlobal("fetch", () =>

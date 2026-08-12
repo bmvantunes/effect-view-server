@@ -12,6 +12,11 @@ import type {
 } from "effect-view-server/source-adapter";
 import { SourceAdapter } from "effect-view-server/source-adapter";
 import { parseKafkaSchemaRegistryProtobufFrame } from "./schema-registry-frame";
+import {
+  kafkaProtobufMessageAtIndexes,
+  kafkaProtobufMessageAtNormalizedIndexes,
+} from "./schema-registry-descriptor";
+import { decodeKafkaSchemaRegistryProtobufPayload } from "./schema-registry-protobuf-codec";
 
 const KafkaCodecTypeId: unique symbol = Symbol("@effect-view-server/kafka/KafkaCodec");
 const KafkaCodecDecodeTypeId: unique symbol = Symbol("@effect-view-server/kafka/KafkaCodecDecode");
@@ -20,6 +25,9 @@ const KafkaCompactionKeyCodecTypeId: unique symbol = Symbol(
 );
 const KafkaCompactionKeyCodecDecodeTypeId: unique symbol = Symbol(
   "@effect-view-server/kafka/KafkaCompactionKeyCodecDecode",
+);
+const KafkaSchemaRegistryRequirementTypeId: unique symbol = Symbol(
+  "@effect-view-server/kafka/KafkaSchemaRegistryRequirement",
 );
 const KafkaSchemaRegistryProtobufCodecTypeId: unique symbol = Symbol(
   "@effect-view-server/kafka/KafkaSchemaRegistryProtobufCodec",
@@ -108,50 +116,69 @@ export type KafkaCompactionKeyCodecDecodeInput = {
   readonly bytes: Uint8Array;
 };
 
-export type KafkaCodec<Value, Error = never> = {
-  readonly [KafkaCodecTypeId]: () => KafkaCodec<Value, Error>;
+export type KafkaCodec<Value, Error = never, RequiresSchemaRegistry extends boolean = boolean> = {
+  readonly [KafkaCodecTypeId]: () => KafkaCodec<Value, Error, RequiresSchemaRegistry>;
   readonly [KafkaCodecDecodeTypeId]: (input: KafkaCodecDecodeInput) => Effect.Effect<Value, Error>;
+  readonly [KafkaSchemaRegistryRequirementTypeId]: RequiresSchemaRegistry;
   readonly format: string;
 };
 
-export type KafkaCompactionKeyCodec<Value, Error = never> = {
-  readonly [KafkaCompactionKeyCodecTypeId]: () => KafkaCompactionKeyCodec<Value, Error>;
+export type KafkaCompactionKeyCodec<
+  Value,
+  Error = never,
+  RequiresSchemaRegistry extends boolean = boolean,
+> = {
+  readonly [KafkaCompactionKeyCodecTypeId]: () => KafkaCompactionKeyCodec<
+    Value,
+    Error,
+    RequiresSchemaRegistry
+  >;
   readonly [KafkaCompactionKeyCodecDecodeTypeId]: (
     input: KafkaCompactionKeyCodecDecodeInput,
   ) => Effect.Effect<Value, Error>;
+  readonly [KafkaSchemaRegistryRequirementTypeId]: RequiresSchemaRegistry;
   readonly format: string;
 };
 
-export type KafkaBytesCodec = KafkaCodec<Uint8Array> & {
+export type KafkaBytesCodec = KafkaCodec<Uint8Array, never, false> & {
   readonly format: "bytes";
 };
 
-export type KafkaStringCodec = KafkaCodec<string> & {
+export type KafkaStringCodec = KafkaCodec<string, never, false> & {
   readonly format: "string";
 };
 
 export type KafkaJsonCodec<SourceSchema extends KafkaRowSchema = KafkaRowSchema> = KafkaCodec<
   SourceSchema["Type"],
-  KafkaCodecError
+  KafkaCodecError,
+  false
 > & {
   readonly format: "json";
 };
 
 export type KafkaProtobufCodec<Descriptor extends DescMessage = DescMessage> = KafkaCodec<
   MessageShape<Descriptor>,
-  KafkaCodecError
+  KafkaCodecError,
+  false
 > & {
   readonly descriptor: Descriptor;
   readonly format: "protobuf";
 };
 
 export type KafkaSchemaRegistryProtobufCodec<Descriptor extends DescMessage = DescMessage> =
-  KafkaCodec<MessageShape<Descriptor>, KafkaCodecError> &
-    KafkaCompactionKeyCodec<MessageShape<Descriptor>, KafkaCodecError> & {
+  KafkaCodec<MessageShape<Descriptor>, KafkaCodecError, true> &
+    KafkaCompactionKeyCodec<MessageShape<Descriptor>, KafkaCodecError, true> & {
       readonly [KafkaSchemaRegistryProtobufCodecTypeId]: () => KafkaSchemaRegistryProtobufCodec<Descriptor>;
       readonly descriptor: Descriptor;
       readonly format: "schema-registry-protobuf";
     };
+
+export type KafkaCodecSchemaRegistryRequirement<Codec> =
+  Codec extends KafkaCodec<unknown, unknown, infer RequiresSchemaRegistry>
+    ? RequiresSchemaRegistry
+    : Codec extends KafkaCompactionKeyCodec<unknown, unknown, infer RequiresSchemaRegistry>
+      ? RequiresSchemaRegistry
+      : false;
 
 export const isKafkaSchemaRegistryProtobufCodec = (
   value: unknown,
@@ -172,7 +199,7 @@ export const isKafkaSchemaRegistryProtobufCodec = (
   );
 };
 
-export type KafkaCustomCodec<Value, Error> = KafkaCodec<Value, Error> & {
+export type KafkaCustomCodec<Value, Error> = KafkaCodec<Value, Error, false> & {
   readonly format: "custom";
   readonly name: string;
 };
@@ -216,26 +243,30 @@ const codecError = (message: string): KafkaCodecError => ({
 const makeCodec = <Value, Error, const Format extends string>(
   format: Format,
   decode: (input: KafkaCodecDecodeInput) => Effect.Effect<Value, Error>,
-): KafkaCodec<Value, Error> & { readonly format: Format } => {
-  const codec: KafkaCodec<Value, Error> & { readonly format: Format } = {
+): KafkaCodec<Value, Error, false> & { readonly format: Format } => {
+  const codec: KafkaCodec<Value, Error, false> & { readonly format: Format } = {
     [KafkaCodecTypeId]: () => codec,
     [KafkaCodecDecodeTypeId]: decode,
+    [KafkaSchemaRegistryRequirementTypeId]: false,
     format,
   };
   return SourceAdapter.executable(codec);
 };
 
-export const isKafkaCodec = (value: unknown): value is KafkaCodec<unknown, unknown> => {
+export const isKafkaCodec = (value: unknown): value is KafkaCodec<unknown, unknown, boolean> => {
   if (typeof value !== "object" || value === null) {
     return false;
   }
   const brand = Result.try(() => Reflect.get(value, KafkaCodecTypeId));
   const decode = Result.try(() => Reflect.get(value, KafkaCodecDecodeTypeId));
+  const requirement = Result.try(() => Reflect.get(value, KafkaSchemaRegistryRequirementTypeId));
   return (
     Result.isSuccess(brand) &&
     typeof brand.success === "function" &&
     Result.isSuccess(decode) &&
     typeof decode.success === "function" &&
+    Result.isSuccess(requirement) &&
+    typeof requirement.success === "boolean" &&
     Result.try(() => Reflect.apply(brand.success, undefined, [])).pipe(
       Result.match({
         onFailure: () => false,
@@ -245,18 +276,19 @@ export const isKafkaCodec = (value: unknown): value is KafkaCodec<unknown, unkno
   );
 };
 
-export const decodeKafkaCodec = <Value, Error>(
-  codec: KafkaCodec<Value, Error>,
+export const decodeKafkaCodec = <Value, Error, RequiresSchemaRegistry extends boolean>(
+  codec: KafkaCodec<Value, Error, RequiresSchemaRegistry>,
   input: KafkaCodecDecodeInput,
 ): Effect.Effect<Value, Error> => codec[KafkaCodecDecodeTypeId](input);
 
 const makeCompactionKeyCodec = <Value, Error, const Format extends string>(
   format: Format,
   decode: (input: KafkaCompactionKeyCodecDecodeInput) => Effect.Effect<Value, Error>,
-): KafkaCompactionKeyCodec<Value, Error> & { readonly format: Format } => {
-  const codec: KafkaCompactionKeyCodec<Value, Error> & { readonly format: Format } = {
+): KafkaCompactionKeyCodec<Value, Error, false> & { readonly format: Format } => {
+  const codec: KafkaCompactionKeyCodec<Value, Error, false> & { readonly format: Format } = {
     [KafkaCompactionKeyCodecTypeId]: () => codec,
     [KafkaCompactionKeyCodecDecodeTypeId]: decode,
+    [KafkaSchemaRegistryRequirementTypeId]: false,
     format,
   };
   return SourceAdapter.executable(codec);
@@ -264,17 +296,20 @@ const makeCompactionKeyCodec = <Value, Error, const Format extends string>(
 
 export const isKafkaCompactionKeyCodec = (
   value: unknown,
-): value is KafkaCompactionKeyCodec<unknown, unknown> => {
+): value is KafkaCompactionKeyCodec<unknown, unknown, boolean> => {
   if (typeof value !== "object" || value === null) {
     return false;
   }
   const brand = Result.try(() => Reflect.get(value, KafkaCompactionKeyCodecTypeId));
   const decode = Result.try(() => Reflect.get(value, KafkaCompactionKeyCodecDecodeTypeId));
+  const requirement = Result.try(() => Reflect.get(value, KafkaSchemaRegistryRequirementTypeId));
   return (
     Result.isSuccess(brand) &&
     typeof brand.success === "function" &&
     Result.isSuccess(decode) &&
     typeof decode.success === "function" &&
+    Result.isSuccess(requirement) &&
+    typeof requirement.success === "boolean" &&
     Result.try(() => Reflect.apply(brand.success, undefined, [])).pipe(
       Result.match({
         onFailure: () => false,
@@ -284,8 +319,8 @@ export const isKafkaCompactionKeyCodec = (
   );
 };
 
-export const decodeKafkaCompactionKeyCodec = <Value, Error>(
-  codec: KafkaCompactionKeyCodec<Value, Error>,
+export const decodeKafkaCompactionKeyCodec = <Value, Error, RequiresSchemaRegistry extends boolean>(
+  codec: KafkaCompactionKeyCodec<Value, Error, RequiresSchemaRegistry>,
   input: KafkaCompactionKeyCodecDecodeInput,
 ): Effect.Effect<Value, Error> => codec[KafkaCompactionKeyCodecDecodeTypeId](input);
 
@@ -492,6 +527,7 @@ function protobufCodec(descriptor: DescMessage): KafkaProtobufCodec<DescMessage>
   const protobuf: KafkaProtobufCodec<DescMessage> = {
     [KafkaCodecTypeId]: () => protobuf,
     [KafkaCodecDecodeTypeId]: (input) => decodeKafkaCodec(codec, input),
+    [KafkaSchemaRegistryRequirementTypeId]: false,
     format: "protobuf",
     descriptor: capturedDescriptor,
   };
@@ -511,16 +547,26 @@ function schemaRegistryProtobufCodec(
     if (frame._tag === "KafkaSchemaRegistryFrameParseFailure") {
       return Effect.fail(codecError(frame.message));
     }
-    return Effect.try({
-      try: () => fromBinary(capturedDescriptor, frame.payload),
-      catch: () => codecError("Kafka Schema Registry protobuf payload could not be decoded."),
-    });
+    const selected = kafkaProtobufMessageAtIndexes(capturedDescriptor.file, frame.messageIndexes);
+    if (
+      selected?.typeName !== capturedDescriptor.typeName &&
+      kafkaProtobufMessageAtNormalizedIndexes(capturedDescriptor.file, frame.messageIndexes)
+        ?.typeName !== capturedDescriptor.typeName
+    ) {
+      return Effect.fail(
+        codecError(
+          `Confluent Schema Registry Protobuf frame selected a message that does not match configured message ${JSON.stringify(capturedDescriptor.typeName)}.`,
+        ),
+      );
+    }
+    return decodeKafkaSchemaRegistryProtobufPayload(capturedDescriptor, frame.payload);
   };
   const codec: KafkaSchemaRegistryProtobufCodec<DescMessage> = {
     [KafkaCodecTypeId]: () => codec,
     [KafkaCodecDecodeTypeId]: (input) => decode(input.bytes),
     [KafkaCompactionKeyCodecTypeId]: () => codec,
     [KafkaCompactionKeyCodecDecodeTypeId]: (input) => decode(input.bytes),
+    [KafkaSchemaRegistryRequirementTypeId]: true,
     [KafkaSchemaRegistryProtobufCodecTypeId]: () => codec,
     descriptor: capturedDescriptor,
     format: "schema-registry-protobuf",
@@ -618,32 +664,37 @@ function customCodec(definition: KafkaCustomCodecShape): KafkaCustomCodec<unknow
         try: () => decode(input),
         catch: () => codecError("Kafka custom codec threw synchronously."),
       }).pipe(Effect.flatten),
+    [KafkaSchemaRegistryRequirementTypeId]: false,
     format: "custom",
     name: captured.name,
   };
   return SourceAdapter.executable(codec);
 }
 
-export type KafkaCompactionBytesCodec = KafkaCompactionKeyCodec<Uint8Array> & {
+export type KafkaCompactionBytesCodec = KafkaCompactionKeyCodec<Uint8Array, never, false> & {
   readonly format: "bytes";
 };
 
-export type KafkaCompactionStringCodec = KafkaCompactionKeyCodec<string> & {
+export type KafkaCompactionStringCodec = KafkaCompactionKeyCodec<string, never, false> & {
   readonly format: "string";
 };
 
 export type KafkaCompactionJsonCodec<SourceSchema extends KafkaRowSchema = KafkaRowSchema> =
-  KafkaCompactionKeyCodec<SourceSchema["Type"], KafkaCodecError> & {
+  KafkaCompactionKeyCodec<SourceSchema["Type"], KafkaCodecError, false> & {
     readonly format: "json";
   };
 
 export type KafkaCompactionProtobufCodec<Descriptor extends DescMessage = DescMessage> =
-  KafkaCompactionKeyCodec<MessageShape<Descriptor>, KafkaCodecError> & {
+  KafkaCompactionKeyCodec<MessageShape<Descriptor>, KafkaCodecError, false> & {
     readonly descriptor: Descriptor;
     readonly format: "protobuf";
   };
 
-export type KafkaCompactionCustomCodec<Value, Error> = KafkaCompactionKeyCodec<Value, Error> & {
+export type KafkaCompactionCustomCodec<Value, Error> = KafkaCompactionKeyCodec<
+  Value,
+  Error,
+  false
+> & {
   readonly format: "custom";
   readonly name: string;
 };
@@ -735,6 +786,7 @@ function compactionProtobufCodec(
           headers: {},
         },
       }),
+    [KafkaSchemaRegistryRequirementTypeId]: false,
     descriptor: ordinary.descriptor,
     format: "protobuf",
   };
@@ -781,6 +833,7 @@ function compactionCustomCodec(
         try: () => applyDecode(input),
         catch: () => codecError("Kafka compaction key custom codec threw synchronously."),
       }).pipe(Effect.flatten),
+    [KafkaSchemaRegistryRequirementTypeId]: false,
     format: "custom",
     name: captured.name,
   };

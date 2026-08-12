@@ -1,7 +1,11 @@
 import { create, toBinary } from "@bufbuild/protobuf";
 import { fileDesc, messageDesc } from "@bufbuild/protobuf/codegenv2";
 import type { Message } from "@bufbuild/protobuf";
-import { FieldDescriptorProto_Type, FileDescriptorProtoSchema } from "@bufbuild/protobuf/wkt";
+import {
+  FieldDescriptorProto_Label,
+  FieldDescriptorProto_Type,
+  FileDescriptorProtoSchema,
+} from "@bufbuild/protobuf/wkt";
 import { describe, expect, it } from "@effect/vitest";
 import { SourceAdapter } from "effect-view-server/source-adapter";
 import { Duration, Effect, Option, Schedule, Schema } from "effect";
@@ -43,6 +47,10 @@ type ContractMessage = Message<"kafka.contract.Value"> & {
   readonly label: string;
 };
 
+type MappedContractPayload = Message<"kafka.mapped.Container.Payload"> & {
+  readonly label: string;
+};
+
 const base64FromBytes = (bytes: Uint8Array): string =>
   globalThis.btoa(Array.from(bytes, (byte) => String.fromCharCode(byte)).join(""));
 
@@ -63,12 +71,69 @@ const contractFileBytes = toBinary(
           },
         ],
       },
+      {
+        name: "Sibling",
+        field: [
+          {
+            name: "label",
+            number: 1,
+            type: FieldDescriptorProto_Type.STRING,
+          },
+        ],
+      },
     ],
   }),
 );
 const makeContractMessage = () =>
   messageDesc<ContractMessage>(fileDesc(base64FromBytes(contractFileBytes)), 0);
 const contractMessage = makeContractMessage();
+const mappedContractFileBytes = toBinary(
+  FileDescriptorProtoSchema,
+  create(FileDescriptorProtoSchema, {
+    name: "kafka/mapped.proto",
+    package: "kafka.mapped",
+    syntax: "proto3",
+    messageType: [
+      {
+        name: "Container",
+        field: [
+          {
+            name: "labels",
+            number: 1,
+            label: FieldDescriptorProto_Label.REPEATED,
+            type: FieldDescriptorProto_Type.MESSAGE,
+            typeName: ".kafka.mapped.Container.LabelsEntry",
+          },
+        ],
+        nestedType: [
+          {
+            name: "LabelsEntry",
+            options: { mapEntry: true },
+            field: [
+              { name: "key", number: 1, type: FieldDescriptorProto_Type.STRING },
+              { name: "value", number: 2, type: FieldDescriptorProto_Type.STRING },
+            ],
+          },
+          {
+            name: "Payload",
+            field: [
+              {
+                name: "label",
+                number: 1,
+                type: FieldDescriptorProto_Type.STRING,
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  }),
+);
+const mappedContractPayload = messageDesc<MappedContractPayload>(
+  fileDesc(base64FromBytes(mappedContractFileBytes)),
+  0,
+  0,
+);
 
 const encodeConfluentSignedVarint = (value: number): ReadonlyArray<number> => {
   let remaining = value * 2;
@@ -423,13 +488,43 @@ describe("Kafka Source Adapter contract", () => {
     }),
   );
 
+  it("rejects ordinary and compaction codec brands that throw when invoked", () => {
+    const ordinary = kafka.string();
+    const compaction = kafka.compactionKey.string();
+    const throwingBrand = (codec: object, description: string) => {
+      const brand = Option.getOrThrow(
+        Option.fromUndefinedOr(
+          Reflect.ownKeys(codec).find(
+            (key) => typeof key === "symbol" && key.description === description,
+          ),
+        ),
+      );
+      const forged = { ...codec };
+      Object.defineProperty(forged, brand, {
+        value: () => {
+          throw new Error("hostile");
+        },
+      });
+      return forged;
+    };
+
+    expect(isKafkaCodec(throwingBrand(ordinary, "@effect-view-server/kafka/KafkaCodec"))).toBe(
+      false,
+    );
+    expect(
+      isKafkaCompactionKeyCodec(
+        throwingBrand(compaction, "@effect-view-server/kafka/KafkaCompactionKeyCodec"),
+      ),
+    ).toBe(false);
+  });
+
   it.effect(
     "decodes Confluent-framed protobuf with one codec for ordinary and compaction keys",
     () =>
       Effect.gen(function* () {
         const codec = kafka.schemaRegistry.protobuf(contractMessage);
         const payload = toBinary(contractMessage, create(contractMessage, { label: "registered" }));
-        const framed = confluentProtobufFrame(42, [1, 0], payload);
+        const framed = confluentProtobufFrame(42, [0], payload);
 
         const ordinary = yield* decodeKafkaCodec(codec, {
           bytes: framed,
@@ -455,6 +550,40 @@ describe("Kafka Source Adapter contract", () => {
           codec: true,
           compactionKeyCodec: true,
           format: "schema-registry-protobuf",
+        });
+
+        const wrongMessageFrame = confluentProtobufFrame(42, [1], payload);
+        expect(
+          yield* Effect.all([
+            decodeKafkaCodec(codec, { bytes: wrongMessageFrame, metadata }).pipe(Effect.flip),
+            decodeKafkaCompactionKeyCodec(codec, { bytes: wrongMessageFrame }).pipe(Effect.flip),
+          ]),
+        ).toStrictEqual([
+          {
+            _tag: "KafkaCodecError",
+            message:
+              'Confluent Schema Registry Protobuf frame selected a message that does not match configured message "kafka.contract.Value".',
+          },
+          {
+            _tag: "KafkaCodecError",
+            message:
+              'Confluent Schema Registry Protobuf frame selected a message that does not match configured message "kafka.contract.Value".',
+          },
+        ]);
+
+        const mappedCodec = kafka.schemaRegistry.protobuf(mappedContractPayload);
+        const mappedPayload = toBinary(
+          mappedContractPayload,
+          create(mappedContractPayload, { label: "normalized" }),
+        );
+        expect(
+          yield* decodeKafkaCodec(mappedCodec, {
+            bytes: confluentProtobufFrame(43, [0, 0], mappedPayload),
+            metadata,
+          }),
+        ).toStrictEqual({
+          $typeName: "kafka.mapped.Container.Payload",
+          label: "normalized",
         });
       }),
   );
@@ -567,11 +696,13 @@ describe("Kafka Source Adapter contract", () => {
         if (typeof key === "symbol") {
           Object.defineProperty(hostile, key, {
             value:
-              key === registryBrand
-                ? () => {
-                    throw new Error("hostile Registry brand");
-                  }
-                : () => hostile,
+              key.description === "@effect-view-server/kafka/KafkaSchemaRegistryRequirement"
+                ? true
+                : key === registryBrand
+                  ? () => {
+                      throw new Error("hostile Registry brand");
+                    }
+                  : () => hostile,
           });
         }
       }

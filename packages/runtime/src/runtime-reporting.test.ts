@@ -293,6 +293,7 @@ describe("Runtime reporting", () => {
       const dependencies = yield* Queue.unbounded<ReadonlyArray<RuntimeDependency>>();
       const source = yield* SubscriptionRef.make(detailed("42"));
       const scope = yield* Scope.make("sequential");
+      yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
       yield* makeRuntimeReporting(
         scope,
         {
@@ -322,8 +323,7 @@ describe("Runtime reporting", () => {
       yield* Effect.yieldNow;
       expect(yield* Queue.take(heartbeats)).toStrictEqual(detailed("43").heartbeat);
       expect(yield* Queue.take(dependencies)).toStrictEqual(detailed("43").dependencies);
-      yield* Scope.close(scope, Exit.void);
-    }),
+    }).pipe(Effect.scoped),
   );
 
   it.effect("logs callback defects and keeps later emissions alive", () => {

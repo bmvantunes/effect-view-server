@@ -7,6 +7,7 @@ import {
   viewServerSchemaFieldMetadata,
 } from "./index";
 import { viewServerRowSchemaFieldsMatchAst } from "./config-ownership";
+import { schemaAstIsClass } from "./internal";
 
 import { viewServer } from "../test-harness/live-query";
 import { StructuredProfile } from "../test-harness/schemas";
@@ -291,6 +292,20 @@ describe("Topic schema configuration", () => {
       viewServerRowSchemaFieldsMatchAst({ ast: missingTypeParameter, fields: {} }),
       viewServerRowSchemaFieldsMatchAst(missingField),
     ]).toStrictEqual([false, false, false, false, false, false]);
+  });
+
+  it("fails closed for a throwing Class constructor descriptor", () => {
+    class HostileProfile extends Schema.Class<HostileProfile>("HostileProfile")({
+      id: ViewServerId,
+    }) {}
+    Object.defineProperty(HostileProfile.ast.annotations, "~constructor", {
+      configurable: true,
+      value: () => {
+        throw new Error("hostile constructor descriptor");
+      },
+    });
+
+    expect(schemaAstIsClass(HostileProfile.ast)).toBe(false);
   });
 
   it("exposes only the canonical authored Topic tree", () => {

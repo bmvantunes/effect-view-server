@@ -2,6 +2,16 @@ export const expectedPublishRepository = "bmvantunes/effect-view-server";
 export const internalPackageScope = "@effect-view-server/";
 export const publicPackageName = "effect-view-server";
 
+export const effectSchemaAstCompatibilityDeclaration = `export {};
+
+declare module "effect/SchemaAST" {
+  export interface Sentinel {
+    readonly key: PropertyKey;
+    readonly literal: LiteralValue | symbol;
+  }
+}
+`;
+
 const cloneJson = (value) => structuredClone(value);
 
 const omitInternalDependencies = (dependencies) =>

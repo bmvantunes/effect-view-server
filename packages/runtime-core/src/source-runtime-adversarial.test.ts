@@ -210,9 +210,12 @@ describe("Runtime Core adversarial Source runtime", () => {
           offset: Schema.BigInt,
         });
         const schemaFailure = (value: { readonly value: unknown }) =>
-          new SchemaIssue.Forbidden(Option.some(value), {
-            message: "deliberate metrics-stage failure",
-          });
+          new SchemaIssue.Forbidden(
+            {
+              message: "deliberate metrics-stage failure",
+            },
+            value,
+          );
         let encodeCount = 0;
         const encodeFailure = MetricsValue.pipe(
           Schema.decodeTo(MetricsValue, {

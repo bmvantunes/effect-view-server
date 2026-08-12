@@ -46,6 +46,8 @@ const Row = Schema.Struct({
   repeated: RepeatedString,
   symbolic: SymbolicObject,
   mixed: Schema.Union([Schema.Number, Schema.BigInt, Schema.BigDecimal]),
+  optionalText: Schema.optionalKey(Schema.String),
+  optionalNumber: Schema.optionalKey(Schema.Number),
   recursive: RecursiveNode,
   structured: Schema.Array(Schema.String),
 });
@@ -78,6 +80,8 @@ describe("filter field contracts", () => {
     expect(fields.get("repeated")?.supportsText).toBe(true);
     expect(fields.get("symbolic.country")?.supportsText).toBe(true);
     expect(kinds("mixed")).toStrictEqual(["number", "bigint", "bigDecimal"]);
+    expect(fields.get("optionalText")?.supportsText).toBe(true);
+    expect(kinds("optionalNumber")).toStrictEqual(["number"]);
     expect(fields.has("recursive.child.child")).toBe(false);
     expect(fields.has("structured")).toBe(false);
   });

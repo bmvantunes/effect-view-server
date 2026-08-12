@@ -1,13 +1,15 @@
 import { createFileRegistry, toBinary, type DescFile, type DescMessage } from "@bufbuild/protobuf";
 import type { FileDescriptorProto } from "@bufbuild/protobuf/wkt";
 import { FileDescriptorProtoSchema } from "@bufbuild/protobuf/wkt";
-import { Effect, Option, Schema } from "effect";
-import { parseKafkaSchemaRegistryProtobufFrame } from "./schema-registry-frame";
+import { Effect, Exit, Option, Schema } from "effect";
 import {
   kafkaProtobufMessageAtIndexes,
   kafkaProtobufMessageIndexes,
-  kafkaProtobufMessageReaderCompatibilityIssues,
   kafkaProtobufNormalizedMessageIndexes,
+} from "./schema-registry-descriptor";
+import { parseKafkaSchemaRegistryProtobufFrame } from "./schema-registry-frame";
+import {
+  kafkaProtobufMessageReaderCompatibilityIssues,
   kafkaProtobufMessageWireCompatibilityIssues,
   kafkaProtobufWireCompatibilityIssues,
 } from "./schema-registry-wire";
@@ -159,7 +161,25 @@ const unavailable = (
     `Schema Registry request for subject ${JSON.stringify(subject)} failed: ${failure.message}`,
   );
 
-const canonicalWellKnownType = (name: string): boolean => name.startsWith("google/protobuf/");
+const canonicalWellKnownTypes = new Set([
+  "google/protobuf/compiler/plugin.proto",
+  "google/protobuf/any.proto",
+  "google/protobuf/api.proto",
+  "google/protobuf/cpp_features.proto",
+  "google/protobuf/descriptor.proto",
+  "google/protobuf/duration.proto",
+  "google/protobuf/empty.proto",
+  "google/protobuf/field_mask.proto",
+  "google/protobuf/go_features.proto",
+  "google/protobuf/java_features.proto",
+  "google/protobuf/source_context.proto",
+  "google/protobuf/struct.proto",
+  "google/protobuf/timestamp.proto",
+  "google/protobuf/type.proto",
+  "google/protobuf/wrappers.proto",
+]);
+
+const canonicalWellKnownType = (name: string): boolean => canonicalWellKnownTypes.has(name);
 
 const descriptorGraph = (root: DescFile): ReadonlyMap<string, DescFile> => {
   const files = new Map<string, DescFile>();
@@ -188,6 +208,47 @@ const validVersions = (versions: ReadonlyArray<number>): boolean =>
 
 const sameIndexes = (left: ReadonlyArray<number>, right: ReadonlyArray<number>): boolean =>
   left.length === right.length && left.every((index, position) => index === right[position]);
+
+const sharedSchemaRegistryReader = (
+  reader: KafkaSchemaRegistryReader,
+): KafkaSchemaRegistryReader => {
+  const compatibilities = new Map<string, Exit.Exit<string, KafkaSchemaRegistryRequestFailure>>();
+  const versionHistories = new Map<
+    string,
+    Exit.Exit<ReadonlyArray<number>, KafkaSchemaRegistryRequestFailure>
+  >();
+  const schemas = new Map<
+    string,
+    Exit.Exit<KafkaSchemaRegistrySchemaVersion, KafkaSchemaRegistryRequestFailure>
+  >();
+  const cached = <A>(
+    cache: Map<string, Exit.Exit<A, KafkaSchemaRegistryRequestFailure>>,
+    key: string,
+    read: () => Effect.Effect<A, KafkaSchemaRegistryRequestFailure>,
+  ): Effect.Effect<A, KafkaSchemaRegistryRequestFailure> => {
+    const result = cache.get(key);
+    if (result !== undefined) {
+      return result._tag === "Success"
+        ? Effect.succeed(result.value)
+        : Effect.failCause(result.cause);
+    }
+    return read().pipe(
+      Effect.exit,
+      Effect.tap((exit) => Effect.sync(() => cache.set(key, exit))),
+      Effect.flatten,
+    );
+  };
+  return {
+    effectiveCompatibility: (subject) =>
+      cached(compatibilities, subject, () => reader.effectiveCompatibility(subject)),
+    versions: (subject, includeDeleted) =>
+      cached(versionHistories, JSON.stringify([subject, includeDeleted]), () =>
+        reader.versions(subject, includeDeleted),
+      ),
+    schema: (subject, version) =>
+      cached(schemas, JSON.stringify([subject, version]), () => reader.schema(subject, version)),
+  };
+};
 
 const validateDeclaration = Effect.fn("KafkaSchemaRegistry.contract.validateDeclaration")(
   function* (
@@ -568,12 +629,15 @@ const validateDeclaration = Effect.fn("KafkaSchemaRegistry.contract.validateDecl
         declaration.descriptor,
         registered,
       );
-      const registeredToGenerated = kafkaProtobufMessageReaderCompatibilityIssues(
+      const registeredToGenerated = kafkaProtobufMessageWireCompatibilityIssues(
         registered,
         declaration.descriptor,
       );
       anchored ||= generatedToRegistered.length === 0 && registeredToGenerated.length === 0;
-      const mismatch = registeredToGenerated[0];
+      const mismatch = kafkaProtobufMessageReaderCompatibilityIssues(
+        registered,
+        declaration.descriptor,
+      )[0];
       if (mismatch !== undefined) {
         return yield* Effect.fail(
           issue(
@@ -638,8 +702,9 @@ export const inspectKafkaSchemaRegistryContracts = Effect.fn(
   declarations: ReadonlyArray<KafkaSchemaRegistryDeclaration>,
   reader: KafkaSchemaRegistryReader,
 ) {
+  const sharedReader = sharedSchemaRegistryReader(reader);
   const results = yield* Effect.forEach(declarations, (declaration) =>
-    validateDeclaration(declaration, reader).pipe(
+    validateDeclaration(declaration, sharedReader).pipe(
       Effect.match({
         onFailure: (contractIssue) => ({ contractIssue }),
         onSuccess: (contract) => ({ contract }),

@@ -5,7 +5,7 @@ const decodedRowMakeOptions = {
   parseOptions: { onExcessProperty: "error" },
 } as const;
 
-class DecodedRowSnapshotError extends Schema.TaggedErrorClass<DecodedRowSnapshotError>()(
+class DecodedRowSnapshotError extends Schema.TaggedError<DecodedRowSnapshotError>()(
   "DecodedRowSnapshotError",
   { message: Schema.String },
 ) {}
@@ -61,6 +61,10 @@ const snapshotDecodedRow = (
 
 export const validateDecodedRow = <S extends RowSchema>(schema: S, row: unknown) => {
   return Effect.fromResult(snapshotDecodedRow(schema, row)).pipe(
-    Effect.flatMap((snapshot) => schema.makeEffect(snapshot, decodedRowMakeOptions)),
+    Effect.flatMap((snapshot) =>
+      schema
+        .makeEffect(snapshot, decodedRowMakeOptions)
+        .pipe(Effect.mapError((issue) => new Schema.SchemaError(issue))),
+    ),
   );
 };

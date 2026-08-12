@@ -97,7 +97,7 @@ export const readHealthSnapshot = Effect.fn("ViewServerRuntimeCore.health.readSn
   const Topics extends TopicDefinitions,
 >(engine: EngineHealthReader<Topics>, input: ReadHealthInput<Topics>) {
   const nowMillis = yield* Clock.currentTimeMillis;
-  const nowNanos = yield* Clock.currentTimeNanos;
+  const nowNanos = yield* Clock.monotonicTimeNanos;
   return healthFromEngine(yield* engine.health(), {
     transportHealth: input.transportHealth,
     healthOverlay: input.healthOverlay ?? defaultRuntimeCoreHealthOverlay,

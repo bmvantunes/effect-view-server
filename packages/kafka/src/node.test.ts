@@ -9,7 +9,7 @@ import type {
   SourceRuntimeFailure,
 } from "effect-view-server/source-adapter";
 import { runViewServerRuntime } from "@effect-view-server/runtime";
-import { toBinary } from "@bufbuild/protobuf";
+import { create, toBinary } from "@bufbuild/protobuf";
 import { FileDescriptorProtoSchema } from "@bufbuild/protobuf/wkt";
 import { Buffer } from "node:buffer";
 import {
@@ -680,6 +680,29 @@ const makeMultiSourceSchemaRegistryConfig = () =>
     },
   });
 
+const makeMultiRegionSchemaRegistryConfig = () =>
+  defineViewServerConfig({
+    topics: {
+      orders: {
+        schema: Order,
+        source: kafka.source({
+          cleanupPolicy: "delete",
+          retentionPolicy: "Infinity",
+          topic: "source-orders",
+          regions: ["eu", "us"],
+          key: kafka.string(),
+          value: kafka.schemaRegistry.protobuf(OrderValueSchema),
+          localRowKey: ({ key }) => key,
+          map: ({ value, region }) => ({
+            price: value.price,
+            region: String(region),
+          }),
+          startFrom: "earliest",
+        }),
+      },
+    },
+  });
+
 const makeSchemaRegistryKeyValueConfig = () =>
   defineViewServerConfig({
     topics: {
@@ -899,9 +922,8 @@ describe("Kafka Node Adapter", () => {
         return Promise.resolve(new Response(JSON.stringify([1])));
       });
       const config = makeMultiSourceSchemaRegistryConfig();
-
-      yield* Effect.scoped(
-        EffectLayer.build(
+      const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(
+        Effect.provide(
           layer(config, {
             consumerGroupPrefix: "replica",
             regions: {
@@ -913,16 +935,17 @@ describe("Kafka Node Adapter", () => {
           }),
         ),
       );
+      yield* awaitCondition(() => platformatic.state.streams.length === 2);
 
       expect({
         admins: platformatic.state.admins.map((admin) => admin.closed),
-        consumers: platformatic.state.consumers.length,
+        consumers: platformatic.state.consumers.map((consumer) => consumer.closed),
         dispatchers: platformatic.state.dispatchers,
         requests,
       }).toStrictEqual({
         admins: [true],
-        consumers: 0,
-        dispatchers: [{ closed: true }],
+        consumers: [false, false],
+        dispatchers: [{ closed: false }],
         requests: [
           "https://registry.example.com/base/config/source-orders-value?defaultToGlobal=true",
           "https://registry.example.com/base/subjects/source-orders-value/versions",
@@ -934,6 +957,150 @@ describe("Kafka Node Adapter", () => {
           "https://registry.example.com/base/subjects/source-inventory-value/versions/1?deleted=true&format=serialized",
         ],
       });
+      yield* runtime.close;
+      expect(platformatic.state.dispatchers).toStrictEqual([{ closed: true }]);
+    }),
+  );
+
+  it.effect("isolates Schema Registry resources, URLs, and schema IDs between Regions", () =>
+    Effect.gen(function* () {
+      const requests: Array<string> = [];
+      const commits: Array<string> = [];
+      const serialized = Buffer.from(
+        toBinary(FileDescriptorProtoSchema, OrderValueSchema.file.proto),
+      ).toString("base64");
+      vi.stubGlobal("fetch", (input: string | URL | Request) => {
+        const url =
+          typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        requests.push(url);
+        const region = url.includes("registry.eu.example.com") ? "eu" : "us";
+        if (url.includes("/config/")) {
+          return Promise.resolve(
+            new Response(JSON.stringify({ compatibilityLevel: "FULL_TRANSITIVE" })),
+          );
+        }
+        if (url.includes("/versions/1")) {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({
+                subject: "source-orders-value",
+                version: 1,
+                id: region === "eu" ? 41 : 91,
+                schemaType: "PROTOBUF",
+                references: [],
+                schema: serialized,
+              }),
+            ),
+          );
+        }
+        return Promise.resolve(new Response(JSON.stringify([1])));
+      });
+
+      const config = makeMultiRegionSchemaRegistryConfig();
+      const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(
+        Effect.provide(
+          layer(config, {
+            consumerGroupPrefix: "replica",
+            regions: {
+              eu: {
+                bootstrapServers: "eu:9092",
+                schemaRegistry: {
+                  url: "https://registry.eu.example.com/base",
+                  tls: {},
+                },
+              },
+              us: {
+                bootstrapServers: "us:9092",
+                schemaRegistry: {
+                  url: "https://registry.us.example.com/base",
+                  tls: {},
+                },
+              },
+            },
+          }),
+        ),
+      );
+      yield* awaitCondition(() => platformatic.state.streams.length === 2);
+      const registryMessage = (input: {
+        readonly region: "eu" | "us";
+        readonly schemaId: number;
+        readonly key: string;
+        readonly price: number;
+      }) => {
+        const payload = toBinary(
+          OrderValueSchema,
+          create(OrderValueSchema, {
+            customerId: input.key,
+            price: input.price,
+          }),
+        );
+        return {
+          key: Buffer.from(input.key),
+          value: Buffer.concat([
+            Buffer.from([0, 0, 0, 0, input.schemaId, 0]),
+            Buffer.from(payload),
+          ]),
+          headers: new Map<Buffer, Buffer>(),
+          topic: "source-orders",
+          partition: 0,
+          timestamp: 123n,
+          offset: 0n,
+          metadata: {},
+          commit: () => {
+            commits.push(input.region);
+            return Promise.resolve();
+          },
+          toJSON: () => ({}),
+        };
+      };
+      const euConsumerIndex = platformatic.state.consumers.findIndex(
+        (consumer) => consumer.options.bootstrapBrokers[0] === "eu:9092",
+      );
+      const usConsumerIndex = platformatic.state.consumers.findIndex(
+        (consumer) => consumer.options.bootstrapBrokers[0] === "us:9092",
+      );
+      platformatic.state.streams[euConsumerIndex]?.push(
+        registryMessage({ region: "eu", schemaId: 41, key: "order-eu", price: 41 }),
+      );
+      platformatic.state.streams[usConsumerIndex]?.push(
+        registryMessage({ region: "us", schemaId: 91, key: "order-us", price: 91 }),
+      );
+      yield* awaitCondition(() => commits.length === 2);
+
+      expect({
+        commits,
+        dispatchers: platformatic.state.dispatchers,
+        requests,
+        snapshot: yield* runtime.client.snapshot("orders", {
+          select: ["id", "price", "region"],
+          orderBy: [{ field: "id", direction: "asc" }],
+        }),
+      }).toStrictEqual({
+        commits: ["eu", "us"],
+        dispatchers: [{ closed: false }, { closed: false }],
+        requests: [
+          "https://registry.eu.example.com/base/config/source-orders-value?defaultToGlobal=true",
+          "https://registry.eu.example.com/base/subjects/source-orders-value/versions",
+          "https://registry.eu.example.com/base/subjects/source-orders-value/versions?deleted=true",
+          "https://registry.eu.example.com/base/subjects/source-orders-value/versions/1?deleted=true&format=serialized",
+          "https://registry.us.example.com/base/config/source-orders-value?defaultToGlobal=true",
+          "https://registry.us.example.com/base/subjects/source-orders-value/versions",
+          "https://registry.us.example.com/base/subjects/source-orders-value/versions?deleted=true",
+          "https://registry.us.example.com/base/subjects/source-orders-value/versions/1?deleted=true&format=serialized",
+        ],
+        snapshot: {
+          rows: [
+            { id: "eu:0:order-eu", price: 41, region: "eu" },
+            { id: "us:0:order-us", price: 91, region: "us" },
+          ],
+          totalRows: 2,
+          version: 2,
+          status: "ready",
+          statusCode: "Ready",
+        },
+      });
+      yield* runtime.close;
+      expect(platformatic.state.dispatchers).toStrictEqual([{ closed: true }, { closed: true }]);
     }),
   );
 
@@ -1075,7 +1242,7 @@ describe("Kafka Node Adapter", () => {
           describeCalls: 2,
           listenerMessages: [],
         });
-      }),
+      }).pipe(Effect.provide(Logger.layer([Logger.defaultLogger]))),
   );
 
   it.effect("batches broker contract discovery once per Region before consumer startup", () =>
@@ -3015,16 +3182,18 @@ describe("Kafka Node Adapter", () => {
       url: "https://registry.example.com",
       auth: { username: "orders", password: "" },
     });
+    const bearerHttp = kafkaNodeInternals.schemaRegistryHttpOptions(bearer);
+    const basicHttp = kafkaNodeInternals.schemaRegistryHttpOptions(basic);
     expect({
       bearer: { ...bearer, headers: { ...bearer.headers } },
       bearerHttp: {
-        ...kafkaNodeInternals.schemaRegistryHttpOptions(bearer),
-        headers: { ...bearer.headers },
+        ...bearerHttp,
+        headers: { ...bearerHttp.headers },
       },
       basic: { ...basic, headers: { ...basic.headers } },
       basicHttp: {
-        ...kafkaNodeInternals.schemaRegistryHttpOptions(basic),
-        headers: { ...basic.headers },
+        ...basicHttp,
+        headers: { ...basicHttp.headers },
       },
       defaults: (() => {
         const captured = kafkaNodeInternals.snapshotSchemaRegistry({
@@ -3106,6 +3275,10 @@ describe("Kafka Node Adapter", () => {
       { "": "value" },
       { "x-tenant": 1 },
       { "X-Tenant": "one", "x-tenant": "two" },
+      { "invalid header": "value" },
+      { "invalid:header": "value" },
+      { "x-tenant": "line\r\nbreak" },
+      { "x-tenant": "snowman ☃" },
     ];
     for (const headers of malformedHeaders) {
       expect(() =>
@@ -3204,6 +3377,16 @@ describe("Kafka Node Adapter", () => {
       consumerGroupPrefix: "replica",
       regions: new Map([["eu", { bootstrapServers: ["one:9092"] }]]),
       retentionSweepIntervalNanos: 900_000_000_000n,
+      brokerDeclarations: [
+        {
+          viewServerTopic: "orders",
+          sourceTopic: "source-orders",
+          region: "eu",
+          cleanupPolicy: "delete",
+          retentionPolicy: { _tag: "Forever" },
+        },
+      ],
+      schemaRegistryDeclarations: [],
     });
     expect(propertyReads).toBe(0);
     const hostileOptions = new Proxy(
@@ -3270,6 +3453,12 @@ describe("Kafka Node Adapter", () => {
     ).toThrowError("Kafka Node Layer requires a View Server Config.");
     expect(() =>
       Reflect.apply(kafkaNodeInternals.kafkaSourceRegions, undefined, [{ topics: { plain: {} } }]),
+    ).toThrowError("Kafka Node Layer requires at least one Kafka Source Definition.");
+    expect(() =>
+      Reflect.apply(kafkaNodeInternals.snapshotLayerOptions, undefined, [
+        { topics: { plain: {} } },
+        { consumerGroupPrefix: "replica", regions: {} },
+      ]),
     ).toThrowError("Kafka Node Layer requires at least one Kafka Source Definition.");
     expect(() =>
       Reflect.apply(kafkaNodeInternals.kafkaSourceRegions, undefined, [

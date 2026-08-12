@@ -9,7 +9,7 @@ import {
 } from "./filter-expression";
 import { isPlainRecord } from "./row-values";
 
-export class InvalidQueryError extends Schema.TaggedErrorClass<InvalidQueryError>()(
+export class InvalidQueryError extends Schema.TaggedError<InvalidQueryError>()(
   "InvalidQueryError",
   {
     topic: Schema.String,

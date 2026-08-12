@@ -3,7 +3,7 @@ import { fromBinary } from "@bufbuild/protobuf";
 import { FileDescriptorProtoSchema } from "@bufbuild/protobuf/wkt";
 import { Buffer } from "node:buffer";
 import type { ConnectionOptions as NodeTlsConnectionOptions } from "node:tls";
-import { Duration, Effect, Schema, Scope } from "effect";
+import { Duration, Effect, Schedule, Schema, Scope } from "effect";
 import type {
   KafkaSchemaRegistryReader,
   KafkaSchemaRegistryRequestFailure,
@@ -130,18 +130,16 @@ const requestAttempt = (
         return { _tag: "BodyFailure" };
       }
     },
-    catch: () => requestFailure(`Schema Registry request to ${url.origin} failed.`, true),
+    catch: () => requestFailure("Schema Registry request failed.", true),
   }).pipe(
     Effect.timeout(Duration.millis(options.timeout)),
     Effect.mapError((failure) =>
-      "retryable" in failure
-        ? failure
-        : requestFailure(`Schema Registry request to ${url.origin} timed out.`, true),
+      "retryable" in failure ? failure : requestFailure("Schema Registry request timed out.", true),
     ),
     Effect.flatMap((response) => {
       if (response._tag === "BodyFailure") {
         return Effect.fail(
-          requestFailure("Schema Registry response body could not be read.", false),
+          requestFailure("Schema Registry response body could not be read.", true),
         );
       }
       return response.ok
@@ -160,19 +158,20 @@ const request = (
   options: KafkaSchemaRegistryHttpOptions,
   dispatcher: KafkaSchemaRegistryDispatcher | undefined,
   path: string,
-): Effect.Effect<string, KafkaSchemaRegistryRequestFailure> => {
-  const attempt = (number: number): Effect.Effect<string, KafkaSchemaRegistryRequestFailure> =>
-    requestAttempt(options, dispatcher, path).pipe(
-      Effect.catch((failure) =>
-        failure.retryable && number < options.retries
-          ? Effect.sleep(Duration.millis(options.retryDelay)).pipe(
-              Effect.andThen(attempt(number + 1)),
-            )
-          : Effect.fail({ message: failure.message }),
+): Effect.Effect<string, KafkaSchemaRegistryRequestFailure> =>
+  requestAttempt(options, dispatcher, path).pipe(
+    Effect.retry({
+      schedule: Schedule.exponential(Duration.millis(options.retryDelay)).pipe(
+        Schedule.jittered,
+        Schedule.modifyDelay(({ duration }) =>
+          Effect.succeed(Duration.millis(Math.ceil(Duration.toMillis(duration)))),
+        ),
       ),
-    );
-  return attempt(0);
-};
+      times: options.retries,
+      while: (failure) => failure.retryable,
+    }),
+    Effect.mapError((failure) => ({ message: failure.message })),
+  );
 
 const PositiveInt = Schema.Int.check(Schema.isGreaterThan(0));
 const CompatibilityResponseJson = Schema.fromJsonString(

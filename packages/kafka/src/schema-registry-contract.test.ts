@@ -63,7 +63,7 @@ const expectedIssue = (
   code: KafkaSchemaRegistryContractIssue["code"],
   message: string,
   overrides: Partial<
-    Pick<KafkaSchemaRegistryContractIssue, "schemaId" | "subject" | "version">
+    Pick<KafkaSchemaRegistryContractIssue, "schemaId" | "subject" | "version" | "viewServerTopic">
   > = {},
 ): KafkaSchemaRegistryContractIssue => ({
   _tag: "KafkaSchemaRegistryContractIssue",
@@ -832,6 +832,58 @@ describe("Kafka Schema Registry Protobuf contracts", () => {
           { version: 1, schemaId: 41 },
         ),
       ]);
+
+      const customGoogleFile = create(FileDescriptorProtoSchema, {
+        name: "google/protobuf/acme.proto",
+        package: "google.protobuf.acme",
+        syntax: "proto3",
+        messageType: [{ name: "Custom" }],
+      });
+      const customRoot = create(FileDescriptorProtoSchema, {
+        name: "custom-events.proto",
+        package: "events",
+        syntax: "proto3",
+        dependency: [customGoogleFile.name],
+        messageType: [{ name: "CustomEvent" }],
+      });
+      const customGenerated = generatedMessage(
+        [customGoogleFile, customRoot],
+        customRoot.name,
+        "events.CustomEvent",
+      );
+      const customFailure = yield* resolveFailure(
+        {
+          compatibility: {
+            "orders-value": "FULL_TRANSITIVE",
+            "registry-owned-acme": "BACKWARD",
+          },
+          active: { "orders-value": [1], "registry-owned-acme": [1] },
+          all: { "orders-value": [1], "registry-owned-acme": [1] },
+          schemas: {
+            "orders-value:1": referencedSchemaVersion("orders-value", 1, 41, customRoot, [
+              {
+                name: customGoogleFile.name,
+                subject: "registry-owned-acme",
+                version: 1,
+              },
+            ]),
+            "registry-owned-acme:1": referencedSchemaVersion(
+              "registry-owned-acme",
+              1,
+              51,
+              customGoogleFile,
+            ),
+          },
+        },
+        [{ ...declaration(), descriptor: customGenerated }],
+      );
+      expect(customFailure.issues).toStrictEqual([
+        expectedIssue(
+          "CompatibilityPolicyMismatch",
+          'Subject "registry-owned-acme" requires effective FULL_TRANSITIVE compatibility; observed "BACKWARD".',
+          { subject: "registry-owned-acme" },
+        ),
+      ]);
     }),
   );
 
@@ -944,7 +996,7 @@ describe("Kafka Schema Registry Protobuf contracts", () => {
       if (incompatibleField === undefined) {
         throw new Error("OrderValue field missing");
       }
-      incompatibleField.type = FieldDescriptorProto_Type.SINT32;
+      incompatibleField.type = FieldDescriptorProto_Type.BYTES;
       const anchorFailure = yield* resolveFailure({
         compatibility: { "orders-value": "FULL_TRANSITIVE" },
         active: { "orders-value": [1] },
@@ -980,6 +1032,28 @@ describe("Kafka Schema Registry Protobuf contracts", () => {
         [{ ...declaration(), descriptor: generatedWriterOnlyDescriptor }],
       );
 
+      const registeredWriterOnly = clone(FileDescriptorProtoSchema, OrderValueSchema.file.proto);
+      const registeredWriterOnlyMessage = registeredWriterOnly.messageType[0];
+      if (registeredWriterOnlyMessage === undefined) {
+        throw new Error("registered writer-only message missing");
+      }
+      registeredWriterOnlyMessage.field.push(
+        create(FieldDescriptorProtoSchema, {
+          name: "registered_only",
+          number: 3,
+          label: FieldDescriptorProto_Label.OPTIONAL,
+          type: FieldDescriptorProto_Type.STRING,
+        }),
+      );
+      const reverseNoMutualAnchorFailure = yield* resolveFailure({
+        compatibility: { "orders-value": "FULL_TRANSITIVE" },
+        active: { "orders-value": [1] },
+        all: { "orders-value": [1] },
+        schemas: {
+          "orders-value:1": schemaVersion(1, 41, registeredWriterOnly),
+        },
+      });
+
       expect(missingFailure.issues).toStrictEqual([
         expectedIssue(
           "GeneratedSchemaMismatch",
@@ -995,6 +1069,12 @@ describe("Kafka Schema Registry Protobuf contracts", () => {
         ),
       ]);
       expect(noMutualAnchorFailure.issues).toStrictEqual([
+        expectedIssue(
+          "GeneratedSchemaMismatch",
+          'Generated message "viewserver.runtime.test.OrderValue" is not mutually Buf WIRE-compatible with any active version of subject "orders-value".',
+        ),
+      ]);
+      expect(reverseNoMutualAnchorFailure.issues).toStrictEqual([
         expectedIssue(
           "GeneratedSchemaMismatch",
           'Generated message "viewserver.runtime.test.OrderValue" is not mutually Buf WIRE-compatible with any active version of subject "orders-value".',
@@ -1202,6 +1282,87 @@ describe("Kafka Schema Registry Protobuf contracts", () => {
           "CompatibilityPolicyMismatch",
           'Subject "other-value" requires effective FULL_TRANSITIVE compatibility; observed "FORWARD".',
           { subject: "other-value" },
+        ),
+      ]);
+    }),
+  );
+
+  it.effect("shares identical Registry reads across declarations in one inspection", () =>
+    Effect.gen(function* () {
+      const calls = { compatibility: 0, versions: 0, schema: 0 };
+      const base = reader({
+        compatibility: { "orders-value": "FULL_TRANSITIVE" },
+        active: { "orders-value": [1] },
+        all: { "orders-value": [1] },
+        schemas: { "orders-value:1": schemaVersion(1, 41) },
+      });
+      const counted: KafkaSchemaRegistryReader = {
+        effectiveCompatibility: (subject) => {
+          calls.compatibility += 1;
+          return base.effectiveCompatibility(subject);
+        },
+        versions: (subject, includeDeleted) => {
+          calls.versions += 1;
+          return base.versions(subject, includeDeleted);
+        },
+        schema: (subject, version) => {
+          calls.schema += 1;
+          return base.schema(subject, version);
+        },
+      };
+      const contracts = yield* resolveKafkaSchemaRegistryContracts(
+        [declaration(), { ...declaration(), viewServerTopic: "orders-copy" }],
+        counted,
+      );
+
+      expect(
+        contracts.map(({ viewServerTopic, subject, schemaIds }) => ({
+          viewServerTopic,
+          subject,
+          schemaIds: [...schemaIds],
+        })),
+      ).toStrictEqual([
+        {
+          viewServerTopic: "orders",
+          subject: "orders-value",
+          schemaIds: [[41, [[0]]]],
+        },
+        {
+          viewServerTopic: "orders-copy",
+          subject: "orders-value",
+          schemaIds: [[41, [[0]]]],
+        },
+      ]);
+      expect(calls).toStrictEqual({ compatibility: 1, versions: 2, schema: 1 });
+    }),
+  );
+
+  it.effect("shares identical Registry failures across declarations", () =>
+    Effect.gen(function* () {
+      let compatibilityCalls = 0;
+      const unavailable: KafkaSchemaRegistryReader = {
+        effectiveCompatibility: () => {
+          compatibilityCalls += 1;
+          return Effect.fail({ message: "compatibility unavailable" });
+        },
+        versions: () => Effect.die(new Error("versions must not be read")),
+        schema: () => Effect.die(new Error("schema must not be read")),
+      };
+      const failure = yield* resolveKafkaSchemaRegistryContracts(
+        [declaration(), { ...declaration(), viewServerTopic: "orders-copy" }],
+        unavailable,
+      ).pipe(Effect.flip);
+
+      expect(compatibilityCalls).toBe(1);
+      expect(failure.issues).toStrictEqual([
+        expectedIssue(
+          "RegistryUnavailable",
+          'Schema Registry request for subject "orders-value" failed: compatibility unavailable',
+        ),
+        expectedIssue(
+          "RegistryUnavailable",
+          'Schema Registry request for subject "orders-value" failed: compatibility unavailable',
+          { viewServerTopic: "orders-copy" },
         ),
       ]);
     }),

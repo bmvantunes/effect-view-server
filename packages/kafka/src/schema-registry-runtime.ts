@@ -1,4 +1,14 @@
-import { Cause, Duration, Effect, Option, Scope, Semaphore, Stream, SubscriptionRef } from "effect";
+import {
+  Cause,
+  Duration,
+  Effect,
+  Exit,
+  Option,
+  Scope,
+  Semaphore,
+  Stream,
+  SubscriptionRef,
+} from "effect";
 import type { KafkaAdapterFailure } from "./contract";
 import {
   inspectKafkaSchemaRegistryContracts,
@@ -18,14 +28,17 @@ export type KafkaSchemaRegistryBindingInput = {
   readonly sides: ReadonlyArray<KafkaSchemaRegistrySide>;
 };
 
-export type KafkaSchemaRegistryValidationInput = {
-  readonly viewServerTopic: string;
-  readonly sourceTopic: string;
-  readonly side: KafkaSchemaRegistrySide;
-  readonly bytes: Uint8Array;
+export type KafkaSchemaRegistryRecordValidationInput = KafkaSchemaRegistryBindingInput & {
+  readonly key: Uint8Array | null;
+  readonly value: Uint8Array | null;
 };
 
-export type KafkaServerSchemaRegistry = {
+export type KafkaSchemaRegistryRecordPayloads = {
+  readonly key: Uint8Array | undefined;
+  readonly value: Uint8Array | undefined;
+};
+
+export type KafkaSchemaRegistryRuntime = {
   readonly endpoints: ReadonlyArray<string>;
   readonly guard: (
     input: KafkaSchemaRegistryBindingInput,
@@ -33,10 +46,86 @@ export type KafkaServerSchemaRegistry = {
   readonly failures: (
     input: KafkaSchemaRegistryBindingInput,
   ) => Stream.Stream<never, KafkaAdapterFailure>;
-  readonly validate: (
-    input: KafkaSchemaRegistryValidationInput,
-  ) => Effect.Effect<Uint8Array, KafkaAdapterFailure>;
+  readonly validateRecord: (
+    input: KafkaSchemaRegistryRecordValidationInput,
+  ) => Effect.Effect<KafkaSchemaRegistryRecordPayloads, KafkaAdapterFailure>;
 };
+
+export type KafkaServerSchemaRegistry = KafkaSchemaRegistryRuntime & {
+  readonly retain: (lifetimeScope: Scope.Scope) => Effect.Effect<void>;
+};
+
+export const makeKafkaServerSchemaRegistry = Effect.fn("KafkaSchemaRegistryRuntime.server")(
+  function* <E>(input: {
+    readonly layerScope: Scope.Scope;
+    readonly acquire: Effect.Effect<KafkaSchemaRegistryRuntime, E, Scope.Scope>;
+  }): Effect.fn.Return<KafkaServerSchemaRegistry, E> {
+    const resourceScope = yield* Scope.make("sequential");
+    const closeResource = (yield* Effect.cached(Scope.close(resourceScope, Exit.void))).pipe(
+      Effect.uninterruptible,
+    );
+    const lock = Semaphore.makeUnsafe(1);
+    const retainedLifetimes = new Set<Scope.Scope>();
+    let layerReleased = false;
+    let resourceClosing = false;
+    const closeIfUnowned = lock
+      .withPermit(
+        Effect.sync(() => {
+          if (resourceClosing || !layerReleased || retainedLifetimes.size > 0) {
+            return false;
+          }
+          resourceClosing = true;
+          return true;
+        }),
+      )
+      .pipe(Effect.flatMap((shouldClose) => (shouldClose ? closeResource : Effect.void)));
+    const releaseLifetime = (lifetimeScope: Scope.Scope) =>
+      lock
+        .withPermit(
+          Effect.sync(() => {
+            retainedLifetimes.delete(lifetimeScope);
+          }),
+        )
+        .pipe(Effect.andThen(closeIfUnowned));
+    const retain = Effect.fn("KafkaSchemaRegistryRuntime.retain")(function* (
+      lifetimeScope: Scope.Scope,
+    ) {
+      yield* Effect.uninterruptible(
+        lock.withPermit(
+          Effect.sync(() => {
+            retainedLifetimes.add(lifetimeScope);
+          }),
+        ),
+      );
+      yield* Effect.uninterruptible(
+        Scope.addFinalizer(lifetimeScope, releaseLifetime(lifetimeScope)),
+      );
+    });
+    yield* Scope.addFinalizer(
+      input.layerScope,
+      Effect.uninterruptible(
+        lock
+          .withPermit(
+            Effect.sync(() => {
+              layerReleased = true;
+            }),
+          )
+          .pipe(Effect.andThen(closeIfUnowned)),
+      ),
+    );
+    const runtime = yield* input.acquire.pipe(
+      Effect.provideService(Scope.Scope, resourceScope),
+      Effect.onExit((exit) =>
+        Exit.isFailure(exit) ? Scope.close(resourceScope, exit) : Effect.void,
+      ),
+    );
+    const serverRuntime: KafkaServerSchemaRegistry = {
+      ...runtime,
+      retain,
+    };
+    return serverRuntime;
+  },
+);
 
 type RegistryState = {
   readonly revision: number;
@@ -127,7 +216,10 @@ const bindingFailure = (
 
 const missingContractFailure = (
   region: string,
-  input: KafkaSchemaRegistryValidationInput,
+  input: {
+    readonly sourceTopic: string;
+    readonly side: KafkaSchemaRegistrySide;
+  },
 ): KafkaAdapterFailure => ({
   _tag: "KafkaSchemaRegistrySchemaMismatch",
   region,
@@ -138,6 +230,100 @@ const missingContractFailure = (
   message: `Kafka Schema Registry contract for ${input.side} subject ${JSON.stringify(`${input.sourceTopic}-${input.side}`)} is unavailable.`,
 });
 
+type SettledRecordStateValidation =
+  | {
+      readonly _tag: "Failure";
+      readonly failure: KafkaAdapterFailure;
+    }
+  | {
+      readonly _tag: "Success";
+      readonly payloads: KafkaSchemaRegistryRecordPayloads;
+    };
+
+type RecordStateValidation =
+  | SettledRecordStateValidation
+  | {
+      readonly _tag: "Refresh";
+    };
+
+function validateRecordState(
+  region: string,
+  state: RegistryState,
+  input: KafkaSchemaRegistryRecordValidationInput,
+  refreshUnknownIds: false,
+): SettledRecordStateValidation;
+function validateRecordState(
+  region: string,
+  state: RegistryState,
+  input: KafkaSchemaRegistryRecordValidationInput,
+  refreshUnknownIds: true,
+): RecordStateValidation;
+function validateRecordState(
+  region: string,
+  state: RegistryState,
+  input: KafkaSchemaRegistryRecordValidationInput,
+  refreshUnknownIds: boolean,
+): RecordStateValidation {
+  const failure = bindingFailure(state, input);
+  if (failure !== undefined) {
+    return { _tag: "Failure", failure };
+  }
+  let key: Uint8Array | undefined;
+  let value: Uint8Array | undefined;
+  let requiresRefresh = false;
+  for (const side of input.sides) {
+    const bytes = side === "key" ? input.key : input.value;
+    if (bytes === null) {
+      continue;
+    }
+    const validation = {
+      sourceTopic: input.sourceTopic,
+      side,
+    };
+    const contract = state.contracts.get(input.viewServerTopic)?.get(side);
+    if (contract === undefined) {
+      return {
+        _tag: "Failure",
+        failure: missingContractFailure(region, validation),
+      };
+    }
+    const result = validateKafkaSchemaRegistryFrame(contract, bytes);
+    if (result._tag === "Mismatch") {
+      if (
+        refreshUnknownIds &&
+        result.schemaId !== null &&
+        !contract.schemaIds.has(result.schemaId)
+      ) {
+        requiresRefresh = true;
+        continue;
+      }
+      return {
+        _tag: "Failure",
+        failure: {
+          _tag: "KafkaSchemaRegistrySchemaMismatch",
+          region,
+          topic: input.sourceTopic,
+          subject: contract.subject,
+          side,
+          schemaId: result.schemaId,
+          message: result.message,
+        },
+      };
+    }
+    if (side === "key") {
+      key = result.payload;
+    } else {
+      value = result.payload;
+    }
+  }
+  return requiresRefresh
+    ? { _tag: "Refresh" }
+    : {
+        _tag: "Success",
+        payloads: Object.freeze({ key, value }),
+      };
+}
+
 export const makeKafkaSchemaRegistryRuntime = Effect.fn("KafkaSchemaRegistryRuntime.make")(
   function* (input: {
     readonly region: string;
@@ -146,7 +332,7 @@ export const makeKafkaSchemaRegistryRuntime = Effect.fn("KafkaSchemaRegistryRunt
     readonly reader: KafkaSchemaRegistryReader;
     readonly monitorInterval: Duration.Duration;
   }): Effect.fn.Return<
-    KafkaServerSchemaRegistry,
+    KafkaSchemaRegistryRuntime,
     KafkaSchemaRegistryContractValidationFailure,
     Scope.Scope
   > {
@@ -157,15 +343,26 @@ export const makeKafkaSchemaRegistryRuntime = Effect.fn("KafkaSchemaRegistryRunt
       failures: new Map(),
     });
     const refreshLock = Semaphore.makeUnsafe(1);
+    let refreshSequence = 0;
+    let completedRefreshSequence = 0;
+    let monitorTerminated = false;
     const refresh = Effect.fn("KafkaSchemaRegistryRuntime.refresh")(function* (
-      expectedRevision?: number,
+      completedAfterSequence?: number,
     ) {
       return yield* refreshLock.withPermit(
         Effect.gen(function* () {
           const current = SubscriptionRef.getUnsafe(state);
-          if (expectedRevision !== undefined && current.revision !== expectedRevision) {
+          if (monitorTerminated) {
             return;
           }
+          if (
+            completedAfterSequence !== undefined &&
+            completedRefreshSequence > completedAfterSequence
+          ) {
+            return;
+          }
+          refreshSequence += 1;
+          const currentRefreshSequence = refreshSequence;
           const resolution = yield* inspectKafkaSchemaRegistryContracts(
             input.declarations,
             input.reader,
@@ -183,6 +380,7 @@ export const makeKafkaSchemaRegistryRuntime = Effect.fn("KafkaSchemaRegistryRunt
             contracts,
             failures: failuresByTopic(resolution.issues),
           });
+          completedRefreshSequence = currentRefreshSequence;
           return resolution;
         }),
       );
@@ -192,22 +390,33 @@ export const makeKafkaSchemaRegistryRuntime = Effect.fn("KafkaSchemaRegistryRunt
     ).pipe(
       Effect.catchCauseIf(
         (cause) => !Cause.hasInterruptsOnly(cause),
-        () =>
-          SubscriptionRef.update(state, (current) => ({
-            revision: current.revision + 1,
-            contracts: current.contracts,
-            failures: monitorFailures(input.declarations),
-          })),
+        (cause) =>
+          refreshLock.withPermit(
+            Effect.gen(function* () {
+              monitorTerminated = true;
+              yield* Effect.logError(
+                "Kafka Schema Registry drift monitor terminated unexpectedly.",
+              ).pipe(Effect.annotateLogs({ cause: Cause.pretty(cause) }));
+              yield* SubscriptionRef.update(state, (current) => ({
+                revision: current.revision + 1,
+                contracts: current.contracts,
+                failures: monitorFailures(input.declarations),
+              }));
+            }),
+          ),
       ),
     );
     yield* Effect.forkScoped(monitor);
 
     const guard = (
       binding: KafkaSchemaRegistryBindingInput,
-    ): Effect.Effect<void, KafkaAdapterFailure> => {
-      const failure = bindingFailure(SubscriptionRef.getUnsafe(state), binding);
-      return failure === undefined ? Effect.void : Effect.fail(failure);
-    };
+    ): Effect.Effect<void, KafkaAdapterFailure> =>
+      SubscriptionRef.get(state).pipe(
+        Effect.flatMap((current) => {
+          const failure = bindingFailure(current, binding);
+          return failure === undefined ? Effect.void : Effect.fail(failure);
+        }),
+      );
     const failures = (
       binding: KafkaSchemaRegistryBindingInput,
     ): Stream.Stream<never, KafkaAdapterFailure> =>
@@ -218,63 +427,36 @@ export const makeKafkaSchemaRegistryRuntime = Effect.fn("KafkaSchemaRegistryRunt
         }),
         Stream.drain,
       );
-    const validate = (
-      validation: KafkaSchemaRegistryValidationInput,
-    ): Effect.Effect<Uint8Array, KafkaAdapterFailure> =>
+    const validateRecord = (
+      validation: KafkaSchemaRegistryRecordValidationInput,
+    ): Effect.Effect<KafkaSchemaRegistryRecordPayloads, KafkaAdapterFailure> =>
       Effect.gen(function* () {
         const current = SubscriptionRef.getUnsafe(state);
-        const currentFailure = current.failures
-          .get(validation.viewServerTopic)
-          ?.get(validation.side);
-        if (currentFailure !== undefined) {
-          return yield* Effect.fail(currentFailure);
+        const initialValidation = validateRecordState(input.region, current, validation, true);
+        if (initialValidation._tag === "Failure") {
+          return yield* Effect.fail(initialValidation.failure);
         }
-        let contract = current.contracts.get(validation.viewServerTopic)?.get(validation.side);
-        if (contract === undefined) {
-          return yield* Effect.fail(missingContractFailure(input.region, validation));
+        if (initialValidation._tag === "Success") {
+          return initialValidation.payloads;
         }
-        let result = validateKafkaSchemaRegistryFrame(contract, validation.bytes);
-        if (
-          result._tag === "Mismatch" &&
-          result.schemaId !== null &&
-          !contract.schemaIds.has(result.schemaId)
-        ) {
-          yield* refresh(current.revision);
-          const refreshedState = SubscriptionRef.getUnsafe(state);
-          const failure = refreshedState.failures
-            .get(validation.viewServerTopic)
-            ?.get(validation.side);
-          if (failure !== undefined) {
-            return yield* Effect.fail(failure);
-          }
-          const refreshed = Option.getOrThrow(
-            Option.fromUndefinedOr(
-              refreshedState.contracts.get(validation.viewServerTopic)?.get(validation.side),
-            ),
-          );
-          contract = refreshed;
-          result = validateKafkaSchemaRegistryFrame(refreshed, validation.bytes);
+        const observedRefreshSequence = refreshSequence;
+        yield* refresh(observedRefreshSequence);
+        const refreshedValidation = validateRecordState(
+          input.region,
+          SubscriptionRef.getUnsafe(state),
+          validation,
+          false,
+        );
+        if (refreshedValidation._tag === "Failure") {
+          return yield* Effect.fail(refreshedValidation.failure);
         }
-        if (result._tag === "Mismatch") {
-          const failure: KafkaAdapterFailure = {
-            _tag: "KafkaSchemaRegistrySchemaMismatch",
-            region: input.region,
-            topic: validation.sourceTopic,
-            subject: contract.subject,
-            side: validation.side,
-            schemaId: result.schemaId,
-            message: result.message,
-          };
-          return yield* Effect.fail(failure);
-        }
-        return result.payload;
+        return refreshedValidation.payloads;
       });
-
     return {
       endpoints: Object.freeze([input.endpoint]),
       guard,
       failures,
-      validate,
+      validateRecord,
     };
   },
 );

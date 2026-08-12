@@ -168,7 +168,7 @@ describe("Invalid grouped row wire inputs", () => {
         }),
       );
 
-      expect(invalidGroupedField.message).toBe("Invalid field id: Expected ViewServerId, got 10");
+      expect(invalidGroupedField.message).toBe("Invalid field id: Expected ViewServerId");
 
       const missingDecodedGroupedField = yield* Effect.flip(
         viewServerDecodeLiveEvent(viewServer, "orders", groupedQuery, {
@@ -416,9 +416,7 @@ describe("Invalid grouped row wire inputs", () => {
         }),
       );
 
-      expect(invalidEncodedMin.message).toBe(
-        'Invalid field minPrice: Expected number, got "not-a-number"',
-      );
+      expect(invalidEncodedMin.message).toBe("Invalid field minPrice: Expected number");
 
       const wrongJsonEnvelope = yield* Effect.flip(
         viewServerDecodeLiveEvent(viewServer, "orders", groupedMinQuery, {
@@ -459,7 +457,7 @@ describe("Invalid grouped row wire inputs", () => {
       );
 
       expect(invalidJsonAggregateValue.message).toBe(
-        'Invalid field minPrice: Expected "Infinity" | "-Infinity" | "NaN", got "not-a-number"',
+        'Invalid field minPrice: Expected "Infinity" | "-Infinity" | "NaN"',
       );
 
       for (const field of ["missing", "toString"]) {

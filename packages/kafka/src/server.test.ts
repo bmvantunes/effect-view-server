@@ -73,6 +73,15 @@ const schemaRegistryFrame = (schemaId: number, payload: Uint8Array): Uint8Array 
 
 const schemaRegistryPayload = (frame: Uint8Array): Uint8Array => frame.slice(6);
 
+const schemaRegistryRecordPayloads = (input: {
+  readonly key: Uint8Array | null;
+  readonly value: Uint8Array | null;
+}) =>
+  Object.freeze({
+    key: input.key === null ? undefined : schemaRegistryPayload(input.key),
+    value: input.value === null ? undefined : schemaRegistryPayload(input.value),
+  });
+
 const metadata = (
   region: string,
   offset: bigint,
@@ -590,9 +599,10 @@ describe("Kafka Source Adapter Server", () => {
             "tokyo",
             {
               endpoints: ["https://registry.kafka-tky.com"],
+              retain: () => Effect.void,
               guard: () => Effect.void,
               failures: () => Stream.empty,
-              validate: ({ bytes }) => Effect.succeed(schemaRegistryPayload(bytes)),
+              validateRecord: (input) => Effect.succeed(schemaRegistryRecordPayloads(input)),
             },
           ],
         ]),
@@ -813,19 +823,22 @@ describe("Kafka Source Adapter Server", () => {
                 "eu",
                 {
                   endpoints: ["https://registry.eu.example.com"],
+                  retain: () => Effect.void,
                   guard: () => Effect.void,
                   failures: () => Stream.empty,
-                  validate: (input) =>
+                  validateRecord: (input) =>
                     Effect.gen(function* () {
-                      registryValidations.push({
-                        region: "eu",
-                        sourceTopic: input.sourceTopic,
-                        side: input.side,
-                      });
+                      for (const side of input.sides) {
+                        registryValidations.push({
+                          region: "eu",
+                          sourceTopic: input.sourceTopic,
+                          side,
+                        });
+                      }
                       if (input.sourceTopic === "source-orders" && !ordersRegistryHealthy) {
                         return yield* Effect.fail(registryFailure);
                       }
-                      return schemaRegistryPayload(input.bytes);
+                      return schemaRegistryRecordPayloads(input);
                     }),
                 },
               ],
@@ -1019,26 +1032,123 @@ describe("Kafka Source Adapter Server", () => {
     }),
   );
 
+  it.effect("reacquires every Region lane when one Registry monitor fails", () =>
+    Effect.gen(function* () {
+      const acquisitionOrder: Array<string> = [];
+      const eu = yield* makeFakeRegion("eu", acquisitionOrder);
+      const us = yield* makeFakeRegion("us", acquisitionOrder);
+      const registryFailure = yield* Deferred.make<KafkaAdapterFailure>();
+      let euFailureSubscriptions = 0;
+      const source = kafka.source(
+        {
+          cleanupPolicy: "delete",
+          retentionPolicy: "Infinity",
+          topic: "source-orders",
+          regions: ["eu", "us"],
+          key: kafka.string(),
+          value: kafka.schemaRegistry.protobuf(OrderValueSchema),
+          localRowKey: ({ key }) => key,
+          map: ({ value, region }) => ({ price: value.price, region: String(region) }),
+          startFrom: "earliest",
+        },
+        Schedule.spaced("1 second"),
+      );
+      const config = defineViewServerConfig({
+        topics: { orders: { schema: Order, source } },
+      });
+      const registry = (region: string) => ({
+        endpoints: [`https://registry.${region}.example.com`],
+        retain: () => Effect.void,
+        guard: () => Effect.void,
+        failures: () => {
+          if (region !== "eu") {
+            return Stream.empty;
+          }
+          euFailureSubscriptions += 1;
+          return euFailureSubscriptions === 1
+            ? Stream.unwrap(Deferred.await(registryFailure).pipe(Effect.map(Stream.fail)))
+            : Stream.empty;
+        },
+        validateRecord: (input: {
+          readonly key: Uint8Array | null;
+          readonly value: Uint8Array | null;
+        }) => Effect.succeed(schemaRegistryRecordPayloads(input)),
+      });
+      const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(
+        Effect.provide(
+          makeKafkaServerLayer({
+            brokerContracts: foreverBrokerContracts(["eu", "us"]),
+            retentionSweepIntervalNanos: 900_000_000_000n,
+            consumerGroupPrefix: "registry-multi-region-retry",
+            regions: new Map([
+              ["eu", eu.runtime],
+              ["us", us.runtime],
+            ]),
+            schemaRegistries: new Map([
+              ["eu", registry("eu")],
+              ["us", registry("us")],
+            ]),
+          }),
+        ),
+      );
+      yield* eu.awaitAcquisitions(1);
+      yield* us.awaitAcquisitions(1);
+      const failure: KafkaAdapterFailure = {
+        _tag: "KafkaSchemaRegistryPolicyMismatch",
+        region: "eu",
+        topic: "source-orders",
+        subject: "source-orders-value",
+        side: "value",
+        schemaId: null,
+        message: "Subject policy is no longer FULL_TRANSITIVE.",
+      };
+
+      yield* Deferred.succeed(registryFailure, failure);
+      yield* awaitCondition(
+        () => eu.counts().finalizations === 1 && us.counts().finalizations === 1,
+        "multi-Region Registry failure finalization",
+      );
+      yield* TestClock.withLive(Effect.sleep("1 millis"));
+      yield* TestClock.adjust("1 second");
+      yield* eu.awaitAcquisitions(2);
+      yield* us.awaitAcquisitions(2);
+
+      expect({
+        acquisitionOrder,
+        eu: eu.counts(),
+        us: us.counts(),
+      }).toStrictEqual({
+        acquisitionOrder: ["eu:1", "us:1", "eu:2", "us:2"],
+        eu: { acquisitions: 2, finalizations: 1 },
+        us: { acquisitions: 2, finalizations: 1 },
+      });
+      yield* runtime.close;
+    }),
+  );
+
   it.effect("validates Registry-backed keys and values before decoding either payload", () =>
     Effect.gen(function* () {
       const acquisitionOrder: Array<string> = [];
       const eu = yield* makeFakeRegion("eu", acquisitionOrder);
       const validations: Array<"key" | "value"> = [];
       let mappings = 0;
-      const source = kafka.source({
-        cleanupPolicy: "delete",
-        retentionPolicy: "Infinity",
-        topic: "source-orders",
-        regions: ["eu"],
-        key: kafka.schemaRegistry.protobuf(OrderValueSchema),
-        value: kafka.schemaRegistry.protobuf(OrderValueSchema),
-        localRowKey: ({ key }) => key.customerId,
-        map: ({ value, region }) => {
-          mappings += 1;
-          return { price: value.price, region: String(region) };
+      const source = kafka.source(
+        {
+          cleanupPolicy: "delete",
+          retentionPolicy: "Infinity",
+          topic: "source-orders",
+          regions: ["eu"],
+          key: kafka.schemaRegistry.protobuf(OrderValueSchema),
+          value: kafka.schemaRegistry.protobuf(OrderValueSchema),
+          localRowKey: ({ key }) => key.customerId,
+          map: ({ value, region }) => {
+            mappings += 1;
+            return { price: value.price, region: String(region) };
+          },
+          startFrom: "earliest",
         },
-        startFrom: "earliest",
-      });
+        Schedule.recurs(0),
+      );
       const config = defineViewServerConfig({
         topics: { orders: { schema: Order, source } },
       });
@@ -1054,12 +1164,28 @@ describe("Kafka Source Adapter Server", () => {
                 "eu",
                 {
                   endpoints: ["https://registry.eu.example.com"],
+                  retain: () => Effect.void,
                   guard: () => Effect.void,
                   failures: () => Stream.empty,
-                  validate: ({ bytes: framedBytes, side }) =>
-                    Effect.sync(() => {
-                      validations.push(side);
-                      return schemaRegistryPayload(framedBytes);
+                  validateRecord: (input) =>
+                    Effect.gen(function* () {
+                      for (const side of input.sides) {
+                        validations.push(side);
+                        const framedBytes = side === "key" ? input.key : input.value;
+                        const schemaId = framedBytes?.[4] ?? -1;
+                        if (schemaId === 99) {
+                          return yield* Effect.fail<KafkaAdapterFailure>({
+                            _tag: "KafkaSchemaRegistrySchemaMismatch",
+                            region: "eu",
+                            topic: "source-orders",
+                            subject: `source-orders-${side}`,
+                            side,
+                            schemaId,
+                            message: `Schema ID ${String(schemaId)} is not active.`,
+                          });
+                        }
+                      }
+                      return schemaRegistryRecordPayloads(input);
                     }),
                 },
               ],
@@ -1105,24 +1231,90 @@ describe("Kafka Source Adapter Server", () => {
         statusCode: "Ready",
       });
 
-      let malformedSettlements = 0;
+      const malformedApplicationExits: Array<SourceApplicationExit> = [];
       yield* eu.offerRecord({
         key,
         value: schemaRegistryFrame(43, Uint8Array.from([0x0a, 0x02, 0x61])),
         metadata: metadata("eu", 2n),
-        settlement: () =>
+        settlement: (applicationExit) =>
           Effect.sync(() => {
-            malformedSettlements += 1;
+            malformedApplicationExits.push(applicationExit);
+            if (Exit.isSuccess(applicationExit)) {
+              eu.commits.push(2n);
+            }
           }),
       });
       yield* awaitCondition(
-        () => malformedSettlements === 1,
+        () => malformedApplicationExits.length === 1,
         "malformed Registry protobuf rejection settlement",
       );
-      expect({ malformedSettlements, mappings, validations }).toStrictEqual({
-        malformedSettlements: 1,
+      const diagnostics = yield* runtime.liveClient.subscribeSourceHealth({ topic: "orders" });
+      const sourceHealth = Option.getOrThrow(
+        yield* diagnostics.events.pipe(Stream.take(1), Stream.runHead),
+      );
+      yield* diagnostics.close();
+      const degraded = Option.getOrThrow(
+        Option.liftPredicate(sourceHealth.status, (status) => status._tag === "Degraded"),
+      );
+      const malformedRejection = Option.getOrThrow(
+        Option.liftPredicate(
+          degraded.reasons[0],
+          (reason) => reason._tag === "SourceItemRejection",
+        ),
+      );
+      expect({
+        malformedApplicationExit: malformedApplicationExits[0],
+        malformedRejection: {
+          failure: malformedRejection.latestRejection.failure,
+          location: malformedRejection.latestRejection.location,
+        },
+        mappings,
+        validations,
+        commits: eu.commits,
+      }).toStrictEqual({
+        malformedApplicationExit: Exit.succeed(undefined),
+        malformedRejection: {
+          failure: {
+            _tag: "AdapterFailure",
+            failure: {
+              _tag: "KafkaDecodeFailure",
+              region: "eu",
+              topic: "source-orders",
+              message: "Kafka value codec rejected the record.",
+            },
+          },
+          location: {
+            topic: "source-orders",
+            region: "eu",
+            partition: 0,
+            offset: 2n,
+            phase: "valueDecode",
+            message: "Kafka value codec rejected the record.",
+          },
+        },
         mappings: 1,
         validations: ["key", "value", "key", "value"],
+        commits: [1n, 2n],
+      });
+
+      let mixedSettlements = 0;
+      yield* eu.offerRecord({
+        key: schemaRegistryFrame(41, Uint8Array.from([0x0a, 0x02, 0x61])),
+        value: schemaRegistryFrame(99, Uint8Array.from([])),
+        metadata: metadata("eu", 3n),
+        settlement: () =>
+          Effect.sync(() => {
+            mixedSettlements += 1;
+          }),
+      });
+      yield* awaitCondition(
+        () => mixedSettlements === 1 || eu.counts().finalizations === 1,
+        "mixed Registry outcome",
+      );
+      expect({ mixedSettlements, mappings, validations }).toStrictEqual({
+        mixedSettlements: 0,
+        mappings: 1,
+        validations: ["key", "value", "key", "value", "key", "value"],
       });
       yield* runtime.close;
     }),
@@ -1226,12 +1418,14 @@ describe("Kafka Source Adapter Server", () => {
                 "eu",
                 {
                   endpoints: ["https://registry.eu.example.com"],
+                  retain: () => Effect.void,
                   guard: () => Effect.void,
                   failures: () => Stream.empty,
-                  validate: ({ bytes: framedBytes }) =>
+                  validateRecord: (input) =>
                     Effect.sync(() => {
+                      const framedBytes = Option.getOrThrow(Option.fromNullishOr(input.value));
                       validations.push(framedBytes[4] ?? -1);
-                      return schemaRegistryPayload(framedBytes);
+                      return schemaRegistryRecordPayloads(input);
                     }),
                 },
               ],
@@ -1258,13 +1452,48 @@ describe("Kafka Source Adapter Server", () => {
           Stream.runHead,
         ),
       );
-      expect({ settlements, status: exhausted.status, validations }).toStrictEqual({
+      expect({
+        reporting: yield* runtime.reporting.snapshot,
+        settlements,
+        status: exhausted.status,
+        validations,
+      }).toStrictEqual({
+        reporting: {
+          heartbeat: { status: "Exhausted", problems: ["dependency"] },
+          dependencies: [
+            {
+              dependency: "kafka",
+              target: "eu",
+              endpoints: [],
+              status: "Exhausted",
+              issues: [],
+            },
+            {
+              dependency: "schema-registry",
+              target: "eu",
+              endpoints: ["https://registry.eu.example.com"],
+              status: "Ready",
+              issues: [],
+            },
+          ],
+        },
         settlements: [1n, 2n],
         status: {
           _tag: "Exhausted",
           exhaustion: {
             _tag: "RetryExhausted",
-            lastTermination: { _tag: "UnexpectedCompletion" },
+            lastTermination: {
+              _tag: "Failed",
+              failure: {
+                _tag: "AdapterFailure",
+                failure: {
+                  _tag: "KafkaConsumeFailure",
+                  region: "eu",
+                  topic: "source-orders",
+                  message: 'Kafka Region "eu" consumer stream completed unexpectedly.',
+                },
+              },
+            },
           },
           exhaustedAtNanos: 0n,
         },
@@ -1361,6 +1590,8 @@ describe("Kafka Source Adapter Server", () => {
         currentTimeMillis: Effect.succeed(-1),
         currentTimeNanosUnsafe: () => 0n,
         currentTimeNanos: Effect.succeed(0n),
+        monotonicTimeNanosUnsafe: () => 0n,
+        monotonicTimeNanos: Effect.succeed(0n),
         sleep: () => Effect.void,
       };
       const clockFailure = yield* kafkaServerInternals
@@ -3217,8 +3448,10 @@ describe("Kafka Source Adapter Server", () => {
       const clock: Clock.Clock = {
         currentTimeMillisUnsafe: () => wallMillis,
         currentTimeMillis: Effect.sync(() => wallMillis),
-        currentTimeNanosUnsafe: () => monotonicNanos,
-        currentTimeNanos: Effect.sync(() => {
+        currentTimeNanosUnsafe: () => BigInt(wallMillis) * 1_000_000n,
+        currentTimeNanos: Effect.sync(() => BigInt(wallMillis) * 1_000_000n),
+        monotonicTimeNanosUnsafe: () => monotonicNanos,
+        monotonicTimeNanos: Effect.sync(() => {
           const current = monotonicNanos;
           monotonicNanos += 50n;
           return current;
@@ -4106,14 +4339,17 @@ describe("Kafka Source Adapter Server", () => {
                   "eu",
                   {
                     endpoints: ["https://registry.eu.example.com"],
+                    retain: () => Effect.void,
                     guard: () => Effect.void,
                     failures: () => Stream.empty,
-                    validate: ({ bytes: framedBytes, side }) => {
+                    validateRecord: (input) => {
+                      const side = Option.getOrThrow(Option.fromUndefinedOr(input.sides[0]));
+                      const framedBytes = Option.getOrThrow(Option.fromNullishOr(input.key));
                       const schemaId = framedBytes[4] ?? -1;
                       validations.push({ schemaId, side });
                       return schemaId === 99
                         ? Effect.fail(mismatchFailure)
-                        : Effect.succeed(schemaRegistryPayload(framedBytes));
+                        : Effect.succeed(schemaRegistryRecordPayloads(input));
                     },
                   },
                 ],
@@ -4273,6 +4509,8 @@ describe("Kafka Source Adapter Server", () => {
           currentTimeMillis: Effect.sync(() => wallMillis),
           currentTimeNanosUnsafe: () => monotonicClock.currentTimeNanosUnsafe(),
           currentTimeNanos: monotonicClock.currentTimeNanos,
+          monotonicTimeNanosUnsafe: () => monotonicClock.monotonicTimeNanosUnsafe(),
+          monotonicTimeNanos: monotonicClock.monotonicTimeNanos,
           sleep: (duration) => monotonicClock.sleep(duration),
           adjust: (duration) => monotonicClock.adjust(duration),
           setTime: (timestamp) => monotonicClock.setTime(timestamp),

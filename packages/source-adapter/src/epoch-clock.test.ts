@@ -29,8 +29,10 @@ describe("epoch clock", () => {
       const clock: Clock.Clock = {
         currentTimeMillisUnsafe: () => wallMillis,
         currentTimeMillis: Effect.sync(() => wallMillis),
-        currentTimeNanosUnsafe: () => monotonicNanos,
-        currentTimeNanos: Effect.sync(() => monotonicNanos),
+        currentTimeNanosUnsafe: () => BigInt(wallMillis) * 1_000_000n,
+        currentTimeNanos: Effect.sync(() => BigInt(wallMillis) * 1_000_000n),
+        monotonicTimeNanosUnsafe: () => monotonicNanos,
+        monotonicTimeNanos: Effect.sync(() => monotonicNanos),
         sleep: () => Effect.void,
       };
       return Effect.gen(function* () {
@@ -39,7 +41,8 @@ describe("epoch clock", () => {
         expect(yield* currentEpochNanos).toBe(2_000_000_000n);
         wallMillis = 3_500;
         expect(yield* currentEpochNanos).toBe(3_500_000_000n);
-        expect(yield* Clock.currentTimeNanos).toBe(9_000_000_000n);
+        expect(yield* Clock.currentTimeNanos).toBe(3_500_000_000n);
+        expect(yield* Clock.monotonicTimeNanos).toBe(9_000_000_000n);
       }).pipe(Effect.provideService(Clock.Clock, clock));
     },
   );

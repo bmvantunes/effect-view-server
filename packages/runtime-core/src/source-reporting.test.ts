@@ -362,8 +362,47 @@ describe("Runtime Source reporting", () => {
     ]);
   });
 
+  it("applies a detailed dependency issue to every target when no targets are classified", () => {
+    const definition: RuntimeSourceReportingDefinition = {
+      ...grpc,
+      classifyFailure: () => ({
+        problem: "dependency",
+        issue: {
+          code: "GrpcUnavailable",
+          message: "The gRPC dependency is unavailable.",
+          attributes: [],
+        },
+      }),
+    };
+    const state = makeRuntimeSourceReportingState(
+      definition,
+      waiting(adapterFailure({ _tag: "Dependency" })),
+    );
+
+    expect(runtimeSourceReportingSnapshot([definition], [state]).dependencies).toStrictEqual([
+      {
+        dependency: "grpc",
+        target: "orders",
+        endpoints: ["https://orders.grpc-tky.com"],
+        status: "WaitingToRetry",
+        issues: [
+          {
+            source: "orders",
+            code: "GrpcUnavailable",
+            message: "The gRPC dependency is unavailable.",
+            attributes: [],
+          },
+        ],
+      },
+    ]);
+  });
+
   it("deduplicates, orders, and semantically compares detailed dependency issues", () => {
-    const issueDefinition = (source: string, code: string): RuntimeSourceReportingDefinition => ({
+    const issueDefinition = (
+      source: string,
+      code: string,
+      message = `${source}:${code}`,
+    ): RuntimeSourceReportingDefinition => ({
       source,
       dependency: "schema-registry",
       lifecycle: "materialized",
@@ -379,7 +418,7 @@ describe("Runtime Source reporting", () => {
         targets: [{ dependency: "schema-registry", target: "tokyo" }],
         issue: {
           code,
-          message: `${source}:${code}`,
+          message,
           attributes: [{ name: "subject", value: `${source}-value` }],
         },
       }),
@@ -400,9 +439,10 @@ describe("Runtime Source reporting", () => {
       ],
     });
     const inventory = issueDefinition("inventory", "A");
-    const ordersA = issueDefinition("orders", "A");
+    const ordersAFirst = issueDefinition("orders", "A", "orders:A:first");
+    const ordersASecond = issueDefinition("orders", "A", "orders:A:second");
     const ordersB = issueDefinition("orders", "B");
-    const definitions = [ordersB, inventory, ordersA];
+    const definitions = [ordersASecond, ordersB, inventory, ordersAFirst];
     const makeStates = () =>
       definitions.map((definition) => makeRuntimeSourceReportingState(definition, degraded(1n)));
     const firstStates = makeStates();
@@ -410,7 +450,7 @@ describe("Runtime Source reporting", () => {
 
     expect(updateRuntimeSourceReportingState(ordersBState, degraded(2n))).toBe(false);
     const first = runtimeSourceReportingSnapshot(definitions, [...firstStates, ordersBState]);
-    const second = runtimeSourceReportingSnapshot(definitions, makeStates());
+    const second = runtimeSourceReportingSnapshot(definitions, [...makeStates()].reverse());
 
     expect(first).toStrictEqual({
       heartbeat: { status: "Degraded", problems: ["dependency"] },
@@ -430,7 +470,13 @@ describe("Runtime Source reporting", () => {
             {
               source: "orders",
               code: "A",
-              message: "orders:A",
+              message: "orders:A:first",
+              attributes: [{ name: "subject", value: "orders-value" }],
+            },
+            {
+              source: "orders",
+              code: "A",
+              message: "orders:A:second",
               attributes: [{ name: "subject", value: "orders-value" }],
             },
             {
@@ -607,6 +653,13 @@ describe("Runtime Source reporting", () => {
       }),
     },
     {
+      label: "an empty dependency issue code",
+      value: malformedClassification({
+        problem: "dependency",
+        issue: { code: "", message: "invalid", attributes: [] },
+      }),
+    },
+    {
       label: "a primitive dependency attribute",
       value: malformedClassification({
         problem: "dependency",
@@ -621,6 +674,17 @@ describe("Runtime Source reporting", () => {
           code: "Failure",
           message: "invalid",
           attributes: [{ name: "subject", value: 1 }],
+        },
+      }),
+    },
+    {
+      label: "an empty dependency attribute name",
+      value: malformedClassification({
+        problem: "dependency",
+        issue: {
+          code: "Failure",
+          message: "invalid",
+          attributes: [{ name: "", value: "x" }],
         },
       }),
     },

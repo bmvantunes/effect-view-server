@@ -1,14 +1,17 @@
 import { clone } from "@bufbuild/protobuf";
 import { FieldDescriptorProto_Type, FileDescriptorProtoSchema } from "@bufbuild/protobuf/wkt";
 import { describe, expect, it } from "@effect/vitest";
-import { Deferred, Duration, Effect, Fiber, Stream } from "effect";
+import { Clock, Deferred, Duration, Effect, Fiber, Option, Stream } from "effect";
 import { TestClock } from "effect/testing";
 import {
   type KafkaSchemaRegistryDeclaration,
   type KafkaSchemaRegistryReader,
   type KafkaSchemaRegistrySchemaVersion,
 } from "./schema-registry-contract";
-import { makeKafkaSchemaRegistryRuntime } from "./schema-registry-runtime";
+import {
+  makeKafkaSchemaRegistryRuntime,
+  type KafkaSchemaRegistryRuntime,
+} from "./schema-registry-runtime";
 import { OrderValueSchema } from "./test-fixtures/orders_pb";
 
 type MutableSubject = {
@@ -108,6 +111,31 @@ const frame = (schemaId: number): Uint8Array =>
     0,
   ]);
 
+const validateSide = (
+  runtime: KafkaSchemaRegistryRuntime,
+  input: {
+    readonly viewServerTopic: string;
+    readonly sourceTopic: string;
+    readonly side: "key" | "value";
+    readonly bytes: Uint8Array;
+  },
+) =>
+  runtime
+    .validateRecord({
+      viewServerTopic: input.viewServerTopic,
+      sourceTopic: input.sourceTopic,
+      sides: [input.side],
+      key: input.side === "key" ? input.bytes : null,
+      value: input.side === "value" ? input.bytes : null,
+    })
+    .pipe(
+      Effect.map((payloads) =>
+        Option.getOrThrow(
+          Option.fromUndefinedOr(input.side === "key" ? payloads.key : payloads.value),
+        ),
+      ),
+    );
+
 describe("Kafka Schema Registry Region runtime", () => {
   it.effect("groups key and value contracts for one View Server Topic", () =>
     Effect.scoped(
@@ -140,13 +168,13 @@ describe("Kafka Schema Registry Region runtime", () => {
         yield* TestClock.adjust(Duration.seconds(1));
         expect(
           yield* Effect.all([
-            runtime.validate({
+            validateSide(runtime, {
               viewServerTopic: "orders",
               sourceTopic: "source-orders",
               side: "key",
               bytes: frame(40),
             }),
-            runtime.validate({
+            validateSide(runtime, {
               viewServerTopic: "orders",
               sourceTopic: "source-orders",
               side: "value",
@@ -196,7 +224,7 @@ describe("Kafka Schema Registry Region runtime", () => {
         orders.schemas.set(2, schemaVersion("source-orders-value", 2, 42));
         yield* TestClock.adjust(Duration.seconds(1));
         const callsAfterWarm = { ...calls };
-        yield* runtime.validate({
+        yield* validateSide(runtime, {
           viewServerTopic: "orders",
           sourceTopic: "source-orders",
           side: "value",
@@ -254,7 +282,7 @@ describe("Kafka Schema Registry Region runtime", () => {
         orders.active = [1, 2];
         orders.all = [1, 2];
         orders.schemas.set(2, schemaVersion("source-orders-value", 2, 42));
-        const validate42 = runtime.validate({
+        const validate42 = validateSide(runtime, {
           viewServerTopic: "orders",
           sourceTopic: "source-orders",
           side: "value",
@@ -263,14 +291,12 @@ describe("Kafka Schema Registry Region runtime", () => {
         yield* Effect.all([validate42, validate42], { concurrency: "unbounded" });
         expect(calls).toStrictEqual({ compatibility: 2, versions: 4, schemas: 3 });
 
-        const missing = yield* runtime
-          .validate({
-            viewServerTopic: "orders",
-            sourceTopic: "source-orders",
-            side: "value",
-            bytes: frame(99),
-          })
-          .pipe(Effect.flip);
+        const missing = yield* validateSide(runtime, {
+          viewServerTopic: "orders",
+          sourceTopic: "source-orders",
+          side: "value",
+          bytes: frame(99),
+        }).pipe(Effect.flip);
         expect(missing).toStrictEqual({
           _tag: "KafkaSchemaRegistrySchemaMismatch",
           region: "eu",
@@ -282,14 +308,12 @@ describe("Kafka Schema Registry Region runtime", () => {
             'Schema ID 99 is not an active validated version of subject "source-orders-value".',
         });
 
-        const missingContract = yield* runtime
-          .validate({
-            viewServerTopic: "unknown",
-            sourceTopic: "source-unknown",
-            side: "value",
-            bytes: frame(41),
-          })
-          .pipe(Effect.flip);
+        const missingContract = yield* validateSide(runtime, {
+          viewServerTopic: "unknown",
+          sourceTopic: "source-unknown",
+          side: "value",
+          bytes: frame(41),
+        }).pipe(Effect.flip);
         expect(missingContract).toStrictEqual({
           _tag: "KafkaSchemaRegistrySchemaMismatch",
           region: "eu",
@@ -300,6 +324,92 @@ describe("Kafka Schema Registry Region runtime", () => {
           message:
             'Kafka Schema Registry contract for value subject "source-unknown-value" is unavailable.',
         });
+      }),
+    ),
+  );
+
+  it.effect("revalidates the complete key-value binding after refresh and guards tombstones", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const key = mutableSubject("source-orders-key", 40);
+        const value = mutableSubject("source-orders-value", 41);
+        const runtime = yield* makeKafkaSchemaRegistryRuntime({
+          region: "eu",
+          endpoint: "https://registry.eu.example.com",
+          declarations: [
+            declaration("orders", "source-orders", "key"),
+            declaration("orders", "source-orders"),
+          ],
+          reader: mutableReader(
+            new Map([
+              ["source-orders-key", key],
+              ["source-orders-value", value],
+            ]),
+            { compatibility: 0, versions: 0, schemas: 0 },
+          ),
+          monitorInterval: Duration.seconds(1),
+        });
+
+        key.active = [2];
+        key.all = [1, 2];
+        key.schemas.set(2, schemaVersion("source-orders-key", 2, 43));
+        value.active = [1, 2];
+        value.all = [1, 2];
+        value.schemas.set(2, schemaVersion("source-orders-value", 2, 42));
+
+        const keyFailure = yield* runtime
+          .validateRecord({
+            viewServerTopic: "orders",
+            sourceTopic: "source-orders",
+            sides: ["key", "value"],
+            key: frame(40),
+            value: frame(42),
+          })
+          .pipe(Effect.flip);
+        expect(keyFailure).toStrictEqual({
+          _tag: "KafkaSchemaRegistrySchemaMismatch",
+          region: "eu",
+          topic: "source-orders",
+          subject: "source-orders-key",
+          side: "key",
+          schemaId: null,
+          message: 'Subject "source-orders-key" version 1 is soft-deleted.',
+        });
+
+        key.active = [1, 2];
+        value.compatibility = "BACKWARD";
+        yield* TestClock.adjust(Duration.seconds(1));
+        const tombstoneFailure = yield* runtime
+          .validateRecord({
+            viewServerTopic: "orders",
+            sourceTopic: "source-orders",
+            sides: ["key", "value"],
+            key: frame(40),
+            value: null,
+          })
+          .pipe(Effect.flip);
+        expect(tombstoneFailure).toStrictEqual({
+          _tag: "KafkaSchemaRegistryPolicyMismatch",
+          region: "eu",
+          topic: "source-orders",
+          subject: "source-orders-value",
+          side: "value",
+          schemaId: null,
+          message:
+            'Subject "source-orders-value" requires effective FULL_TRANSITIVE compatibility; observed "BACKWARD".',
+        });
+
+        value.compatibility = "FULL_TRANSITIVE";
+        yield* TestClock.adjust(Duration.seconds(1));
+        expect(
+          yield* runtime.validateRecord({
+            viewServerTopic: "orders",
+            sourceTopic: "source-orders",
+            sides: ["key", "value"],
+            key: frame(40),
+            value: null,
+          }),
+        ).toStrictEqual({ key: Uint8Array.from([]), value: undefined });
       }),
     ),
   );
@@ -325,14 +435,12 @@ describe("Kafka Schema Registry Region runtime", () => {
         );
 
         expect(
-          yield* runtime
-            .validate({
-              viewServerTopic: "orders",
-              sourceTopic: "source-orders",
-              side: "value",
-              bytes: frame(42),
-            })
-            .pipe(Effect.flip),
+          yield* validateSide(runtime, {
+            viewServerTopic: "orders",
+            sourceTopic: "source-orders",
+            side: "value",
+            bytes: frame(42),
+          }).pipe(Effect.flip),
         ).toStrictEqual({
           _tag: "KafkaSchemaRegistrySchemaMismatch",
           region: "eu",
@@ -387,7 +495,7 @@ describe("Kafka Schema Registry Region runtime", () => {
         yield* TestClock.adjust(Duration.seconds(1));
         yield* runtime.guard(binding);
         expect(
-          yield* runtime.validate({
+          yield* validateSide(runtime, {
             viewServerTopic: "orders",
             sourceTopic: "source-orders",
             side: "value",
@@ -427,14 +535,12 @@ describe("Kafka Schema Registry Region runtime", () => {
           monitorInterval: Duration.hours(1),
         });
         const validateMissing = (schemaId: number) =>
-          runtime
-            .validate({
-              viewServerTopic: "orders",
-              sourceTopic: "source-orders",
-              side: "value",
-              bytes: frame(schemaId),
-            })
-            .pipe(Effect.flip);
+          validateSide(runtime, {
+            viewServerTopic: "orders",
+            sourceTopic: "source-orders",
+            side: "value",
+            bytes: frame(schemaId),
+          }).pipe(Effect.flip);
 
         const firstFiber = yield* validateMissing(98).pipe(
           Effect.forkChild({ startImmediately: true }),
@@ -469,8 +575,8 @@ describe("Kafka Schema Registry Region runtime", () => {
               'Schema ID 99 is not an active validated version of subject "source-orders-value".',
           },
         ]);
-        expect(compatibilityReads).toBe(2);
-        expect(calls.compatibility).toBe(2);
+        expect(compatibilityReads).toBe(3);
+        expect(calls.compatibility).toBe(3);
 
         orders.compatibility = "BACKWARD";
         const policyFailure = yield* validateMissing(100);
@@ -484,6 +590,75 @@ describe("Kafka Schema Registry Region runtime", () => {
           message:
             'Subject "source-orders-value" requires effective FULL_TRANSITIVE compatibility; observed "BACKWARD".',
         });
+      }),
+    ),
+  );
+
+  it.effect("refreshes after a stale monitor snapshot misses a first-seen active ID", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const orders = mutableSubject("source-orders-value", 41);
+        const calls: ReaderCalls = { compatibility: 0, versions: 0, schemas: 0 };
+        const baseReader = mutableReader(new Map([["source-orders-value", orders]]), calls);
+        const staleSnapshotCaptured = yield* Deferred.make<void>();
+        const releaseStaleRefresh = yield* Deferred.make<void>();
+        let versionReads = 0;
+        let schemaReads = 0;
+        const reader: KafkaSchemaRegistryReader = {
+          ...baseReader,
+          versions: (subject, includeDeleted) =>
+            Effect.gen(function* () {
+              versionReads += 1;
+              if (versionReads === 3 || versionReads === 4) {
+                if (versionReads === 4) {
+                  yield* Deferred.succeed(staleSnapshotCaptured, undefined);
+                }
+                return [1];
+              }
+              return yield* baseReader.versions(subject, includeDeleted);
+            }),
+          schema: (subject, version) =>
+            Effect.gen(function* () {
+              schemaReads += 1;
+              if (schemaReads === 2) {
+                yield* Deferred.await(releaseStaleRefresh);
+              }
+              return yield* baseReader.schema(subject, version);
+            }),
+        };
+        const runtime = yield* makeKafkaSchemaRegistryRuntime({
+          region: "eu",
+          endpoint: "https://registry.eu.example.com",
+          declarations: [declaration("orders", "source-orders")],
+          reader,
+          monitorInterval: Duration.seconds(1),
+        });
+        const monitorFiber = yield* TestClock.adjust(Duration.seconds(1)).pipe(
+          Effect.forkChild({ startImmediately: true }),
+        );
+        yield* Deferred.await(staleSnapshotCaptured);
+
+        orders.active = [1, 2];
+        orders.all = [1, 2];
+        orders.schemas.set(2, schemaVersion("source-orders-value", 2, 42));
+        const validationFiber = yield* validateSide(runtime, {
+          viewServerTopic: "orders",
+          sourceTopic: "source-orders",
+          side: "value",
+          bytes: frame(42),
+        }).pipe(Effect.forkChild({ startImmediately: true }));
+        const coalescedValidationFiber = yield* validateSide(runtime, {
+          viewServerTopic: "orders",
+          sourceTopic: "source-orders",
+          side: "value",
+          bytes: frame(42),
+        }).pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Deferred.succeed(releaseStaleRefresh, undefined);
+
+        expect(yield* Fiber.join(validationFiber)).toStrictEqual(Uint8Array.from([]));
+        expect(yield* Fiber.join(coalescedValidationFiber)).toStrictEqual(Uint8Array.from([]));
+        yield* Fiber.join(monitorFiber);
+        expect(calls.compatibility).toBe(3);
       }),
     ),
   );
@@ -529,14 +704,12 @@ describe("Kafka Schema Registry Region runtime", () => {
         }
         orders.schemas.set(1, { ...original, schemaType: "AVRO" });
         yield* TestClock.adjust(Duration.seconds(1));
-        const mismatch = yield* runtime
-          .validate({
-            viewServerTopic: "orders",
-            sourceTopic: "source-orders",
-            side: "value",
-            bytes: frame(41),
-          })
-          .pipe(Effect.flip);
+        const mismatch = yield* validateSide(runtime, {
+          viewServerTopic: "orders",
+          sourceTopic: "source-orders",
+          side: "value",
+          bytes: frame(41),
+        }).pipe(Effect.flip);
         expect(mismatch).toStrictEqual({
           _tag: "KafkaSchemaRegistrySchemaMismatch",
           region: "eu",
@@ -584,7 +757,7 @@ describe("Kafka Schema Registry Region runtime", () => {
           orders.schemas.set(2, schemaVersion("source-orders-value", 2, 42));
           inventory.compatibility = "BACKWARD";
           expect(
-            yield* runtime.validate({
+            yield* validateSide(runtime, {
               viewServerTopic: "orders",
               sourceTopic: "source-orders",
               side: "value",
@@ -662,6 +835,95 @@ describe("Kafka Schema Registry Region runtime", () => {
           schemaId: null,
           message: "Kafka Schema Registry drift monitor terminated unexpectedly.",
         });
+        expect(yield* runtime.guard(binding).pipe(Effect.flip)).toStrictEqual(failure);
+      }),
+    ),
+  );
+
+  it.effect("keeps terminal monitor failure after an overlapping first-seen refresh", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const orders = mutableSubject("source-orders-value", 41);
+        const calls: ReaderCalls = { compatibility: 0, versions: 0, schemas: 0 };
+        const baseReader = mutableReader(new Map([["source-orders-value", orders]]), calls);
+        const monitorSleeping = yield* Deferred.make<void>();
+        const terminateMonitor = yield* Deferred.make<void>();
+        const firstSeenRefreshStarted = yield* Deferred.make<void>();
+        const releaseFirstSeenRefresh = yield* Deferred.make<void>();
+        let compatibilityReads = 0;
+        const reader: KafkaSchemaRegistryReader = {
+          ...baseReader,
+          effectiveCompatibility: (subject) =>
+            Effect.gen(function* () {
+              compatibilityReads += 1;
+              if (compatibilityReads === 2) {
+                yield* Deferred.succeed(firstSeenRefreshStarted, undefined);
+                yield* Deferred.await(releaseFirstSeenRefresh);
+              }
+              return yield* baseReader.effectiveCompatibility(subject);
+            }),
+        };
+        const clock: Clock.Clock = {
+          currentTimeMillisUnsafe: () => 0,
+          currentTimeMillis: Effect.succeed(0),
+          currentTimeNanosUnsafe: () => 0n,
+          currentTimeNanos: Effect.succeed(0n),
+          monotonicTimeNanosUnsafe: () => 0n,
+          monotonicTimeNanos: Effect.succeed(0n),
+          sleep: () =>
+            Effect.gen(function* () {
+              yield* Deferred.succeed(monitorSleeping, undefined);
+              yield* Deferred.await(terminateMonitor);
+              return yield* Effect.die(new Error("injected monitor sleep defect"));
+            }),
+        };
+        const runtime = yield* makeKafkaSchemaRegistryRuntime({
+          region: "eu",
+          endpoint: "https://registry.eu.example.com",
+          declarations: [declaration("orders", "source-orders")],
+          reader,
+          monitorInterval: Duration.seconds(1),
+        }).pipe(Effect.provideService(Clock.Clock, clock));
+        const binding = {
+          viewServerTopic: "orders",
+          sourceTopic: "source-orders",
+          sides: ["value"] as const,
+        };
+        const failureFiber = yield* runtime
+          .failures(binding)
+          .pipe(Stream.runDrain, Effect.flip, Effect.forkChild({ startImmediately: true }));
+        yield* Deferred.await(monitorSleeping);
+        const validationFiber = yield* validateSide(runtime, {
+          viewServerTopic: "orders",
+          sourceTopic: "source-orders",
+          side: "value",
+          bytes: frame(99),
+        }).pipe(Effect.exit, Effect.forkChild({ startImmediately: true }));
+        yield* Deferred.await(firstSeenRefreshStarted);
+        yield* Deferred.succeed(terminateMonitor, undefined);
+        yield* Effect.yieldNow;
+        const queuedValidationFiber = yield* validateSide(runtime, {
+          viewServerTopic: "orders",
+          sourceTopic: "source-orders",
+          side: "value",
+          bytes: frame(98),
+        }).pipe(Effect.flip, Effect.forkChild({ startImmediately: true }));
+        yield* Effect.yieldNow;
+        yield* Deferred.succeed(releaseFirstSeenRefresh, undefined);
+        yield* Fiber.join(validationFiber);
+        const failure = yield* Fiber.join(failureFiber);
+        const queuedFailure = yield* Fiber.join(queuedValidationFiber);
+
+        expect(failure).toStrictEqual({
+          _tag: "KafkaSchemaRegistryUnavailable",
+          region: "eu",
+          topic: "source-orders",
+          subject: "source-orders-value",
+          side: "value",
+          schemaId: null,
+          message: "Kafka Schema Registry drift monitor terminated unexpectedly.",
+        });
+        expect(queuedFailure).toStrictEqual(failure);
         expect(yield* runtime.guard(binding).pipe(Effect.flip)).toStrictEqual(failure);
       }),
     ),

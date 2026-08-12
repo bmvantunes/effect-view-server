@@ -4,13 +4,10 @@ import { TestClock } from "effect/testing";
 import * as Net from "node:net";
 import { TcpPublisherExampleError, writeCommand } from "./tcp-client";
 
-class TcpClientTestError extends Schema.TaggedErrorClass<TcpClientTestError>()(
-  "TcpClientTestError",
-  {
-    cause: Schema.optional(Schema.Unknown),
-    message: Schema.String,
-  },
-) {}
+class TcpClientTestError extends Schema.TaggedError<TcpClientTestError>()("TcpClientTestError", {
+  cause: Schema.optional(Schema.Unknown),
+  message: Schema.String,
+}) {}
 
 const ListeningAddress = Schema.Struct({
   port: Schema.Number,

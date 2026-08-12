@@ -255,6 +255,28 @@ const registryCompactAndDeleteKeyOnlySource = kafka.source({
   map: ({ key, value }) => ({ orderId: key.orderId, price: value.price }),
   startFrom: "latest",
 });
+const registryKeyOnlySource = kafka.source({
+  cleanupPolicy: "delete",
+  retentionPolicy: "Infinity",
+  topic: "registry-key-only-delete-orders-source",
+  regions: ["eu"],
+  key: registryCompactionKey,
+  value,
+  localRowKey: ({ key: registryKey, value: ordinaryValue, region }) => {
+    expectTypeOf(registryKey).toEqualTypeOf<OrderKey>();
+    expectTypeOf(ordinaryValue).toEqualTypeOf<{ readonly price: number }>();
+    expectTypeOf(region).toEqualTypeOf<"eu">();
+    return registryKey.orderId;
+  },
+  map: ({ key: registryKey, value: ordinaryValue, region, localRowKey }) => {
+    expectTypeOf(registryKey).toEqualTypeOf<OrderKey>();
+    expectTypeOf(ordinaryValue).toEqualTypeOf<{ readonly price: number }>();
+    expectTypeOf(region).toEqualTypeOf<"eu">();
+    expectTypeOf(localRowKey).toEqualTypeOf<string>();
+    return { orderId: registryKey.orderId, price: ordinaryValue.price };
+  },
+  startFrom: "earliest",
+});
 const registryValueOnlySource = kafka.source({
   cleanupPolicy: "delete",
   retentionPolicy: "Infinity",
@@ -318,8 +340,8 @@ describe("Kafka Source Adapter type contract", () => {
     const registryValue = kafka.schemaRegistry.protobuf(OrderValueSchema);
     expectTypeOf<KafkaCodecValue<typeof registryKey>>().toEqualTypeOf<OrderKey>();
     expectTypeOf<KafkaCodecValue<typeof registryValue>>().toEqualTypeOf<OrderValue>();
-    expectTypeOf(registryKey).toExtend<KafkaCodec<OrderKey, KafkaCodecError>>();
-    expectTypeOf(registryKey).toExtend<KafkaCompactionKeyCodec<OrderKey, KafkaCodecError>>();
+    expectTypeOf(registryKey).toExtend<KafkaCodec<OrderKey, KafkaCodecError, true>>();
+    expectTypeOf(registryKey).toExtend<KafkaCompactionKeyCodec<OrderKey, KafkaCodecError, true>>();
     expectTypeOf(registryKey.format).toEqualTypeOf<"schema-registry-protobuf">();
     // @ts-expect-error compaction key codecs are intentionally distinct from ordinary codecs.
     const ordinaryCodec: KafkaCodec<unknown, unknown> = compactionKey;
@@ -374,6 +396,9 @@ describe("Kafka Source Adapter type contract", () => {
     expectTypeOf(
       registryCompactAndDeleteKeyOnlySource.options.cleanupPolicy,
     ).toEqualTypeOf<"compact-and-delete">();
+    expectTypeOf(registryKeyOnlySource).toExtend<
+      KafkaDeleteSourceDefinition<readonly ["eu"], typeof registryCompactionKey, typeof value>
+    >();
     expectTypeOf(registryValueOnlySource).toExtend<
       KafkaDeleteSourceDefinition<readonly ["eu"], typeof key, typeof registryCompactionValue>
     >();

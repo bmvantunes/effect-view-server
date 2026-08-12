@@ -1,7 +1,7 @@
 import { Schema } from "effect";
 import type { InvalidQueryError } from "./raw-query-compiler";
 
-export class InvalidTopicError extends Schema.TaggedErrorClass<InvalidTopicError>()(
+export class InvalidTopicError extends Schema.TaggedError<InvalidTopicError>()(
   "InvalidTopicError",
   {
     topic: Schema.String,
@@ -9,12 +9,12 @@ export class InvalidTopicError extends Schema.TaggedErrorClass<InvalidTopicError
   },
 ) {}
 
-export class InvalidRowError extends Schema.TaggedErrorClass<InvalidRowError>()("InvalidRowError", {
+export class InvalidRowError extends Schema.TaggedError<InvalidRowError>()("InvalidRowError", {
   topic: Schema.String,
   message: Schema.String,
 }) {}
 
-export class EngineClosedError extends Schema.TaggedErrorClass<EngineClosedError>()(
+export class EngineClosedError extends Schema.TaggedError<EngineClosedError>()(
   "EngineClosedError",
   {
     message: Schema.String,

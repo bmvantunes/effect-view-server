@@ -63,11 +63,9 @@ const isBorrowableImmutablePrimitive = (value: unknown): boolean =>
   typeof value === "bigint" ||
   typeof value === "boolean";
 
-const unorderedEffectCollectionTags = new Set(["effect/HashMap", "effect/HashSet"]);
-
 const isBigDecimalAst = (ast: SchemaAST.AST): boolean =>
   SchemaAST.isDeclaration(ast) &&
-  Reflect.get(Object(ast.annotations?.["typeConstructor"]), "_tag") === "effect/BigDecimal";
+  Reflect.get(Object(ast.annotations?.["representation"]), "id") === "effect/schema/BigDecimal";
 
 const schemaContainsBigDecimal = (ast: SchemaAST.AST, seen: Set<SchemaAST.AST>): boolean => {
   if (seen.has(ast)) {
@@ -89,9 +87,11 @@ const schemaContainsUnorderedEffectCollection = (
   }
   seen.add(ast);
   if (SchemaAST.isDeclaration(ast)) {
-    const typeConstructor = ast.annotations?.["typeConstructor"];
-    const tag = Reflect.get(Object(typeConstructor), "_tag");
-    if (typeof tag === "string" && unorderedEffectCollectionTags.has(tag)) {
+    const representationId = Reflect.get(Object(ast.annotations?.["representation"]), "id");
+    if (
+      representationId === "effect/schema/HashMap" ||
+      representationId === "effect/schema/HashSet"
+    ) {
       return true;
     }
   }

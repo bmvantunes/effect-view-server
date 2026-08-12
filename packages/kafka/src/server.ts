@@ -1,5 +1,15 @@
-import { fromBinary } from "@bufbuild/protobuf";
-import { Duration, Effect, Fiber, Layer, Option, Result, Schedule, Scope, Stream } from "effect";
+import {
+  Duration,
+  Effect,
+  Fiber,
+  Layer,
+  Option,
+  Result,
+  Schedule,
+  Scope,
+  Semaphore,
+  Stream,
+} from "effect";
 import type {
   SourceApplicationExit,
   SourceExecutionFailure,
@@ -35,8 +45,11 @@ import {
 } from "./contract";
 import type {
   KafkaSchemaRegistryBindingInput,
+  KafkaSchemaRegistryRecordValidationInput,
+  KafkaSchemaRegistryRuntime,
   KafkaServerSchemaRegistry,
 } from "./schema-registry-runtime";
+import { decodeKafkaSchemaRegistryProtobufPayload } from "./schema-registry-protobuf-codec";
 import {
   completeKafkaDelivery,
   configurationFailure,
@@ -217,6 +230,13 @@ const mappingFailure = (region: string, topic: string, message: string): KafkaAd
   region,
   topic,
   message,
+});
+
+const unexpectedConsumerCompletion = (region: string, topic: string): KafkaAdapterFailure => ({
+  _tag: "KafkaConsumeFailure",
+  region,
+  topic,
+  message: `Kafka Region ${JSON.stringify(region)} consumer stream completed unexpectedly.`,
 });
 
 const adapterExecutionFailure = (
@@ -528,29 +548,16 @@ const schemaRegistrySides = (codecs: KafkaSchemaRegistryCodecs): ReadonlyArray<"
     ...(codecs.value === undefined ? [] : (["value"] as const)),
   ]);
 
-const validateSchemaRegistryPayload = (
-  registry: KafkaServerSchemaRegistry,
-  input: {
-    readonly region: string;
-    readonly viewServerTopic: string;
-    readonly sourceTopic: string;
-    readonly side: "key" | "value";
-    readonly bytes: Uint8Array;
-  },
-): Effect.Effect<Uint8Array, SourceExecutionFailure<KafkaAdapterFailure>> =>
-  registry.validate(input).pipe(Effect.mapError(adapterExecutionFailure));
+const validateSchemaRegistryRecord = (
+  registry: KafkaSchemaRegistryRuntime,
+  input: KafkaSchemaRegistryRecordValidationInput,
+) => registry.validateRecord(input).pipe(Effect.mapError(adapterExecutionFailure));
 
 const decodeSchemaRegistryProtobufPayload = (
   codec: KafkaSchemaRegistryProtobufCodec,
   payload: Uint8Array,
 ): Effect.Effect<unknown, KafkaCodecError> =>
-  Effect.try({
-    try: () => fromBinary(codec.descriptor, payload),
-    catch: () => ({
-      _tag: "KafkaCodecError",
-      message: "Kafka Schema Registry protobuf payload could not be decoded.",
-    }),
-  });
+  decodeKafkaSchemaRegistryProtobufPayload(codec.descriptor, payload);
 
 const recordEvent = Effect.fn("KafkaSourceAdapter.record.event")(function* <
   Row extends object,
@@ -561,7 +568,7 @@ const recordEvent = Effect.fn("KafkaSourceAdapter.record.event")(function* <
   regionConsumer: KafkaServerRegionConsumer,
   metricInput: KafkaServerRegionMetricsInput,
   record: KafkaServerRecord,
-  schemaRegistry: KafkaServerSchemaRegistry | undefined,
+  schemaRegistry: KafkaSchemaRegistryRuntime | undefined,
   registryCodecs: KafkaSchemaRegistryCodecs,
   lifetime: {
     readonly applicationState: KafkaApplicationState<Topic>;
@@ -620,19 +627,24 @@ const recordEvent = Effect.fn("KafkaSourceAdapter.record.event")(function* <
   if (record.key === null) {
     return yield* rejectDecode("keyDecode", "Kafka record key is required.");
   }
-  const registryKeyPayload =
-    registryCodecs.key === undefined
+  const registryPayloads =
+    registryCodecs.key === undefined && registryCodecs.value === undefined
       ? undefined
-      : yield* validateSchemaRegistryPayload(
+      : yield* validateSchemaRegistryRecord(
           Option.getOrThrow(Option.fromUndefinedOr(schemaRegistry)),
           {
-            region,
             viewServerTopic: toolkit.topic,
             sourceTopic,
-            side: "key",
-            bytes: record.key,
+            sides: schemaRegistrySides(registryCodecs),
+            key: registryCodecs.key === undefined ? null : record.key,
+            value: registryCodecs.value === undefined ? null : record.value,
           },
         );
+  const registryKeyPayload = registryPayloads?.key;
+  // Compaction identity owns an immutable snapshot that application codecs can never mutate.
+  const serializedKeyBytes =
+    definition.cleanupPolicy === "delete" ? undefined : Uint8Array.from(record.key);
+  const registryValuePayload = registryPayloads?.value;
   const processedRegistryKey =
     registryCodecs.key === undefined
       ? undefined
@@ -646,9 +658,6 @@ const recordEvent = Effect.fn("KafkaSourceAdapter.record.event")(function* <
   if (processedRegistryKey?._tag === "Rejected") {
     return processedRegistryKey.event;
   }
-  // Compaction identity owns an immutable snapshot that application codecs can never mutate.
-  const serializedKeyBytes =
-    definition.cleanupPolicy === "delete" ? undefined : Uint8Array.from(record.key);
   if (record.value === null) {
     if (definition.cleanupPolicy === "delete") {
       return yield* rejectDecode(
@@ -671,19 +680,6 @@ const recordEvent = Effect.fn("KafkaSourceAdapter.record.event")(function* <
       authoritativeExpired: false,
     });
   }
-  const registryValuePayload =
-    registryCodecs.value === undefined
-      ? undefined
-      : yield* validateSchemaRegistryPayload(
-          Option.getOrThrow(Option.fromUndefinedOr(schemaRegistry)),
-          {
-            region,
-            viewServerTopic: toolkit.topic,
-            sourceTopic,
-            side: "value",
-            bytes: record.value,
-          },
-        );
   const processedKey = yield* effectFailure(
     registryCodecs.key !== undefined
       ? Effect.succeed(Option.getOrThrow(Option.fromUndefinedOr(processedRegistryKey)).value)
@@ -923,6 +919,7 @@ export const makeKafkaServerLayer = (
         readonly contracts: ReadonlyMap<string, KafkaResolvedBrokerContract>;
       };
       const lifetimes = new Map<Scope.Scope, KafkaLifetimeState>();
+      const lifetimeStateLock = Semaphore.makeUnsafe(1);
       const resolvedContracts = (
         viewServerTopic: string,
         definition: KafkaRuntimeDefinition,
@@ -938,30 +935,44 @@ export const makeKafkaServerLayer = (
         definition: KafkaRuntimeDefinition,
       ) {
         return yield* Effect.uninterruptible(
-          Effect.gen(function* () {
-            const existing = lifetimes.get(lifetimeScope);
-            if (existing !== undefined) {
-              return existing;
-            }
-            const contracts = new Map(
-              resolvedContracts(viewServerTopic, definition).map((contract) => [
-                contract.region,
-                contract,
-              ]),
-            );
-            const state: KafkaLifetimeState = {
-              start: undefined,
-              contracts,
-            };
-            lifetimes.set(lifetimeScope, state);
-            yield* Scope.addFinalizer(
-              lifetimeScope,
-              Effect.sync(() => {
-                lifetimes.delete(lifetimeScope);
-              }),
-            );
-            return state;
-          }),
+          lifetimeStateLock.withPermit(
+            Effect.gen(function* () {
+              const existing = lifetimes.get(lifetimeScope);
+              if (existing !== undefined) {
+                return existing;
+              }
+              if (schemaRegistrySides(schemaRegistryCodecs(definition)).length > 0) {
+                yield* Effect.forEach(
+                  definition.regions,
+                  (region) => {
+                    const schemaRegistry = schemaRegistries.get(region);
+                    return schemaRegistry === undefined
+                      ? Effect.void
+                      : schemaRegistry.retain(lifetimeScope);
+                  },
+                  { discard: true },
+                );
+              }
+              const contracts = new Map(
+                resolvedContracts(viewServerTopic, definition).map((contract) => [
+                  contract.region,
+                  contract,
+                ]),
+              );
+              const state: KafkaLifetimeState = {
+                start: undefined,
+                contracts,
+              };
+              lifetimes.set(lifetimeScope, state);
+              yield* Scope.addFinalizer(
+                lifetimeScope,
+                Effect.sync(() => {
+                  lifetimes.delete(lifetimeScope);
+                }),
+              );
+              return state;
+            }),
+          ),
         );
       });
       const resolveBindingStart = (state: KafkaLifetimeState, start: KafkaCapturedStartPosition) =>
@@ -1122,6 +1133,13 @@ export const makeKafkaServerLayer = (
                                   contracts: state.contracts,
                                 },
                               ),
+                            ),
+                          ),
+                        ),
+                        Stream.concat(
+                          Stream.fail(
+                            adapterExecutionFailure(
+                              unexpectedConsumerCompletion(region, definition.topic),
                             ),
                           ),
                         ),

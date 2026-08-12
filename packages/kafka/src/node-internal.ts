@@ -27,8 +27,8 @@ import {
   kafkaConsumerGroupId,
   isKafkaSchemaRegistryProtobufCodec,
   type KafkaAdapterFailure,
+  type KafkaCodecSchemaRegistryRequirement,
   type KafkaRegionMetrics,
-  type KafkaSchemaRegistryProtobufCodec,
 } from "./contract";
 import {
   type KafkaBrokerConfigResource,
@@ -55,7 +55,11 @@ import {
   type KafkaSchemaRegistryHttpAuth,
   type KafkaSchemaRegistryHttpOptions,
 } from "./schema-registry-node";
-import { makeKafkaSchemaRegistryRuntime } from "./schema-registry-runtime";
+import {
+  makeKafkaSchemaRegistryRuntime,
+  makeKafkaServerSchemaRegistry,
+  type KafkaServerSchemaRegistry,
+} from "./schema-registry-runtime";
 
 type KafkaNodeViewServer = {
   readonly topics: Readonly<Record<string, object>>;
@@ -92,9 +96,9 @@ type KafkaSchemaRegistryRegionsForTopic<Topic> = [KafkaDefinitionForTopic<Topic>
         readonly key: infer Key;
         readonly value: infer Value;
       }
-    ? Extract<Key | Value, KafkaSchemaRegistryProtobufCodec> extends never
-      ? never
-      : Region
+    ? true extends KafkaCodecSchemaRegistryRequirement<Key | Value>
+      ? Region
+      : never
     : never;
 
 export type KafkaRequiredRegion<ViewServer extends KafkaNodeViewServer> = Extract<
@@ -506,6 +510,41 @@ const ownDataKeys = (value: object): ReadonlyArray<string> =>
     ).keys(),
   );
 
+type CapturedKafkaSource = {
+  readonly viewServerTopic: string;
+  readonly source: object;
+};
+
+const captureKafkaSources = (
+  viewServer: KafkaNodeViewServer,
+): ReadonlyArray<CapturedKafkaSource> => {
+  const sources: Array<CapturedKafkaSource> = [];
+  for (const viewServerTopic of Object.keys(viewServer.topics)) {
+    const configured = viewServer.topics[viewServerTopic];
+    const source =
+      typeof configured === "object" && configured !== null && Object.hasOwn(configured, "source")
+        ? Reflect.get(configured, "source")
+        : undefined;
+    if (
+      typeof source === "object" &&
+      source !== null &&
+      Reflect.get(source, "adapter") === KafkaSourceAdapter
+    ) {
+      sources.push(Object.freeze({ viewServerTopic, source }));
+    }
+  }
+  return Object.freeze(sources);
+};
+
+const forEachCapturedKafkaSource = (
+  sources: ReadonlyArray<CapturedKafkaSource>,
+  visit: (viewServerTopic: string, source: object) => void,
+): void => {
+  for (const source of sources) {
+    visit(source.viewServerTopic, source.source);
+  }
+};
+
 const captureDenseDataArray = (value: unknown, message: string): ReadonlyArray<unknown> => {
   const captured = Result.try(() => {
     if (!Array.isArray(value)) {
@@ -762,8 +801,9 @@ const snapshotSchemaRegistryHeaders = (
   for (const [name, header] of captureDataFields(value, message)) {
     const normalized = name.toLowerCase();
     if (
-      name.length === 0 ||
+      !/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/.test(name) ||
       typeof header !== "string" ||
+      !/^[\t\x20-\x7e\x80-\xff]*$/.test(header) ||
       Object.hasOwn(snapshot, normalized) ||
       (hasAuth && normalized === "authorization")
     ) {
@@ -900,29 +940,11 @@ const snapshotRegionOptions = (options: unknown): KafkaNodeRegionSnapshot => {
   });
 };
 
-const kafkaSourceRegions = (viewServer: KafkaNodeViewServer): ReadonlySet<string> => {
-  if (
-    typeof viewServer !== "object" ||
-    viewServer === null ||
-    typeof viewServer.topics !== "object" ||
-    viewServer.topics === null
-  ) {
-    throw new KafkaSourceConfigurationError("Kafka Node Layer requires a View Server Config.");
-  }
+const kafkaSourceRegionsFrom = (
+  sources: ReadonlyArray<CapturedKafkaSource>,
+): ReadonlySet<string> => {
   const regions = new Set<string>();
-  for (const topic of Object.keys(viewServer.topics)) {
-    const definition = viewServer.topics[topic];
-    const source =
-      typeof definition === "object" && definition !== null && Object.hasOwn(definition, "source")
-        ? Reflect.get(definition, "source")
-        : undefined;
-    if (
-      typeof source !== "object" ||
-      source === null ||
-      Reflect.get(source, "adapter") !== KafkaSourceAdapter
-    ) {
-      continue;
-    }
+  forEachCapturedKafkaSource(sources, (topic, source) => {
     const options = Reflect.get(source, "options");
     const sourceRegions =
       typeof options === "object" && options !== null && Object.hasOwn(options, "regions")
@@ -943,7 +965,20 @@ const kafkaSourceRegions = (viewServer: KafkaNodeViewServer): ReadonlySet<string
     for (const region of sourceRegions) {
       regions.add(region);
     }
+  });
+  return regions;
+};
+
+const kafkaSourceRegions = (viewServer: KafkaNodeViewServer): ReadonlySet<string> => {
+  if (
+    typeof viewServer !== "object" ||
+    viewServer === null ||
+    typeof viewServer.topics !== "object" ||
+    viewServer.topics === null
+  ) {
+    throw new KafkaSourceConfigurationError("Kafka Node Layer requires a View Server Config.");
   }
+  const regions = kafkaSourceRegionsFrom(captureKafkaSources(viewServer));
   if (regions.size === 0) {
     throw new KafkaSourceConfigurationError(
       "Kafka Node Layer requires at least one Kafka Source Definition.",
@@ -954,21 +989,14 @@ const kafkaSourceRegions = (viewServer: KafkaNodeViewServer): ReadonlySet<string
 
 const kafkaSchemaRegistryDeclarations = (
   viewServer: KafkaNodeViewServer,
+): ReadonlyArray<KafkaSchemaRegistryDeclaration> =>
+  kafkaSchemaRegistryDeclarationsFrom(captureKafkaSources(viewServer));
+
+const kafkaSchemaRegistryDeclarationsFrom = (
+  sources: ReadonlyArray<CapturedKafkaSource>,
 ): ReadonlyArray<KafkaSchemaRegistryDeclaration> => {
   const declarations: Array<KafkaSchemaRegistryDeclaration> = [];
-  for (const viewServerTopic of Object.keys(viewServer.topics)) {
-    const configured = viewServer.topics[viewServerTopic];
-    const source =
-      typeof configured === "object" && configured !== null && Object.hasOwn(configured, "source")
-        ? Reflect.get(configured, "source")
-        : undefined;
-    if (
-      typeof source !== "object" ||
-      source === null ||
-      Reflect.get(source, "adapter") !== KafkaSourceAdapter
-    ) {
-      continue;
-    }
+  forEachCapturedKafkaSource(sources, (viewServerTopic, source) => {
     const options = Reflect.get(source, "options");
     if (typeof options !== "object" || options === null) {
       throw new KafkaSourceConfigurationError(
@@ -1015,7 +1043,7 @@ const kafkaSchemaRegistryDeclarations = (
         );
       }
     }
-  }
+  });
   return Object.freeze(declarations);
 };
 
@@ -1048,21 +1076,14 @@ const capturedRetentionPolicy = (
 
 const kafkaBrokerDeclarations = (
   viewServer: KafkaNodeViewServer,
+): ReadonlyArray<KafkaBrokerContractDeclaration> =>
+  kafkaBrokerDeclarationsFrom(captureKafkaSources(viewServer));
+
+const kafkaBrokerDeclarationsFrom = (
+  sources: ReadonlyArray<CapturedKafkaSource>,
 ): ReadonlyArray<KafkaBrokerContractDeclaration> => {
   const declarations: Array<KafkaBrokerContractDeclaration> = [];
-  for (const topic of Object.keys(viewServer.topics)) {
-    const configured = viewServer.topics[topic];
-    const source =
-      typeof configured === "object" && configured !== null && Object.hasOwn(configured, "source")
-        ? Reflect.get(configured, "source")
-        : undefined;
-    if (
-      typeof source !== "object" ||
-      source === null ||
-      Reflect.get(source, "adapter") !== KafkaSourceAdapter
-    ) {
-      continue;
-    }
+  forEachCapturedKafkaSource(sources, (topic, source) => {
     const options = Reflect.get(source, "options");
     if (typeof options !== "object" || options === null) {
       throw new KafkaSourceConfigurationError(
@@ -1100,7 +1121,7 @@ const kafkaBrokerDeclarations = (
         retentionPolicy,
       });
     }
-  }
+  });
   return Object.freeze(declarations);
 };
 
@@ -1120,34 +1141,27 @@ const retentionSweepIntervalNanos = (input: unknown): bigint => {
   return nanos.value;
 };
 
-const validateConsumerGroupIds = (
-  viewServer: KafkaNodeViewServer,
+const validateConsumerGroupIdsFrom = (
+  sources: ReadonlyArray<CapturedKafkaSource>,
   consumerGroupPrefix: string,
 ): void => {
-  for (const topic of Object.keys(viewServer.topics)) {
-    const definition = viewServer.topics[topic];
-    const source =
-      typeof definition === "object" && definition !== null && Object.hasOwn(definition, "source")
-        ? Reflect.get(definition, "source")
-        : undefined;
-    if (
-      typeof source === "object" &&
-      source !== null &&
-      Reflect.get(source, "adapter") === KafkaSourceAdapter
-    ) {
-      kafkaConsumerGroupId(consumerGroupPrefix, topic);
-    }
-  }
+  forEachCapturedKafkaSource(sources, (topic) => {
+    kafkaConsumerGroupId(consumerGroupPrefix, topic);
+  });
+};
+
+type KafkaLayerSnapshot = {
+  readonly consumerGroupPrefix: string;
+  readonly regions: ReadonlyMap<string, KafkaNodeRegionSnapshot>;
+  readonly retentionSweepIntervalNanos: bigint;
+  readonly brokerDeclarations: ReadonlyArray<KafkaBrokerContractDeclaration>;
+  readonly schemaRegistryDeclarations: ReadonlyArray<KafkaSchemaRegistryDeclaration>;
 };
 
 const snapshotLayerOptions = <ViewServer extends KafkaNodeViewServer>(
   viewServer: ViewServer,
   options: unknown,
-): {
-  readonly consumerGroupPrefix: string;
-  readonly regions: ReadonlyMap<string, KafkaNodeRegionSnapshot>;
-  readonly retentionSweepIntervalNanos: bigint;
-} => {
+): KafkaLayerSnapshot => {
   if (typeof options !== "object" || options === null || Array.isArray(options)) {
     throw new KafkaSourceConfigurationError(
       "Kafka Node Layer requires exactly consumerGroupPrefix and regions.",
@@ -1178,8 +1192,14 @@ const snapshotLayerOptions = <ViewServer extends KafkaNodeViewServer>(
       "Kafka Node Layer requires exactly consumerGroupPrefix and regions.",
     );
   }
-  const required = kafkaSourceRegions(viewServer);
-  validateConsumerGroupIds(viewServer, consumerGroupPrefix);
+  const sources = captureKafkaSources(viewServer);
+  const required = kafkaSourceRegionsFrom(sources);
+  if (required.size === 0) {
+    throw new KafkaSourceConfigurationError(
+      "Kafka Node Layer requires at least one Kafka Source Definition.",
+    );
+  }
+  validateConsumerGroupIdsFrom(sources, consumerGroupPrefix);
   const provided = captureDataFields(
     regionOptions,
     "Kafka Node Layer regions must contain all and only referenced Regions.",
@@ -1199,8 +1219,9 @@ const snapshotLayerOptions = <ViewServer extends KafkaNodeViewServer>(
     }
     regions.set(region, snapshotRegionOptions(value));
   }
+  const schemaRegistryDeclarations = kafkaSchemaRegistryDeclarationsFrom(sources);
   const registryRegions = new Set(
-    kafkaSchemaRegistryDeclarations(viewServer).map((declaration) => declaration.region),
+    schemaRegistryDeclarations.map((declaration) => declaration.region),
   );
   for (const region of registryRegions) {
     if (regions.get(region)?.schemaRegistry === undefined) {
@@ -1213,6 +1234,8 @@ const snapshotLayerOptions = <ViewServer extends KafkaNodeViewServer>(
     consumerGroupPrefix,
     regions,
     retentionSweepIntervalNanos: retentionSweepIntervalNanos(sweepInterval),
+    brokerDeclarations: kafkaBrokerDeclarationsFrom(sources),
+    schemaRegistryDeclarations,
   });
 };
 
@@ -1270,7 +1293,7 @@ const configValidationMessage = (cause: unknown): string =>
 const configValidationFailure = (cause: unknown): Config.ConfigError =>
   new Config.ConfigError(
     new Schema.SchemaError(
-      new SchemaIssue.InvalidValue(Option.none(), {
+      new SchemaIssue.InvalidValue({
         message: configValidationMessage(cause),
       }),
     ),
@@ -2072,20 +2095,13 @@ const discoverKafkaBrokerRegion = Effect.fn("KafkaNode.brokerContract.discoverRe
       };
 });
 
-type KafkaLayerSnapshot = {
-  readonly consumerGroupPrefix: string;
-  readonly regions: ReadonlyMap<string, KafkaNodeRegionSnapshot>;
-  readonly retentionSweepIntervalNanos: bigint;
-};
-
 const validateKafkaBrokerContracts = Effect.fn("KafkaNode.brokerContract.validate")(function* (
-  viewServer: KafkaNodeViewServer,
   snapshot: KafkaLayerSnapshot,
 ): Effect.fn.Return<
   ReadonlyArray<KafkaResolvedBrokerContract>,
   KafkaBrokerContractValidationFailureType
 > {
-  const declarations = kafkaBrokerDeclarations(viewServer);
+  const declarations = snapshot.brokerDeclarations;
   const topicsByRegion = new Map<string, Set<string>>();
   for (const declaration of declarations) {
     const topics = topicsByRegion.get(declaration.region) ?? new Set<string>();
@@ -2134,15 +2150,48 @@ const schemaRegistryStartupFailure = (
   };
 };
 
-const makeLayerFromSnapshot = (viewServer: KafkaNodeViewServer, snapshot: KafkaLayerSnapshot) =>
+const makeManagedKafkaSchemaRegistry = Effect.fn("KafkaNode.schemaRegistry.managed")(
+  function* (input: {
+    readonly region: string;
+    readonly layerScope: Scope.Scope;
+    readonly options: KafkaNodeSchemaRegistrySnapshot;
+    readonly declarations: readonly [
+      KafkaSchemaRegistryDeclaration,
+      ...ReadonlyArray<KafkaSchemaRegistryDeclaration>,
+    ];
+  }): Effect.fn.Return<
+    KafkaServerSchemaRegistry,
+    KafkaSchemaRegistryContractValidationFailureType
+  > {
+    return yield* makeKafkaServerSchemaRegistry({
+      layerScope: input.layerScope,
+      acquire: Effect.gen(function* () {
+        const reader = yield* makeKafkaSchemaRegistryReader(
+          schemaRegistryHttpOptions(input.options),
+        ).pipe(
+          Effect.mapError((failure) =>
+            schemaRegistryStartupFailure(input.declarations, failure.message),
+          ),
+        );
+        return yield* makeKafkaSchemaRegistryRuntime({
+          region: input.region,
+          endpoint: input.options.url,
+          declarations: input.declarations,
+          reader,
+          monitorInterval: input.options.monitorInterval,
+        });
+      }),
+    });
+  },
+);
+
+const makeLayerFromSnapshot = (snapshot: KafkaLayerSnapshot) =>
   Layer.unwrap(
     Effect.gen(function* () {
-      const contracts = yield* validateKafkaBrokerContracts(viewServer, snapshot);
-      const declarations = kafkaSchemaRegistryDeclarations(viewServer);
-      const schemaRegistries = new Map<
-        string,
-        import("./schema-registry-runtime").KafkaServerSchemaRegistry
-      >();
+      const layerScope = yield* Effect.scope;
+      const contracts = yield* validateKafkaBrokerContracts(snapshot);
+      const declarations = snapshot.schemaRegistryDeclarations;
+      const schemaRegistries = new Map<string, KafkaServerSchemaRegistry>();
       for (const [region, options] of snapshot.regions) {
         const regionDeclarations = declarations.filter(
           (declaration) => declaration.region === region,
@@ -2152,24 +2201,13 @@ const makeLayerFromSnapshot = (viewServer: KafkaNodeViewServer, snapshot: KafkaL
           continue;
         }
         const registryOptions = Option.getOrThrow(Option.fromUndefinedOr(options.schemaRegistry));
-        const reader = yield* makeKafkaSchemaRegistryReader(
-          schemaRegistryHttpOptions(registryOptions),
-        ).pipe(
-          Effect.mapError((failure) =>
-            schemaRegistryStartupFailure(
-              [firstDeclaration, ...regionDeclarations.slice(1)],
-              failure.message,
-            ),
-          ),
-        );
-        const runtime = yield* makeKafkaSchemaRegistryRuntime({
+        const registry = yield* makeManagedKafkaSchemaRegistry({
           region,
-          endpoint: registryOptions.url,
-          declarations: regionDeclarations,
-          reader,
-          monitorInterval: registryOptions.monitorInterval,
+          layerScope,
+          options: registryOptions,
+          declarations: [firstDeclaration, ...regionDeclarations.slice(1)],
         });
-        schemaRegistries.set(region, runtime);
+        schemaRegistries.set(region, registry);
       }
       const regions = new Map<string, KafkaServerRegion>();
       for (const [region, options] of snapshot.regions) {
@@ -2197,7 +2235,7 @@ export const layer = <
 ): Layer.Layer<
   import("effect").Context.Service.Identifier<typeof KafkaSourceAdapter.runtimeService>,
   KafkaBrokerContractValidationFailureType | KafkaSchemaRegistryContractValidationFailureType
-> => makeLayerFromSnapshot(viewServer, snapshotLayerOptions(viewServer, options));
+> => makeLayerFromSnapshot(snapshotLayerOptions(viewServer, options));
 
 export const layerConfig = <
   const ViewServer extends KafkaNodeViewServer,
@@ -2222,7 +2260,7 @@ export const layerConfig = <
           catch: configValidationFailure,
         }),
       ),
-      Effect.map((snapshot) => makeLayerFromSnapshot(viewServer, snapshot)),
+      Effect.map(makeLayerFromSnapshot),
     ),
   );
 

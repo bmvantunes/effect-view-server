@@ -1,14 +1,23 @@
-import type {
-  DescEnum,
-  DescExtension,
-  DescField,
-  DescFile,
-  DescMessage,
-  DescMethod,
-  DescService,
+import {
+  clone,
+  create,
+  createFileRegistry,
+  ScalarType,
+  type DescEnum,
+  type DescExtension,
+  type DescField,
+  type DescFile,
+  type DescMessage,
+  type DescMethod,
+  type DescService,
 } from "@bufbuild/protobuf";
-import { ScalarType } from "@bufbuild/protobuf";
-import { FieldDescriptorProto_Label } from "@bufbuild/protobuf/wkt";
+import {
+  FieldDescriptorProto_Label,
+  FileDescriptorProtoSchema,
+  FileDescriptorSetSchema,
+} from "@bufbuild/protobuf/wkt";
+import type { DescriptorProto } from "@bufbuild/protobuf/wkt";
+import { Option } from "effect";
 
 export type KafkaProtobufWireRule =
   | "ENUM_VALUE_NO_DELETE_UNLESS_NUMBER_RESERVED"
@@ -45,6 +54,39 @@ const issue = (
 ): KafkaProtobufWireIssue => ({ rule, path, message });
 
 const descriptorFileName = (file: DescFile): string => file.proto.name;
+
+type NormalizedDescriptorGraph = {
+  readonly messages: ReadonlyMap<string, DescMessage>;
+};
+
+const normalizedDescriptorGraphs = new WeakMap<DescFile, NormalizedDescriptorGraph>();
+
+const exposeMapEntryMessages = (messages: ReadonlyArray<DescriptorProto>): void => {
+  for (const message of messages) {
+    if (message.options?.mapEntry === true) {
+      message.options.mapEntry = false;
+    }
+    exposeMapEntryMessages(message.nestedType);
+  }
+};
+
+const normalizedDescriptorGraph = (root: DescFile): NormalizedDescriptorGraph => {
+  const cached = normalizedDescriptorGraphs.get(root);
+  if (cached !== undefined) {
+    return cached;
+  }
+  const files = [...descriptorGraph(root).values()].reverse().map((file) => {
+    const proto = clone(FileDescriptorProtoSchema, file.proto);
+    exposeMapEntryMessages(proto.messageType);
+    return proto;
+  });
+  const registry = createFileRegistry(create(FileDescriptorSetSchema, { file: files }));
+  const normalized = Object.freeze({
+    messages: messagesByTypeName(registry.files),
+  });
+  normalizedDescriptorGraphs.set(root, normalized);
+  return normalized;
+};
 
 const descriptorGraph = (root: DescFile): ReadonlyMap<string, DescFile> => {
   const files = new Map<string, DescFile>();
@@ -185,6 +227,16 @@ type FieldValueType =
 
 type ComparableField = DescField | DescExtension;
 
+const mapEntryTypeName = (field: Extract<DescField, { readonly fieldKind: "map" }>): string =>
+  field.proto.typeName.startsWith(".") ? field.proto.typeName.slice(1) : field.proto.typeName;
+
+const mapEntryMessage = (field: Extract<DescField, { readonly fieldKind: "map" }>): DescMessage =>
+  Option.getOrThrow(
+    Option.fromUndefinedOr(
+      normalizedDescriptorGraph(field.parent.file).messages.get(mapEntryTypeName(field)),
+    ),
+  );
+
 const fieldValueType = (field: ComparableField): FieldValueType => {
   if (field.fieldKind === "scalar") {
     return { _tag: "Scalar", scalar: field.scalar };
@@ -269,22 +321,150 @@ const valueTypeCompatible = (previous: FieldValueType, current: FieldValueType):
   return false;
 };
 
-const bytesEqual = (left: Uint8Array, right: Uint8Array): boolean =>
-  left.byteLength === right.byteLength && left.every((byte, index) => byte === right[index]);
+const fieldValueTypeCompatible = (previous: ComparableField, current: ComparableField): boolean => {
+  // Protobuf maps are encoded as repeated synthetic entry messages. Buf WIRE therefore permits
+  // toggling only the map_entry option while the repeated field keeps the same entry type.
+  if (
+    previous.kind === "field" &&
+    previous.fieldKind === "map" &&
+    current.kind === "field" &&
+    current.fieldKind === "list" &&
+    current.listKind === "message"
+  ) {
+    return mapEntryTypeName(previous) === current.message.typeName && !current.delimitedEncoding;
+  }
+  if (
+    previous.kind === "field" &&
+    previous.fieldKind === "list" &&
+    previous.listKind === "message" &&
+    current.kind === "field" &&
+    current.fieldKind === "map"
+  ) {
+    return previous.message.typeName === mapEntryTypeName(current) && !previous.delimitedEncoding;
+  }
+  return valueTypeCompatible(fieldValueType(previous), fieldValueType(current));
+};
 
-const fieldDefault = (
-  field: ComparableField,
-): bigint | boolean | number | string | Uint8Array | undefined =>
-  field.fieldKind === "scalar" || field.fieldKind === "enum" || field.fieldKind === "message"
-    ? field.getDefaultValue()
-    : undefined;
+type DefaultableField = Extract<ComparableField, { readonly fieldKind: "enum" | "scalar" }>;
+
+const bytesDefault = (value: Uint8Array): string =>
+  [...value].map((byte) => String.fromCharCode(byte)).join("");
+
+const normalizeDeclaredDefault = (
+  scalar: ScalarType,
+  value: bigint | boolean | number | string | Uint8Array,
+): bigint | boolean | number | string => {
+  if (value instanceof Uint8Array) {
+    return bytesDefault(value);
+  }
+  if (scalar === ScalarType.STRING && typeof value === "string") {
+    return bytesDefault(new TextEncoder().encode(value));
+  }
+  if (scalar === ScalarType.FLOAT && typeof value === "number") {
+    return Math.fround(value);
+  }
+  return value;
+};
+
+const fieldDefault = (field: DefaultableField): bigint | boolean | number | string => {
+  if (field.fieldKind === "enum") {
+    return (
+      field.getDefaultValue() ??
+      Option.getOrThrow(Option.fromUndefinedOr(field.enum.values[0])).number
+    );
+  }
+  const declared = field.getDefaultValue();
+  if (declared !== undefined) {
+    return normalizeDeclaredDefault(field.scalar, declared);
+  }
+  if (field.scalar === ScalarType.STRING || field.scalar === ScalarType.BYTES) {
+    return "";
+  }
+  if (field.scalar === ScalarType.BOOL) {
+    return false;
+  }
+  if (
+    field.scalar === ScalarType.INT64 ||
+    field.scalar === ScalarType.UINT64 ||
+    field.scalar === ScalarType.SINT64 ||
+    field.scalar === ScalarType.FIXED64 ||
+    field.scalar === ScalarType.SFIXED64
+  ) {
+    return 0n;
+  }
+  return 0;
+};
+
+const numericDefault = (value: bigint | boolean | number): number | bigint =>
+  typeof value === "boolean" ? (value ? 1 : 0) : value;
+
+const numericDefaultsEqual = (
+  previous: bigint | boolean | number,
+  current: bigint | boolean | number,
+): boolean => {
+  const previousNumeric = numericDefault(previous);
+  const currentNumeric = numericDefault(current);
+  if (typeof previousNumeric === "number" && Number.isNaN(previousNumeric)) {
+    return typeof currentNumeric === "number" && Number.isNaN(currentNumeric);
+  }
+  if (typeof currentNumeric === "number" && Number.isNaN(currentNumeric)) {
+    return false;
+  }
+  if (
+    (typeof previousNumeric === "number" && !Number.isFinite(previousNumeric)) ||
+    (typeof currentNumeric === "number" && !Number.isFinite(currentNumeric))
+  ) {
+    return previousNumeric === currentNumeric;
+  }
+  if (typeof previousNumeric === "bigint" && typeof currentNumeric === "bigint") {
+    return previousNumeric === currentNumeric;
+  }
+  if (typeof previousNumeric === "bigint") {
+    return Number.isInteger(currentNumeric) && BigInt(currentNumeric) === previousNumeric;
+  }
+  if (typeof currentNumeric === "bigint") {
+    return Number.isInteger(previousNumeric) && BigInt(previousNumeric) === currentNumeric;
+  }
+  return previousNumeric === currentNumeric;
+};
 
 const defaultsEqual = (previous: ComparableField, current: ComparableField): boolean => {
+  if (
+    previous.fieldKind === "message" ||
+    previous.fieldKind === "list" ||
+    previous.fieldKind === "map" ||
+    current.fieldKind === "message" ||
+    current.fieldKind === "list" ||
+    current.fieldKind === "map"
+  ) {
+    return true;
+  }
   const previousDefault = fieldDefault(previous);
   const currentDefault = fieldDefault(current);
-  return previousDefault instanceof Uint8Array && currentDefault instanceof Uint8Array
-    ? bytesEqual(previousDefault, currentDefault)
-    : Object.is(previousDefault, currentDefault);
+  if (typeof previousDefault === "string" || typeof currentDefault === "string") {
+    return previousDefault === currentDefault;
+  }
+  if (
+    previous.fieldKind === "scalar" &&
+    current.fieldKind === "scalar" &&
+    previous.scalar === ScalarType.FLOAT &&
+    current.scalar === ScalarType.DOUBLE &&
+    typeof previousDefault === "number" &&
+    typeof currentDefault === "number"
+  ) {
+    return numericDefaultsEqual(previousDefault, Math.fround(currentDefault));
+  }
+  if (
+    previous.fieldKind === "scalar" &&
+    current.fieldKind === "scalar" &&
+    previous.scalar === ScalarType.DOUBLE &&
+    current.scalar === ScalarType.FLOAT &&
+    typeof previousDefault === "number" &&
+    typeof currentDefault === "number"
+  ) {
+    return numericDefaultsEqual(Math.fround(previousDefault), currentDefault);
+  }
+  return numericDefaultsEqual(previousDefault, currentDefault);
 };
 
 const oneofName = (field: ComparableField): string | undefined => field.oneof?.name;
@@ -306,7 +486,7 @@ const fieldCompatibilityIssues = (
   if (!defaultsEqual(previous, current)) {
     issues.push(issue("FIELD_SAME_DEFAULT", path, "Field default value changed."));
   }
-  if (!valueTypeCompatible(fieldValueType(previous), fieldValueType(current))) {
+  if (!fieldValueTypeCompatible(previous, current)) {
     issues.push(
       issue("FIELD_WIRE_COMPATIBLE_TYPE", path, "Field type is not directionally wire-compatible."),
     );
@@ -435,6 +615,28 @@ const referencedPairs = (
   readonly messages: ReadonlyArray<MessagePair>;
   readonly enums: ReadonlyArray<EnumPair>;
 } => {
+  if (
+    previous.fieldKind === "map" &&
+    current.fieldKind === "list" &&
+    current.listKind === "message" &&
+    mapEntryTypeName(previous) === current.message.typeName
+  ) {
+    return {
+      messages: [{ previous: mapEntryMessage(previous), current: current.message }],
+      enums: [],
+    };
+  }
+  if (
+    previous.fieldKind === "list" &&
+    previous.listKind === "message" &&
+    current.fieldKind === "map" &&
+    previous.message.typeName === mapEntryTypeName(current)
+  ) {
+    return {
+      messages: [{ previous: previous.message, current: mapEntryMessage(current) }],
+      enums: [],
+    };
+  }
   if (previous.fieldKind === "message" && current.fieldKind === "message") {
     return {
       messages:
@@ -522,7 +724,7 @@ const messageGraphIssues = (
   const visitedMessages = new Set<string>();
   const visitedEnums = new Set<string>();
   while (pending.length > 0) {
-    const pair = pending.shift()!;
+    const pair = Option.getOrThrow(Option.fromUndefinedOr(pending.shift()));
     const messageIdentity = JSON.stringify([pair.previous.typeName, pair.current.typeName]);
     if (visitedMessages.has(messageIdentity)) {
       continue;
@@ -706,8 +908,11 @@ export const kafkaProtobufWireCompatibilityIssues = (
     }
   }
 
-  const previousMessages = messagesByTypeName(previousFiles.values());
-  const currentMessages = messagesByTypeName(currentFiles.values());
+  // Buf exposes maps as fields and hides their synthetic entry messages from ordinary descriptor
+  // traversal. Compare the normalized graph so map ↔ repeated-entry transitions validate the
+  // entry's key and value fields just like any other message.
+  const previousMessages = normalizedDescriptorGraph(previousRoot).messages;
+  const currentMessages = normalizedDescriptorGraph(currentRoot).messages;
   for (const [typeName, previous] of previousMessages) {
     const current = currentMessages.get(typeName);
     if (current !== undefined) {
@@ -747,100 +952,3 @@ export const kafkaProtobufWireCompatibilityIssues = (
   }
   return Object.freeze(issues);
 };
-
-const nestedMessageIndexes = (
-  messages: DescFile["proto"]["messageType"],
-  parentTypeName: string,
-  typeName: string,
-  skipMapEntries: boolean,
-): readonly [number, ...ReadonlyArray<number>] | undefined => {
-  let messageIndex = 0;
-  for (const message of messages) {
-    if (skipMapEntries && message.options?.mapEntry === true) {
-      continue;
-    }
-    const candidateTypeName =
-      parentTypeName.length === 0 ? message.name : `${parentTypeName}.${message.name}`;
-    if (candidateTypeName === typeName) {
-      return [messageIndex];
-    }
-    const nested = nestedMessageIndexes(
-      message.nestedType,
-      candidateTypeName,
-      typeName,
-      skipMapEntries,
-    );
-    if (nested !== undefined) {
-      return [messageIndex, ...nested];
-    }
-    messageIndex += 1;
-  }
-  return undefined;
-};
-
-const messageIndexes = (
-  root: DescFile,
-  typeName: string,
-  skipMapEntries: boolean,
-): readonly [number, ...ReadonlyArray<number>] | undefined => {
-  const indexes = nestedMessageIndexes(
-    root.proto.messageType,
-    root.proto.package,
-    typeName,
-    skipMapEntries,
-  );
-  return indexes;
-};
-
-export const kafkaProtobufMessageIndexes = (
-  root: DescFile,
-  typeName: string,
-): readonly [number, ...ReadonlyArray<number>] | undefined => messageIndexes(root, typeName, false);
-
-export const kafkaProtobufNormalizedMessageIndexes = (
-  root: DescFile,
-  typeName: string,
-): readonly [number, ...ReadonlyArray<number>] | undefined => messageIndexes(root, typeName, true);
-
-const messageAtIndexes = (
-  root: DescFile,
-  indexes: readonly [number, ...ReadonlyArray<number>],
-  skipMapEntries: boolean,
-): DescMessage | undefined => {
-  let messages = root.proto.messageType;
-  let parentTypeName = root.proto.package;
-  for (const index of indexes) {
-    const message = skipMapEntries
-      ? messages.filter((candidate) => candidate.options?.mapEntry !== true)[index]
-      : messages[index];
-    if (message === undefined) {
-      return undefined;
-    }
-    parentTypeName =
-      parentTypeName.length === 0 ? message.name : `${parentTypeName}.${message.name}`;
-    messages = message.nestedType;
-  }
-  const find = (candidates: ReadonlyArray<DescMessage>): DescMessage | undefined => {
-    for (const candidate of candidates) {
-      if (candidate.typeName === parentTypeName) {
-        return candidate;
-      }
-      const nested = find(candidate.nestedMessages);
-      if (nested !== undefined) {
-        return nested;
-      }
-    }
-    return undefined;
-  };
-  return find(root.messages);
-};
-
-export const kafkaProtobufMessageAtIndexes = (
-  root: DescFile,
-  indexes: readonly [number, ...ReadonlyArray<number>],
-): DescMessage | undefined => messageAtIndexes(root, indexes, false);
-
-export const kafkaProtobufMessageAtNormalizedIndexes = (
-  root: DescFile,
-  indexes: readonly [number, ...ReadonlyArray<number>],
-): DescMessage | undefined => messageAtIndexes(root, indexes, true);

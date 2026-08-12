@@ -119,6 +119,8 @@ describe("ColumnLiveViewEngine close mutation barrier", () => {
         }),
         currentTimeNanosUnsafe: () => 0n,
         currentTimeNanos: Effect.succeed(0n),
+        monotonicTimeNanosUnsafe: () => 0n,
+        monotonicTimeNanos: Effect.succeed(0n),
         sleep: () => Effect.void,
       };
       const engine = yield* createColumnLiveViewEngineInternal({
@@ -172,6 +174,8 @@ describe("ColumnLiveViewEngine close mutation barrier", () => {
         }),
         currentTimeNanosUnsafe: () => 0n,
         currentTimeNanos: Effect.succeed(0n),
+        monotonicTimeNanosUnsafe: () => 0n,
+        monotonicTimeNanos: Effect.succeed(0n),
         sleep: () => Effect.void,
       };
       const secondClock: Clock.Clock = {
@@ -183,6 +187,8 @@ describe("ColumnLiveViewEngine close mutation barrier", () => {
         }),
         currentTimeNanosUnsafe: () => 0n,
         currentTimeNanos: Effect.succeed(0n),
+        monotonicTimeNanosUnsafe: () => 0n,
+        monotonicTimeNanos: Effect.succeed(0n),
         sleep: () => Effect.void,
       };
       const engine = yield* createColumnLiveViewEngine({

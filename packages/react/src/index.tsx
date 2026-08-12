@@ -433,7 +433,11 @@ export const createViewServerReact = <const Topics extends TopicDefinitions>(
           publish(viewportState.prepare(command));
         },
       });
-      return { viewport, deactivate: viewport.deactivate };
+      return {
+        viewport,
+        replaceCaptured: viewport.replaceCaptured,
+        deactivate: viewport.deactivate,
+      };
     }, [client, publish, topic, viewportState]);
     useInsertionEffect(() => {
       binding.install(entry);

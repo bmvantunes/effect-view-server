@@ -15,9 +15,11 @@ import {
   kafkaProtobufMessageAtNormalizedIndexes,
   kafkaProtobufMessageAtIndexes,
   kafkaProtobufMessageIndexes,
+  kafkaProtobufNormalizedMessageIndexes,
+} from "./schema-registry-descriptor";
+import {
   kafkaProtobufMessageReaderCompatibilityIssues,
   kafkaProtobufMessageWireCompatibilityIssues,
-  kafkaProtobufNormalizedMessageIndexes,
   kafkaProtobufWireCompatibilityIssues,
 } from "./schema-registry-wire";
 
@@ -416,6 +418,209 @@ describe("Kafka Schema Registry Buf WIRE compatibility", () => {
     expect(rules(previous, gap)).toStrictEqual(["RESERVED_MESSAGE_NO_DELETE"]);
   });
 
+  it("normalizes Buf WIRE-equivalent effective defaults", () => {
+    const previous = descriptorFile({
+      syntax: "proto2",
+      messages: [
+        orderMessage([
+          field("integer", 1, FieldDescriptorProto_Type.INT32, { defaultValue: "1" }),
+          field("text", 2, FieldDescriptorProto_Type.STRING, { defaultValue: "xyz" }),
+          field("zero", 3, FieldDescriptorProto_Type.INT32),
+          field("truth", 4, FieldDescriptorProto_Type.BOOL, { defaultValue: "true" }),
+          field("float", 5, FieldDescriptorProto_Type.FLOAT, { defaultValue: "1.25" }),
+          field("nan", 6, FieldDescriptorProto_Type.FLOAT, { defaultValue: "nan" }),
+          field("infinity", 7, FieldDescriptorProto_Type.FLOAT, { defaultValue: "inf" }),
+        ]),
+      ],
+    });
+    const current = descriptorFile({
+      syntax: "proto2",
+      messages: [
+        orderMessage([
+          field("integer", 1, FieldDescriptorProto_Type.INT64, { defaultValue: "1" }),
+          field("text", 2, FieldDescriptorProto_Type.BYTES, { defaultValue: "xyz" }),
+          field("zero", 3, FieldDescriptorProto_Type.UINT64, { defaultValue: "0" }),
+          field("truth", 4, FieldDescriptorProto_Type.INT32, { defaultValue: "1" }),
+          field("float", 5, FieldDescriptorProto_Type.FLOAT, { defaultValue: "1.25" }),
+          field("nan", 6, FieldDescriptorProto_Type.FLOAT, { defaultValue: "nan" }),
+          field("infinity", 7, FieldDescriptorProto_Type.FLOAT, { defaultValue: "inf" }),
+        ]),
+      ],
+    });
+
+    expect(kafkaProtobufWireCompatibilityIssues(previous, current)).toStrictEqual([]);
+  });
+
+  it("matches Buf FIELD_SAME_DEFAULT numeric and non-default partitions", () => {
+    const makeDefaults = (
+      integerType: FieldDescriptorProto_Type,
+      integerDefault: string,
+      floatType: FieldDescriptorProto_Type,
+      floatDefault: string,
+      nanDefault: string,
+      messageType: boolean,
+      booleanDefault = "true",
+      optionalEnumDefault = "STATE_UNSPECIFIED",
+    ) =>
+      descriptorFile({
+        syntax: "proto2",
+        enums: [
+          {
+            name: "State",
+            values: [
+              ["STATE_UNSPECIFIED", 0],
+              ["STATE_READY", 1],
+            ],
+          },
+        ],
+        messages: [
+          { name: "Child" },
+          orderMessage([
+            field("integer", 1, integerType, { defaultValue: integerDefault }),
+            field("float", 2, floatType, { defaultValue: floatDefault }),
+            field("nan", 3, FieldDescriptorProto_Type.DOUBLE, { defaultValue: nanDefault }),
+            messageType
+              ? field("kind", 4, FieldDescriptorProto_Type.MESSAGE, {
+                  typeName: ".example.Child",
+                })
+              : field("kind", 4, FieldDescriptorProto_Type.INT32),
+            field("infinity", 5, FieldDescriptorProto_Type.DOUBLE, { defaultValue: "inf" }),
+            field("boolean", 6, FieldDescriptorProto_Type.BOOL, {
+              defaultValue: booleanDefault,
+            }),
+            field("enumeration", 7, FieldDescriptorProto_Type.ENUM, {
+              typeName: ".example.State",
+              defaultValue: optionalEnumDefault,
+            }),
+          ]),
+        ],
+      });
+    const previous = makeDefaults(
+      FieldDescriptorProto_Type.INT64,
+      "9007199254740993",
+      FieldDescriptorProto_Type.FLOAT,
+      "1.1",
+      "nan",
+      false,
+      "true",
+      "STATE_UNSPECIFIED",
+    );
+    const current = makeDefaults(
+      FieldDescriptorProto_Type.UINT64,
+      "9007199254740993",
+      FieldDescriptorProto_Type.DOUBLE,
+      String(Math.fround(1.1)),
+      "1",
+      true,
+      "true",
+      "STATE_UNSPECIFIED",
+    );
+    const reversed = makeDefaults(
+      FieldDescriptorProto_Type.INT64,
+      "9007199254740993",
+      FieldDescriptorProto_Type.FLOAT,
+      "1.1",
+      "1",
+      false,
+      "true",
+      "STATE_UNSPECIFIED",
+    );
+    const negativeInfinity = makeDefaults(
+      FieldDescriptorProto_Type.INT64,
+      "9007199254740993",
+      FieldDescriptorProto_Type.FLOAT,
+      "1.1",
+      "nan",
+      false,
+      "true",
+      "STATE_UNSPECIFIED",
+    );
+    const changedCurrentNaN = makeDefaults(
+      FieldDescriptorProto_Type.INT64,
+      "9007199254740993",
+      FieldDescriptorProto_Type.FLOAT,
+      "1.1",
+      "nan",
+      false,
+      "false",
+      "STATE_READY",
+    );
+    const implicit = descriptorFile({
+      syntax: "proto2",
+      enums: [
+        {
+          name: "State",
+          values: [
+            ["STATE_UNSPECIFIED", 0],
+            ["STATE_READY", 1],
+          ],
+        },
+      ],
+      messages: [
+        { name: "Child" },
+        orderMessage([
+          field("integer", 1, FieldDescriptorProto_Type.INT64),
+          field("float", 2, FieldDescriptorProto_Type.FLOAT),
+          field("nan", 3, FieldDescriptorProto_Type.DOUBLE),
+          field("kind", 4, FieldDescriptorProto_Type.INT32),
+          field("infinity", 5, FieldDescriptorProto_Type.DOUBLE),
+          field("boolean", 6, FieldDescriptorProto_Type.BOOL),
+          field("enumeration", 7, FieldDescriptorProto_Type.ENUM, {
+            typeName: ".example.State",
+          }),
+        ]),
+      ],
+    });
+    const messageToScalar = descriptorFile({
+      syntax: "proto2",
+      messages: [
+        { name: "Child" },
+        orderMessage([
+          field("kind", 4, FieldDescriptorProto_Type.STRING),
+          field("infinity", 5, FieldDescriptorProto_Type.DOUBLE),
+        ]),
+      ],
+    });
+    const negativeInfinityOrder = negativeInfinity.messages.find(
+      (message) => message.name === "Order",
+    );
+    const infinityField = negativeInfinityOrder?.fields.find(
+      (candidate) => candidate.name === "infinity",
+    );
+    if (infinityField === undefined) {
+      throw new Error("infinity default fixture missing");
+    }
+    infinityField.proto.defaultValue = "-inf";
+
+    expect(rules(previous, current)).toStrictEqual([
+      "FIELD_WIRE_COMPATIBLE_TYPE",
+      "FIELD_SAME_DEFAULT",
+      "FIELD_WIRE_COMPATIBLE_TYPE",
+    ]);
+    expect(rules(current, reversed)).toStrictEqual([
+      "FIELD_WIRE_COMPATIBLE_TYPE",
+      "FIELD_WIRE_COMPATIBLE_TYPE",
+    ]);
+    expect(rules(previous, negativeInfinity)).toStrictEqual(["FIELD_SAME_DEFAULT"]);
+    expect(rules(current, changedCurrentNaN)).toStrictEqual([
+      "FIELD_WIRE_COMPATIBLE_TYPE",
+      "FIELD_SAME_DEFAULT",
+      "FIELD_WIRE_COMPATIBLE_TYPE",
+      "FIELD_SAME_DEFAULT",
+      "FIELD_SAME_DEFAULT",
+    ]);
+    expect(rules(implicit, implicit)).toStrictEqual([]);
+    expect(rules(current, messageToScalar)).toStrictEqual([
+      "FIELD_NO_DELETE_UNLESS_NUMBER_RESERVED",
+      "FIELD_NO_DELETE_UNLESS_NUMBER_RESERVED",
+      "FIELD_NO_DELETE_UNLESS_NUMBER_RESERVED",
+      "FIELD_WIRE_COMPATIBLE_TYPE",
+      "FIELD_SAME_DEFAULT",
+      "FIELD_NO_DELETE_UNLESS_NUMBER_RESERVED",
+      "FIELD_NO_DELETE_UNLESS_NUMBER_RESERVED",
+    ]);
+  });
+
   it("rejects incompatible enum, message, list, map, and cross-kind field values", () => {
     const makeKinds = (changed: boolean) =>
       descriptorFile({
@@ -487,6 +692,65 @@ describe("Kafka Schema Registry Buf WIRE compatibility", () => {
       "FIELD_WIRE_COMPATIBLE_TYPE",
       "FIELD_WIRE_COMPATIBLE_TYPE",
     ]);
+  });
+
+  it("validates Buf WIRE-compatible map and repeated map-entry message transitions recursively", () => {
+    const makeMapField = (
+      mapEntry: boolean,
+      qualifiedTypeName = true,
+      valueType = FieldDescriptorProto_Type.INT32,
+    ) =>
+      descriptorFile({
+        messages: [
+          orderMessage(
+            [
+              field("labels", 1, FieldDescriptorProto_Type.MESSAGE, {
+                typeName: `${qualifiedTypeName ? "." : ""}example.Order.LabelsEntry`,
+                label: FieldDescriptorProto_Label.REPEATED,
+              }),
+            ],
+            {
+              nested: [
+                {
+                  name: "LabelsEntry",
+                  mapEntry,
+                  fields: [
+                    field("key", 1, FieldDescriptorProto_Type.STRING),
+                    field("value", 2, valueType),
+                  ],
+                },
+              ],
+            },
+          ),
+        ],
+      });
+    const mapped = makeMapField(true);
+    const unqualifiedMap = makeMapField(true, false);
+    const repeatedEntry = makeMapField(false);
+
+    expect(rules(mapped, repeatedEntry)).toStrictEqual([]);
+    expect(rules(repeatedEntry, mapped)).toStrictEqual([]);
+    expect(rules(unqualifiedMap, repeatedEntry)).toStrictEqual([]);
+    expect(
+      rules(mapped, makeMapField(false, true, FieldDescriptorProto_Type.SINT32)),
+    ).toStrictEqual(["FIELD_WIRE_COMPATIBLE_TYPE"]);
+    expect(
+      kafkaProtobufMessageReaderCompatibilityIssues(
+        mapped.messages[0]!,
+        makeMapField(false, true, FieldDescriptorProto_Type.SINT32).messages[0]!,
+      ).map(({ rule, path }) => ({ rule, path })),
+    ).toStrictEqual([
+      {
+        rule: "FIELD_WIRE_COMPATIBLE_TYPE",
+        path: "example.Order.LabelsEntry.value",
+      },
+    ]);
+    expect(
+      kafkaProtobufMessageWireCompatibilityIssues(
+        repeatedEntry.messages[0]!,
+        unqualifiedMap.messages[0]!,
+      ),
+    ).toStrictEqual([]);
   });
 
   it("recurses through compatible map value graphs and skips changed map type identities", () => {
@@ -996,7 +1260,6 @@ describe("Kafka Schema Registry Buf WIRE compatibility", () => {
 
     expect(rules(previous, current)).toStrictEqual([
       "FIELD_WIRE_COMPATIBLE_CARDINALITY",
-      "FIELD_SAME_DEFAULT",
       "FIELD_WIRE_COMPATIBLE_TYPE",
     ]);
     const removed = descriptorFile({

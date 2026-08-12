@@ -72,8 +72,8 @@ const semanticRowSummary = {
 const decodeTransportedEvent = Effect.fn("ViewServerProtocol.test.transport")(function* (
   value: unknown,
 ) {
-  const jsonText = yield* Schema.encodeUnknownEffect(Schema.UnknownFromJsonString)(value);
-  const parsed = yield* Schema.decodeUnknownEffect(Schema.UnknownFromJsonString)(jsonText);
+  const jsonText = yield* Schema.encodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(value);
+  const parsed = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(jsonText);
   return yield* Schema.decodeUnknownEffect(ViewServerWireEventSchema)(parsed);
 });
 
@@ -107,8 +107,12 @@ describe("Schema value wire semantics", () => {
         where: [{ field: "venue.code", type: "equals", filter: "XNYS" }],
       });
 
-      const jsonText = yield* Schema.encodeUnknownEffect(Schema.UnknownFromJsonString)(encoded);
-      const transported = yield* Schema.decodeUnknownEffect(Schema.UnknownFromJsonString)(jsonText);
+      const jsonText = yield* Schema.encodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(
+        encoded,
+      );
+      const transported = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(
+        jsonText,
+      );
       const decoded = yield* viewServerDecodeRawQuery(semanticViewServer, "semantic", transported);
 
       expect(decoded.where).toStrictEqual([

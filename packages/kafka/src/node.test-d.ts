@@ -6,6 +6,8 @@ import {
   KafkaSourceAdapter,
   kafka,
   type KafkaAdapterFailure,
+  type KafkaCodec,
+  type KafkaCodecError,
   type KafkaRegionMetrics,
 } from "./contract";
 import {
@@ -16,7 +18,7 @@ import {
   type KafkaSchemaRegistryContractValidationFailure,
   type KafkaSchemaRegistryRequiredRegion,
 } from "./node";
-import { OrderValueSchema } from "./test-fixtures/orders_pb";
+import { OrderValueSchema, type OrderValue } from "./test-fixtures/orders_pb";
 import type {
   KafkaServerRecord,
   KafkaServerRegion,
@@ -83,6 +85,28 @@ const schemaRegistryConfig = defineViewServerConfig({
           price: value.price,
           region: String(region),
         }),
+        startFrom: "earliest",
+      }),
+    },
+  },
+});
+
+const widenedRegistryValue: KafkaCodec<OrderValue, KafkaCodecError> =
+  kafka.schemaRegistry.protobuf(OrderValueSchema);
+expectTypeOf(widenedRegistryValue).not.toBeAny();
+const widenedSchemaRegistryConfig = defineViewServerConfig({
+  topics: {
+    orders: {
+      schema: Row,
+      source: kafka.source({
+        cleanupPolicy: "delete",
+        retentionPolicy: "Infinity",
+        topic: "source-orders",
+        regions: ["eu"],
+        key: kafka.string(),
+        value: widenedRegistryValue,
+        localRowKey: ({ key }) => key,
+        map: ({ value, region }) => ({ price: value.price, region: String(region) }),
         startFrom: "earliest",
       }),
     },
@@ -340,6 +364,9 @@ describe("Kafka Node type contract", () => {
     expectTypeOf<
       KafkaSchemaRegistryRequiredRegion<typeof schemaRegistryConfig>
     >().toEqualTypeOf<"eu">();
+    expectTypeOf<
+      KafkaSchemaRegistryRequiredRegion<typeof widenedSchemaRegistryConfig>
+    >().toEqualTypeOf<"eu">();
 
     const registryLayer = layer(schemaRegistryConfig, {
       consumerGroupPrefix: "replica",
@@ -370,6 +397,13 @@ describe("Kafka Node type contract", () => {
       consumerGroupPrefix: "replica",
       regions: {
         // @ts-expect-error Registry-backed Sources require a Region Schema Registry resource.
+        eu: { bootstrapServers: "eu:9092" },
+      },
+    });
+    layer(widenedSchemaRegistryConfig, {
+      consumerGroupPrefix: "replica",
+      regions: {
+        // @ts-expect-error widening a Registry codec cannot erase the Region Registry requirement.
         eu: { bootstrapServers: "eu:9092" },
       },
     });

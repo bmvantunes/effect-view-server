@@ -17,14 +17,17 @@ import { createInMemoryViewServer } from "effect-view-server/in-memory";
 import {
   decodeKafkaCodec,
   kafka as kafkaSourceAdapter,
+  KafkaSourceAdapter,
   type KafkaCodecValue as KafkaSourceCodecValue,
   type KafkaCompactionMappingInput,
 } from "effect-view-server/kafka/contract";
 import {
   layer as kafkaNodeLayer,
   layerConfig as kafkaNodeLayerConfig,
+  type KafkaBrokerContractValidationFailure,
+  type KafkaSchemaRegistryContractValidationFailure,
 } from "effect-view-server/kafka/node";
-import { Config, Context, Effect, Schema } from "effect";
+import { Config, Context, Effect, Layer, Schema } from "effect";
 import type * as EffectOption from "effect/Option";
 import type { BigDecimal } from "effect/BigDecimal";
 import type { ViewServerLiveClient } from "effect-view-server/client";
@@ -374,8 +377,20 @@ describe("public effect-view-server subpath type contracts", () => {
       typeof IncomingKafkaOrder.Type
     >();
     expectTypeOf<KafkaSourceCodecValue<typeof kafkaRegistryValue>>().toEqualTypeOf<Timestamp>();
-    expectTypeOf(registryKafkaLayer).not.toBeAny();
-    expectTypeOf(registryKafkaConfigLayer).not.toBeAny();
+    expectTypeOf(registryKafkaLayer).toEqualTypeOf<
+      Layer.Layer<
+        Context.Service.Identifier<typeof KafkaSourceAdapter.runtimeService>,
+        KafkaBrokerContractValidationFailure | KafkaSchemaRegistryContractValidationFailure
+      >
+    >();
+    expectTypeOf(registryKafkaConfigLayer).toEqualTypeOf<
+      Layer.Layer<
+        Context.Service.Identifier<typeof KafkaSourceAdapter.runtimeService>,
+        | Config.ConfigError
+        | KafkaBrokerContractValidationFailure
+        | KafkaSchemaRegistryContractValidationFailure
+      >
+    >();
     // @ts-expect-error the public facade rejects widened dynamic descriptors.
     kafkaSourceAdapter.schemaRegistry.protobuf(widenedKafkaDescriptor);
     // @ts-expect-error the public facade rejects unions of generated descriptors.

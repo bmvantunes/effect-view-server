@@ -44,8 +44,9 @@ subject and all recursively reachable reference subjects:
    only IDs satisfying that directional consumer check enter the runtime cache.
 7. Verify the complete active history with Buf `WIRE` semantics. A stricter producer-side Buf `FILE`
    policy is welcome but not required by this consumer.
-8. Treat canonical `google/protobuf/*` well-known types as Buf-owned descriptors rather than requiring
-   Registry subjects for them.
+8. Treat only Buf's canonical allowlist of `google/protobuf/*` well-known-type files as Buf-owned
+   descriptors rather than requiring Registry subjects for them. A custom file merely using that
+   directory prefix remains Registry-owned and fully validated.
 
 Startup validation failures are structured `KafkaSchemaRegistryContractValidationFailure` Layer
 errors. Runtime transport does not start and no Kafka consumer is acquired.
@@ -85,8 +86,11 @@ Consequences include:
 
 One deduplicated monitor per Region periodically rechecks effective policies, subject/reference
 versions, deletions/gaps, and compatibility. Compatible additions warm the schema-ID cache. A
-violation fails only Source lanes whose key/value contracts depend on the violated subject. Source
-supervision controls `WaitingToRetry` and eventual `Exhausted` status.
+violation fails only Sources whose key/value contracts depend on the violated subject; unrelated
+Sources, including those using the same Region, continue. Within one multi-Region Source, a Region
+lane failure intentionally terminates and reacquires that Source's complete attempt under its one
+Retry Policy, matching the repository-wide Source Attempt ownership contract. Source supervision
+controls `WaitingToRetry` and eventual `Exhausted` status.
 
 The reporting module does not perform probes. It projects the Kafka module's typed failures.
 
@@ -132,8 +136,8 @@ Example projection:
   anchors, policy inheritance, deletions, and version gaps.
 - Node tests use a fake HTTP Registry to cover auth, TLS-facing option validation, retries, caching,
   startup failure, first-seen IDs, monitor recovery/failure, and scoped cleanup.
-- Kafka server tests prove no Mapping or commit occurs after Registry failure and unrelated lanes keep
-  running.
+- Kafka server tests prove no Mapping or commit occurs after Registry failure and unrelated Sources
+  keep running, while a multi-Region Source retains the canonical whole-attempt retry contract.
 - reporting tests prove separate broker/Registry dependency states and detailed issue recovery.
 - Run focused tests, Kafka/runtime package tests with 100% coverage, `vp check`, strict Effect
   diagnostics, and the canonical Kafka benchmark gate.

@@ -31,6 +31,10 @@ One Region-shared monitor detects later policy or schema drift. Kafka publishes 
 failures; generic runtime reporting projects them onto a separate `schema-registry` dependency target
 without learning Kafka-specific failure tags.
 
+Drift failure is isolated to Sources whose contracts depend on it. A multi-Region Source remains one
+Source Attempt ownership unit: failure of one Region lane terminates and reacquires that Source's
+complete attempt, while unrelated Sources continue.
+
 ## Consequences
 
 Record decoding stays statically typed and avoids dynamic reflection. Registry parsing and

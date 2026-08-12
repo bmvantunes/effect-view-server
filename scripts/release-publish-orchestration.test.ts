@@ -77,7 +77,7 @@ const makeReleaseTree = (version = "0.0.6") => {
     publishConfig: { provenance: true },
     dependencies: {
       "@effect-view-server/client": "workspace:*",
-      effect: "4.0.0-beta.100",
+      effect: "4.0.0-beta.106",
     },
     scripts: { build: "vp pack" },
   });
@@ -93,6 +93,10 @@ const makeReleaseTree = (version = "0.0.6") => {
   writeFileSync(
     join(publicPackageDirectory, "dist", "index.d.ts"),
     "export declare const ready: true;\n//# sourceMappingURL=index.d.ts.map\n",
+  );
+  writeFileSync(
+    join(publicPackageDirectory, "dist", "nested", "types.d.ts"),
+    "export declare const nested: true;\n//# sourceMappingURL=types.d.ts.map\n",
   );
   writeFileSync(join(publicPackageDirectory, "dist", "nested", "data.txt"), "ready\n");
   writeFileSync(join(publicPackageDirectory, "dist", "index.js.map"), "{}\n");
@@ -150,6 +154,7 @@ const makeScenario = ({
     declaration: string;
     files: Array<string>;
     manifest: Record<string, unknown>;
+    nestedDeclaration: string;
     nestedFile: string;
     readme: string;
     runtime: string;
@@ -202,6 +207,10 @@ const makeScenario = ({
         declaration: readFileSync(join(publishDirectory, "dist", "index.d.ts"), "utf8"),
         files: readdirSync(publishDirectory).sort(),
         manifest: JSON.parse(readFileSync(join(publishDirectory, "package.json"), "utf8")),
+        nestedDeclaration: readFileSync(
+          join(publishDirectory, "dist", "nested", "types.d.ts"),
+          "utf8",
+        ),
         nestedFile: readFileSync(join(publishDirectory, "dist", "nested", "data.txt"), "utf8"),
         readme: readFileSync(join(publishDirectory, "README.md"), "utf8"),
         runtime: readFileSync(join(publishDirectory, "dist", "index.js"), "utf8"),
@@ -269,7 +278,8 @@ describe("release publish orchestration", () => {
       version: "0.0.7",
     });
     expect(scenario.publishedArtifact()).toStrictEqual({
-      declaration: "export declare const ready: true;\n",
+      declaration:
+        '/// <reference path="./effect-schemaast-compat.d.ts" />\nexport declare const ready: true;\n',
       files: ["README.md", "dist", "package.json"],
       manifest: {
         name: "effect-view-server",
@@ -281,8 +291,10 @@ describe("release publish orchestration", () => {
         },
         files: ["dist", "README.md"],
         publishConfig: { access: "public", provenance: true },
-        dependencies: { effect: "4.0.0-beta.100" },
+        dependencies: { effect: "4.0.0-beta.106" },
       },
+      nestedDeclaration:
+        '/// <reference path="../effect-schemaast-compat.d.ts" />\nexport declare const nested: true;\n',
       nestedFile: "ready\n",
       readme: "# Public package\n",
       runtime: "export const ready = true;\n",

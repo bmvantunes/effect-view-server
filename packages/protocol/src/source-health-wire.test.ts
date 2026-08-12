@@ -573,14 +573,14 @@ describe("Source Health wire contract", () => {
           code: "InvalidQuery",
           topic: "leased",
           message:
-            'Invalid Source Health value: Expected { readonly "_tag": "Inactive", ... } | { readonly "_tag": "Active", ... }, got null',
+            'Invalid Source Health value: Expected { readonly "_tag": "Inactive", ... } | { readonly "_tag": "Active", ... }',
         },
         {
           _tag: "ViewServerRuntimeError",
           code: "InvalidQuery",
           topic: "leased",
           message:
-            "Invalid Source Health value: Schema validation failed without a safely printable diagnostic.",
+            'Invalid Source Health value: Expected { readonly "_tag": "Inactive", ... } | { readonly "_tag": "Active", ... }',
         },
         {
           _tag: "ViewServerRuntimeError",
@@ -598,13 +598,13 @@ describe("Source Health wire contract", () => {
           _tag: "ViewServerRuntimeError",
           code: "InvalidQuery",
           topic: "materialized",
-          message: 'Invalid Source Health value: Expected bigint, got 12\n  at ["sampledAtNanos"]',
+          message: 'Invalid Source Health value: Expected bigint\n  at ["sampledAtNanos"]',
         },
         {
           _tag: "ViewServerRuntimeError",
           code: "InvalidQuery",
           topic: "materialized",
-          message: 'Invalid Source Health value: Expected 1, got 2n\n  at ["status"]["attempt"]',
+          message: 'Invalid Source Health value: Expected 1\n  at ["status"]["attempt"]',
         },
         {
           _tag: "ViewServerRuntimeError",

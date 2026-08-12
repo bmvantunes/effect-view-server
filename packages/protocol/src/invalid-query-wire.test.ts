@@ -499,7 +499,7 @@ describe("Invalid query wire inputs", () => {
 
       expect(invalidFilter.code).toBe("InvalidQuery");
 
-      expect(invalidFilter.message).toBe('Invalid filter for price: Expected number, got "nope"');
+      expect(invalidFilter.message).toBe("Invalid filter for price: Expected number");
 
       const invalidEncodeStartsWith = yield* Effect.flip(
         viewServerEncodeRawQuery(viewServer, "orders", {

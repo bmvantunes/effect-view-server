@@ -106,7 +106,7 @@ const validateDecodedTopicRow = Effect.fn("ColumnLiveViewEngine.topicRow.decoded
     invalidRow: InvalidRowErrorFactory<Error>,
   ) {
     const decoded = yield* validateDecodedRow(context.schema, row).pipe(
-      Effect.mapError((cause) => invalidRow(context.topic, String(cause))),
+      Effect.mapError((cause) => invalidRow(context.topic, cause.toString())),
     );
     return yield* Effect.try({
       try: () =>

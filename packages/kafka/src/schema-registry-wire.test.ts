@@ -11,6 +11,7 @@ import {
 } from "@bufbuild/protobuf/wkt";
 import type { DescriptorProto } from "@bufbuild/protobuf/wkt";
 import { describe, expect, it } from "@effect/vitest";
+import { Option } from "effect";
 import {
   kafkaProtobufMessageAtNormalizedIndexes,
   kafkaProtobufMessageAtIndexes,
@@ -799,20 +800,21 @@ describe("Kafka Schema Registry Buf WIRE compatibility", () => {
       messageTypeName: ".example.OtherChild",
       enumTypeName: ".example.OtherState",
     });
-    const previousOrder = previous.messages.find((message) => message.typeName === "example.Order");
-    const compatibleOrder = compatibleChild.messages.find(
-      (message) => message.typeName === "example.Order",
+    const previousOrder = Option.getOrThrow(
+      Option.fromUndefinedOr(
+        previous.messages.find((message) => message.typeName === "example.Order"),
+      ),
     );
-    const changedOrder = changedIdentities.messages.find(
-      (message) => message.typeName === "example.Order",
+    const compatibleOrder = Option.getOrThrow(
+      Option.fromUndefinedOr(
+        compatibleChild.messages.find((message) => message.typeName === "example.Order"),
+      ),
     );
-    if (
-      previousOrder === undefined ||
-      compatibleOrder === undefined ||
-      changedOrder === undefined
-    ) {
-      throw new Error("map graph messages missing");
-    }
+    const changedOrder = Option.getOrThrow(
+      Option.fromUndefinedOr(
+        changedIdentities.messages.find((message) => message.typeName === "example.Order"),
+      ),
+    );
 
     expect(
       kafkaProtobufMessageWireCompatibilityIssues(previousOrder, compatibleOrder).map(

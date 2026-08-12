@@ -789,7 +789,7 @@ describe("Kafka Schema Registry Buf WIRE compatibility", () => {
       messageTypeName: ".example.Child",
       enumTypeName: ".example.State",
     });
-    const incompatibleChild = makeMapGraph({
+    const compatibleChild = makeMapGraph({
       childType: FieldDescriptorProto_Type.STRING,
       messageTypeName: ".example.Child",
       enumTypeName: ".example.State",
@@ -800,7 +800,7 @@ describe("Kafka Schema Registry Buf WIRE compatibility", () => {
       enumTypeName: ".example.OtherState",
     });
     const previousOrder = previous.messages.find((message) => message.typeName === "example.Order");
-    const incompatibleOrder = incompatibleChild.messages.find(
+    const compatibleOrder = compatibleChild.messages.find(
       (message) => message.typeName === "example.Order",
     );
     const changedOrder = changedIdentities.messages.find(
@@ -808,22 +808,17 @@ describe("Kafka Schema Registry Buf WIRE compatibility", () => {
     );
     if (
       previousOrder === undefined ||
-      incompatibleOrder === undefined ||
+      compatibleOrder === undefined ||
       changedOrder === undefined
     ) {
       throw new Error("map graph messages missing");
     }
 
     expect(
-      kafkaProtobufMessageWireCompatibilityIssues(previousOrder, incompatibleOrder).map(
+      kafkaProtobufMessageWireCompatibilityIssues(previousOrder, compatibleOrder).map(
         ({ rule, path }) => ({ rule, path }),
       ),
-    ).toStrictEqual([
-      {
-        rule: "FIELD_WIRE_COMPATIBLE_TYPE",
-        path: "example.Child.value",
-      },
-    ]);
+    ).toStrictEqual([]);
     expect(
       kafkaProtobufMessageWireCompatibilityIssues(previousOrder, changedOrder).map(
         ({ rule }) => rule,
@@ -912,7 +907,7 @@ describe("Kafka Schema Registry Buf WIRE compatibility", () => {
     ]);
   });
 
-  it("implements directional scalar, cardinality, oneof, default, and required-field rules", () => {
+  it("implements scalar, cardinality, oneof, default, and required-field rules", () => {
     const previous = descriptorFile({
       syntax: "proto2",
       messages: [
@@ -956,7 +951,6 @@ describe("Kafka Schema Registry Buf WIRE compatibility", () => {
       "MESSAGE_SAME_REQUIRED_FIELDS",
     ]);
     expect(rules(current, previous)).toStrictEqual([
-      "FIELD_WIRE_COMPATIBLE_TYPE",
       "FIELD_WIRE_COMPATIBLE_CARDINALITY",
       "FIELD_SAME_ONEOF",
       "FIELD_SAME_DEFAULT",

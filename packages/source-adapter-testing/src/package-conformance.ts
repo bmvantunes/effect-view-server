@@ -11,6 +11,7 @@ import { gzipSync } from "node:zlib";
 import { Cause, Context, Data, Effect, Exit, Layer, Option, Schema } from "effect";
 import ts from "typescript-compiler-api";
 import { version as typescriptVersion } from "typescript";
+import typescriptPackage from "typescript/package.json" with { type: "json" };
 import { build, type Plugin } from "vite";
 import { browserBuildChunks } from "./browser-build-output";
 import { sourceAdapterConformanceDefinitionIsLinked } from "./conformance";
@@ -386,18 +387,12 @@ const typescriptPackageRoot = resolve(
   fileURLToPath(import.meta.resolve("typescript/package.json")),
   "..",
 );
+const typescriptCompilerCli = resolve(typescriptPackageRoot, typescriptPackage.bin.tsc);
 
 const executeTypeScriptCompiler = (projectPath: string): number => {
   const compiler = spawnSync(
     process.execPath,
-    [
-      resolve(typescriptPackageRoot, "lib/tsc.js"),
-      "--project",
-      projectPath,
-      "--noEmit",
-      "--pretty",
-      "false",
-    ],
+    [typescriptCompilerCli, "--project", projectPath, "--noEmit", "--pretty", "false"],
     { stdio: "ignore" },
   );
   return compiler.status === 0 ? 0 : 1;

@@ -233,9 +233,16 @@ const sharedSchemaRegistryReader = (
         : Effect.failCause(result.cause);
     }
     return read().pipe(
-      Effect.exit,
-      Effect.tap((exit) => Effect.sync(() => cache.set(key, exit))),
-      Effect.flatten,
+      Effect.matchEffect({
+        onFailure: (failure) =>
+          Effect.sync(() => cache.set(key, Exit.fail(failure))).pipe(
+            Effect.andThen(Effect.fail(failure)),
+          ),
+        onSuccess: (value) =>
+          Effect.sync(() => cache.set(key, Exit.succeed(value))).pipe(
+            Effect.andThen(Effect.succeed(value)),
+          ),
+      }),
     );
   };
   return {

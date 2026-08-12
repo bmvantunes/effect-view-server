@@ -9,7 +9,7 @@ import {
 } from "@bufbuild/protobuf/wkt";
 import type { FileDescriptorProto } from "@bufbuild/protobuf/wkt";
 import { describe, expect, it } from "@effect/vitest";
-import { Effect } from "effect";
+import { Effect, Option } from "effect";
 import { OrderValueSchema } from "./test-fixtures/orders_pb";
 import {
   resolveKafkaSchemaRegistryContracts,
@@ -151,10 +151,7 @@ const generatedMessage = (
   }
   const pending = [...root.messages];
   while (pending.length > 0) {
-    const candidate = pending.shift();
-    if (candidate === undefined) {
-      throw new Error("generated descriptor traversal failed");
-    }
+    const candidate = Option.getOrThrow(Option.fromUndefinedOr(pending.shift()));
     if (candidate.typeName === typeName) {
       return candidate;
     }

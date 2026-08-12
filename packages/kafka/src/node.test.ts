@@ -340,6 +340,7 @@ const platformatic = vi.hoisted(() => {
   class Consumer {
     readonly options: ConsumerOptions;
     readonly handlers = new Map<string, Set<EventHandler>>();
+    stream: ControlledStream | undefined;
     assignments: ReadonlyArray<{
       readonly topic: string;
       readonly partitions: ReadonlyArray<number>;
@@ -403,6 +404,7 @@ const platformatic = vi.hoisted(() => {
       const stream = new ControlledStream();
       stream.failClose = state.failNextStreamClose;
       state.failNextStreamClose = false;
+      this.stream = stream;
       state.streams.push(stream);
       return Promise.resolve(stream);
     }
@@ -1054,18 +1056,21 @@ describe("Kafka Node Adapter", () => {
           toJSON: () => ({}),
         };
       };
-      const euConsumerIndex = platformatic.state.consumers.findIndex(
-        (consumer) => consumer.options.bootstrapBrokers[0] === "eu:9092",
-      );
-      const usConsumerIndex = platformatic.state.consumers.findIndex(
-        (consumer) => consumer.options.bootstrapBrokers[0] === "us:9092",
-      );
-      platformatic.state.streams[euConsumerIndex]?.push(
-        registryMessage({ region: "eu", schemaId: 41, key: "order-eu", price: 41 }),
-      );
-      platformatic.state.streams[usConsumerIndex]?.push(
-        registryMessage({ region: "us", schemaId: 91, key: "order-us", price: 91 }),
-      );
+      const streamForBroker = (broker: string) =>
+        Option.getOrThrow(
+          Option.flatMap(
+            Option.fromUndefinedOr(
+              platformatic.state.consumers.find(
+                (consumer) => consumer.options.bootstrapBrokers[0] === broker,
+              ),
+            ),
+            (consumer) => Option.fromUndefinedOr(consumer.stream),
+          ),
+        );
+      const euStream = streamForBroker("eu:9092");
+      const usStream = streamForBroker("us:9092");
+      euStream.push(registryMessage({ region: "eu", schemaId: 41, key: "order-eu", price: 41 }));
+      usStream.push(registryMessage({ region: "us", schemaId: 91, key: "order-us", price: 91 }));
       yield* awaitCondition(() => commits.length === 2);
 
       expect({
@@ -3255,6 +3260,7 @@ describe("Kafka Node Adapter", () => {
       {},
       { token: "" },
       { token: "token", extra: true },
+      { username: "orders", password: "secret", token: "token" },
       { username: "", password: "secret" },
       { username: 1, password: "secret" },
       { username: "orders" },
@@ -3461,6 +3467,11 @@ describe("Kafka Node Adapter", () => {
         { consumerGroupPrefix: "replica", regions: {} },
       ]),
     ).toThrowError("Kafka Node Layer requires at least one Kafka Source Definition.");
+    for (const malformed of [undefined, null, {}, { topics: null }]) {
+      expect(() =>
+        Reflect.apply(kafkaNodeInternals.snapshotLayerOptions, undefined, [malformed, {}]),
+      ).toThrowError("Kafka Node Layer requires a View Server Config.");
+    }
     expect(() =>
       Reflect.apply(kafkaNodeInternals.kafkaSourceRegions, undefined, [
         {

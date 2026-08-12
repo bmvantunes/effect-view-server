@@ -47,38 +47,73 @@ export const kafkaProtobufNormalizedMessageIndexes = (
   typeName: string,
 ): readonly [number, ...ReadonlyArray<number>] | undefined => messageIndexes(root, typeName, true);
 
+type IndexedMessages = {
+  readonly raw: ReadonlyMap<string, DescMessage>;
+  readonly normalized: ReadonlyMap<string, DescMessage>;
+};
+
+const indexedMessagesByFile = new WeakMap<DescFile, IndexedMessages>();
+
+const indexKey = (indexes: ReadonlyArray<number>): string => indexes.join(".");
+
+const messagesByTypeName = (root: DescFile): ReadonlyMap<string, DescMessage> => {
+  const messages = new Map<string, DescMessage>();
+  const visit = (candidates: ReadonlyArray<DescMessage>): void => {
+    for (const candidate of candidates) {
+      messages.set(candidate.typeName, candidate);
+      visit(candidate.nestedMessages);
+    }
+  };
+  visit(root.messages);
+  return messages;
+};
+
+const indexedMessages = (root: DescFile): IndexedMessages => {
+  const cached = indexedMessagesByFile.get(root);
+  if (cached !== undefined) {
+    return cached;
+  }
+  const descriptors = messagesByTypeName(root);
+  const build = (skipMapEntries: boolean): ReadonlyMap<string, DescMessage> => {
+    const indexed = new Map<string, DescMessage>();
+    const visit = (
+      messages: DescFile["proto"]["messageType"],
+      parentTypeName: string,
+      parentIndexes: ReadonlyArray<number>,
+    ): void => {
+      const candidates = skipMapEntries
+        ? messages.filter((candidate) => candidate.options?.mapEntry !== true)
+        : messages;
+      for (const [index, candidate] of candidates.entries()) {
+        const typeName =
+          parentTypeName.length === 0 ? candidate.name : `${parentTypeName}.${candidate.name}`;
+        const indexes = [...parentIndexes, index];
+        const descriptor = descriptors.get(typeName);
+        if (descriptor !== undefined) {
+          indexed.set(indexKey(indexes), descriptor);
+        }
+        visit(candidate.nestedType, typeName, indexes);
+      }
+    };
+    visit(root.proto.messageType, root.proto.package, []);
+    return indexed;
+  };
+  const result: IndexedMessages = Object.freeze({
+    raw: build(false),
+    normalized: build(true),
+  });
+  indexedMessagesByFile.set(root, result);
+  return result;
+};
+
 const messageAtIndexes = (
   root: DescFile,
   indexes: readonly [number, ...ReadonlyArray<number>],
   skipMapEntries: boolean,
-): DescMessage | undefined => {
-  let messages = root.proto.messageType;
-  let parentTypeName = root.proto.package;
-  for (const index of indexes) {
-    const message = skipMapEntries
-      ? messages.filter((candidate) => candidate.options?.mapEntry !== true)[index]
-      : messages[index];
-    if (message === undefined) {
-      return undefined;
-    }
-    parentTypeName =
-      parentTypeName.length === 0 ? message.name : `${parentTypeName}.${message.name}`;
-    messages = message.nestedType;
-  }
-  const find = (candidates: ReadonlyArray<DescMessage>): DescMessage | undefined => {
-    for (const candidate of candidates) {
-      if (candidate.typeName === parentTypeName) {
-        return candidate;
-      }
-      const nested = find(candidate.nestedMessages);
-      if (nested !== undefined) {
-        return nested;
-      }
-    }
-    return undefined;
-  };
-  return find(root.messages);
-};
+): DescMessage | undefined =>
+  (skipMapEntries ? indexedMessages(root).normalized : indexedMessages(root).raw).get(
+    indexKey(indexes),
+  );
 
 export const kafkaProtobufMessageAtIndexes = (
   root: DescFile,

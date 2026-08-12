@@ -91,14 +91,14 @@ export const makeKafkaServerSchemaRegistry = Effect.fn("KafkaSchemaRegistryRunti
       lifetimeScope: Scope.Scope,
     ) {
       yield* Effect.uninterruptible(
-        lock.withPermit(
-          Effect.sync(() => {
-            retainedLifetimes.add(lifetimeScope);
-          }),
-        ),
-      );
-      yield* Effect.uninterruptible(
-        Scope.addFinalizer(lifetimeScope, releaseLifetime(lifetimeScope)),
+        Effect.gen(function* () {
+          yield* lock.withPermit(
+            Effect.sync(() => {
+              retainedLifetimes.add(lifetimeScope);
+            }),
+          );
+          yield* Scope.addFinalizer(lifetimeScope, releaseLifetime(lifetimeScope));
+        }),
       );
     });
     yield* Scope.addFinalizer(
@@ -276,15 +276,14 @@ function validateRecordState(
     if (bytes === null) {
       continue;
     }
-    const validation = {
-      sourceTopic: input.sourceTopic,
-      side,
-    };
     const contract = state.contracts.get(input.viewServerTopic)?.get(side);
     if (contract === undefined) {
       return {
         _tag: "Failure",
-        failure: missingContractFailure(region, validation),
+        failure: missingContractFailure(region, {
+          sourceTopic: input.sourceTopic,
+          side,
+        }),
       };
     }
     const result = validateKafkaSchemaRegistryFrame(contract, bytes);

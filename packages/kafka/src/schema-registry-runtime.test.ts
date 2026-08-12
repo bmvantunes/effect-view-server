@@ -602,26 +602,42 @@ describe("Kafka Schema Registry Region runtime", () => {
         const baseReader = mutableReader(new Map([["source-orders-value", orders]]), calls);
         const staleSnapshotCaptured = yield* Deferred.make<void>();
         const releaseStaleRefresh = yield* Deferred.make<void>();
-        let versionReads = 0;
-        let schemaReads = 0;
+        let captureNextOrdersSnapshot = false;
+        let staleOrdersSnapshot:
+          | {
+              readonly active: ReadonlyArray<number>;
+              readonly all: ReadonlyArray<number>;
+            }
+          | undefined;
         const reader: KafkaSchemaRegistryReader = {
           ...baseReader,
           versions: (subject, includeDeleted) =>
             Effect.gen(function* () {
-              versionReads += 1;
-              if (versionReads === 3 || versionReads === 4) {
-                if (versionReads === 4) {
-                  yield* Deferred.succeed(staleSnapshotCaptured, undefined);
+              if (subject === "source-orders-value" && captureNextOrdersSnapshot) {
+                if (!includeDeleted) {
+                  staleOrdersSnapshot = {
+                    active: [...orders.active],
+                    all: [...orders.all],
+                  };
+                  return staleOrdersSnapshot.active;
                 }
-                return [1];
+                if (staleOrdersSnapshot !== undefined) {
+                  captureNextOrdersSnapshot = false;
+                  yield* Deferred.succeed(staleSnapshotCaptured, undefined);
+                  return staleOrdersSnapshot.all;
+                }
               }
               return yield* baseReader.versions(subject, includeDeleted);
             }),
           schema: (subject, version) =>
             Effect.gen(function* () {
-              schemaReads += 1;
-              if (schemaReads === 2) {
+              if (
+                subject === "source-orders-value" &&
+                version === 1 &&
+                staleOrdersSnapshot !== undefined
+              ) {
                 yield* Deferred.await(releaseStaleRefresh);
+                staleOrdersSnapshot = undefined;
               }
               return yield* baseReader.schema(subject, version);
             }),
@@ -633,6 +649,7 @@ describe("Kafka Schema Registry Region runtime", () => {
           reader,
           monitorInterval: Duration.seconds(1),
         });
+        captureNextOrdersSnapshot = true;
         const monitorFiber = yield* TestClock.adjust(Duration.seconds(1)).pipe(
           Effect.forkChild({ startImmediately: true }),
         );

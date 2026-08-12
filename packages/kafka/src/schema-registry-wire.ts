@@ -924,15 +924,24 @@ export const kafkaProtobufWireCompatibilityIssues = (
   const currentExtensions = extensionsByExtendeeAndNumber(currentFiles.values());
   for (const [identity, previous] of previousExtensions) {
     const current = currentExtensions.get(identity);
-    if (current !== undefined) {
-      issues.push(
-        ...fieldCompatibilityIssues(
-          previous,
-          current,
-          `${previous.extendee.typeName}.${String(previous.number)}`,
-        ),
-      );
+    const path = `${previous.extendee.typeName}.${String(previous.number)}`;
+    if (current === undefined) {
+      const currentExtendee = currentMessages.get(previous.extendee.typeName);
+      if (
+        currentExtendee === undefined ||
+        !rangeContains(messageRanges(currentExtendee), previous.number)
+      ) {
+        issues.push(
+          issue(
+            "FIELD_NO_DELETE_UNLESS_NUMBER_RESERVED",
+            path,
+            `Field number ${String(previous.number)} was deleted without being reserved.`,
+          ),
+        );
+      }
+      continue;
     }
+    issues.push(...fieldCompatibilityIssues(previous, current, path));
   }
 
   const previousServices = servicesByTypeName(previousFiles.values());

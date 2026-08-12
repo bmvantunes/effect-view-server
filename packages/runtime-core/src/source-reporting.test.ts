@@ -402,6 +402,9 @@ describe("Runtime Source reporting", () => {
       source: string,
       code: string,
       message = `${source}:${code}`,
+      attributes: ReadonlyArray<{ readonly name: string; readonly value: string }> = [
+        { name: "subject", value: `${source}-value` },
+      ],
     ): RuntimeSourceReportingDefinition => ({
       source,
       dependency: "schema-registry",
@@ -419,7 +422,7 @@ describe("Runtime Source reporting", () => {
         issue: {
           code,
           message,
-          attributes: [{ name: "subject", value: `${source}-value` }],
+          attributes,
         },
       }),
     });
@@ -442,14 +445,41 @@ describe("Runtime Source reporting", () => {
     const ordersAFirst = issueDefinition("orders", "A", "orders:A:first");
     const ordersASecond = issueDefinition("orders", "A", "orders:A:second");
     const ordersB = issueDefinition("orders", "B");
-    const definitions = [ordersASecond, ordersB, inventory, ordersAFirst];
+    const ordersCSubjectZulu = issueDefinition("orders", "C", "orders:C", [
+      { name: "subject", value: "zulu" },
+    ]);
+    const ordersCSubjectAlphaAndVersion = issueDefinition("orders", "C", "orders:C", [
+      { name: "subject", value: "alpha" },
+      { name: "version", value: "1" },
+    ]);
+    const ordersCSubjectAlpha = issueDefinition("orders", "C", "orders:C", [
+      { name: "subject", value: "alpha" },
+    ]);
+    const ordersCRegion = issueDefinition("orders", "C", "orders:C", [
+      { name: "region", value: "zulu" },
+    ]);
+    const definitions = [
+      ordersASecond,
+      ordersB,
+      ordersCSubjectZulu,
+      ordersCSubjectAlphaAndVersion,
+      inventory,
+      ordersCSubjectAlpha,
+      ordersAFirst,
+      ordersCRegion,
+    ];
     const makeStates = () =>
       definitions.map((definition) => makeRuntimeSourceReportingState(definition, degraded(1n)));
     const firstStates = makeStates();
-    const ordersBState = Option.getOrThrow(Option.fromUndefinedOr(firstStates[0]));
+    const ordersASecondDuplicateState = Option.getOrThrow(Option.fromUndefinedOr(firstStates[0]));
 
-    expect(updateRuntimeSourceReportingState(ordersBState, degraded(2n))).toBe(false);
-    const first = runtimeSourceReportingSnapshot(definitions, [...firstStates, ordersBState]);
+    expect(updateRuntimeSourceReportingState(ordersASecondDuplicateState, degraded(2n))).toBe(
+      false,
+    );
+    const first = runtimeSourceReportingSnapshot(definitions, [
+      ...firstStates,
+      ordersASecondDuplicateState,
+    ]);
     const second = runtimeSourceReportingSnapshot(definitions, [...makeStates()].reverse());
 
     expect(first).toStrictEqual({
@@ -484,6 +514,33 @@ describe("Runtime Source reporting", () => {
               code: "B",
               message: "orders:B",
               attributes: [{ name: "subject", value: "orders-value" }],
+            },
+            {
+              source: "orders",
+              code: "C",
+              message: "orders:C",
+              attributes: [{ name: "region", value: "zulu" }],
+            },
+            {
+              source: "orders",
+              code: "C",
+              message: "orders:C",
+              attributes: [
+                { name: "subject", value: "alpha" },
+                { name: "version", value: "1" },
+              ],
+            },
+            {
+              source: "orders",
+              code: "C",
+              message: "orders:C",
+              attributes: [{ name: "subject", value: "alpha" }],
+            },
+            {
+              source: "orders",
+              code: "C",
+              message: "orders:C",
+              attributes: [{ name: "subject", value: "zulu" }],
             },
           ],
         },
@@ -619,20 +676,55 @@ describe("Runtime Source reporting", () => {
   });
 
   it.each([
-    { label: "undefined", value: malformedClassification(undefined) },
-    { label: "a primitive", value: malformedClassification("dependency") },
-    { label: "an invalid problem", value: malformedClassification({ problem: "upstream" }) },
+    {
+      label: "undefined",
+      value: malformedClassification(undefined),
+      reason: "Source failure classification must be an object.",
+    },
+    {
+      label: "a primitive",
+      value: malformedClassification("dependency"),
+      reason: "Source failure classification must be an object.",
+    },
+    {
+      label: "an invalid problem",
+      value: malformedClassification({ problem: "upstream" }),
+      reason: "Source failure classification has an invalid problem.",
+    },
+    {
+      label: "dependency targets on self provenance",
+      value: malformedClassification({ problem: "self", targets: ["tokyo"] }),
+      reason: "Self failure classification cannot contain dependency fields.",
+    },
+    {
+      label: "a dependency issue on self provenance",
+      value: malformedClassification({ problem: "self", issue: { code: "Failure" } }),
+      reason: "Self failure classification cannot contain dependency fields.",
+    },
+    {
+      label: "an explicit undefined dependency target on self provenance",
+      value: malformedClassification({ problem: "self", targets: undefined }),
+      reason: "Self failure classification cannot contain dependency fields.",
+    },
+    {
+      label: "an explicit undefined dependency issue on self provenance",
+      value: malformedClassification({ problem: "self", issue: undefined }),
+      reason: "Self failure classification cannot contain dependency fields.",
+    },
     {
       label: "non-array targets",
       value: malformedClassification({ problem: "dependency", targets: "tokyo" }),
+      reason: "Source failure classification has invalid dependency targets.",
     },
     {
       label: "non-string targets",
       value: malformedClassification({ problem: "dependency", targets: [1] }),
+      reason: "Source failure classification has invalid dependency targets.",
     },
     {
       label: "empty targets",
       value: malformedClassification({ problem: "dependency", targets: [""] }),
+      reason: "Source failure classification has invalid dependency targets.",
     },
     {
       label: "an invalid structured target",
@@ -640,10 +732,12 @@ describe("Runtime Source reporting", () => {
         problem: "dependency",
         targets: [{ dependency: "schema-registry", target: "" }],
       }),
+      reason: "Source failure classification has invalid dependency targets.",
     },
     {
       label: "a primitive dependency issue",
       value: malformedClassification({ problem: "dependency", issue: "invalid" }),
+      reason: "Source failure classification has an invalid dependency issue.",
     },
     {
       label: "invalid dependency issue fields",
@@ -651,6 +745,7 @@ describe("Runtime Source reporting", () => {
         problem: "dependency",
         issue: { code: "Failure", message: "invalid", attributes: "invalid" },
       }),
+      reason: "Source failure classification has an invalid dependency issue.",
     },
     {
       label: "an empty dependency issue code",
@@ -658,6 +753,7 @@ describe("Runtime Source reporting", () => {
         problem: "dependency",
         issue: { code: "", message: "invalid", attributes: [] },
       }),
+      reason: "Source failure classification has an invalid dependency issue.",
     },
     {
       label: "a primitive dependency attribute",
@@ -665,6 +761,7 @@ describe("Runtime Source reporting", () => {
         problem: "dependency",
         issue: { code: "Failure", message: "invalid", attributes: [1] },
       }),
+      reason: "Source failure classification has invalid dependency attributes.",
     },
     {
       label: "invalid dependency attribute fields",
@@ -676,6 +773,7 @@ describe("Runtime Source reporting", () => {
           attributes: [{ name: "subject", value: 1 }],
         },
       }),
+      reason: "Source failure classification has invalid dependency attributes.",
     },
     {
       label: "an empty dependency attribute name",
@@ -687,9 +785,14 @@ describe("Runtime Source reporting", () => {
           attributes: [{ name: "", value: "x" }],
         },
       }),
+      reason: "Source failure classification has invalid dependency attributes.",
     },
-    { label: "a throwing getter", value: throwingClassification },
-  ])("conservatively treats $label classification as self provenance", ({ value }) => {
+    {
+      label: "a throwing getter",
+      value: throwingClassification,
+      reason: "hostile classification getter",
+    },
+  ])("diagnoses $label classification as self provenance", ({ value, reason }) => {
     const malformed: RuntimeSourceReportingDefinition = {
       ...kafka,
       classifyFailure: () => value,
@@ -704,9 +807,59 @@ describe("Runtime Source reporting", () => {
       status: "WaitingToRetry",
       problems: ["self"],
     });
-    expect(snapshot.dependencies.map(({ target, status }) => ({ target, status }))).toStrictEqual([
-      { target: "oregon", status: "Starting" },
-      { target: "tokyo", status: "Starting" },
+    expect(snapshot.dependencies).toStrictEqual([
+      {
+        dependency: "kafka",
+        target: "oregon",
+        endpoints: ["b-1.kafka-oregon.com"],
+        status: "Starting",
+        issues: [
+          {
+            source: "orders",
+            code: "InvalidSourceFailureClassification",
+            message: "The Source Adapter returned an invalid failure classification.",
+            attributes: [{ name: "reason", value: reason }],
+          },
+        ],
+      },
+      {
+        dependency: "kafka",
+        target: "tokyo",
+        endpoints: ["b-1.kafka-tky.com", "b-2.kafka-tky.com"],
+        status: "Starting",
+        issues: [
+          {
+            source: "orders",
+            code: "InvalidSourceFailureClassification",
+            message: "The Source Adapter returned an invalid failure classification.",
+            attributes: [{ name: "reason", value: reason }],
+          },
+        ],
+      },
+    ]);
+  });
+
+  it("diagnoses classifiers that fail with non-Error values", () => {
+    const malformed: RuntimeSourceReportingDefinition = {
+      ...kafka,
+      classifyFailure: () => {
+        throw "classifier defect";
+      },
+    };
+    const state = makeRuntimeSourceReportingState(
+      malformed,
+      waiting(adapterFailure({ _tag: "Dependency", target: "tokyo" })),
+    );
+
+    expect(
+      runtimeSourceReportingSnapshot([malformed], [state]).dependencies[0]?.issues,
+    ).toStrictEqual([
+      {
+        source: "orders",
+        code: "InvalidSourceFailureClassification",
+        message: "The Source Adapter returned an invalid failure classification.",
+        attributes: [{ name: "reason", value: "The classifier failed with a non-Error value." }],
+      },
     ]);
   });
 

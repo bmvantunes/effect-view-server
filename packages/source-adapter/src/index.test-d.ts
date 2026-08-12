@@ -301,6 +301,12 @@ const _invalidSelfIssue: SourceFailureClassification = {
   issue: structuredDependencyIssue,
 };
 
+// @ts-expect-error self provenance cannot carry dependency targets.
+const _invalidSelfTargetsClassification: SourceFailureClassification = {
+  problem: "self",
+  targets: [structuredDependencyTarget],
+};
+
 const invalidReportingDescriptor: ReportingImplementation = {
   // @ts-expect-error dependency reporting endpoints must be strings.
   dependencies: () => Effect.succeed([{ target: "orders", endpoints: [1] }]),

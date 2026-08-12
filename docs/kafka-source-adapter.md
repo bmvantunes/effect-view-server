@@ -136,7 +136,15 @@ use a Registry codec must provide exactly one `schemaRegistry` connection. That
 connection is shared only within the Region:
 
 ```ts
+import { Schema } from "effect";
+import { ViewServerId } from "effect-view-server/config";
 import { OrderKeySchema, OrderValueSchema } from "./gen/orders_pb";
+
+const Order = Schema.Struct({
+  id: ViewServerId,
+  orderId: Schema.String,
+  total: Schema.Number,
+});
 
 const orderKey = kafka.schemaRegistry.protobuf(OrderKeySchema);
 const orderValue = kafka.schemaRegistry.protobuf(OrderValueSchema);

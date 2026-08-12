@@ -15,6 +15,7 @@ import {
   layerConfig,
   type KafkaBrokerContractValidationFailure,
   type KafkaRequiredRegion,
+  type KafkaNodeSchemaRegistryAuthOptions,
   type KafkaSchemaRegistryContractValidationFailure,
   type KafkaSchemaRegistryRequiredRegion,
 } from "./node";
@@ -407,7 +408,13 @@ describe("Kafka Node type contract", () => {
         eu: { bootstrapServers: "eu:9092" },
       },
     });
-    // @ts-expect-error Registry auth is an exact basic-or-token union.
+    // @ts-expect-error Registry basic and token credentials are mutually exclusive through variables.
+    const invalidRegistryAuth: KafkaNodeSchemaRegistryAuthOptions = {
+      username: "user",
+      password: "secret",
+      token: "secret",
+    };
+    expectTypeOf(invalidRegistryAuth).toEqualTypeOf<KafkaNodeSchemaRegistryAuthOptions>();
     layer(schemaRegistryConfig, {
       consumerGroupPrefix: "replica",
       regions: {
@@ -415,6 +422,7 @@ describe("Kafka Node type contract", () => {
           bootstrapServers: "eu:9092",
           schemaRegistry: {
             url: "https://registry.example.com",
+            // @ts-expect-error Registry auth is an exact basic-or-token union.
             auth: { token: "secret", username: "user" },
           },
         },

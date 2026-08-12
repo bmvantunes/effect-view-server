@@ -570,6 +570,7 @@ const recordEvent = Effect.fn("KafkaSourceAdapter.record.event")(function* <
   record: KafkaServerRecord,
   schemaRegistry: KafkaSchemaRegistryRuntime | undefined,
   registryCodecs: KafkaSchemaRegistryCodecs,
+  registrySides: ReadonlyArray<"key" | "value">,
   lifetime: {
     readonly applicationState: KafkaApplicationState<Topic>;
     readonly contracts: ReadonlyMap<string, KafkaResolvedBrokerContract>;
@@ -635,7 +636,7 @@ const recordEvent = Effect.fn("KafkaSourceAdapter.record.event")(function* <
           {
             viewServerTopic: toolkit.topic,
             sourceTopic,
-            sides: schemaRegistrySides(registryCodecs),
+            sides: registrySides,
             key: registryCodecs.key === undefined ? null : record.key,
             value: registryCodecs.value === undefined ? null : record.value,
           },
@@ -1128,6 +1129,7 @@ export const makeKafkaServerLayer = (
                                 boundRecord,
                                 schemaRegistry,
                                 registryCodecs,
+                                registrySides,
                                 {
                                   applicationState,
                                   contracts: state.contracts,

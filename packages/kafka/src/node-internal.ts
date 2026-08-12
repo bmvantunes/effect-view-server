@@ -142,9 +142,12 @@ export type KafkaNodeSchemaRegistryAuthOptions =
   | {
       readonly username: string;
       readonly password: string;
+      readonly token?: never;
     }
   | {
       readonly token: string;
+      readonly username?: never;
+      readonly password?: never;
     };
 
 export type KafkaNodeSchemaRegistryOptions = {
@@ -534,15 +537,6 @@ const captureKafkaSources = (
     }
   }
   return Object.freeze(sources);
-};
-
-const forEachCapturedKafkaSource = (
-  sources: ReadonlyArray<CapturedKafkaSource>,
-  visit: (viewServerTopic: string, source: object) => void,
-): void => {
-  for (const source of sources) {
-    visit(source.viewServerTopic, source.source);
-  }
 };
 
 const captureDenseDataArray = (value: unknown, message: string): ReadonlyArray<unknown> => {
@@ -944,7 +938,8 @@ const kafkaSourceRegionsFrom = (
   sources: ReadonlyArray<CapturedKafkaSource>,
 ): ReadonlySet<string> => {
   const regions = new Set<string>();
-  forEachCapturedKafkaSource(sources, (topic, source) => {
+  for (const captured of sources) {
+    const { source, viewServerTopic: topic } = captured;
     const options = Reflect.get(source, "options");
     const sourceRegions =
       typeof options === "object" && options !== null && Object.hasOwn(options, "regions")
@@ -965,7 +960,7 @@ const kafkaSourceRegionsFrom = (
     for (const region of sourceRegions) {
       regions.add(region);
     }
-  });
+  }
   return regions;
 };
 
@@ -996,7 +991,8 @@ const kafkaSchemaRegistryDeclarationsFrom = (
   sources: ReadonlyArray<CapturedKafkaSource>,
 ): ReadonlyArray<KafkaSchemaRegistryDeclaration> => {
   const declarations: Array<KafkaSchemaRegistryDeclaration> = [];
-  forEachCapturedKafkaSource(sources, (viewServerTopic, source) => {
+  for (const captured of sources) {
+    const { source, viewServerTopic } = captured;
     const options = Reflect.get(source, "options");
     if (typeof options !== "object" || options === null) {
       throw new KafkaSourceConfigurationError(
@@ -1043,7 +1039,7 @@ const kafkaSchemaRegistryDeclarationsFrom = (
         );
       }
     }
-  });
+  }
   return Object.freeze(declarations);
 };
 
@@ -1083,7 +1079,8 @@ const kafkaBrokerDeclarationsFrom = (
   sources: ReadonlyArray<CapturedKafkaSource>,
 ): ReadonlyArray<KafkaBrokerContractDeclaration> => {
   const declarations: Array<KafkaBrokerContractDeclaration> = [];
-  forEachCapturedKafkaSource(sources, (topic, source) => {
+  for (const captured of sources) {
+    const { source, viewServerTopic: topic } = captured;
     const options = Reflect.get(source, "options");
     if (typeof options !== "object" || options === null) {
       throw new KafkaSourceConfigurationError(
@@ -1121,7 +1118,7 @@ const kafkaBrokerDeclarationsFrom = (
         retentionPolicy,
       });
     }
-  });
+  }
   return Object.freeze(declarations);
 };
 
@@ -1145,9 +1142,9 @@ const validateConsumerGroupIdsFrom = (
   sources: ReadonlyArray<CapturedKafkaSource>,
   consumerGroupPrefix: string,
 ): void => {
-  forEachCapturedKafkaSource(sources, (topic) => {
-    kafkaConsumerGroupId(consumerGroupPrefix, topic);
-  });
+  for (const source of sources) {
+    kafkaConsumerGroupId(consumerGroupPrefix, source.viewServerTopic);
+  }
 };
 
 type KafkaLayerSnapshot = {
@@ -1162,6 +1159,14 @@ const snapshotLayerOptions = <ViewServer extends KafkaNodeViewServer>(
   viewServer: ViewServer,
   options: unknown,
 ): KafkaLayerSnapshot => {
+  if (
+    typeof viewServer !== "object" ||
+    viewServer === null ||
+    typeof viewServer.topics !== "object" ||
+    viewServer.topics === null
+  ) {
+    throw new KafkaSourceConfigurationError("Kafka Node Layer requires a View Server Config.");
+  }
   if (typeof options !== "object" || options === null || Array.isArray(options)) {
     throw new KafkaSourceConfigurationError(
       "Kafka Node Layer requires exactly consumerGroupPrefix and regions.",

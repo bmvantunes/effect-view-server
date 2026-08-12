@@ -63,6 +63,16 @@ type StatusEvidence = {
   readonly dependencyIssues: ReadonlyMap<string, RuntimeDependencyIssue>;
 };
 
+type FailureClassificationOutcome =
+  | {
+      readonly _tag: "Valid";
+      readonly classification: SourceFailureClassification;
+    }
+  | {
+      readonly _tag: "Invalid";
+      readonly issue: SourceDependencyIssue;
+    };
+
 const emptyEvidence: StatusEvidence = {
   problems: [],
   dependencyTargets: new Set(),
@@ -153,7 +163,7 @@ const captureClassificationIssue = (
 const classification = (
   classifyFailure: RuntimeSourceReportingDefinition["classifyFailure"],
   failure: unknown,
-): SourceFailureClassification =>
+): FailureClassificationOutcome =>
   Result.match(
     Result.try((): SourceFailureClassification => {
       const candidate: unknown = classifyFailure(failure);
@@ -162,6 +172,9 @@ const classification = (
       }
       const problem = Reflect.get(candidate, "problem");
       if (problem === "self") {
+        if (Object.hasOwn(candidate, "targets") || Object.hasOwn(candidate, "issue")) {
+          throw new TypeError("Self failure classification cannot contain dependency fields.");
+        }
         return { problem: "self" };
       }
       if (problem !== "dependency") {
@@ -183,8 +196,23 @@ const classification = (
       return captured;
     }),
     {
-      onFailure: () => ({ problem: "self" }),
-      onSuccess: (value) => value,
+      onFailure: (failure) => ({
+        _tag: "Invalid",
+        issue: Object.freeze({
+          code: "InvalidSourceFailureClassification",
+          message: "The Source Adapter returned an invalid failure classification.",
+          attributes: Object.freeze([
+            Object.freeze({
+              name: "reason",
+              value:
+                failure instanceof Error
+                  ? failure.message
+                  : "The classifier failed with a non-Error value.",
+            }),
+          ]),
+        }),
+      }),
+      onSuccess: (value) => ({ _tag: "Valid", classification: value }),
     },
   );
 
@@ -212,21 +240,51 @@ const classifiedDependencyTargets = (
     : new Set(allTargets);
 };
 
-const classifiedDependencyIssues = (
-  classified: Extract<SourceFailureClassification, { readonly problem: "dependency" }>,
+const dependencyIssuesForTargets = (
+  issue: SourceDependencyIssue | undefined,
   targets: ReadonlySet<string>,
   definition: RuntimeSourceReportingDefinition,
 ): ReadonlyMap<string, RuntimeDependencyIssue> => {
-  if (classified.issue === undefined) {
+  if (issue === undefined) {
     return new Map();
   }
   const dependencyIssue: RuntimeDependencyIssue = Object.freeze({
     source: definition.source,
-    code: classified.issue.code,
-    message: classified.issue.message,
-    attributes: classified.issue.attributes,
+    code: issue.code,
+    message: issue.message,
+    attributes: issue.attributes,
   });
   return new Map([...targets].map((target) => [target, dependencyIssue]));
+};
+
+const classificationEvidence = (
+  outcome: FailureClassificationOutcome,
+  definition: RuntimeSourceReportingDefinition,
+): StatusEvidence => {
+  if (outcome._tag === "Invalid") {
+    return {
+      problems: ["self"],
+      dependencyTargets: new Set(),
+      dependencyIssues: dependencyIssuesForTargets(
+        outcome.issue,
+        new Set(definitionTargetKeys(definition)),
+        definition,
+      ),
+    };
+  }
+  const classified = outcome.classification;
+  const dependencyTargets =
+    classified.problem === "dependency"
+      ? classifiedDependencyTargets(classified, definition)
+      : new Set<string>();
+  return {
+    problems: [classified.problem],
+    dependencyTargets,
+    dependencyIssues:
+      classified.problem === "dependency"
+        ? dependencyIssuesForTargets(classified.issue, dependencyTargets, definition)
+        : new Map(),
+  };
 };
 
 const terminationEvidence = (
@@ -247,19 +305,10 @@ const terminationEvidence = (
       dependencyIssues: new Map(),
     };
   }
-  const classified = classification(definition.classifyFailure, termination.failure.failure);
-  const dependencyTargets =
-    classified.problem === "dependency"
-      ? classifiedDependencyTargets(classified, definition)
-      : new Set<string>();
-  return {
-    problems: [classified.problem],
-    dependencyTargets,
-    dependencyIssues:
-      classified.problem === "dependency"
-        ? classifiedDependencyIssues(classified, dependencyTargets, definition)
-        : new Map(),
-  };
+  return classificationEvidence(
+    classification(definition.classifyFailure, termination.failure.failure),
+    definition,
+  );
 };
 
 const statusEvidence = (
@@ -291,20 +340,18 @@ const statusEvidence = (
       problems.add("self");
       continue;
     }
-    const classified = classification(definition.classifyFailure, rejection.failure);
-    problems.add(classified.problem);
-    if (classified.problem === "dependency") {
-      const classifiedTargets = classifiedDependencyTargets(classified, definition);
-      for (const target of classifiedTargets) {
-        dependencyTargets.add(target);
-      }
-      for (const [target, dependencyIssue] of classifiedDependencyIssues(
-        classified,
-        classifiedTargets,
-        definition,
-      )) {
-        dependencyIssues.set(target, dependencyIssue);
-      }
+    const evidence = classificationEvidence(
+      classification(definition.classifyFailure, rejection.failure),
+      definition,
+    );
+    for (const problem of evidence.problems) {
+      problems.add(problem);
+    }
+    for (const target of evidence.dependencyTargets) {
+      dependencyTargets.add(target);
+    }
+    for (const [target, dependencyIssue] of evidence.dependencyIssues) {
+      dependencyIssues.set(target, dependencyIssue);
     }
   }
   return {
@@ -354,22 +401,42 @@ const updateDependencyStatuses = (
   return changed;
 };
 
+const dependencyIssueAttributesKey = (attributes: RuntimeDependencyIssue["attributes"]): string =>
+  JSON.stringify(attributes.map((attribute) => [attribute.name, attribute.value]));
+
 const sameDependencyIssue = (
   left: RuntimeDependencyIssue | undefined,
   right: RuntimeDependencyIssue | undefined,
-): boolean =>
-  left === right ||
-  (left !== undefined &&
-    right !== undefined &&
-    left.source === right.source &&
-    left.code === right.code &&
-    left.message === right.message &&
-    left.attributes.length === right.attributes.length &&
-    left.attributes.every(
-      (attribute, index) =>
-        attribute.name === right.attributes[index]?.name &&
-        attribute.value === right.attributes[index]?.value,
-    ));
+): boolean => {
+  if (left === right) return true;
+  if (
+    left === undefined ||
+    right === undefined ||
+    left.source !== right.source ||
+    left.code !== right.code ||
+    left.message !== right.message
+  ) {
+    return false;
+  }
+  return (
+    dependencyIssueAttributesKey(left.attributes) === dependencyIssueAttributesKey(right.attributes)
+  );
+};
+
+const compareDependencyIssues = (
+  left: RuntimeDependencyIssue,
+  right: RuntimeDependencyIssue,
+): number => {
+  const source = left.source.localeCompare(right.source);
+  if (source !== 0) return source;
+  const code = left.code.localeCompare(right.code);
+  if (code !== 0) return code;
+  const message = left.message.localeCompare(right.message);
+  if (message !== 0) return message;
+  return dependencyIssueAttributesKey(left.attributes).localeCompare(
+    dependencyIssueAttributesKey(right.attributes),
+  );
+};
 
 const sameStatusEvidence = (left: StatusEvidence, right: StatusEvidence): boolean =>
   left.problems.join("\u0000") === right.problems.join("\u0000") &&
@@ -518,15 +585,7 @@ export const runtimeSourceReportingSnapshot = (
         target: dependency.target,
         endpoints: Object.freeze([...dependency.endpoints]),
         status,
-        issues: Object.freeze(
-          [...dependency.issues].sort((left, right) =>
-            left.source !== right.source
-              ? left.source.localeCompare(right.source)
-              : left.code !== right.code
-                ? left.code.localeCompare(right.code)
-                : left.message.localeCompare(right.message),
-          ),
-        ),
+        issues: Object.freeze([...dependency.issues].sort(compareDependencyIssues)),
       });
     })
     .sort((left, right) =>

@@ -177,6 +177,11 @@ const field = (
 const rules = (previous: DescFile, current: DescFile): ReadonlyArray<string> =>
   kafkaProtobufWireCompatibilityIssues(previous, current).map((issue) => issue.rule);
 
+const orderDescriptor = (file: DescFile) =>
+  Option.getOrThrow(
+    Option.fromUndefinedOr(file.messages.find((message) => message.typeName === "example.Order")),
+  );
+
 describe("Kafka Schema Registry Buf WIRE compatibility", () => {
   it("resolves both raw and normalized Confluent indexes around synthetic map entries", () => {
     const file = descriptorFile({
@@ -786,17 +791,17 @@ describe("Kafka Schema Registry Buf WIRE compatibility", () => {
         ],
       });
     const previous = makeMapGraph({
-      childType: FieldDescriptorProto_Type.BYTES,
-      messageTypeName: ".example.Child",
-      enumTypeName: ".example.State",
-    });
-    const compatibleChild = makeMapGraph({
       childType: FieldDescriptorProto_Type.STRING,
       messageTypeName: ".example.Child",
       enumTypeName: ".example.State",
     });
-    const changedIdentities = makeMapGraph({
+    const compatibleChild = makeMapGraph({
       childType: FieldDescriptorProto_Type.BYTES,
+      messageTypeName: ".example.Child",
+      enumTypeName: ".example.State",
+    });
+    const changedIdentities = makeMapGraph({
+      childType: FieldDescriptorProto_Type.STRING,
       messageTypeName: ".example.OtherChild",
       enumTypeName: ".example.OtherState",
     });
@@ -953,11 +958,112 @@ describe("Kafka Schema Registry Buf WIRE compatibility", () => {
       "MESSAGE_SAME_REQUIRED_FIELDS",
     ]);
     expect(rules(current, previous)).toStrictEqual([
+      "FIELD_WIRE_COMPATIBLE_TYPE",
       "FIELD_WIRE_COMPATIBLE_CARDINALITY",
       "FIELD_SAME_ONEOF",
       "FIELD_SAME_DEFAULT",
       "MESSAGE_SAME_REQUIRED_FIELDS",
     ]);
+  });
+
+  it("matches Buf WIRE direction for string and bytes in history and generated readers", () => {
+    const withScalar = (type: FieldDescriptorProto_Type) =>
+      descriptorFile({ messages: [orderMessage([field("value", 1, type)])] });
+    const stringFile = withScalar(FieldDescriptorProto_Type.STRING);
+    const bytesFile = withScalar(FieldDescriptorProto_Type.BYTES);
+    const stringMessage = orderDescriptor(stringFile);
+    const bytesMessage = orderDescriptor(bytesFile);
+
+    expect(rules(stringFile, bytesFile)).toStrictEqual([]);
+    expect(rules(bytesFile, stringFile)).toStrictEqual(["FIELD_WIRE_COMPATIBLE_TYPE"]);
+    expect(
+      kafkaProtobufMessageReaderCompatibilityIssues(stringMessage, bytesMessage),
+    ).toStrictEqual([]);
+    expect(
+      kafkaProtobufMessageReaderCompatibilityIssues(bytesMessage, stringMessage).map(
+        ({ rule }) => rule,
+      ),
+    ).toStrictEqual(["FIELD_WIRE_COMPATIBLE_TYPE"]);
+  });
+
+  it("rejects enum and Buf integer types in both directions for history and generated readers", () => {
+    const withType = (type: FieldDescriptorProto_Type) => {
+      const options = type === FieldDescriptorProto_Type.ENUM ? { typeName: ".example.State" } : {};
+      return descriptorFile({
+        enums: [{ name: "State", values: [["STATE_UNSPECIFIED", 0]] }],
+        messages: [orderMessage([field("value", 1, type, options)])],
+      });
+    };
+    const enumFile = withType(FieldDescriptorProto_Type.ENUM);
+    const enumMessage = orderDescriptor(enumFile);
+    const integerTypes = [
+      FieldDescriptorProto_Type.INT32,
+      FieldDescriptorProto_Type.UINT32,
+      FieldDescriptorProto_Type.INT64,
+      FieldDescriptorProto_Type.UINT64,
+    ];
+
+    for (const integerType of integerTypes) {
+      const integerFile = withType(integerType);
+      const integerMessage = orderDescriptor(integerFile);
+
+      expect(rules(enumFile, integerFile)).toStrictEqual(["FIELD_WIRE_COMPATIBLE_TYPE"]);
+      expect(rules(integerFile, enumFile)).toStrictEqual(["FIELD_WIRE_COMPATIBLE_TYPE"]);
+      expect(
+        kafkaProtobufMessageReaderCompatibilityIssues(enumMessage, integerMessage).map(
+          ({ rule }) => rule,
+        ),
+      ).toStrictEqual(["FIELD_WIRE_COMPATIBLE_TYPE"]);
+      expect(
+        kafkaProtobufMessageReaderCompatibilityIssues(integerMessage, enumMessage).map(
+          ({ rule }) => rule,
+        ),
+      ).toStrictEqual(["FIELD_WIRE_COMPATIBLE_TYPE"]);
+    }
+  });
+
+  it("rejects singular and repeated string, bytes, and message fields in both directions", () => {
+    const withCardinality = (
+      type: FieldDescriptorProto_Type,
+      label: FieldDescriptorProto_Label,
+    ) => {
+      const options =
+        type === FieldDescriptorProto_Type.MESSAGE
+          ? { label, typeName: ".example.Child" }
+          : { label };
+      return descriptorFile({
+        messages: [{ name: "Child" }, orderMessage([field("value", 1, type, options)])],
+      });
+    };
+    const valueTypes = [
+      FieldDescriptorProto_Type.STRING,
+      FieldDescriptorProto_Type.BYTES,
+      FieldDescriptorProto_Type.MESSAGE,
+    ];
+
+    for (const valueType of valueTypes) {
+      const singularFile = withCardinality(valueType, FieldDescriptorProto_Label.OPTIONAL);
+      const repeatedFile = withCardinality(valueType, FieldDescriptorProto_Label.REPEATED);
+      const singularMessage = orderDescriptor(singularFile);
+      const repeatedMessage = orderDescriptor(repeatedFile);
+
+      expect(rules(singularFile, repeatedFile)).toStrictEqual([
+        "FIELD_WIRE_COMPATIBLE_CARDINALITY",
+      ]);
+      expect(rules(repeatedFile, singularFile)).toStrictEqual([
+        "FIELD_WIRE_COMPATIBLE_CARDINALITY",
+      ]);
+      expect(
+        kafkaProtobufMessageReaderCompatibilityIssues(singularMessage, repeatedMessage).map(
+          ({ rule }) => rule,
+        ),
+      ).toStrictEqual(["FIELD_WIRE_COMPATIBLE_CARDINALITY"]);
+      expect(
+        kafkaProtobufMessageReaderCompatibilityIssues(repeatedMessage, singularMessage).map(
+          ({ rule }) => rule,
+        ),
+      ).toStrictEqual(["FIELD_WIRE_COMPATIBLE_CARDINALITY"]);
+    }
   });
 
   it("rejects required reader fields absent from writer message graphs", () => {

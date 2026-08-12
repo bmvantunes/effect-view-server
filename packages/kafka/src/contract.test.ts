@@ -1,11 +1,7 @@
 import { create, toBinary } from "@bufbuild/protobuf";
 import { fileDesc, messageDesc } from "@bufbuild/protobuf/codegenv2";
 import type { Message } from "@bufbuild/protobuf";
-import {
-  FieldDescriptorProto_Label,
-  FieldDescriptorProto_Type,
-  FileDescriptorProtoSchema,
-} from "@bufbuild/protobuf/wkt";
+import { FieldDescriptorProto_Type, FileDescriptorProtoSchema } from "@bufbuild/protobuf/wkt";
 import { describe, expect, it } from "@effect/vitest";
 import { SourceAdapter } from "effect-view-server/source-adapter";
 import { Duration, Effect, Option, Schedule, Schema } from "effect";
@@ -47,10 +43,6 @@ type ContractMessage = Message<"kafka.contract.Value"> & {
   readonly label: string;
 };
 
-type MappedContractPayload = Message<"kafka.mapped.Container.Payload"> & {
-  readonly label: string;
-};
-
 const base64FromBytes = (bytes: Uint8Array): string =>
   globalThis.btoa(Array.from(bytes, (byte) => String.fromCharCode(byte)).join(""));
 
@@ -87,86 +79,8 @@ const contractFileBytes = toBinary(
 const makeContractMessage = () =>
   messageDesc<ContractMessage>(fileDesc(base64FromBytes(contractFileBytes)), 0);
 const contractMessage = makeContractMessage();
-const mappedContractFileBytes = toBinary(
-  FileDescriptorProtoSchema,
-  create(FileDescriptorProtoSchema, {
-    name: "kafka/mapped.proto",
-    package: "kafka.mapped",
-    syntax: "proto3",
-    messageType: [
-      {
-        name: "Container",
-        field: [
-          {
-            name: "labels",
-            number: 1,
-            label: FieldDescriptorProto_Label.REPEATED,
-            type: FieldDescriptorProto_Type.MESSAGE,
-            typeName: ".kafka.mapped.Container.LabelsEntry",
-          },
-        ],
-        nestedType: [
-          {
-            name: "LabelsEntry",
-            options: { mapEntry: true },
-            field: [
-              { name: "key", number: 1, type: FieldDescriptorProto_Type.STRING },
-              { name: "value", number: 2, type: FieldDescriptorProto_Type.STRING },
-            ],
-          },
-          {
-            name: "Payload",
-            field: [
-              {
-                name: "label",
-                number: 1,
-                type: FieldDescriptorProto_Type.STRING,
-              },
-            ],
-          },
-        ],
-      },
-    ],
-  }),
-);
-const mappedContractPayload = messageDesc<MappedContractPayload>(
-  fileDesc(base64FromBytes(mappedContractFileBytes)),
-  0,
-  0,
-);
-
-const encodeConfluentSignedVarint = (value: number): ReadonlyArray<number> => {
-  let remaining = value * 2;
-  const encoded: Array<number> = [];
-  do {
-    const next = remaining % 128;
-    remaining = Math.floor(remaining / 128);
-    encoded.push(remaining === 0 ? next : next | 0x80);
-  } while (remaining !== 0);
-  return encoded;
-};
-
-const confluentProtobufFrame = (
-  schemaId: number,
-  messageIndexes: readonly [number, ...ReadonlyArray<number>],
-  payload: Uint8Array,
-): Uint8Array => {
-  const encodedIndexes =
-    messageIndexes.length === 1 && messageIndexes[0] === 0
-      ? [0]
-      : [
-          ...encodeConfluentSignedVarint(messageIndexes.length),
-          ...messageIndexes.flatMap(encodeConfluentSignedVarint),
-        ];
-  return Uint8Array.from([
-    0,
-    Math.floor(schemaId / 0x1_00_00_00) % 0x100,
-    Math.floor(schemaId / 0x1_00_00) % 0x100,
-    Math.floor(schemaId / 0x1_00) % 0x100,
-    schemaId % 0x100,
-    ...encodedIndexes,
-    ...payload,
-  ]);
+const hostileRegistryBrand = (): never => {
+  throw new Error("hostile Registry brand");
 };
 
 const validSourceInput = () => ({
@@ -518,179 +432,48 @@ describe("Kafka Source Adapter contract", () => {
     ).toBe(false);
   });
 
-  it.effect(
-    "decodes Confluent-framed protobuf with one codec for ordinary and compaction keys",
-    () =>
-      Effect.gen(function* () {
-        const codec = kafka.schemaRegistry.protobuf(contractMessage);
-        const payload = toBinary(contractMessage, create(contractMessage, { label: "registered" }));
-        const framed = confluentProtobufFrame(42, [0], payload);
-
-        const ordinary = yield* decodeKafkaCodec(codec, {
-          bytes: framed,
-          metadata,
-        });
-        const compaction = yield* decodeKafkaCompactionKeyCodec(codec, { bytes: framed });
-
-        expect({
-          ordinary,
-          compaction,
-          codec: isKafkaCodec(codec),
-          compactionKeyCodec: isKafkaCompactionKeyCodec(codec),
-          format: codec.format,
-        }).toStrictEqual({
-          ordinary: {
-            $typeName: "kafka.contract.Value",
-            label: "registered",
-          },
-          compaction: {
-            $typeName: "kafka.contract.Value",
-            label: "registered",
-          },
-          codec: true,
-          compactionKeyCodec: true,
-          format: "schema-registry-protobuf",
-        });
-
-        const wrongMessageFrame = confluentProtobufFrame(42, [1], payload);
-        expect(
-          yield* Effect.all([
-            decodeKafkaCodec(codec, { bytes: wrongMessageFrame, metadata }).pipe(Effect.flip),
-            decodeKafkaCompactionKeyCodec(codec, { bytes: wrongMessageFrame }).pipe(Effect.flip),
-          ]),
-        ).toStrictEqual([
-          {
-            _tag: "KafkaCodecError",
-            message:
-              'Confluent Schema Registry Protobuf frame selected a message that does not match configured message "kafka.contract.Value".',
-          },
-          {
-            _tag: "KafkaCodecError",
-            message:
-              'Confluent Schema Registry Protobuf frame selected a message that does not match configured message "kafka.contract.Value".',
-          },
-        ]);
-
-        const mappedCodec = kafka.schemaRegistry.protobuf(mappedContractPayload);
-        const mappedPayload = toBinary(
-          mappedContractPayload,
-          create(mappedContractPayload, { label: "normalized" }),
+  it.effect("requires Registry contract validation before invoking embedded decoders", () =>
+    Effect.gen(function* () {
+      const codec = kafka.schemaRegistry.protobuf(contractMessage);
+      const decoder = (description: string) => {
+        const key = Option.getOrThrow(
+          Option.fromUndefinedOr(
+            Reflect.ownKeys(codec).find(
+              (candidate) => typeof candidate === "symbol" && candidate.description === description,
+            ),
+          ),
         );
-        expect(
-          yield* decodeKafkaCodec(mappedCodec, {
-            bytes: confluentProtobufFrame(43, [0, 0], mappedPayload),
-            metadata,
-          }),
-        ).toStrictEqual({
-          $typeName: "kafka.mapped.Container.Payload",
-          label: "normalized",
-        });
-      }),
-  );
-
-  it.effect("rejects malformed Confluent protobuf framing before Buf decoding", () =>
-    Effect.gen(function* () {
-      const codec = kafka.schemaRegistry.protobuf(contractMessage);
-      const malformedFrames = [
-        Uint8Array.from([]),
-        Uint8Array.from([1, 0, 0, 0, 42, 0]),
-        Uint8Array.from([0, 0, 0, 0, 42, 0x80]),
-        Uint8Array.from([0, 0, 0, 0, 42, 2]),
-        Uint8Array.from([0, 0, 0, 0, 42, 4, 1, 0]),
-        Uint8Array.from([0, 0, 0, 0, 0, 0]),
-        Uint8Array.from([0, 0x80, 0, 0, 0, 0]),
-        Uint8Array.from([0, 0, 0, 0, 42, 0xff, 0xff, 0xff, 0xff, 0x1f]),
-        Uint8Array.from([0, 0, 0, 0, 42, 0x80, 0x80, 0x80, 0x80, 0x80]),
-        Uint8Array.from([0, 0, 0, 0, 42, 1]),
-        Uint8Array.from([0, 0, 0, 0, 42, 6, 0]),
-        Uint8Array.from([0, 0, 0, 0, 42, 2, 0x80]),
-        Uint8Array.from([0, 0, 0, 0, 42, 2, 0xff, 0xff, 0xff, 0xff, 0x1f]),
-      ];
-
-      const failures = yield* Effect.forEach(malformedFrames, (bytes) =>
-        decodeKafkaCodec(codec, { bytes, metadata }).pipe(Effect.flip),
-      );
-
-      expect(failures).toStrictEqual([
-        {
-          _tag: "KafkaCodecError",
-          message:
-            "Confluent Schema Registry Protobuf frame is shorter than its six-byte minimum prefix.",
-        },
-        {
-          _tag: "KafkaCodecError",
-          message:
-            "Confluent Schema Registry Protobuf frame uses unsupported payload-prefix version 1.",
-        },
-        {
-          _tag: "KafkaCodecError",
-          message:
-            "Confluent Schema Registry Protobuf frame contains a truncated message-index varint.",
-        },
-        {
-          _tag: "KafkaCodecError",
-          message:
-            "Confluent Schema Registry Protobuf frame declares more message indexes than the payload contains.",
-        },
-        {
-          _tag: "KafkaCodecError",
-          message: "Confluent Schema Registry Protobuf frame contains a negative message index.",
-        },
-        {
-          _tag: "KafkaCodecError",
-          message: "Confluent Schema Registry Protobuf frame contains an invalid schema ID.",
-        },
-        {
-          _tag: "KafkaCodecError",
-          message: "Confluent Schema Registry Protobuf frame contains an invalid schema ID.",
-        },
-        {
-          _tag: "KafkaCodecError",
-          message:
-            "Confluent Schema Registry Protobuf frame contains an overflowing message-index varint.",
-        },
-        {
-          _tag: "KafkaCodecError",
-          message:
-            "Confluent Schema Registry Protobuf frame contains a message-index varint longer than five bytes.",
-        },
-        {
-          _tag: "KafkaCodecError",
-          message:
-            "Confluent Schema Registry Protobuf frame contains a negative message-index count.",
-        },
-        {
-          _tag: "KafkaCodecError",
-          message:
-            "Confluent Schema Registry Protobuf frame declares more message indexes than the payload contains.",
-        },
-        {
-          _tag: "KafkaCodecError",
-          message:
-            "Confluent Schema Registry Protobuf frame contains a truncated message-index varint.",
-        },
-        {
-          _tag: "KafkaCodecError",
-          message:
-            "Confluent Schema Registry Protobuf frame contains an overflowing message-index varint.",
-        },
+        return Option.getOrThrow(
+          Option.liftPredicate(
+            Reflect.get(codec, key),
+            (candidate): candidate is (...args: ReadonlyArray<unknown>) => unknown =>
+              typeof candidate === "function",
+          ),
+        );
+      };
+      const invoke = (description: string, input: unknown) =>
+        Option.getOrThrow(
+          Option.liftPredicate(
+            Reflect.apply(decoder(description), codec, [input]),
+            Effect.isEffect,
+          ),
+        );
+      const failures = yield* Effect.all([
+        invoke("@effect-view-server/kafka/KafkaCodecDecode", {
+          bytes: Uint8Array.from([]),
+          metadata,
+        }).pipe(Effect.flip),
+        invoke("@effect-view-server/kafka/KafkaCompactionKeyCodecDecode", {
+          bytes: Uint8Array.from([]),
+        }).pipe(Effect.flip),
       ]);
-    }),
-  );
-
-  it.effect("rejects malformed framed protobuf payloads and hostile Registry codec brands", () =>
-    Effect.gen(function* () {
-      const codec = kafka.schemaRegistry.protobuf(contractMessage);
-      const payloadFailure = yield* decodeKafkaCodec(codec, {
-        bytes: confluentProtobufFrame(42, [0], Uint8Array.from([0x0a])),
-        metadata,
-      }).pipe(Effect.flip);
-      const registryBrand = Reflect.ownKeys(codec).find(
-        (key) => typeof key === "symbol" && String(key).includes("SchemaRegistryProtobufCodec"),
+      const registryBrand = Option.getOrThrow(
+        Option.fromUndefinedOr(
+          Reflect.ownKeys(codec).find(
+            (key) => typeof key === "symbol" && String(key).includes("SchemaRegistryProtobufCodec"),
+          ),
+        ),
       );
-      if (registryBrand === undefined) {
-        throw new Error("Schema Registry codec brand missing");
-      }
       const hostile: object = {};
       for (const key of Reflect.ownKeys(codec)) {
         if (typeof key === "symbol") {
@@ -699,18 +482,24 @@ describe("Kafka Source Adapter contract", () => {
               key.description === "@effect-view-server/kafka/KafkaSchemaRegistryRequirement"
                 ? true
                 : key === registryBrand
-                  ? () => {
-                      throw new Error("hostile Registry brand");
-                    }
+                  ? hostileRegistryBrand
                   : () => hostile,
           });
         }
       }
 
-      expect(payloadFailure).toStrictEqual({
-        _tag: "KafkaCodecError",
-        message: "Kafka Schema Registry protobuf payload could not be decoded.",
-      });
+      expect(failures).toStrictEqual([
+        {
+          _tag: "KafkaCodecError",
+          message:
+            "Schema Registry contract validation is required before decoding Kafka protobuf.",
+        },
+        {
+          _tag: "KafkaCodecError",
+          message:
+            "Schema Registry contract validation is required before decoding Kafka protobuf.",
+        },
+      ]);
       expect(isKafkaCodec(hostile)).toBe(true);
       expect(isKafkaCompactionKeyCodec(hostile)).toBe(true);
       expect(isKafkaSchemaRegistryProtobufCodec(hostile)).toBe(false);
@@ -1964,6 +1753,55 @@ describe("Kafka Source Adapter contract", () => {
         throw new Error("Region descriptor escaped");
       },
     });
+    const directDecodeDescription = "@effect-view-server/kafka/KafkaDirectDecode";
+    const codecBrandDescription = "@effect-view-server/kafka/KafkaCodec";
+    const compactionCodecBrandDescription = "@effect-view-server/kafka/KafkaCompactionKeyCodec";
+    const ordinaryCodec = kafka.string();
+    const hostileDirectCodec: object = {};
+    Object.defineProperties(hostileDirectCodec, {
+      ...Object.getOwnPropertyDescriptors(ordinaryCodec),
+      [Option.getOrThrow(
+        Option.fromUndefinedOr(
+          Reflect.ownKeys(ordinaryCodec).find(
+            (key) => typeof key === "symbol" && key.description === codecBrandDescription,
+          ),
+        ),
+      )]: { value: () => hostileDirectCodec },
+      [Option.getOrThrow(
+        Option.fromUndefinedOr(
+          Reflect.ownKeys(ordinaryCodec).find(
+            (key) => typeof key === "symbol" && key.description === directDecodeDescription,
+          ),
+        ),
+      )]: {
+        get: () => {
+          throw new Error("direct codec brand escaped");
+        },
+      },
+    });
+    const compactionCodec = kafka.compactionKey.string();
+    const hostileDirectCompactionKeyCodec: object = {};
+    Object.defineProperties(hostileDirectCompactionKeyCodec, {
+      ...Object.getOwnPropertyDescriptors(compactionCodec),
+      [Option.getOrThrow(
+        Option.fromUndefinedOr(
+          Reflect.ownKeys(compactionCodec).find(
+            (key) => typeof key === "symbol" && key.description === compactionCodecBrandDescription,
+          ),
+        ),
+      )]: { value: () => hostileDirectCompactionKeyCodec },
+      [Option.getOrThrow(
+        Option.fromUndefinedOr(
+          Reflect.ownKeys(compactionCodec).find(
+            (key) => typeof key === "symbol" && key.description === directDecodeDescription,
+          ),
+        ),
+      )]: {
+        get: () => {
+          throw new Error("direct compaction codec brand escaped");
+        },
+      },
+    });
     const invalidInputs: ReadonlyArray<object> = [
       {},
       { ...validSourceInput(), topic: "" },
@@ -1977,6 +1815,18 @@ describe("Kafka Source Adapter contract", () => {
       { ...validSourceInput(), regions: hostileRegions },
       { ...validSourceInput(), key: {} },
       { ...validSourceInput(), value: {} },
+      { ...validSourceInput(), key: hostileDirectCodec },
+      { ...validSourceInput(), value: hostileDirectCodec },
+      {
+        cleanupPolicy: "compact",
+        retentionPolicy: "match-kafka-retention",
+        topic: "orders",
+        regions: ["eu"],
+        key: hostileDirectCompactionKeyCodec,
+        value: kafka.string(),
+        map: () => ({}),
+        startFrom: "earliest",
+      },
       { ...validSourceInput(), localRowKey: true },
       { ...validSourceInput(), map: true },
       { ...validSourceInput(), extra: true },

@@ -293,21 +293,10 @@ const enumSubset = (previous: DescEnum, current: DescEnum): boolean => {
   );
 };
 
-const valueTypeCompatible = (
-  previous: FieldValueType,
-  current: FieldValueType,
-  readerCompatibility: boolean,
-): boolean => {
+const valueTypeCompatible = (previous: FieldValueType, current: FieldValueType): boolean => {
   if (previous._tag === "Scalar" && current._tag === "Scalar") {
-    if (
-      (previous.scalar === ScalarType.STRING && current.scalar === ScalarType.BYTES) ||
-      (previous.scalar === ScalarType.BYTES && current.scalar === ScalarType.STRING)
-    ) {
-      return !(
-        readerCompatibility &&
-        previous.scalar === ScalarType.BYTES &&
-        current.scalar === ScalarType.STRING
-      );
+    if (previous.scalar === ScalarType.STRING && current.scalar === ScalarType.BYTES) {
+      return true;
     }
     return scalarFamily(previous.scalar) === scalarFamily(current.scalar);
   }
@@ -326,17 +315,13 @@ const valueTypeCompatible = (
   if (previous._tag === "Map" && current._tag === "Map") {
     return (
       scalarFamily(previous.key) === scalarFamily(current.key) &&
-      valueTypeCompatible(previous.value, current.value, readerCompatibility)
+      valueTypeCompatible(previous.value, current.value)
     );
   }
   return false;
 };
 
-const fieldValueTypeCompatible = (
-  previous: ComparableField,
-  current: ComparableField,
-  readerCompatibility: boolean,
-): boolean => {
+const fieldValueTypeCompatible = (previous: ComparableField, current: ComparableField): boolean => {
   // Protobuf maps are encoded as repeated synthetic entry messages. Buf WIRE therefore permits
   // toggling only the map_entry option while the repeated field keeps the same entry type.
   if (
@@ -357,11 +342,7 @@ const fieldValueTypeCompatible = (
   ) {
     return previous.message.typeName === mapEntryTypeName(current) && !previous.delimitedEncoding;
   }
-  return valueTypeCompatible(
-    fieldValueType(previous),
-    fieldValueType(current),
-    readerCompatibility,
-  );
+  return valueTypeCompatible(fieldValueType(previous), fieldValueType(current));
 };
 
 type DefaultableField = Extract<ComparableField, { readonly fieldKind: "enum" | "scalar" }>;
@@ -492,7 +473,6 @@ const fieldCompatibilityIssues = (
   previous: ComparableField,
   current: ComparableField,
   path: string,
-  readerCompatibility: boolean,
 ): ReadonlyArray<KafkaProtobufWireIssue> => {
   const issues: Array<KafkaProtobufWireIssue> = [];
   if (fieldCardinality(previous) !== fieldCardinality(current)) {
@@ -506,7 +486,7 @@ const fieldCompatibilityIssues = (
   if (!defaultsEqual(previous, current)) {
     issues.push(issue("FIELD_SAME_DEFAULT", path, "Field default value changed."));
   }
-  if (!fieldValueTypeCompatible(previous, current, readerCompatibility)) {
+  if (!fieldValueTypeCompatible(previous, current)) {
     issues.push(
       issue("FIELD_WIRE_COMPATIBLE_TYPE", path, "Field type is not directionally wire-compatible."),
     );
@@ -536,7 +516,7 @@ const messageIssues = (
       }
       continue;
     }
-    issues.push(...fieldCompatibilityIssues(previousField, currentField, path, false));
+    issues.push(...fieldCompatibilityIssues(previousField, currentField, path));
   }
 
   const currentRanges = messageRanges(current);
@@ -597,7 +577,6 @@ const readerMessageIssues = (
           writerField,
           readerField,
           `${writer.typeName}.${writerField.name}`,
-          true,
         ),
       );
     }
@@ -962,7 +941,7 @@ export const kafkaProtobufWireCompatibilityIssues = (
       }
       continue;
     }
-    issues.push(...fieldCompatibilityIssues(previous, current, path, false));
+    issues.push(...fieldCompatibilityIssues(previous, current, path));
   }
 
   const previousServices = servicesByTypeName(previousFiles.values());

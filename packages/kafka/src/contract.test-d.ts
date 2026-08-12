@@ -15,6 +15,8 @@ type TypeEqual<Left, Right> =
     : false;
 import {
   KafkaSourceAdapter,
+  decodeKafkaCompactionKeyCodec,
+  decodeKafkaCodec,
   kafka,
   type KafkaAdapterFailure,
   type KafkaCapturedStartPosition,
@@ -231,6 +233,10 @@ const compactAndDeleteSource = kafka.source({
 });
 const registryCompactionKey = kafka.schemaRegistry.protobuf(OrderKeySchema);
 const registryCompactionValue = kafka.schemaRegistry.protobuf(OrderValueSchema);
+declare const codecDecodeInput: KafkaCodecDecodeInput;
+declare const compactionKeyCodecDecodeInput: KafkaCompactionKeyCodecDecodeInput;
+declare const widenedRegistryCodec: KafkaCodec<OrderKey, KafkaCodecError>;
+declare const widenedRegistryCompactionKey: KafkaCompactionKeyCodec<OrderKey, KafkaCodecError>;
 const registryCompactSource = kafka.source({
   cleanupPolicy: "compact",
   retentionPolicy: "match-kafka-retention",
@@ -343,6 +349,20 @@ describe("Kafka Source Adapter type contract", () => {
     expectTypeOf(registryKey).toExtend<KafkaCodec<OrderKey, KafkaCodecError, true>>();
     expectTypeOf(registryKey).toExtend<KafkaCompactionKeyCodec<OrderKey, KafkaCodecError, true>>();
     expectTypeOf(registryKey.format).toEqualTypeOf<"schema-registry-protobuf">();
+    expectTypeOf(decodeKafkaCodec(key, codecDecodeInput)).toEqualTypeOf<
+      Effect.Effect<string, never>
+    >();
+    expectTypeOf(
+      decodeKafkaCompactionKeyCodec(compactionKey, compactionKeyCodecDecodeInput),
+    ).toEqualTypeOf<Effect.Effect<string, never>>();
+    // @ts-expect-error Schema Registry codecs require resolved Registry contract validation.
+    void decodeKafkaCodec(registryKey, codecDecodeInput);
+    // @ts-expect-error Schema Registry compaction keys require resolved Registry contract validation.
+    void decodeKafkaCompactionKeyCodec(registryKey, compactionKeyCodecDecodeInput);
+    // @ts-expect-error widening cannot bypass resolved Registry contract validation.
+    void decodeKafkaCodec(widenedRegistryCodec, codecDecodeInput);
+    // @ts-expect-error widening cannot bypass resolved Registry contract validation.
+    void decodeKafkaCompactionKeyCodec(widenedRegistryCompactionKey, compactionKeyCodecDecodeInput);
     // @ts-expect-error compaction key codecs are intentionally distinct from ordinary codecs.
     const ordinaryCodec: KafkaCodec<unknown, unknown> = compactionKey;
     expectTypeOf(ordinaryCodec).not.toBeAny();

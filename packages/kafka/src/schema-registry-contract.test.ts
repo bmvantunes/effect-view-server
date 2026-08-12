@@ -1,5 +1,6 @@
 import { clone, create, createFileRegistry, type DescMessage } from "@bufbuild/protobuf";
 import {
+  DescriptorProtoSchema,
   FieldDescriptorProtoSchema,
   FieldDescriptorProto_Label,
   FieldDescriptorProto_Type,
@@ -913,6 +914,43 @@ describe("Kafka Schema Registry Protobuf contracts", () => {
         [1, 1],
         [1, 0],
       ]);
+    }),
+  );
+
+  it.effect("resolves message indexes from each registered schema version", () =>
+    Effect.gen(function* () {
+      const generatedRoot = OrderValueSchema.file.proto;
+      const shiftedRoot = clone(FileDescriptorProtoSchema, generatedRoot);
+      shiftedRoot.messageType.unshift(create(DescriptorProtoSchema, { name: "Unrelated" }));
+      const contracts = yield* resolveKafkaSchemaRegistryContracts(
+        [declaration()],
+        reader({
+          compatibility: { "orders-value": "FULL_TRANSITIVE" },
+          active: { "orders-value": [1, 2] },
+          all: { "orders-value": [1, 2] },
+          schemas: {
+            "orders-value:1": schemaVersion(1, 41, generatedRoot),
+            "orders-value:2": schemaVersion(2, 42, shiftedRoot),
+          },
+        }),
+      );
+      const contract = Option.getOrThrow(Option.fromUndefinedOr(contracts[0]));
+
+      expect([...contract.schemaIds]).toStrictEqual([
+        [41, [[0]]],
+        [42, [[1]]],
+      ]);
+      expect(validateKafkaSchemaRegistryFrame(contract, frame(42, 1))).toStrictEqual({
+        _tag: "Valid",
+        schemaId: 42,
+        payload: Uint8Array.from([]),
+      });
+      expect(validateKafkaSchemaRegistryFrame(contract, frame(42, 0))).toStrictEqual({
+        _tag: "Mismatch",
+        schemaId: 42,
+        message:
+          'Schema ID 42 selected a protobuf message that does not match "viewserver.runtime.test.OrderValue".',
+      });
     }),
   );
 

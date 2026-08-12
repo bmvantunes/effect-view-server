@@ -1,7 +1,18 @@
 import { clone } from "@bufbuild/protobuf";
 import { FieldDescriptorProto_Type, FileDescriptorProtoSchema } from "@bufbuild/protobuf/wkt";
 import { describe, expect, it } from "@effect/vitest";
-import { Clock, Deferred, Duration, Effect, Fiber, Option, Stream } from "effect";
+import {
+  Cause,
+  Clock,
+  Deferred,
+  Duration,
+  Effect,
+  Exit,
+  Fiber,
+  Option,
+  Scope,
+  Stream,
+} from "effect";
 import { TestClock } from "effect/testing";
 import {
   type KafkaSchemaRegistryDeclaration,
@@ -10,6 +21,7 @@ import {
 } from "./schema-registry-contract";
 import {
   makeKafkaSchemaRegistryRuntime,
+  makeKafkaServerSchemaRegistry,
   type KafkaSchemaRegistryRuntime,
 } from "./schema-registry-runtime";
 import { OrderValueSchema } from "./test-fixtures/orders_pb";
@@ -135,6 +147,77 @@ const validateSide = (
         ),
       ),
     );
+
+const serverRuntimeFixture: KafkaSchemaRegistryRuntime = {
+  endpoints: [],
+  guard: () => Effect.void,
+  failures: () => Stream.never,
+  validateRecord: () => Effect.succeed({ key: undefined, value: undefined }),
+};
+
+describe("Kafka Schema Registry server lifetime", () => {
+  it.effect("interrupts retention after resource closure becomes irreversible", () =>
+    Effect.gen(function* () {
+      const layerScope = yield* Scope.make("sequential");
+      const lateLifetimeScope = yield* Scope.make("sequential");
+      const finalizerStarted = yield* Deferred.make<void>();
+      const releaseFinalizer = yield* Deferred.make<void>();
+      let closeCount = 0;
+      const runtime = yield* makeKafkaServerSchemaRegistry({
+        layerScope,
+        acquire: Effect.acquireRelease(Effect.succeed(serverRuntimeFixture), () =>
+          Effect.gen(function* () {
+            closeCount += 1;
+            yield* Deferred.succeed(finalizerStarted, undefined);
+            yield* Deferred.await(releaseFinalizer);
+          }),
+        ),
+      });
+
+      const layerCloseFiber = yield* Scope.close(layerScope, Exit.void).pipe(
+        Effect.forkChild({ startImmediately: true }),
+      );
+      yield* Deferred.await(finalizerStarted);
+      const lateRetainExit = yield* runtime.retain(lateLifetimeScope).pipe(Effect.exit);
+      const closeCountBeforeRelease = closeCount;
+
+      yield* Deferred.succeed(releaseFinalizer, undefined);
+      yield* Fiber.join(layerCloseFiber);
+      yield* Scope.close(lateLifetimeScope, Exit.void);
+
+      expect(Exit.isFailure(lateRetainExit) && Cause.hasInterruptsOnly(lateRetainExit.cause)).toBe(
+        true,
+      );
+      expect(closeCountBeforeRelease).toBe(1);
+      expect(closeCount).toBe(1);
+    }),
+  );
+
+  it.effect("keeps a retained lifetime alive through layer closure and closes exactly once", () =>
+    Effect.gen(function* () {
+      const layerScope = yield* Scope.make("sequential");
+      const lifetimeScope = yield* Scope.make("sequential");
+      let closeCount = 0;
+      const runtime = yield* makeKafkaServerSchemaRegistry({
+        layerScope,
+        acquire: Effect.acquireRelease(Effect.succeed(serverRuntimeFixture), () =>
+          Effect.sync(() => {
+            closeCount += 1;
+          }),
+        ),
+      });
+
+      yield* runtime.retain(lifetimeScope);
+      yield* Scope.close(layerScope, Exit.void);
+      expect(closeCount).toBe(0);
+
+      yield* Scope.close(lifetimeScope, Exit.void);
+      yield* Scope.close(layerScope, Exit.void);
+      yield* Scope.close(lifetimeScope, Exit.void);
+      expect(closeCount).toBe(1);
+    }),
+  );
+});
 
 describe("Kafka Schema Registry Region runtime", () => {
   it.effect("groups key and value contracts for one View Server Topic", () =>

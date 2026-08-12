@@ -92,11 +92,18 @@ export const makeKafkaServerSchemaRegistry = Effect.fn("KafkaSchemaRegistryRunti
     ) {
       yield* Effect.uninterruptible(
         Effect.gen(function* () {
-          yield* lock.withPermit(
+          const retained = yield* lock.withPermit(
             Effect.sync(() => {
+              if (resourceClosing) {
+                return false;
+              }
               retainedLifetimes.add(lifetimeScope);
+              return true;
             }),
           );
+          if (!retained) {
+            return yield* Effect.interrupt;
+          }
           yield* Scope.addFinalizer(lifetimeScope, releaseLifetime(lifetimeScope));
         }),
       );

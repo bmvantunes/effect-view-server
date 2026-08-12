@@ -682,7 +682,7 @@ const recordEvent = Effect.fn("KafkaSourceAdapter.record.event")(function* <
     });
   }
   const processedKey = yield* effectFailure(
-    registryCodecs.key !== undefined
+    isKafkaSchemaRegistryProtobufCodec(definition.key)
       ? Effect.succeed(Option.getOrThrow(Option.fromUndefinedOr(processedRegistryKey)).value)
       : definition.cleanupPolicy === "delete"
         ? decodeKafkaCodec(definition.key, {
@@ -699,15 +699,15 @@ const recordEvent = Effect.fn("KafkaSourceAdapter.record.event")(function* <
   }
   const key = processedKey.value;
   const processedValueResult = yield* effectFailure(
-    registryCodecs.value === undefined
-      ? decodeKafkaCodec(definition.value, {
+    isKafkaSchemaRegistryProtobufCodec(definition.value)
+      ? decodeSchemaRegistryProtobufPayload(
+          definition.value,
+          Option.getOrThrow(Option.fromUndefinedOr(registryValuePayload)),
+        )
+      : decodeKafkaCodec(definition.value, {
           bytes: record.value,
           metadata,
-        })
-      : decodeSchemaRegistryProtobufPayload(
-          registryCodecs.value,
-          Option.getOrThrow(Option.fromUndefinedOr(registryValuePayload)),
-        ),
+        }),
     () => rejectDecode("valueDecode", codecRejectionMessage("value", definition.value)),
   );
   if (processedValueResult._tag === "Rejected") {

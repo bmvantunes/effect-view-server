@@ -805,21 +805,9 @@ describe("Kafka Schema Registry Buf WIRE compatibility", () => {
       messageTypeName: ".example.OtherChild",
       enumTypeName: ".example.OtherState",
     });
-    const previousOrder = Option.getOrThrow(
-      Option.fromUndefinedOr(
-        previous.messages.find((message) => message.typeName === "example.Order"),
-      ),
-    );
-    const compatibleOrder = Option.getOrThrow(
-      Option.fromUndefinedOr(
-        compatibleChild.messages.find((message) => message.typeName === "example.Order"),
-      ),
-    );
-    const changedOrder = Option.getOrThrow(
-      Option.fromUndefinedOr(
-        changedIdentities.messages.find((message) => message.typeName === "example.Order"),
-      ),
-    );
+    const previousOrder = orderDescriptor(previous);
+    const compatibleOrder = orderDescriptor(compatibleChild);
+    const changedOrder = orderDescriptor(changedIdentities);
 
     expect(
       kafkaProtobufMessageWireCompatibilityIssues(previousOrder, compatibleOrder).map(

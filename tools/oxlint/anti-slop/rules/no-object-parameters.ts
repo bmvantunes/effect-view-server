@@ -47,6 +47,29 @@ function lexicalTypeParameterNames(node: ESTree.Node): ReadonlySet<string> {
 	return names;
 }
 
+function isLexicalScope(node: ESTree.Node): boolean {
+	return (
+		node.type === "Program" ||
+		node.type === "BlockStatement" ||
+		node.type === "StaticBlock" ||
+		node.type === "TSModuleBlock"
+	);
+}
+
+function lexicalScopes(node: ESTree.Node): readonly ESTree.Node[] {
+	const scopes: ESTree.Node[] = [];
+	let current: ESTree.Node | null = node.parent;
+	while (current !== null) {
+		if (isLexicalScope(current)) scopes.push(current);
+		current = current.parent;
+	}
+	return scopes;
+}
+
+function lexicalScope(node: ESTree.Node): ESTree.Node {
+	return lexicalScopes(node)[0] ?? node;
+}
+
 /** Ban the broad object type on function inputs, including local aliases to object. */
 export const noObjectParametersRule = defineRule({
 	meta: {
@@ -61,19 +84,31 @@ export const noObjectParametersRule = defineRule({
 		},
 	},
 	create(context) {
-		const aliases = new Map<string, ESTree.TSType>();
+		const aliasesByScope = new Map<ESTree.Node, Map<string, ESTree.TSType>>();
+		const parameterOwners: ParameterOwner[] = [];
+
+		const visibleAliases = (node: ESTree.Node): ReadonlyMap<string, ESTree.TSType> => {
+			const aliases = new Map<string, ESTree.TSType>();
+			for (const scope of lexicalScopes(node)) {
+				for (const [name, type] of aliasesByScope.get(scope) ?? []) {
+					if (!aliases.has(name)) aliases.set(name, type);
+				}
+			}
+			return aliases;
+		};
 
 		const resolvesToObject = (
 			type: ESTree.TSType,
 			shadowedAliases: ReadonlySet<string>,
+			aliases: ReadonlyMap<string, ESTree.TSType>,
 			visited = new Set<string>(),
 		): boolean => {
 			if (type.type === "TSObjectKeyword") return true;
 			if (type.type === "TSParenthesizedType")
-				return resolvesToObject(type.typeAnnotation, shadowedAliases, visited);
+				return resolvesToObject(type.typeAnnotation, shadowedAliases, aliases, visited);
 			if (type.type === "TSUnionType") {
 				return type.types.some((member) =>
-					resolvesToObject(member, shadowedAliases, visited),
+					resolvesToObject(member, shadowedAliases, aliases, visited),
 				);
 			}
 			if (
@@ -91,15 +126,16 @@ export const noObjectParametersRule = defineRule({
 			if (alias === undefined) return false;
 			const nextVisited = new Set(visited);
 			nextVisited.add(type.typeName.name);
-			return resolvesToObject(alias, shadowedAliases, nextVisited);
+			return resolvesToObject(alias, shadowedAliases, aliases, nextVisited);
 		};
 
 		const checkParameters = (node: ParameterOwner) => {
 			const shadowedAliases = lexicalTypeParameterNames(node);
+			const aliases = visibleAliases(node);
 			for (const parameter of node.params) {
 				const annotation = parameterAnnotation(parameter);
 				if (annotation === null || annotation === undefined) continue;
-				if (!resolvesToObject(annotation.typeAnnotation, shadowedAliases)) continue;
+				if (!resolvesToObject(annotation.typeAnnotation, shadowedAliases, aliases)) continue;
 				context.report({
 					node: annotation.typeAnnotation,
 					messageId: "objectParameter",
@@ -109,28 +145,26 @@ export const noObjectParametersRule = defineRule({
 		};
 
 		return {
-			Program(node) {
-				for (const statement of node.body) {
-					const declaration =
-						statement.type === "ExportNamedDeclaration" ? statement.declaration : statement;
-					if (
-						declaration?.type === "TSTypeAliasDeclaration" &&
-						(declaration.typeParameters === null || declaration.typeParameters === undefined)
-					) {
-						aliases.set(declaration.id.name, declaration.typeAnnotation);
-					}
-				}
+			"Program:exit"() {
+				for (const node of parameterOwners) checkParameters(node);
 			},
-			ArrowFunctionExpression: checkParameters,
-			FunctionDeclaration: checkParameters,
-			FunctionExpression: checkParameters,
-			TSCallSignatureDeclaration: checkParameters,
-			TSConstructSignatureDeclaration: checkParameters,
-			TSConstructorType: checkParameters,
-			TSDeclareFunction: checkParameters,
-			TSEmptyBodyFunctionExpression: checkParameters,
-			TSFunctionType: checkParameters,
-			TSMethodSignature: checkParameters,
+			TSTypeAliasDeclaration(node) {
+				if (node.typeParameters !== null && node.typeParameters !== undefined) return;
+				const scope = lexicalScope(node);
+				const aliases = aliasesByScope.get(scope) ?? new Map<string, ESTree.TSType>();
+				aliases.set(node.id.name, node.typeAnnotation);
+				aliasesByScope.set(scope, aliases);
+			},
+			ArrowFunctionExpression: (node) => parameterOwners.push(node),
+			FunctionDeclaration: (node) => parameterOwners.push(node),
+			FunctionExpression: (node) => parameterOwners.push(node),
+			TSCallSignatureDeclaration: (node) => parameterOwners.push(node),
+			TSConstructSignatureDeclaration: (node) => parameterOwners.push(node),
+			TSConstructorType: (node) => parameterOwners.push(node),
+			TSDeclareFunction: (node) => parameterOwners.push(node),
+			TSEmptyBodyFunctionExpression: (node) => parameterOwners.push(node),
+			TSFunctionType: (node) => parameterOwners.push(node),
+			TSMethodSignature: (node) => parameterOwners.push(node),
 		};
 	},
 });

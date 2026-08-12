@@ -1,6 +1,8 @@
 import { defineRule } from "@oxlint/plugins";
 import type { ESTree, Variable } from "@oxlint/plugins";
 
+import { createTypeEnvironment, type TypeEnvironment } from "../shared/dictionary-types.ts";
+
 type BroadTypeKind = "top" | "object" | "record";
 
 type KnownValueEvidence = {
@@ -140,23 +142,37 @@ function isDefinitelyObjectType(type: ESTree.TSType): boolean {
   }
 }
 
-function isDefinitelyNarrowerRecordType(type: ESTree.TSType): boolean {
+function isDefinitelyNarrowerRecordType(
+  type: ESTree.TSType,
+  environment: TypeEnvironment,
+  resolvingAliases: ReadonlySet<string> = new Set(),
+): boolean {
   const unwrapped = unwrapTypeParentheses(type);
   if (unwrapped.type === "TSTypeLiteral") {
     return unwrapped.members.some((member) => member.type !== "TSIndexSignature");
   }
 
   if (unwrapped.type !== "TSTypeReference") return false;
-  if (typeReferenceName(unwrapped) === "Readonly") {
+  const name = typeReferenceName(unwrapped);
+  if (name === "Readonly") {
     const [inner] = unwrapped.typeArguments?.params ?? [];
-    return inner !== undefined && isDefinitelyNarrowerRecordType(inner);
+    return (
+      inner !== undefined && isDefinitelyNarrowerRecordType(inner, environment, resolvingAliases)
+    );
   }
-  if (typeReferenceName(unwrapped) !== "Record") return false;
+  if (name === "Record") {
+    const parameters = unwrapped.typeArguments?.params ?? [];
+    return (
+      parameters.length === 2 && parameters[1] !== undefined && !isUnknownOrAnyType(parameters[1])
+    );
+  }
 
-  const parameters = unwrapped.typeArguments?.params ?? [];
-  return (
-    parameters.length === 2 && parameters[1] !== undefined && !isUnknownOrAnyType(parameters[1])
-  );
+  if (name === null || resolvingAliases.has(name)) return false;
+  const alias = environment.aliases.get(name);
+  if (alias === undefined || (alias.typeParameters?.params.length ?? 0) > 0) return false;
+  const nextResolvingAliases = new Set(resolvingAliases);
+  nextResolvingAliases.add(name);
+  return isDefinitelyNarrowerRecordType(alias.typeAnnotation, environment, nextResolvingAliases);
 }
 
 function functionBoundary(node: ESTree.Node): ESTree.Node | null {
@@ -303,12 +319,13 @@ function assertionIsNarrower(
   broadKind: BroadTypeKind,
   evidence: KnownValueEvidence,
   assertedType: ESTree.TSType,
+  environment: TypeEnvironment,
 ): boolean {
   if (broadTypeKind(assertedType) !== null) return false;
   if (broadKind === "top") return true;
   if (typesHaveSameSyntax(sourceText, evidence.type, assertedType)) return true;
   if (broadKind === "object") return isDefinitelyObjectType(assertedType);
-  return isDefinitelyNarrowerRecordType(assertedType);
+  return isDefinitelyNarrowerRecordType(assertedType, environment);
 }
 
 /** Detect immutable local bindings that erase a known type and are later asserted back to a narrower type. */
@@ -326,8 +343,10 @@ export const noWidenThenAssertRule = defineRule({
   },
   create(context) {
     const scopes = context.sourceCode.scopeManager.scopes;
+    let environment: TypeEnvironment | null = null;
 
     const checkAssertion = (node: ESTree.TSAsExpression | ESTree.TSTypeAssertion) => {
+      if (environment === null) return;
       const expression = assertedExpression(node);
       if (expression.type !== "Identifier") return;
 
@@ -343,6 +362,7 @@ export const noWidenThenAssertRule = defineRule({
           widened.broadKind,
           widened.evidence,
           node.typeAnnotation,
+          environment,
         )
       ) {
         return;
@@ -356,6 +376,9 @@ export const noWidenThenAssertRule = defineRule({
     };
 
     return {
+      Program(node) {
+        environment = createTypeEnvironment(node);
+      },
       TSAsExpression: checkAssertion,
       TSTypeAssertion: checkAssertion,
     };

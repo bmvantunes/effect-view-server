@@ -2,7 +2,7 @@ type RuntimeQueryRecord = Readonly<Record<string, unknown>>;
 
 declare const ValidatedRuntimeQueryTypeId: unique symbol;
 
-export type ValidatedRuntimeQuery = RuntimeQueryRecord & {
+export type ValidatedRuntimeQuery = {
   readonly [ValidatedRuntimeQueryTypeId]: true;
 };
 

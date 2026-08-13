@@ -2,6 +2,7 @@ import { defineRule } from "@oxlint/plugins";
 
 import {
 	classifyUnsafeDictionary,
+	classifyUnsafeDictionaryInterfaceReference,
 	classifyUnsafeDictionaryValue,
 	createTypeEnvironment,
 	type TypeEnvironment,
@@ -53,10 +54,6 @@ function isTypeNode(node: ESTree.Node): node is ESTree.TSType {
 	return typeNodeKinds.has(node.type);
 }
 
-function typeReferenceName(type: ESTree.TSTypeReference): string | null {
-	return type.typeName.type === "Identifier" ? type.typeName.name : null;
-}
-
 function isExportedTypeDeclaration(
 	declaration: ESTree.TSTypeAliasDeclaration | ESTree.TSInterfaceDeclaration,
 ): boolean {
@@ -71,6 +68,7 @@ function isExportedTypeDeclaration(
 	return current.body.some(
 		(statement) =>
 			statement.type === "ExportNamedDeclaration" &&
+			statement.source === null &&
 			statement.specifiers.some(
 				(specifier) =>
 					specifier.type === "ExportSpecifier" &&
@@ -102,19 +100,8 @@ function isDirectExportedDictionaryContractType(node: ESTree.Node): boolean {
 	return false;
 }
 
-function isPlainAliasConsumerUse(node: ESTree.TSType, environment: TypeEnvironment): boolean {
-	if (node.type !== "TSTypeReference" || node.typeArguments?.params.length) return false;
-	const name = typeReferenceName(node);
-	return (
-		name !== null &&
-		environment.aliases.has(name) &&
-		node.parent.type !== "TSTypeAliasDeclaration"
-	);
-}
-
 function shouldReportType(node: ESTree.TSType, environment: TypeEnvironment): boolean {
 	if (!isDirectExportedDictionaryContractType(node)) return false;
-	if (isPlainAliasConsumerUse(node, environment)) return false;
 	if (classifyUnsafeDictionary(node, environment) === null) return false;
 	let current: ESTree.Node | null = node.parent;
 	while (current !== null && current.type !== "Program") {
@@ -157,6 +144,11 @@ export const noUnsafeDictionaryTypeRule = defineRule({
 			TSTypeReference: reportIfUnsafe,
 			TSTypeLiteral: reportIfUnsafe,
 			TSMappedType: reportIfUnsafe,
+			TSInterfaceHeritage(node) {
+				if (environment === null || !isDirectExportedDictionaryContractType(node)) return;
+				const unsafe = classifyUnsafeDictionaryInterfaceReference(node, environment);
+				if (unsafe !== null) report(node, unsafe.unsafeValue);
+			},
 			TSIndexSignature(node) {
 				if (
 					environment === null ||

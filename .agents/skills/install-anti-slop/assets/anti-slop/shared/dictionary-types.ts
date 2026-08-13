@@ -83,11 +83,7 @@ export function createTypeEnvironment(program: ESTree.Program): TypeEnvironment 
 			continue;
 		}
 
-		if (
-			(declaration?.type === "ClassDeclaration" ||
-				declaration?.type === "FunctionDeclaration") &&
-			declaration.id !== null
-		) {
+		if (declaration?.type === "ClassDeclaration" && declaration.id !== null) {
 			if (BUILT_INS.has(declaration.id.name)) shadowedBuiltIns.add(declaration.id.name);
 		}
 	}
@@ -178,6 +174,21 @@ function aliasSubstitution(
 ): TypeAliasEnvironment | null {
 	const parameters = alias.typeParameters?.params ?? [];
 	const arguments_ = type.typeArguments?.params ?? [];
+	const next = new Map(base);
+	for (const [index, parameter] of parameters.entries()) {
+		const argument = arguments_[index] ?? parameter.default;
+		if (argument === null || argument === undefined) return null;
+		next.set(parameter.name.name, resolvedSubstitutionArgument(argument, next));
+	}
+	return next;
+}
+
+function interfaceSubstitution(
+	declaration: ESTree.TSInterfaceDeclaration,
+	arguments_: readonly ESTree.TSType[],
+	base: TypeAliasEnvironment,
+): TypeAliasEnvironment | null {
+	const parameters = declaration.typeParameters?.params ?? [];
 	const next = new Map(base);
 	for (const [index, parameter] of parameters.entries()) {
 		const argument = arguments_[index] ?? parameter.default;
@@ -295,6 +306,16 @@ function dictionaryValueTypes(
 			: dictionaryValueTypes(source, environment, substitutions, resolvingAliases);
 	}
 
+	if (environment.interfaces.has(name)) {
+		return dictionaryValueTypesForInterfaceReference(
+			name,
+			unwrapped.typeArguments?.params ?? [],
+			environment,
+			substitutions,
+			resolvingAliases,
+		);
+	}
+
 	const alias = environment.aliases.get(name);
 	if (alias === undefined || resolvingAliases.has(name)) return [];
 	const nextSubstitutions = aliasSubstitution(alias, unwrapped, substitutions);
@@ -302,6 +323,67 @@ function dictionaryValueTypes(
 	const nextResolving = new Set(resolvingAliases);
 	nextResolving.add(name);
 	return dictionaryValueTypes(alias.typeAnnotation, environment, nextSubstitutions, nextResolving);
+}
+
+function dictionaryValueTypesForInterfaceReference(
+	name: string,
+	arguments_: readonly ESTree.TSType[],
+	environment: TypeEnvironment,
+	substitutions: TypeAliasEnvironment,
+	resolvingAliases: ReadonlySet<string>,
+): readonly ResolvedType[] {
+	const interfaceDeclarations = environment.interfaces.get(name);
+	if (interfaceDeclarations === undefined || resolvingAliases.has(name)) return [];
+	const nextResolving = new Set(resolvingAliases);
+	nextResolving.add(name);
+	return interfaceDeclarations.flatMap((declaration) => {
+		const nextSubstitutions = interfaceSubstitution(declaration, arguments_, substitutions);
+		return nextSubstitutions === null
+			? []
+			: dictionaryValueTypesFromInterface(
+					declaration,
+					environment,
+					nextSubstitutions,
+					nextResolving,
+			  );
+	});
+}
+
+function dictionaryValueTypesFromInterface(
+	declaration: ESTree.TSInterfaceDeclaration,
+	environment: TypeEnvironment,
+	substitutions: TypeAliasEnvironment,
+	resolvingAliases: ReadonlySet<string>,
+): readonly ResolvedType[] {
+	const ownValues = declaration.body.body.flatMap((member): readonly ResolvedType[] =>
+		member.type === "TSIndexSignature" && member.typeAnnotation !== null
+			? [{ type: member.typeAnnotation.typeAnnotation, substitutions }]
+			: [],
+	);
+	const inheritedValues = declaration.extends.flatMap((heritage): readonly ResolvedType[] => {
+		const name = heritage.expression.type === "Identifier" ? heritage.expression.name : null;
+		if (name === null || resolvingAliases.has(name)) return [];
+		const baseDeclarations = environment.interfaces.get(name);
+		if (baseDeclarations === undefined) return [];
+		const nextResolving = new Set(resolvingAliases);
+		nextResolving.add(name);
+		return baseDeclarations.flatMap((baseDeclaration) => {
+			const nextSubstitutions = interfaceSubstitution(
+				baseDeclaration,
+				heritage.typeArguments?.params ?? [],
+				substitutions,
+			);
+			return nextSubstitutions === null
+				? []
+				: dictionaryValueTypesFromInterface(
+						baseDeclaration,
+						environment,
+						nextSubstitutions,
+						nextResolving,
+				  );
+		});
+	});
+	return [...ownValues, ...inheritedValues];
 }
 
 export function classifyUnsafeDictionaryValue(
@@ -316,7 +398,34 @@ export function classifyUnsafeDictionary(
 	type: ESTree.TSType,
 	environment: TypeEnvironment,
 ): UnsafeDictionary | null {
-	for (const valueType of dictionaryValueTypes(type, environment, new Map(), new Set())) {
+	return classifyUnsafeDictionaryValues(
+		dictionaryValueTypes(type, environment, new Map(), new Set()),
+		environment,
+	);
+}
+
+export function classifyUnsafeDictionaryInterfaceReference(
+	heritage: ESTree.TSInterfaceHeritage,
+	environment: TypeEnvironment,
+): UnsafeDictionary | null {
+	if (heritage.expression.type !== "Identifier") return null;
+	return classifyUnsafeDictionaryValues(
+		dictionaryValueTypesForInterfaceReference(
+			heritage.expression.name,
+			heritage.typeArguments?.params ?? [],
+			environment,
+			new Map(),
+			new Set(),
+		),
+		environment,
+	);
+}
+
+function classifyUnsafeDictionaryValues(
+	valueTypes: readonly ResolvedType[],
+	environment: TypeEnvironment,
+): UnsafeDictionary | null {
+	for (const valueType of valueTypes) {
 		const unsafeValue = unsafeDirectValue(
 			valueType.type,
 			environment,

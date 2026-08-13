@@ -4,10 +4,13 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const lintFixture = (source: string) => {
+const lintFixture = (source: string, additionalFiles: Readonly<Record<string, string>> = {}) => {
   const directory = mkdtempSync(join(tmpdir(), "effect-view-server-anti-slop-"));
   const file = join(directory, "fixture.ts");
   writeFileSync(file, source);
+  for (const [name, contents] of Object.entries(additionalFiles)) {
+    writeFileSync(join(directory, name), contents);
+  }
   const result = spawnSync("vp", ["lint", "--format", "json", file], {
     cwd: process.cwd(),
     encoding: "utf8",
@@ -32,12 +35,38 @@ describe("anti-slop Oxlint integration", () => {
         "export type PublicAlias = Local;",
         "type ExportedByList = Record<string, unknown>;",
         "export type { ExportedByList };",
+        "type WrappedUnsafe = Record<string, unknown>;",
+        "export type ParenthesizedPublic = (WrappedUnsafe);",
+        "export type UnionPublic = WrappedUnsafe | never;",
+        "interface HiddenUnsafe {",
+        "  [key: string]: unknown;",
+        "}",
+        "export type InterfaceAlias = HiddenUnsafe;",
+        "interface BaseUnsafe {",
+        "  [key: string]: unknown;",
+        "}",
+        "export interface DerivedUnsafe extends BaseUnsafe {}",
+        "function Record() {}",
+        "export type FunctionShadowedRecord = Record<string, unknown>;",
         "export type Nested = { readonly values: Record<string, unknown> };",
       ].join("\n"),
     );
 
     expect(result.status).toBe(1);
-    expect(result.output.match(/anti-slop\(no-unsafe-dictionary-type\)/g)).toHaveLength(5);
+    expect(result.output.match(/anti-slop\(no-unsafe-dictionary-type\)/g)).toHaveLength(10);
+  });
+
+  it("does not treat source-backed re-exports as local exports", () => {
+    const result = lintFixture(
+      [
+        "type Payload = Record<string, unknown>;",
+        'export type { Payload } from "./generated";',
+      ].join("\n"),
+      { "generated.ts": "export type Payload = string;" },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.output).not.toContain("anti-slop(no-unsafe-dictionary-type)");
   });
 
   it("allows boundary guards and internal dictionary plumbing", () => {

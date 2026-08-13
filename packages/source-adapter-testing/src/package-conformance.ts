@@ -389,13 +389,33 @@ const typescriptPackageRoot = resolve(
 );
 const typescriptCompilerCli = resolve(typescriptPackageRoot, typescriptPackage.bin.tsc);
 
+type TypeScriptCompilerProcessResult = {
+  readonly error?: Error;
+  readonly signal: NodeJS.Signals | null;
+  readonly status: number | null;
+};
+
+export const typeScriptCompilerExitCode = (compiler: TypeScriptCompilerProcessResult): number => {
+  if (compiler.error !== undefined) {
+    throw compiler.error;
+  }
+  if (compiler.status === null) {
+    throw new Error(
+      compiler.signal === null
+        ? "TypeScript compiler terminated without an exit code."
+        : `TypeScript compiler terminated from signal ${compiler.signal}.`,
+    );
+  }
+  return compiler.status === 0 ? 0 : 1;
+};
+
 const executeTypeScriptCompiler = (projectPath: string): number => {
   const compiler = spawnSync(
     process.execPath,
     [typescriptCompilerCli, "--project", projectPath, "--noEmit", "--pretty", "false"],
     { stdio: "ignore" },
   );
-  return compiler.status === 0 ? 0 : 1;
+  return typeScriptCompilerExitCode(compiler);
 };
 
 const inspectTypeTests = (

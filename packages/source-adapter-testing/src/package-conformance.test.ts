@@ -8,10 +8,32 @@ import {
   inspectSourceAdapterContractBrowserBundle,
   inspectSourceAdapterPackageConformance,
   SourceAdapterPackageInspectionError,
+  typeScriptCompilerExitCode,
   type SourceAdapterPackageInspectionOptions,
   type SourceAdapterPackageConformanceSnapshot,
   validateSourceAdapterPackageConformance,
 } from "./package-conformance";
+
+describe("TypeScript compiler process results", () => {
+  it("preserves normal compiler exits", () => {
+    expect(typeScriptCompilerExitCode({ status: 0, signal: null })).toBe(0);
+    expect(typeScriptCompilerExitCode({ status: 2, signal: null })).toBe(1);
+  });
+
+  it("throws compiler launch and signal failures", () => {
+    const launchFailure = new Error("compiler could not launch");
+
+    expect(() =>
+      typeScriptCompilerExitCode({ error: launchFailure, status: null, signal: null }),
+    ).toThrow(launchFailure);
+    expect(() => typeScriptCompilerExitCode({ status: null, signal: "SIGTERM" })).toThrow(
+      "TypeScript compiler terminated from signal SIGTERM.",
+    );
+    expect(() => typeScriptCompilerExitCode({ status: null, signal: null })).toThrow(
+      "TypeScript compiler terminated without an exit code.",
+    );
+  });
+});
 
 Reflect.set(
   globalThis,

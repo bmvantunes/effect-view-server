@@ -101,7 +101,7 @@ describe("query result semantics", () => {
       "Projected Query Result Row does not satisfy its compiled proof.",
     );
     expect(() => defectSemantics.projectOwnedRow({ value: { count: 1 } })).toThrowError(
-      expect.toSatisfy((error: unknown) => error === defect),
+      expect.toSatisfy((error) => error === defect),
     );
   });
 

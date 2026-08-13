@@ -13,7 +13,9 @@ export type BoundQueryResultTopicStorageProjectionProof<ResultRow extends RowObj
   readonly selectedFields: ReadonlyArray<string>;
 };
 
-const queryResultTopicStorageProjectionProofConstructionToken = Object.freeze({});
+const queryResultTopicStorageProjectionProofConstructionToken = Symbol(
+  "QueryResultTopicStorageProjectionProofConstruction",
+);
 
 type QueryResultTopicStorageProjectionProofMetadata = {
   readonly selectedFields: ReadonlyArray<string>;
@@ -32,7 +34,7 @@ class AuthenticQueryResultTopicStorageProjectionProof<ResultRow extends RowObjec
   declare private readonly output: ResultRow;
 
   constructor(
-    constructionToken: object,
+    constructionToken: symbol,
     topicRow: TopicRowValueSemantics,
     selectedFields: ReadonlyArray<string>,
     narrowProjectedRow: QueryResultRowNarrower<ResultRow>,
@@ -51,7 +53,7 @@ class AuthenticQueryResultTopicStorageProjectionProof<ResultRow extends RowObjec
   }
 
   bind(
-    constructionToken: object,
+    constructionToken: symbol,
     selectedFields: ReadonlyArray<string>,
   ): BoundQueryResultTopicStorageProjectionProof<ResultRow> {
     if (constructionToken !== queryResultTopicStorageProjectionProofConstructionToken) {

@@ -48,7 +48,7 @@ export const invalidQuery = (topic: string, message: string): ViewServerRuntimeE
   topic,
 });
 
-export const ownProtocolQueryInput = Effect.fn("ViewServerProtocol.query.ownInput")(function* (
+export const snapshotProtocolQueryInput = Effect.fn("ViewServerProtocol.query.ownInput")(function* (
   topic: string,
   query: unknown,
 ) {
@@ -58,7 +58,7 @@ export const ownProtocolQueryInput = Effect.fn("ViewServerProtocol.query.ownInpu
   });
 });
 
-export const requireRouteByRecord = Effect.fn("ViewServerProtocol.query.routeBy.requireRecord")(
+export const decodeRouteByRecord = Effect.fn("ViewServerProtocol.query.routeBy.requireRecord")(
   function* (topic: string, routeBy: unknown) {
     const snapshot = protocolRecordSnapshot(routeBy);
     if (snapshot === undefined) {

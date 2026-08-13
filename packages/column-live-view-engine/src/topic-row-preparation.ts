@@ -26,10 +26,10 @@ export type PreparedTopicRow = {
   readonly source: "patch" | "row";
 };
 
-const makePreparedTopicRow = (
+const makePreparedTopicRow = <Row extends RowObject>(
   context: TopicRowPreparationContext,
   key: string,
-  row: RowObject,
+  row: Row,
   source: "patch" | "row",
   changedFields?: TopicRowChangedFields,
 ): PreparedTopicRow => {
@@ -62,9 +62,9 @@ export type TopicRowPreparationContext = {
   readonly topic: string;
 };
 
-const completeDecodedTopicRow = (
+const completeDecodedTopicRow = <Row extends RowObject>(
   context: TopicRowPreparationContext,
-  row: RowObject,
+  row: Row,
 ): RowObject => {
   for (const field of context.fieldNames) {
     if (!Object.hasOwn(row, field)) {
@@ -79,17 +79,17 @@ const completeDecodedTopicRow = (
   return row;
 };
 
-const normalizedDecodedTopicRow = (
+const normalizedDecodedTopicRow = <Row extends RowObject>(
   context: TopicRowPreparationContext,
-  decoded: RowObject,
+  decoded: Row,
 ): RowObject => {
   return completeDecodedTopicRow(context, context.semantics.materializeRow(decoded));
 };
 
 const normalizeDecodedTopicRow = Effect.fn("ColumnLiveViewEngine.topicRow.decoded.normalize")(
-  function* <Error>(
+  function* <Error, Row extends RowObject>(
     context: TopicRowPreparationContext,
-    row: RowObject,
+    row: Row,
     invalidRow: InvalidRowErrorFactory<Error>,
   ) {
     return yield* Effect.try({
@@ -100,9 +100,9 @@ const normalizeDecodedTopicRow = Effect.fn("ColumnLiveViewEngine.topicRow.decode
 );
 
 const validateDecodedTopicRow = Effect.fn("ColumnLiveViewEngine.topicRow.decoded.validate")(
-  function* <Error>(
+  function* <Error, Row extends RowObject>(
     context: TopicRowPreparationContext,
-    row: RowObject,
+    row: Row,
     invalidRow: InvalidRowErrorFactory<Error>,
   ) {
     const decoded = yield* validateDecodedRow(context.schema, row).pipe(
@@ -116,9 +116,12 @@ const validateDecodedTopicRow = Effect.fn("ColumnLiveViewEngine.topicRow.decoded
   },
 );
 
-export const topicRowKey = Effect.fn("ColumnLiveViewEngine.topicRow.key")(function <Error>(
+export const topicRowKey = Effect.fn("ColumnLiveViewEngine.topicRow.key")(function <
+  Error,
+  Row extends RowObject,
+>(
   context: Pick<TopicRowPreparationContext, "keyField" | "topic">,
-  row: RowObject,
+  row: Row,
   invalidRow: InvalidRowErrorFactory<Error>,
 ): Effect.Effect<string, Error> {
   const key = fieldValue(row, context.keyField);
@@ -223,10 +226,10 @@ export const prepareDecodedTopicRowWithStorageKey = Effect.fn(
 });
 
 const preparePatchedTopicRow = Effect.fn("ColumnLiveViewEngine.topicRow.patch.preparePatched")(
-  function* <Patch extends Partial<RowObject>, Error>(
+  function* <Row extends RowObject, Patch extends Partial<RowObject>, Error>(
     context: TopicRowPreparationContext,
     key: string,
-    current: RowObject | undefined,
+    current: Row | undefined,
     patch: Patch,
     invalidRow: InvalidRowErrorFactory<Error>,
     preparePatchedRow: (row: RowObject) => Effect.Effect<RowObject, Error>,
@@ -255,10 +258,10 @@ const preparePatchedTopicRow = Effect.fn("ColumnLiveViewEngine.topicRow.patch.pr
 );
 
 export const prepareTopicPatch = Effect.fn("ColumnLiveViewEngine.topicRow.patch.prepare")(
-  function* <Patch extends Partial<RowObject>, Error>(
+  function* <Row extends RowObject, Patch extends Partial<RowObject>, Error>(
     context: TopicRowPreparationContext,
     key: string,
-    current: RowObject | undefined,
+    current: Row | undefined,
     patch: Patch,
     invalidRow: InvalidRowErrorFactory<Error>,
   ) {
@@ -270,10 +273,10 @@ export const prepareTopicPatch = Effect.fn("ColumnLiveViewEngine.topicRow.patch.
 
 export const prepareDecodedTopicPatch = Effect.fn(
   "ColumnLiveViewEngine.topicRow.decodedPatch.prepare",
-)(function* <Patch extends Partial<RowObject>, Error>(
+)(function* <Row extends RowObject, Patch extends Partial<RowObject>, Error>(
   context: TopicRowPreparationContext,
   key: string,
-  current: RowObject | undefined,
+  current: Row | undefined,
   patch: Patch,
   invalidRow: InvalidRowErrorFactory<Error>,
 ) {

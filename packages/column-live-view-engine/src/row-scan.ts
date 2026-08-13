@@ -37,9 +37,9 @@ function makeTopicRowChangedFields(fields: Iterable<string>): TopicRowChangedFie
 export const isTopicRowChangedFields = (value: unknown): value is TopicRowChangedFields =>
   typeof value === "object" && value !== null && Object.hasOwn(value, changedFieldsTypeId);
 
-export const topicRowChangedFieldsFromRows = (
-  previous: RowObject,
-  next: RowObject,
+export const topicRowChangedFieldsFromRows = <Previous extends RowObject, Next extends RowObject>(
+  previous: Previous,
+  next: Next,
   fields: Iterable<string>,
   equivalent: (field: string, left: unknown, right: unknown) => boolean,
 ): TopicRowChangedFields | undefined => {

@@ -287,8 +287,8 @@ export type FilterExpression<Row> = StrictUnionMember<
 
 export type Where<Row> = ReadonlyArray<FilterExpression<Row>>;
 
-type RejectExpressionExtraKeys<Candidate, Shape> = {
-  readonly [Key in Exclude<keyof Candidate, keyof Shape>]: never;
+type RejectExpressionExtraKeys<Candidate, Expected> = {
+  readonly [Key in Exclude<keyof Candidate, keyof Expected>]: never;
 };
 
 type FilterExpressionKey =
@@ -298,9 +298,9 @@ type FilterExpressionKey =
   | keyof NegationExpression<never>
   | typeof filterExpressionType;
 
-type StrictFilterExpressionShape<Shape> = Shape extends unknown
-  ? Shape & {
-      readonly [Key in Exclude<FilterExpressionKey, keyof Shape>]?: never;
+type StrictFilterExpressionShape<Expected> = Expected extends unknown
+  ? Expected & {
+      readonly [Key in Exclude<FilterExpressionKey, keyof Expected>]?: never;
     }
   : never;
 
@@ -336,12 +336,12 @@ type ExactFieldCondition<Row, Candidate> = Candidate extends {
   ? Field extends FilterableFieldPath<Row>
     ? StrictFilterExpressionShape<
         Extract<FieldConditionForPath<Row, Field>, { readonly field: Field; readonly type: Type }>
-      > extends infer Shape
-      ? [Shape] extends [never]
+      > extends infer Expected
+      ? [Expected] extends [never]
         ? never
         : Candidate &
-            Shape &
-            RejectExpressionExtraKeys<Candidate, Shape> &
+            Expected &
+            RejectExpressionExtraKeys<Candidate, Expected> &
             ExactFieldConditionFilter<Candidate>
       : never
     : never

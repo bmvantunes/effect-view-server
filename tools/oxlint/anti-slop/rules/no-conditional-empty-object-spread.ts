@@ -13,10 +13,32 @@ function isEmptyObjectExpression(node: ESTree.Expression): boolean {
   return node.type === "ObjectExpression" && node.properties.length === 0;
 }
 
+function isNullishComparison(node: ESTree.Expression): boolean {
+	if (node.type !== "BinaryExpression" || !["==", "===", "!=", "!=="].includes(node.operator))
+		return false;
+	return [node.left, node.right].some(
+		(operand) =>
+			(operand.type === "Identifier" && operand.name === "undefined") ||
+			(operand.type === "Literal" && operand.value === null),
+	);
+}
+
+function isSimpleOptionalCondition(node: ESTree.Expression): boolean {
+	const condition = unwrapParentheses(node);
+	return (
+		condition.type === "Identifier" ||
+		condition.type === "CallExpression" ||
+		condition.type === "BinaryExpression" ||
+		condition.type === "UnaryExpression"
+	);
+}
+
 function isConditionalEmptyObjectSpread(node: ESTree.Expression): boolean {
   const conditional = unwrapParentheses(node);
   return (
     conditional.type === "ConditionalExpression" &&
+		!isNullishComparison(conditional.test) &&
+		!isSimpleOptionalCondition(conditional.test) &&
     (isEmptyObjectExpression(conditional.consequent) ||
       isEmptyObjectExpression(conditional.alternate))
   );

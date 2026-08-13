@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import { TopicRowChangeJournal } from "./topic-row-change-journal";
 
-const row = (id: string): object => ({ id });
+const row = (id: string) => ({ id });
 
 describe("column-live-view-engine topic row change journal", () => {
   it("normalizes invalid retained limit overrides", () => {

@@ -46,7 +46,7 @@ type MutableColumnOperations = {
   copySlot(targetSlot: number, sourceSlot: number): void;
   pop(): void;
   reserve(minimumCapacity: number): void;
-  set(slot: number, value: unknown): void;
+  set<Value>(slot: number, value: Value): void;
 };
 
 type MutableGenericTopicColumnValues = GenericTopicColumnValues & MutableColumnOperations;
@@ -74,7 +74,7 @@ class GenericTopicColumn implements MutableGenericTopicColumnValues {
     return this.values[slot];
   }
 
-  set(slot: number, value: unknown): void {
+  set<Value>(slot: number, value: Value): void {
     this.values[slot] = value;
   }
 
@@ -112,7 +112,7 @@ class StringTopicColumn implements MutableStringTopicColumnValues {
     return this.values[slot];
   }
 
-  set(slot: number, value: unknown): void {
+  set<Value>(slot: number, value: Value): void {
     this.values[slot] = typeof value === "string" ? value : undefined;
   }
 
@@ -152,7 +152,7 @@ class NumberTopicColumn implements MutableNumberTopicColumnValues {
     return this.values[slot];
   }
 
-  set(slot: number, value: unknown): void {
+  set<Value>(slot: number, value: Value): void {
     this.ensureCapacity(slot + 1);
     if (slot >= this.lengthValue) {
       this.lengthValue = slot + 1;
@@ -230,7 +230,7 @@ class BigIntTopicColumn implements MutableBigIntTopicColumnValues {
     return this.values[slot];
   }
 
-  set(slot: number, value: unknown): void {
+  set<Value>(slot: number, value: Value): void {
     this.values[slot] = typeof value === "bigint" ? value : undefined;
   }
 
@@ -268,7 +268,7 @@ class BigDecimalTopicColumn implements MutableBigDecimalTopicColumnValues {
     return this.values[slot];
   }
 
-  set(slot: number, value: unknown): void {
+  set<Value>(slot: number, value: Value): void {
     this.values[slot] = isBigDecimal(value) ? value : undefined;
   }
 

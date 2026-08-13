@@ -8,7 +8,7 @@ describe("ColumnLiveViewEngine subscription query validation", () => {
       const engine = yield* makeEngine();
       yield* engine.publish("orders", order("1", "open", 10, 1));
 
-      const wrongNumericDomain: object = {
+      const wrongNumericDomain = {
         select: ["id"],
         where: [{ field: "price", type: "greaterThan", filter: "9" }],
       };
@@ -28,7 +28,7 @@ describe("ColumnLiveViewEngine subscription query validation", () => {
       );
       expect(nonFiniteError.message).toBe("Query input could not be snapshotted.");
 
-      const nonArrayIn: object = {
+      const nonArrayIn = {
         select: ["id"],
         where: [{ field: "status", type: "in", filter: "open" }],
       };
@@ -38,7 +38,7 @@ describe("ColumnLiveViewEngine subscription query validation", () => {
       );
       expect(nonArrayInError.message).toBe("Filter condition status in.filter must be an array.");
 
-      const undefinedOperand: object = {
+      const undefinedOperand = {
         select: ["id"],
         where: [{ field: "status", type: "equals", filter: undefined }],
       };
@@ -48,7 +48,7 @@ describe("ColumnLiveViewEngine subscription query validation", () => {
       );
       expect(undefinedOperandError.message).toBe("Query input could not be snapshotted.");
 
-      const unknownField: object = {
+      const unknownField = {
         select: ["id"],
         where: [{ field: "statuz", type: "equals", filter: "open" }],
       };
@@ -65,7 +65,7 @@ describe("ColumnLiveViewEngine subscription query validation", () => {
   it.effect("rejects invalid filters before opening a subscription", () =>
     Effect.gen(function* () {
       const engine = yield* makeEngine();
-      const invalidQuery: object = {
+      const invalidQuery = {
         select: ["id"],
         where: [{ field: "price", type: "startsWith", filter: "1" }],
       };

@@ -313,7 +313,7 @@ const makeControlledClient = (input?: {
   return {
     client,
     invocations,
-    emit: (index: number, value: unknown) =>
+    emit: <Value>(index: number, value: Value) =>
       Effect.sync(() => {
         const invocation = invocations[index];
         if (invocation === undefined) {
@@ -352,7 +352,7 @@ const awaitInvocationCount = (controlled: ReturnType<typeof makeControlledClient
     () => controlled.invocations.length === count,
   );
 
-const requestField = (request: unknown, field: string): unknown =>
+const requestField = <Request>(request: Request, field: string): unknown =>
   Reflect.get(Object(request), field);
 
 const dataEvents = <A, E, R>(events: Stream.Stream<A, E, R>) =>
@@ -368,7 +368,7 @@ const dataEvents = <A, E, R>(events: Stream.Stream<A, E, R>) =>
 const isClosedLayer = (value: unknown): value is Layer.Layer<unknown, unknown, never> =>
   Layer.isLayer(value);
 
-const rawMaterializedSource = (options: unknown): unknown =>
+const rawMaterializedSource = <Options>(options: Options): unknown =>
   Reflect.apply(GrpcSourceAdapter.materializedSource, GrpcSourceAdapter, [options]);
 
 describe("gRPC Source Adapter Runtime Core vertical slice", () => {

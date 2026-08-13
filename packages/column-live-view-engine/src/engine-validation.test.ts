@@ -92,7 +92,7 @@ describe("ColumnLiveViewEngine validation", () => {
 
   it.effect("rejects the removed configurable key property at runtime", () =>
     Effect.gen(function* () {
-      const invalidKeyConfig: object = {
+      const invalidKeyConfig = {
         topics: {
           orders: {
             schema: Order,
@@ -117,7 +117,7 @@ describe("ColumnLiveViewEngine validation", () => {
 
   it.effect("rejects row schemas without the nominal ViewServerId", () =>
     Effect.gen(function* () {
-      const invalidIdConfig: object = {
+      const invalidIdConfig = {
         topics: {
           orders: {
             schema: Schema.Struct({
@@ -325,7 +325,7 @@ describe("ColumnLiveViewEngine validation", () => {
   it.effect("keeps runtime guards for untyped grouped aggregate query callers", () =>
     Effect.gen(function* () {
       const engine = yield* makeEngine();
-      const groupedRuntimeQuery: object = {
+      const groupedRuntimeQuery = {
         groupBy: ["missing"],
         aggregates: { count: { aggFunc: "count" } },
       };
@@ -529,7 +529,7 @@ describe("ColumnLiveViewEngine validation", () => {
       const engine = yield* makeEngine();
       yield* engine.publish("orders", order("1", "open", 10, 1));
 
-      const invalidWhereQuery: object = {
+      const invalidWhereQuery = {
         select: ["id"],
         where: "bad",
       };
@@ -562,7 +562,7 @@ describe("ColumnLiveViewEngine validation", () => {
         }),
       );
 
-      const invalidWhereMapQuery: object = {
+      const invalidWhereMapQuery = {
         select: ["id"],
         where: new Map([["status", "open"]]),
       };
@@ -575,7 +575,7 @@ describe("ColumnLiveViewEngine validation", () => {
         }),
       );
 
-      const unknownTopLevelRawQuery: object = {
+      const unknownTopLevelRawQuery = {
         select: ["id"],
         where: [{ field: "status", type: "equals", filter: "open" }],
         whre: {
@@ -592,7 +592,7 @@ describe("ColumnLiveViewEngine validation", () => {
         message: expect.stringContaining("unsupported key: whre"),
       });
 
-      const invalidOrderByQuery: object = {
+      const invalidOrderByQuery = {
         select: ["id"],
         orderBy: "bad",
       };
@@ -604,7 +604,7 @@ describe("ColumnLiveViewEngine validation", () => {
 
       const decoratedSelect = ["id"];
       Object.defineProperty(decoratedSelect, "metadata", { enumerable: true, value: true });
-      const decoratedSelectQuery: object = { select: decoratedSelect };
+      const decoratedSelectQuery = { select: decoratedSelect };
       const decoratedSelectError = yield* Effect.flip(
         // @ts-expect-error decorated query arrays are rejected by the runtime boundary.
         engine.snapshot("orders", decoratedSelectQuery),
@@ -618,7 +618,7 @@ describe("ColumnLiveViewEngine validation", () => {
 
       const decoratedOrderBy = [{ field: "price", direction: "asc" }];
       Object.defineProperty(decoratedOrderBy, "metadata", { enumerable: true, value: true });
-      const decoratedOrderByQuery: object = { select: ["id"], orderBy: decoratedOrderBy };
+      const decoratedOrderByQuery = { select: ["id"], orderBy: decoratedOrderBy };
       const decoratedOrderByError = yield* Effect.flip(
         // @ts-expect-error decorated query arrays are rejected by the runtime boundary.
         engine.snapshot("orders", decoratedOrderByQuery),
@@ -638,7 +638,7 @@ describe("ColumnLiveViewEngine validation", () => {
       );
       expect(invalidFields._tag).toBe("InvalidQueryError");
 
-      const invalidFieldEntryQuery: object = {
+      const invalidFieldEntryQuery = {
         select: [1],
       };
       const invalidFieldEntry = yield* Effect.flip(
@@ -659,7 +659,7 @@ describe("ColumnLiveViewEngine validation", () => {
       );
       expect(invalidEmptySelect._tag).toBe("InvalidQueryError");
 
-      const invalidOffsetQuery: object = {
+      const invalidOffsetQuery = {
         select: ["id"],
         offset: "0",
       };
@@ -707,7 +707,7 @@ describe("ColumnLiveViewEngine validation", () => {
         message: expect.stringContaining("offset"),
       });
 
-      const invalidLimitQuery: object = {
+      const invalidLimitQuery = {
         select: ["id"],
         limit: "1",
       };
@@ -733,7 +733,7 @@ describe("ColumnLiveViewEngine validation", () => {
         }),
       );
 
-      const invalidOrderByEntryQuery: object = {
+      const invalidOrderByEntryQuery = {
         select: ["id"],
         orderBy: ["bad"],
       };
@@ -743,7 +743,7 @@ describe("ColumnLiveViewEngine validation", () => {
       );
       expect(invalidOrderByEntry._tag).toBe("InvalidQueryError");
 
-      const invalidOrderByExtraKeyQuery: object = {
+      const invalidOrderByExtraKeyQuery = {
         select: ["id"],
         orderBy: [
           {
@@ -762,7 +762,7 @@ describe("ColumnLiveViewEngine validation", () => {
         message: expect.stringContaining("unsupported key: typo"),
       });
 
-      const invalidOrderByFieldQuery: object = {
+      const invalidOrderByFieldQuery = {
         select: ["id"],
         orderBy: [
           {
@@ -776,7 +776,7 @@ describe("ColumnLiveViewEngine validation", () => {
       );
       expect(invalidOrderByField._tag).toBe("InvalidQueryError");
 
-      const unknownOrderByFieldQuery: object = {
+      const unknownOrderByFieldQuery = {
         select: ["id"],
         orderBy: [
           {
@@ -794,7 +794,7 @@ describe("ColumnLiveViewEngine validation", () => {
         message: expect.stringContaining("orderBy"),
       });
 
-      const unknownProjectionFieldQuery: object = {
+      const unknownProjectionFieldQuery = {
         select: ["prcie"],
       };
       const unknownProjectionField = yield* Effect.flip(
@@ -809,7 +809,7 @@ describe("ColumnLiveViewEngine validation", () => {
         message: expect.stringContaining("select"),
       });
 
-      const unknownWhereFieldQuery: object = {
+      const unknownWhereFieldQuery = {
         select: ["id"],
         where: [{ field: "prcie", type: "equals", filter: 10 }],
       };
@@ -822,7 +822,7 @@ describe("ColumnLiveViewEngine validation", () => {
         message: expect.stringContaining("unknown or non-filterable field"),
       });
 
-      const invalidOrderByDirectionQuery: object = {
+      const invalidOrderByDirectionQuery = {
         select: ["id"],
         orderBy: [
           {

@@ -113,7 +113,11 @@ const InventoryService = serviceDesc<{
   };
 }>(descriptorFile, 1);
 
-const invoke = (owner: object, method: string, input: unknown): unknown => {
+const invoke = <Owner extends object, Input>(
+  owner: Owner,
+  method: string,
+  input: Input,
+): unknown => {
   const selected = Reflect.get(owner, method);
   if (typeof selected !== "function") {
     throw new TypeError(`Expected ${method} to be a function.`);

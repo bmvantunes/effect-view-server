@@ -19,7 +19,7 @@ import {
 } from "./protocol-health-schema";
 import {
   compileSourceHealthContract,
-  requireExactSourceHealth,
+  validateExactSourceHealth,
   type CompiledSourceHealthContract,
 } from "./source-health-wire";
 
@@ -211,7 +211,7 @@ const projectSourceValues = Effect.fn("ViewServerProtocol.health.sourceValues.pr
   ) => Effect.Effect<Output, ViewServerRuntimeError>,
 ): Effect.fn.Return<Output | ReadonlyArray<Output>, ViewServerRuntimeError> {
   if (contract.lifecycle === "materialized") {
-    yield* requireExactSourceHealth(topic, contract, value).pipe(
+    yield* validateExactSourceHealth(topic, contract, value).pipe(
       Effect.mapError((error) => invalidHealthRow(topic, error.message)),
     );
     return yield* project(value, sourceHealthCodecErrors(topic));
@@ -223,7 +223,7 @@ const projectSourceValues = Effect.fn("ViewServerProtocol.health.sourceValues.pr
   }
   const active: Array<Output> = [];
   for (const health of value) {
-    yield* requireExactSourceHealth(topic, contract, health).pipe(
+    yield* validateExactSourceHealth(topic, contract, health).pipe(
       Effect.mapError((error) => invalidHealthRow(topic, error.message)),
     );
     active.push(yield* project(health, sourceHealthCodecErrors(topic)));

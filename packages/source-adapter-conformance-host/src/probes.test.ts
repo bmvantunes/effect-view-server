@@ -237,7 +237,7 @@ describe("Source Adapter conformance host probes", () => {
       Effect.runSync(
         invokeEffect(
           {
-            valid: (value: unknown) => Effect.succeed(value),
+            valid: <Value>(value: Value) => Effect.succeed(value),
           },
           "valid",
           ["result"],
@@ -309,7 +309,7 @@ describe("Source Adapter conformance host probes", () => {
 
   it.effect("rejects malformed snapshot subscriptions and rows", () =>
     Effect.gen(function* () {
-      const runtime = (snapshot: unknown) => ({
+      const runtime = <Snapshot>(snapshot: Snapshot) => ({
         liveClient: {
           subscribe: () =>
             Effect.succeed({

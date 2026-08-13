@@ -235,8 +235,8 @@ type KafkaNodeConfigWrap<Value> = [NonNullable<Value>] extends [infer NonNullVal
     : Config.Config<NonNullValue>
   : Config.Config<Value>;
 
-type RejectExtraKeys<Candidate, Shape> = {
-  readonly [Key in Exclude<keyof Candidate, keyof Shape>]: never;
+type RejectExtraKeys<Candidate, Expected> = {
+  readonly [Key in Exclude<keyof Candidate, keyof Expected>]: never;
 };
 
 type IsAny<Value> = 0 extends 1 & Value ? true : false;
@@ -505,7 +505,7 @@ const captureDataFields = (value: object, message: string): ReadonlyMap<string, 
   return captured.success;
 };
 
-const ownDataKeys = (value: object): ReadonlyArray<string> =>
+const ownDataKeys = <Value extends object>(value: Value): ReadonlyArray<string> =>
   Array.from(
     captureDataFields(
       value,

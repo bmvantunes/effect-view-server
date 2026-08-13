@@ -16,7 +16,7 @@ export const makeColumns = (
   return columns;
 };
 
-export const numericRowField = (row: object, field: string): number => {
+export const numericRowField = <Row extends object>(row: Row, field: string): number => {
   const value = fieldValue(row, field);
   if (typeof value === "number") {
     return value;

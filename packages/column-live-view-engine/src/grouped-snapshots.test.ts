@@ -138,7 +138,7 @@ describe("ColumnLiveViewEngine grouped snapshots", () => {
         { status: "open", minNote: "same", maxNote: "same" },
       ]);
 
-      const emptyNumericQuery: object = {
+      const emptyNumericQuery = {
         groupBy: ["status"],
         aggregates: {
           noteTotal: { aggFunc: "sum", field: "note" },

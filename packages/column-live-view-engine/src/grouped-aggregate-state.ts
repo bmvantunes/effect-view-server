@@ -296,7 +296,7 @@ const minMaxAggregateValueOr = (
   return value === undefined ? { count: missingCount, input } : value;
 };
 
-const updateAggregateState = (state: AggregateState, row: RowObject): void => {
+const updateAggregateState = <Row extends RowObject>(state: AggregateState, row: Row): void => {
   if (state.aggFunc === "count") {
     state.count += 1n;
     return;
@@ -387,9 +387,9 @@ const recomputeMinMaxAggregateState = (state: RetainedMinMaxAggregateState): voi
   state.selection = nextSelection;
 };
 
-const removeAggregateState = (
+const removeAggregateState = <Row extends RowObject>(
   state: ReversibleAggregateState,
-  row: RowObject,
+  row: Row,
 ): RetainedMinMaxAggregateState | undefined => {
   if (state.aggFunc === "count") {
     state.count -= 1n;
@@ -473,18 +473,21 @@ const aggregateStateResultValue = (state: AggregateState): unknown => {
 export const groupAggregateStateCompareValue = (group: GroupState, stateIndex: number): unknown =>
   aggregateStateResultValue(Arr.getUnsafe(group.aggregates, stateIndex));
 
-export const updateGroupAggregateState = (state: AggregateState, row: RowObject): void => {
+export const updateGroupAggregateState = <Row extends RowObject>(
+  state: AggregateState,
+  row: Row,
+): void => {
   updateAggregateState(state, row);
 };
 
-export const removeGroupAggregateState = (
+export const removeGroupAggregateState = <Row extends RowObject>(
   state: ReversibleAggregateState,
-  row: RowObject,
+  row: Row,
 ): RetainedMinMaxAggregateState | undefined => removeAggregateState(state, row);
 
-const projectGroupFields = (
+const projectGroupFields = <Row extends RowObject>(
   groupBy: ReadonlyArray<string>,
-  row: RowObject,
+  row: Row,
 ): Record<string, unknown> => {
   const projected: Record<string, unknown> = {};
   for (const field of groupBy) {
@@ -501,11 +504,11 @@ const projectGroupFields = (
   return projected;
 };
 
-export const newGroupState = (
+export const newGroupState = <Row extends RowObject>(
   key: string,
   groupBy: ReadonlyArray<string>,
   aggregates: ReadonlyArray<GroupedAggregatePlan>,
-  row: RowObject,
+  row: Row,
 ): GroupState => {
   const resultRow = projectGroupFields(groupBy, row);
   const aggregateStates = aggregates.map(emptyAggregateState);
@@ -516,11 +519,11 @@ export const newGroupState = (
   };
 };
 
-export const newIncrementalGroupState = (
+export const newIncrementalGroupState = <Row extends RowObject>(
   key: string,
   groupBy: ReadonlyArray<string>,
   aggregates: ReadonlyArray<GroupedAggregatePlan>,
-  row: RowObject,
+  row: Row,
 ): MaterializedIncrementalGroupState => {
   const resultRow = projectGroupFields(groupBy, row);
   const aggregateStates = aggregates.map(emptyReversibleAggregateState);

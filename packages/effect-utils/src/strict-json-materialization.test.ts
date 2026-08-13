@@ -10,8 +10,8 @@ const successValue = (
   result: Result.Result<Schema.Json, StrictJsonMaterializationError>,
 ): Schema.Json => Option.getOrThrow(Result.getSuccess(result));
 
-const expectFailure = (
-  value: unknown,
+const expectFailure = <Value>(
+  value: Value,
   expected: {
     readonly path: string;
     readonly reason: StrictJsonMaterializationReason;

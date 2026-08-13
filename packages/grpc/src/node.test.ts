@@ -118,7 +118,7 @@ const config = defineViewServerConfig({
   },
 });
 
-const invokeLayer = (options: unknown): unknown =>
+const invokeLayer = <Options>(options: Options): unknown =>
   Reflect.apply(grpcNodeLayer, undefined, [config, options]);
 
 const isClosedLayer = (value: unknown): value is Layer.Layer<unknown, unknown, never> =>

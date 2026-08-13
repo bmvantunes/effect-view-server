@@ -514,15 +514,18 @@ export function classifyWideningTarget(
 	if (unwrapped.type === "TSUnknownKeyword") return { kind: "unknown" };
 	if (unwrapped.type === "TSObjectKeyword") return { kind: "object" };
 	if (unwrapped.type === "TSTypeLiteral") {
-		return unwrapped.members.some((member) => member.type === "TSIndexSignature")
+		const index = unwrapped.members.find((member) => member.type === "TSIndexSignature");
+		return index?.type === "TSIndexSignature" &&
+			index.typeAnnotation !== null &&
+			classifyUnsafeDictionaryValue(index.typeAnnotation.typeAnnotation, environment) !== null
 			? { kind: "open dictionary" }
-			: unwrapped.members.length > 0
-				? { kind: "anonymous object" }
-				: null;
+			: null;
 	}
 	if (
 		unwrapped.type === "TSMappedType" &&
-		isBroadMappedKey(unwrapped.constraint, environment, new Map())
+		isBroadMappedKey(unwrapped.constraint, environment, new Map()) &&
+		unwrapped.typeAnnotation !== null &&
+		classifyUnsafeDictionaryValue(unwrapped.typeAnnotation, environment) !== null
 	)
 		return { kind: "open dictionary" };
 	if (unwrapped.type !== "TSTypeReference") return null;
@@ -533,7 +536,10 @@ export function classifyWideningTarget(
 		return wrapped === undefined ? null : classifyWideningTarget(wrapped, environment);
 	}
 	if (name === "Record" && isBuiltInReference(unwrapped, name, environment))
-		return { kind: "open dictionary" };
+		return isBroadRecordKey(unwrapped.typeArguments?.params[0], environment) &&
+			classifyUnsafeDictionaryValue(unwrapped.typeArguments?.params[1]!, environment) !== null
+			? { kind: "open dictionary" }
+			: null;
 	const alias = environment.aliases.get(name);
 	if (alias === undefined) return null;
 	if ((alias.typeParameters?.params.length ?? 0) > 0) {
@@ -582,6 +588,26 @@ function isBroadMappedKey(
 	return isBuiltInReference(unwrapped, name, environment) && name === "PropertyKey";
 }
 
+function isBroadRecordKey(
+	type: ESTree.TSType | undefined,
+	environment: TypeEnvironment,
+): boolean {
+	if (type === undefined) return false;
+	const unwrapped = unwrapTransparentType(type);
+	if (
+		unwrapped.type === "TSStringKeyword" ||
+		unwrapped.type === "TSNumberKeyword" ||
+		unwrapped.type === "TSSymbolKeyword"
+	)
+		return true;
+	if (unwrapped.type === "TSUnionType") {
+		return unwrapped.types.some((member) => isBroadRecordKey(member, environment));
+	}
+	if (unwrapped.type !== "TSTypeReference") return false;
+	const name = typeReferenceName(unwrapped);
+	return name !== null && isBuiltInReference(unwrapped, name, environment) && name === "PropertyKey";
+}
+
 function classifyAliasBroadTarget(
 	type: ESTree.TSType,
 	environment: TypeEnvironment,
@@ -592,12 +618,17 @@ function classifyAliasBroadTarget(
 	if (unwrapped.type === "TSUnknownKeyword") return { kind: "unknown" };
 	if (unwrapped.type === "TSObjectKeyword") return { kind: "object" };
 	if (unwrapped.type === "TSTypeLiteral") {
-		return unwrapped.members.some((member) => member.type === "TSIndexSignature")
+		const index = unwrapped.members.find((member) => member.type === "TSIndexSignature");
+		return index?.type === "TSIndexSignature" &&
+			index.typeAnnotation !== null &&
+			classifyUnsafeDictionaryValue(index.typeAnnotation.typeAnnotation, environment) !== null
 			? { kind: "open dictionary" }
 			: null;
 	}
 	if (unwrapped.type === "TSMappedType") {
-		return isBroadMappedKey(unwrapped.constraint, environment, substitutions)
+		return isBroadMappedKey(unwrapped.constraint, environment, substitutions) &&
+			unwrapped.typeAnnotation !== null &&
+			classifyUnsafeDictionaryValue(unwrapped.typeAnnotation, environment, substitutions) !== null
 			? { kind: "open dictionary" }
 			: null;
 	}
@@ -622,7 +653,14 @@ function classifyAliasBroadTarget(
 			: classifyAliasBroadTarget(wrapped, environment, substitutions, resolvingAliases);
 	}
 	if (name === "Record" && isBuiltInReference(unwrapped, name, environment)) {
-		return { kind: "open dictionary" };
+		return isBroadRecordKey(unwrapped.typeArguments?.params[0], environment) &&
+			classifyUnsafeDictionaryValue(
+				unwrapped.typeArguments?.params[1]!,
+				environment,
+				substitutions,
+			) !== null
+			? { kind: "open dictionary" }
+			: null;
 	}
 	const alias = environment.aliases.get(name);
 	if (alias === undefined || resolvingAliases.has(name)) return null;

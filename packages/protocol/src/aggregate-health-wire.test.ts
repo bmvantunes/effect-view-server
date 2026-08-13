@@ -244,15 +244,16 @@ const requireJsonObject = (candidate: Schema.Json): Schema.JsonObject | undefine
     ? candidate
     : undefined;
 
-function typedAggregateHealth(candidate: unknown): ViewServerHealth<typeof config.topics>;
-function typedAggregateHealth(candidate: unknown): unknown {
-  return candidate;
-}
-
-function typedConfig(candidate: unknown): typeof config;
-function typedConfig(candidate: unknown): unknown {
-  return candidate;
-}
+const withSources = <Sources>(sources: Sources): ViewServerHealth<typeof config.topics> => {
+  const health = { ...aggregateHealth };
+  Object.defineProperty(health, "sources", {
+    configurable: true,
+    enumerable: true,
+    value: sources,
+    writable: true,
+  });
+  return health;
+};
 
 describe("Aggregate Source Health wire contract", () => {
   it.effect("round-trips exact materialized and active leased health as canonical JSON", () =>
@@ -532,42 +533,27 @@ describe("Aggregate Source Health wire contract", () => {
         },
       );
       const hostileKeys = yield* Effect.flip(
-        viewServerEncodeHealth(
-          config,
-          typedAggregateHealth({
-            ...aggregateHealth,
-            sources: hostileSources,
-          }),
-        ),
+        viewServerEncodeHealth(config, withSources(hostileSources)),
       );
       const invalidSourcesObject = yield* Effect.flip(
-        viewServerEncodeHealth(
-          config,
-          typedAggregateHealth({
-            ...aggregateHealth,
-            sources: null,
-          }),
-        ),
+        viewServerEncodeHealth(config, withSources(null)),
       );
       const symbolicSourceKey = Symbol("source");
+      const symbolicSources = { ...aggregateHealth.sources };
+      Object.defineProperty(symbolicSources, symbolicSourceKey, {
+        configurable: true,
+        enumerable: true,
+        value: materializedHealth,
+        writable: true,
+      });
       const symbolicKeys = yield* Effect.flip(
-        viewServerEncodeHealth(
-          config,
-          typedAggregateHealth({
-            ...aggregateHealth,
-            sources: {
-              ...aggregateHealth.sources,
-              [symbolicSourceKey]: materializedHealth,
-            },
-          }),
-        ),
+        viewServerEncodeHealth(config, withSources(symbolicSources)),
       );
-      const throwingValue = Object.defineProperty(
-        {
-          leased: aggregateHealth.sources.leased,
-        },
+      const throwingSources = Object.defineProperty(
+        { leased: aggregateHealth.sources.leased },
         "materialized",
         {
+          configurable: true,
           enumerable: true,
           get: () => {
             throw new Error("hostile source value");
@@ -575,43 +561,28 @@ describe("Aggregate Source Health wire contract", () => {
         },
       );
       const hostileValue = yield* Effect.flip(
-        viewServerEncodeHealth(
-          config,
-          typedAggregateHealth({
-            ...aggregateHealth,
-            sources: throwingValue,
-          }),
-        ),
+        viewServerEncodeHealth(config, withSources(throwingSources)),
       );
       const leasedCardinality = yield* Effect.flip(
         viewServerEncodeHealth(
           config,
-          typedAggregateHealth({
-            ...aggregateHealth,
-            sources: {
-              ...aggregateHealth.sources,
-              leased: leasedHealth,
-            },
-          }),
+          withSources({ ...aggregateHealth.sources, leased: leasedHealth }),
         ),
       );
       const leasedIdentity = yield* Effect.flip(
         viewServerEncodeHealth(
           config,
-          typedAggregateHealth({
-            ...aggregateHealth,
-            sources: {
-              ...aggregateHealth.sources,
-              leased: [
-                {
-                  ...leasedHealth,
-                  adapter: {
-                    name: "different-adapter",
-                    version: "1",
-                  },
+          withSources({
+            ...aggregateHealth.sources,
+            leased: [
+              {
+                ...leasedHealth,
+                adapter: {
+                  name: "different-adapter",
+                  version: "1",
                 },
-              ],
-            },
+              },
+            ],
           }),
         ),
       );
@@ -636,17 +607,26 @@ describe("Aggregate Source Health wire contract", () => {
   it.effect("maps aggregate contract compilation failures to health errors", () =>
     Effect.gen(function* () {
       const encoded = yield* viewServerEncodeHealth(config, aggregateHealth);
-      const malformedConfig = typedConfig({
-        ...config,
-        topics: {
-          ...config.topics,
-          leased: {
-            ...config.topics.leased,
-            schema: Schema.Struct({
-              id: ViewServerId,
-            }),
-          },
-        },
+      const malformedConfig = { ...config };
+      const malformedTopics = { ...config.topics };
+      const malformedLeasedTopic = { ...config.topics.leased };
+      Object.defineProperty(malformedLeasedTopic, "schema", {
+        configurable: true,
+        enumerable: true,
+        value: Schema.Struct({ id: ViewServerId }),
+        writable: true,
+      });
+      Object.defineProperty(malformedTopics, "leased", {
+        configurable: true,
+        enumerable: true,
+        value: malformedLeasedTopic,
+        writable: true,
+      });
+      Object.defineProperty(malformedConfig, "topics", {
+        configurable: true,
+        enumerable: true,
+        value: malformedTopics,
+        writable: true,
       });
 
       const failure = yield* Effect.flip(viewServerDecodeHealth(malformedConfig, encoded));

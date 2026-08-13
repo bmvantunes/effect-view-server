@@ -42,9 +42,12 @@ export type TypedRuntimeRawQuery<Row extends object, Query> = RuntimeRawQuery & 
   readonly [typedRuntimeRawQueryBrand]: TypedRuntimeRawQueryInvariant<Row, Query>;
 };
 
-export const typedRuntimeRawQueryMatchesSemantics = (
-  query: object,
-  valueSemantics: object,
+export const typedRuntimeRawQueryMatchesSemantics = <
+  Query extends object,
+  Semantics extends object,
+>(
+  query: Query,
+  valueSemantics: Semantics,
 ): boolean => typedRuntimeRawQueryMetadata.get(query)?.valueSemantics === valueSemantics;
 
 const rawQueryKeys = new Set(["where", "orderBy", "offset", "limit", "select"]);

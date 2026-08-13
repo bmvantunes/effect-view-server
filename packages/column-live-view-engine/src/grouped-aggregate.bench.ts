@@ -452,7 +452,7 @@ const profileEventReader = (benchmarkProfile: BenchmarkProfile): StatusAggregate
   return benchmarkProfile.eventReader;
 };
 
-const bigintRowField = (row: object, field: string): bigint => {
+const bigintRowField = <Row extends object>(row: Row, field: string): bigint => {
   const value = fieldValue(row, field);
   if (typeof value === "bigint") {
     return value;
@@ -460,7 +460,7 @@ const bigintRowField = (row: object, field: string): bigint => {
   throw new Error(`Expected bigint row field ${field}.`);
 };
 
-const bigDecimalRowField = (row: object, field: string): string => {
+const bigDecimalRowField = <Row extends object>(row: Row, field: string): string => {
   const value = fieldValue(row, field);
   if (isBigDecimal(value)) {
     return formatBigDecimal(value);

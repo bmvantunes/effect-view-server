@@ -54,7 +54,11 @@ export type TopicStorageProjectableQueryResultSemantics<ResultRow extends RowObj
     readonly topicStorageProjectionProof: QueryResultTopicStorageProjectionProof<ResultRow>;
   };
 
-const defineResultField = (row: RowObject, field: string, value: unknown): void => {
+const defineResultField = <Row extends RowObject, Value>(
+  row: Row,
+  field: string,
+  value: Value,
+): void => {
   Object.defineProperty(row, field, {
     configurable: true,
     enumerable: true,
@@ -63,10 +67,10 @@ const defineResultField = (row: RowObject, field: string, value: unknown): void 
   });
 };
 
-const hasEnumerableField = (row: RowObject, field: string): boolean =>
+const hasEnumerableField = <Row extends RowObject>(row: Row, field: string): boolean =>
   Object.prototype.propertyIsEnumerable.call(row, field);
 
-const borrowValue = (_semantics: SchemaValueSemantics, value: unknown): unknown => value;
+const borrowValue = <Value>(_semantics: SchemaValueSemantics, value: Value): Value => value;
 
 const isBorrowableImmutablePrimitive = (value: unknown): boolean =>
   value === null ||
@@ -79,9 +83,9 @@ const isBorrowableImmutablePrimitive = (value: unknown): boolean =>
 const materializeValue = (semantics: SchemaValueSemantics, value: unknown): unknown =>
   isBorrowableImmutablePrimitive(value) ? value : semantics.materialize(value);
 
-const projectFields = (
+const projectFields = <Row extends RowObject>(
   fields: ReadonlyArray<QueryResultFieldSemantics>,
-  row: RowObject,
+  row: Row,
   projectValue: QueryResultProjectValue,
 ): RowObject => {
   const projected: Record<string, unknown> = {};
@@ -248,7 +252,7 @@ const runtimeResultProof = (
 
 const narrowResultRow =
   <ResultRow extends RowObject>(isResultRow: QueryResultProof<ResultRow>) =>
-  (row: RowObject): ResultRow => {
+  <Row extends RowObject>(row: Row): ResultRow => {
     if (!isResultRow(row)) {
       throw new TypeError("Projected Query Result Row does not satisfy its compiled proof.");
     }

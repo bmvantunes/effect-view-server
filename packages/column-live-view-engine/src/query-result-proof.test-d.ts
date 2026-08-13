@@ -127,7 +127,7 @@ describe("compiled Query Result Semantics", () => {
       stringMetadata.valueSemantics,
       ["id"],
       // @ts-expect-error proof output requires a real narrower for the selected result row.
-      (row: object) => row,
+      <Row extends object>(row: Row) => row,
       () => ({ forged: true }),
     );
     const stringProjectionSession = bindTopicStorageProjection(

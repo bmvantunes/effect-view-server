@@ -13,9 +13,9 @@ type TopicStorageProjectionBinder = (
   selectedFields: ReadonlyArray<string>,
 ) => TopicStorageProjector;
 
-const topicStorageProjectionConstructionToken = Object.freeze({});
+const topicStorageProjectionConstructionToken = Symbol("TopicStorageProjectionConstruction");
 
-const assertTopicStorageProjectionConstruction = (constructionToken: object): void => {
+const assertTopicStorageProjectionConstruction = (constructionToken: symbol): void => {
   if (constructionToken !== topicStorageProjectionConstructionToken) {
     throw new TypeError("Topic Storage projection construction is private.");
   }
@@ -26,7 +26,7 @@ class AuthenticTopicStorageProjectionCapability {
   readonly #valueSemantics: TopicRowValueSemantics;
 
   constructor(
-    constructionToken: object,
+    constructionToken: symbol,
     valueSemantics: TopicRowValueSemantics,
     bindProjectRow: TopicStorageProjectionBinder,
   ) {
@@ -78,7 +78,7 @@ class AuthenticTopicStorageProjectionSession<ResultRow extends RowObject> {
   readonly projectResultRow: (slot: number) => ResultRow;
 
   constructor(
-    constructionToken: object,
+    constructionToken: symbol,
     projectRow: TopicStorageProjector,
     proof: BoundQueryResultTopicStorageProjectionProof<ResultRow>,
   ) {

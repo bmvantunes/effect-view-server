@@ -344,8 +344,8 @@ type ActiveFixtureTarget = {
   finalizations: bigint;
 };
 
-type CallbackFixtureEmission = {
-  readonly row: unknown;
+type CallbackFixtureEmission<Row extends object> = {
+  readonly row: Row;
   readonly settled: Deferred.Deferred<void>;
 };
 
@@ -572,14 +572,10 @@ const makeControllableSourceFixtureEffect = Effect.fn("SourceAdapterTesting.fixt
     let callbackFinalizations = 0n;
     let pauseNextCallbackConsumer = false;
     let callbackConsumerGate: Deferred.Deferred<void> | undefined;
-    let offerBackpressurable:
-      | ((row: unknown) => Effect.Effect<void, SourceFixtureFailure>)
-      | undefined;
-    let offerNonPausable: ((row: unknown) => Effect.Effect<void, SourceFixtureFailure>) | undefined;
-    let emitBackpressurable:
-      | ((row: unknown) => Effect.Effect<void, SourceFixtureFailure>)
-      | undefined;
-    let emitNonPausable: ((row: unknown) => Effect.Effect<void, SourceFixtureFailure>) | undefined;
+    let offerBackpressurable: ((row: Row) => Effect.Effect<void, SourceFixtureFailure>) | undefined;
+    let offerNonPausable: ((row: Row) => Effect.Effect<void, SourceFixtureFailure>) | undefined;
+    let emitBackpressurable: ((row: Row) => Effect.Effect<void, SourceFixtureFailure>) | undefined;
+    let emitNonPausable: ((row: Row) => Effect.Effect<void, SourceFixtureFailure>) | undefined;
     const applicationState = SourceAdapterServer.applicationState({
       sweepIntervalNanos: 86_400_000_000_000n,
       initialState: () => Object.freeze({ applied: 0n }),
@@ -601,12 +597,12 @@ const makeControllableSourceFixtureEffect = Effect.fn("SourceAdapterTesting.fixt
         const consumerGate = pauseNextCallbackConsumer ? yield* Deferred.make<void>() : undefined;
         pauseNextCallbackConsumer = false;
         callbackConsumerGate = consumerGate;
-        const backpressurable = yield* SourceBuffer.backpressurable<CallbackFixtureEmission>({
+        const backpressurable = yield* SourceBuffer.backpressurable<CallbackFixtureEmission<Row>>({
           capacity: 1,
           register: (emit) =>
             Effect.gen(function* () {
               callbackRegistrations += 1n;
-              const offer = (value: unknown) =>
+              const offer = (value: Row) =>
                 Effect.gen(function* () {
                   const settled = yield* Deferred.make<void>();
                   yield* emit({ row: value, settled });
@@ -626,12 +622,12 @@ const makeControllableSourceFixtureEffect = Effect.fn("SourceAdapterTesting.fixt
               });
             }),
         });
-        const nonPausable = yield* SourceBuffer.nonPausable<CallbackFixtureEmission>({
+        const nonPausable = yield* SourceBuffer.nonPausable<CallbackFixtureEmission<Row>>({
           capacity: 1,
           register: (emit) =>
             Effect.gen(function* () {
               callbackRegistrations += 1n;
-              const offer = (value: unknown) =>
+              const offer = (value: Row) =>
                 Effect.gen(function* () {
                   const settled = yield* Deferred.make<void>();
                   emit({ row: value, settled });
@@ -651,7 +647,7 @@ const makeControllableSourceFixtureEffect = Effect.fn("SourceAdapterTesting.fixt
             }),
         });
         const toDelivery = Effect.fn("SourceAdapterTesting.callbackFixture.delivery")(function* (
-          emission: CallbackFixtureEmission,
+          emission: CallbackFixtureEmission<Row>,
         ) {
           const decoded = yield* decodeFixtureRow(input.definition.row, emission.row);
           const mutation = yield* input.toolkit.upsert(decoded);
@@ -830,10 +826,10 @@ const makeControllableSourceFixtureEffect = Effect.fn("SourceAdapterTesting.fixt
           if (fault === undefined) {
             return attempt;
           }
-          const nominalOverride = <Value extends object>(
+          const nominalOverride = <Value extends object, PropertyValue>(
             source: Value,
             property: string,
-            value: unknown,
+            value: PropertyValue,
           ): Value => {
             const clone: Value = Object.create(Object.getPrototypeOf(source));
             Object.assign(clone, source);
@@ -848,10 +844,10 @@ const makeControllableSourceFixtureEffect = Effect.fn("SourceAdapterTesting.fixt
             });
             return Object.freeze(clone);
           };
-          const faultedLane = (
+          const faultedLane = <PropertyValue>(
             lane: (typeof lanes)[number],
             property: "id" | "bufferMetrics",
-            value: unknown,
+            value: PropertyValue,
           ) => nominalOverride(lane, property, value);
           const faultedLanes =
             fault === "EmptyLanes"

@@ -244,7 +244,7 @@ export const sendTcpPublishLine = Effect.fn("ViewServerRuntime.test.tcp.line.sen
 });
 
 export const sendTcpPublishCommand = Effect.fn("ViewServerRuntime.test.tcp.command.send")(
-  function* (url: string, command: object) {
+  function* <Command extends object>(url: string, command: Command) {
     return yield* sendTcpPublishLine(url, JSON.stringify(command));
   },
 );

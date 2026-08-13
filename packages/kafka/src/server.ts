@@ -459,9 +459,9 @@ const captureCompleteMappedRow = (id: string, value: unknown): Option.Option<obj
     }),
   );
 
-const fromCallback = (
+const fromCallback = <Input extends object>(
   callback: (input: never) => unknown,
-  input: object,
+  input: Input,
   failure: KafkaAdapterFailure,
 ): Effect.Effect<unknown, KafkaAdapterFailure> =>
   Effect.try({

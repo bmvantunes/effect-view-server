@@ -25,7 +25,7 @@ const FilterRow = Schema.Struct({
   label: Schema.Literal("resume"),
 });
 
-const deeplyNestedQuery = (depth: number): object => {
+const deeplyNestedQuery = (depth: number) => {
   let condition = leaf();
   for (let index = 0; index < depth; index += 1) {
     condition = { type: "AND", conditions: [condition] };
@@ -33,7 +33,7 @@ const deeplyNestedQuery = (depth: number): object => {
   return { select: ["name"], where: [condition] };
 };
 
-const sharedDagQuery = (depth: number): object => {
+const sharedDagQuery = (depth: number) => {
   let condition = leaf();
   for (let index = 0; index < depth; index += 1) {
     condition = { type: "AND", conditions: [condition, condition] };
@@ -41,7 +41,7 @@ const sharedDagQuery = (depth: number): object => {
   return { select: ["name"], where: [condition] };
 };
 
-const nonCollapsibleDiamondQuery = (depth: number, share: boolean): object => {
+const nonCollapsibleDiamondQuery = (depth: number, share: boolean) => {
   let condition: unknown = { field: "name", type: "equals", filter: "root" };
   for (let index = 0; index < depth; index += 1) {
     const rightCondition = share ? condition : structuredClone(condition);
@@ -62,7 +62,7 @@ const nonCollapsibleDiamondQuery = (depth: number, share: boolean): object => {
   return { select: ["name"], where: [condition] };
 };
 
-const repeatedSharedGroupQuery = (size: number): object => {
+const repeatedSharedGroupQuery = (size: number) => {
   const shared = {
     type: "AND",
     conditions: Array.from({ length: size }, (_, index) => ({
@@ -76,7 +76,7 @@ const repeatedSharedGroupQuery = (size: number): object => {
   };
 };
 
-const rightDeepDistinctQuery = (size: number): object => {
+const rightDeepDistinctQuery = (size: number) => {
   let condition: unknown = {
     field: "name",
     type: "equals",

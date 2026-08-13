@@ -151,7 +151,7 @@ describe("Source Runtime internal contracts", () => {
     });
 
     for (const value of [cyclicArray, cyclicObject, symbolKeyed, accessor]) {
-      expect(() => sourceRuntimeInternals.freezeDecodedMetrics(value)).toThrow();
+      expect(() => sourceRuntimeInternals.normalizeDecodedMetrics(value)).toThrow();
     }
   });
   it("compares exact route scalars including BigDecimal storage identity", () => {
@@ -209,7 +209,8 @@ describe("Source Runtime internal contracts", () => {
         },
       },
     );
-    const nonEnumerable: Record<string, unknown> = {
+    type NonEnumerablePayload = { amount: ReturnType<typeof makeBigDecimal>; region?: string };
+    const nonEnumerable: NonEnumerablePayload = {
       amount: makeBigDecimal(123n, 2),
     };
     Object.defineProperty(nonEnumerable, "region", {

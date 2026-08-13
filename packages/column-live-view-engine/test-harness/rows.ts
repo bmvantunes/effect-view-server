@@ -1,6 +1,6 @@
 import { format as formatBigDecimal, isBigDecimal } from "effect/BigDecimal";
 
-export const rowField = (row: object, field: string): unknown => {
+export const rowField = <Row extends object>(row: Row, field: string): unknown => {
   for (const [key, value] of Object.entries(row)) {
     if (key === field) {
       return value;

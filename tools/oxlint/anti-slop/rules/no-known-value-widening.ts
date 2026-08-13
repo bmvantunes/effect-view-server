@@ -81,9 +81,19 @@ function annotationTarget(
 	annotation: ESTree.TSTypeAnnotation | null | undefined,
 	environment: TypeEnvironment,
 ): WideningTarget | null {
-	return annotation === null || annotation === undefined
-		? null
-		: classifyWideningTarget(annotation.typeAnnotation, environment);
+	if (annotation === null || annotation === undefined) return null;
+	let type = annotation.typeAnnotation;
+	while (type.type === "TSParenthesizedType" || type.type === "TSTypeOperator") {
+		if (type.type === "TSTypeOperator" && type.operator !== "readonly") break;
+		type = type.typeAnnotation;
+	}
+	if (
+		type.type === "TSTypeReference" &&
+		type.typeName.type === "Identifier" &&
+		(environment.aliases.has(type.typeName.name) || environment.interfaces.has(type.typeName.name))
+	)
+		return null;
+	return classifyWideningTarget(type, environment);
 }
 
 function enclosingFunction(node: ESTree.Node): FunctionExpression | null {
@@ -122,6 +132,23 @@ function isEmptyObjectExpression(expression: ESTree.Expression): boolean {
 	return unwrapped.type === "ObjectExpression" && unwrapped.properties.length === 0;
 }
 
+function isStableEmptyObjectBinding(
+	sourceCode: SourceCode,
+	expression: ESTree.Expression,
+): boolean {
+	const unwrapped = unwrapExpression(expression);
+	if (unwrapped.type !== "Identifier") return false;
+	const variable = resolveVariable(sourceCode, unwrapped);
+	if (variable === null) return false;
+	const declarator = variableDeclarator(variable);
+	return (
+		declarator !== null &&
+		declarator.init !== null &&
+		isStableConstVariable(variable, declarator) &&
+		isEmptyObjectExpression(declarator.init)
+	);
+}
+
 function isDictionaryAccumulatorTarget(destination: WideningTarget): boolean {
 	return destination.kind === "open dictionary" || destination.kind === "generic container";
 }
@@ -154,7 +181,8 @@ export const noKnownValueWideningRule = defineRule({
 			if (destination === null) return;
 			if (
 				isDictionaryAccumulatorTarget(destination) &&
-				isEmptyObjectExpression(expression)
+				(isEmptyObjectExpression(expression) ||
+					isStableEmptyObjectBinding(context.sourceCode, expression))
 			) {
 				return;
 			}
@@ -174,7 +202,13 @@ export const noKnownValueWideningRule = defineRule({
 				environment = createTypeEnvironment(node);
 			},
 			VariableDeclarator(node) {
-				if (node.init === null || node.id.type !== "Identifier") return;
+				if (
+					node.init === null ||
+					node.id.type !== "Identifier" ||
+					node.parent.type !== "VariableDeclaration" ||
+					node.parent.kind !== "const"
+				)
+					return;
 				reportFlow(
 					node.init,
 					targetFromAnnotation(node.id.typeAnnotation),
@@ -202,7 +236,13 @@ export const noKnownValueWideningRule = defineRule({
 				const variable = resolveVariable(context.sourceCode, node.left);
 				if (variable === null) return;
 				const declarator = variableDeclarator(variable);
-				if (declarator === null || declarator.id.type !== "Identifier") return;
+				if (
+					declarator === null ||
+					declarator.id.type !== "Identifier" ||
+					declarator.parent.type !== "VariableDeclaration" ||
+					declarator.parent.kind !== "const"
+				)
+					return;
 				reportFlow(
 					node.right,
 					targetFromAnnotation(declarator.id.typeAnnotation),

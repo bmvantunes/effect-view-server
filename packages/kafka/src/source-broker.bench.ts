@@ -72,7 +72,7 @@ const benchmarkSummaryPath = (path: string): string =>
     ? `${path.slice(0, -".json".length)}.summary.json`
     : `${path}.summary.json`;
 
-const writeJsonFile = (path: string, value: unknown): void => {
+const writeJsonFile = <Value>(path: string, value: Value): void => {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, `${JSON.stringify(value, undefined, 2)}\n`);
 };

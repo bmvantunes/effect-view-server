@@ -131,8 +131,8 @@ export type ViewServerSourceOwnedTopic<Topics extends TopicDefinitions> = Extrac
   string
 >;
 
-type RejectExtraKeys<Candidate, Shape> = {
-  readonly [Key in Exclude<keyof Candidate, keyof Shape>]: never;
+type RejectExtraKeys<Candidate, Expected> = {
+  readonly [Key in Exclude<keyof Candidate, keyof Expected>]: never;
 };
 
 type ExactSourceRoute<Route, Candidate> = Candidate extends Route
@@ -211,8 +211,8 @@ type IsUnion<Value, Whole = Value> = Value extends Whole
     : true
   : never;
 
-type ExactSourceHealthInput<Shape, Candidate> = Shape extends unknown
-  ? Candidate & NoInfer<Shape & RejectExtraKeys<Candidate, Shape>>
+type ExactSourceHealthInput<Expected, Candidate> = Expected extends unknown
+  ? Candidate & NoInfer<Expected & RejectExtraKeys<Candidate, Expected>>
   : never;
 
 export type ViewServerSourceHealthInputForTopic<

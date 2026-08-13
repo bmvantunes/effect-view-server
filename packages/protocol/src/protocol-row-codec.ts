@@ -94,10 +94,10 @@ type InspectedRow = {
 const rowKindTitle = (kind: RowKind): "Row" | "Grouped row" =>
   kind === "row" ? "Row" : "Grouped row";
 
-const inspectRow = Effect.fn("ViewServerProtocol.row.inspect")(function* (
+const inspectRow = Effect.fn("ViewServerProtocol.row.inspect")(function* <Row extends object>(
   topic: string,
   kind: RowKind,
-  row: object,
+  row: Row,
 ): Effect.fn.Return<InspectedRow, ViewServerRuntimeError> {
   const keys = yield* Effect.try({
     try: () => Reflect.ownKeys(row),
@@ -323,7 +323,11 @@ export const compileViewServerGroupedRowContract = (
 
 const encodeProjectedRowWithContract = Effect.fn(
   "ViewServerProtocol.row.project.encodeWithContract",
-)(function* (topic: string, contract: ViewServerProjectedRowContract, row: object) {
+)(function* <Row extends object>(
+  topic: string,
+  contract: ViewServerProjectedRowContract,
+  row: Row,
+) {
   const { fieldSchemas, selectedFields } = contract;
   const output: Record<string, Schema.Json> = {};
   const inspected = yield* inspectRow(topic, "row", row);
@@ -366,11 +370,12 @@ const encodeProjectedRowWithContract = Effect.fn(
 
 export const encodeProjectedRow = Effect.fn("ViewServerProtocol.row.project.encode")(function* <
   const Topics extends TopicDefinitions,
+  Row extends object,
 >(
   config: { readonly topics: Topics },
   topic: Extract<keyof Topics, string>,
   selectedFields: ReadonlySet<string>,
-  row: object,
+  row: Row,
 ) {
   const contract = compileProjectedRowContract(config.topics[topic]!.schema.fields, selectedFields);
   return yield* encodeProjectedRowWithContract(topic, contract, row);
@@ -433,11 +438,11 @@ export const decodeProjectedRow = Effect.fn("ViewServerProtocol.row.project.deco
 });
 
 const encodeGroupedRowWithContract = Effect.fn("ViewServerProtocol.row.grouped.encodeWithContract")(
-  function* <const Topics extends TopicDefinitions>(
+  function* <const Topics extends TopicDefinitions, Row extends object>(
     config: { readonly topics: Topics },
     topic: Extract<keyof Topics, string>,
     contract: ViewServerCompiledGroupedRowContract,
-    row: object,
+    row: Row,
   ) {
     const { aggregateAliases, aggregates, groupFields, groupFieldSchemas } = contract;
     const output: Record<string, Schema.Json> = {};
@@ -499,11 +504,12 @@ const encodeGroupedRowWithContract = Effect.fn("ViewServerProtocol.row.grouped.e
 
 export const encodeGroupedRow = Effect.fn("ViewServerProtocol.row.grouped.encode")(function* <
   const Topics extends TopicDefinitions,
+  Row extends object,
 >(
   config: { readonly topics: Topics },
   topic: Extract<keyof Topics, string>,
   contract: ViewServerGroupedRowContract,
-  row: object,
+  row: Row,
 ) {
   const compiled = compileGroupedRowContractForTopic(config.topics[topic]!.schema.fields, contract);
   return yield* encodeGroupedRowWithContract(config, topic, compiled, row);

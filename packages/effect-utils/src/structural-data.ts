@@ -48,8 +48,8 @@ export type ArrayDataInspection =
   | { readonly _tag: "Success"; readonly snapshot: ArrayDataSnapshot }
   | ArrayDataFailure;
 
-const enumerableDataDescriptor = (
-  value: object,
+const enumerableDataDescriptor = <Value extends object>(
+  value: Value,
   key: PropertyKey,
 ): PropertyDescriptor | undefined => {
   const descriptor = Object.getOwnPropertyDescriptor(value, key);
@@ -126,13 +126,13 @@ export const inspectPlainRecordShape = (value: unknown): PlainRecordShapeInspect
 };
 
 export const inspectPlainRecordData = (value: unknown): PlainRecordInspection => {
-  const shape = inspectPlainRecordShape(value);
-  if (shape._tag === "Failure" || shape.snapshot.symbolKeys.length > 0) {
+  const inspection = inspectPlainRecordShape(value);
+  if (inspection._tag === "Failure" || inspection.snapshot.symbolKeys.length > 0) {
     return { _tag: "Failure", reason: "invalidRecord" };
   }
   const entries: Array<readonly [string, unknown]> = [];
-  for (const key of shape.snapshot.stringKeys) {
-    const inspected = shape.snapshot.inspectData(key);
+  for (const key of inspection.snapshot.stringKeys) {
+    const inspected = inspection.snapshot.inspectData(key);
     if (inspected._tag === "ReflectionFailure") {
       return { _tag: "Failure", reason: "invalidRecord" };
     }
@@ -141,7 +141,7 @@ export const inspectPlainRecordData = (value: unknown): PlainRecordInspection =>
     }
     entries.push([key, inspected.value]);
   }
-  return { _tag: "Success", snapshot: { source: shape.snapshot.source, entries } };
+  return { _tag: "Success", snapshot: { source: inspection.snapshot.source, entries } };
 };
 
 export const inspectArrayData = (value: unknown): ArrayDataInspection => {

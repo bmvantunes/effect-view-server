@@ -464,8 +464,8 @@ const readCapturedDataProperty = (
   return { present: true, value: descriptor.value };
 };
 
-const cloneWithReplacements = (
-  value: object,
+const cloneWithReplacements = <Value extends object>(
+  value: Value,
   replacements: ReadonlyMap<string, unknown>,
   captured: CapturedOwnProperties,
 ): object => {
@@ -539,8 +539,8 @@ const assertNoOwnIteratorOverride = (value: object, path: string): void => {
 
 // Schema.is recursively walks union members. For recursive unions, give it one
 // descriptor-captured graph so matching cannot rescan stateful proxies at every depth.
-const makeAccessorSafeSnapshot = (
-  value: unknown,
+const makeAccessorSafeSnapshot = <Value>(
+  value: Value,
   path: string,
   snapshots: WeakMap<object, unknown>,
 ): unknown => {
@@ -1492,11 +1492,15 @@ const makeStrictJsonObjectKeywordGuard = (
   const guard = compile(root);
   const containsUnion = schemaAstContainsUnion(root, side);
   const containsRecursiveUnion = schemaAstContainsRecursiveUnion(root, side, recursiveUnionCache);
-  return (value: unknown): unknown => {
+  return <Value>(value: Value): unknown => {
     const previousAccessorSafeSnapshots = accessorSafeSnapshots;
     accessorSafeSnapshots = containsRecursiveUnion ? new WeakMap<object, unknown>() : undefined;
     try {
-      if (accessorSafeSnapshots !== undefined) {
+      if (
+        accessorSafeSnapshots !== undefined &&
+        value !== null &&
+        (typeof value === "object" || typeof value === "function")
+      ) {
         makeAccessorSafeSnapshot(value, "$", accessorSafeSnapshots);
       } else if (containsUnion) {
         assertNoAccessorProperties(value, "$", new WeakSet());
@@ -1578,7 +1582,9 @@ export const makeStrictJsonSchemaCodec = <Type>(
       if (Result.isFailure(guardResult)) {
         return Result.fail(guardResult.failure);
       }
-      return Result.succeed((encodedValue: unknown) => strictEncodedJson(encodedValue));
+      return Result.succeed(<EncodedValue>(encodedValue: EncodedValue) =>
+        strictEncodedJson(encodedValue),
+      );
     },
   };
 };

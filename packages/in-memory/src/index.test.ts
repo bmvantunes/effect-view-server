@@ -97,8 +97,8 @@ describe("@effect-view-server/in-memory", () => {
       Object.defineProperty(decoratedOrderBy, "metadata", { enumerable: true, value: true });
       const decoratedGroupBy = ["price"];
       Object.defineProperty(decoratedGroupBy, "metadata", { enumerable: true, value: true });
-      const decoratedRawQuery: object = { select: ["id"], orderBy: decoratedOrderBy };
-      const decoratedGroupedQuery: object = {
+      const decoratedRawQuery = { select: ["id"], orderBy: decoratedOrderBy };
+      const decoratedGroupedQuery = {
         groupBy: decoratedGroupBy,
         aggregates: { rowCount: { aggFunc: "count" } },
       };

@@ -156,7 +156,7 @@ describe("Topic Store ordered-window execution", () => {
         left: { readonly key: string },
         right: { readonly key: string },
       ) => right.key.localeCompare(left.key);
-      const matchesOnlySecondRow = (row: object) => fieldValue(row, "id") === "2";
+      const matchesOnlySecondRow = <Row extends object>(row: Row) => fieldValue(row, "id") === "2";
       const missingColumn = readModel.scanRawWindow({
         predicate: {
           filters: [{ field: "missing", operator: "eq", value: "anything" }],

@@ -167,6 +167,8 @@ describe("anti-slop Oxlint integration", () => {
         "function acceptsObject(value: ObjectAlias = {}) {}",
         "function acceptsUnknown(value: unknown = undefined) {}",
         "function acceptsCause(cause: unknown) {}",
+        "function decodeValue(value: unknown): string { return String(value); }",
+        "const parseValue = (value: unknown): number => Number(value);",
       ].join("\n"),
       {},
       {
@@ -181,6 +183,38 @@ describe("anti-slop Oxlint integration", () => {
     expect(result.output.match(/anti-slop\(no-object-parameters\)/g)?.length).toBe(1);
     expect(result.output.match(/anti-slop\(no-shape-in-symbol-names\)/g)?.length).toBe(1);
     expect(result.output.match(/anti-slop\(no-unknown-parameters\)/g)?.length).toBe(1);
+  }, 120_000);
+
+  it("reports immutable broadening but allows mutable boundary state", () => {
+    const result = lintFixture(
+      [
+        "const widened: object = { value: 1 };",
+        "let mutable: unknown = { value: 1 };",
+        "mutable = { value: 2 };",
+      ].join("\n"),
+      {},
+      { "anti-slop/no-known-value-widening": "error" },
+    );
+
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(1);
+    expect(result.output.match(/anti-slop\(no-known-value-widening\)/g)?.length).toBe(1);
+  }, 120_000);
+
+  it("allows named owner contracts while rejecting anonymous broad targets", () => {
+    const result = lintFixture(
+      [
+        "type OwnerContract = Record<string, unknown>;",
+        "const named: OwnerContract = { value: 1 };",
+        "const anonymous: Record<string, unknown> = { value: 1 };",
+      ].join("\n"),
+      {},
+      { "anti-slop/no-known-value-widening": "error" },
+    );
+
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(1);
+    expect(result.output.match(/anti-slop\(no-known-value-widening\)/g)?.length).toBe(1);
   }, 120_000);
 
   it("registers the plugin through the repository Vite+ lint configuration", () => {

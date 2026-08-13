@@ -414,10 +414,10 @@ const equalRouteValue = (left: unknown, right: unknown): boolean => {
   return Object.is(left, right);
 };
 
-const routeMatchesRow = (
+const routeMatchesRow = <Row extends object>(
   fields: ReadonlyArray<string>,
   route: Readonly<Record<string, unknown>>,
-  row: object,
+  row: Row,
 ): boolean => fields.every((field) => equalRouteValue(route[field], Reflect.get(row, field)));
 
 const copyRoute = (
@@ -757,7 +757,7 @@ const internalPublicId = (storageKey: string): string | undefined => {
   return Result.isSuccess(decoded) ? decoded.success : undefined;
 };
 
-const publicId = (row: object): string | undefined => {
+const publicId = <Row extends object>(row: Row): string | undefined => {
   const id = Result.try(() => Reflect.get(row, "id"));
   return Result.isSuccess(id) && typeof id.success === "string" ? id.success : undefined;
 };
@@ -898,9 +898,9 @@ function snapshotDecodedMetrics(value: unknown, active = new WeakSet<object>()):
   return Object.freeze(snapshot);
 }
 
-function freezeDecodedMetrics<Value>(value: Value): Value;
-function freezeDecodedMetrics(value: unknown, active?: WeakSet<object>): unknown;
-function freezeDecodedMetrics(value: unknown, active = new WeakSet<object>()): unknown {
+function normalizeDecodedMetrics<Value>(value: Value): Value;
+function normalizeDecodedMetrics(value: unknown, active?: WeakSet<object>): unknown;
+function normalizeDecodedMetrics(value: unknown, active = new WeakSet<object>()): unknown {
   if (typeof value !== "object" || value === null || Object.isFrozen(value)) {
     return value;
   }
@@ -910,7 +910,7 @@ function freezeDecodedMetrics(value: unknown, active = new WeakSet<object>()): u
     }
     active.add(value);
     for (const entry of value) {
-      freezeDecodedMetrics(entry, active);
+      normalizeDecodedMetrics(entry, active);
     }
     active.delete(value);
     return Object.freeze(value);
@@ -927,7 +927,7 @@ function freezeDecodedMetrics(value: unknown, active = new WeakSet<object>()): u
     if (descriptor === undefined || descriptor.enumerable !== true || !("value" in descriptor)) {
       throw new TypeError("Source Adapter metrics must contain enumerable data properties.");
     }
-    freezeDecodedMetrics(descriptor.value, active);
+    normalizeDecodedMetrics(descriptor.value, active);
   }
   active.delete(value);
   return Object.freeze(value);
@@ -1132,10 +1132,9 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
   const status = yield* SubscriptionRef.make<SourceStatus<unknown, unknown>>(initialStatus);
   const health = yield* SubscriptionRef.make<Option.Option<RuntimeSourceHealth>>(Option.none());
 
-  const publishHealth = Effect.fn("ViewServerRuntimeCore.source.health.publishSnapshot")(function* (
-    status: SourceStatus<unknown, unknown>,
-    adapterMetrics: unknown,
-  ) {
+  const publishHealth = Effect.fn("ViewServerRuntimeCore.source.health.publishSnapshot")(function* <
+    AdapterMetrics,
+  >(status: SourceStatus<unknown, unknown>, adapterMetrics: AdapterMetrics) {
     const sampledAtNanos = yield* currentEpochNanos;
     const runtimeMetricsResult = yield* runtimeMetrics().pipe(Effect.result);
     if (Result.isFailure(runtimeMetricsResult)) {
@@ -1290,7 +1289,7 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
         ),
       );
       const frozen = yield* Effect.try({
-        try: () => freezeDecodedMetrics(snapshot),
+        try: () => normalizeDecodedMetrics(snapshot),
         catch: () =>
           sourceRuntimeFailure({
             _tag: "InvalidSourceMetrics",
@@ -2665,7 +2664,7 @@ const translateSubscription = <Row extends object>(
   if (Object.hasOwn(query, "groupBy")) {
     return subscription;
   }
-  const publicKey = (storageKey: string, row?: object): string =>
+  const publicKey = <Row extends object>(storageKey: string, row?: Row): string =>
     internalPublicId(storageKey) ??
     (row === undefined ? storageKey : (publicId(row) ?? storageKey));
   const translate = (event: ViewServerLiveEvent<Row>): ViewServerLiveEvent<Row> => {
@@ -3572,7 +3571,7 @@ export const sourceRuntimeInternals = {
   exactRoute,
   feedKeyFor,
   fatalSourceApplicationCause,
-  freezeDecodedMetrics,
+  normalizeDecodedMetrics,
   internalPublicId,
   internalStorageKey,
   maintenanceSupervisorCause,

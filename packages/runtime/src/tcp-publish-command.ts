@@ -200,7 +200,11 @@ const tcpRuntimeError = (
     topic,
   });
 
-const setDecodedField = (record: Record<string, unknown>, field: string, value: unknown): void => {
+const setDecodedField = <Value>(
+  record: Record<string, unknown>,
+  field: string,
+  value: Value,
+): void => {
   Object.defineProperty(record, field, {
     configurable: true,
     enumerable: true,

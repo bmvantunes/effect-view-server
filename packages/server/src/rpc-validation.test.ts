@@ -227,7 +227,7 @@ describe("Real View Server RPC validation and typed errors", () => {
           return { raw, server };
         },
       );
-      const makeServerForRow = (row: object) =>
+      const makeServerForRow = <Row extends object>(row: Row) =>
         makeServerForEvent({
           type: "snapshot",
           topic: "orders",

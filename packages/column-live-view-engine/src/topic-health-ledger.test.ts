@@ -1,12 +1,26 @@
 import { describe, expect, it } from "@effect/vitest";
+import { Effect } from "effect";
 import { createTopicHealthLedger } from "./topic-health-ledger";
+import type { LiveTopicSubscriber } from "./topic-subscriber";
+
+const subscription = (id: string): LiveTopicSubscriber => ({
+  topic: "test",
+  queryId: id,
+  notify: () => Effect.void,
+  queuedEvents: Effect.succeed(0),
+  end: Effect.void,
+  closeWithStatus: () => Effect.void,
+  maxQueueDepth: 0,
+  backpressureEvents: 0,
+  closed: false,
+});
 
 describe("column-live-view-engine topic health ledger", () => {
   it("tracks and guards subscription lifecycle totals", () => {
     const ledger = createTopicHealthLedger();
 
-    const opened = { id: "opened" };
-    const unknown = { id: "unknown" };
+    const opened = subscription("opened");
+    const unknown = subscription("unknown");
 
     expect(ledger.snapshot(0).activeSubscriptions).toBe(0);
 

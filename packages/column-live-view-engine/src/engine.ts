@@ -362,7 +362,8 @@ class InMemoryColumnLiveViewEngine<
   readonly patchDecodedFields: ColumnLiveViewEngineInternal<Topics>["patchDecodedFields"] =
     Effect.fn("ColumnLiveViewEngine.patchDecodedFields")({ self: this }, function* <
       Topic extends Extract<keyof Topics, string>,
-    >(this: InMemoryColumnLiveViewEngine<Topics>, topic: Topic, key: string, patch: object) {
+      Patch extends object,
+    >(this: InMemoryColumnLiveViewEngine<Topics>, topic: Topic, key: string, patch: Patch) {
       yield* this.ensureOpen();
       const store = yield* this.getStore(topic);
       yield* patchTopicStoreDecodedFields(store, key, patch, invalidRow);
@@ -430,9 +431,9 @@ class InMemoryColumnLiveViewEngine<
     LiveQueryResult<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
     ColumnLiveViewEngineError
   >;
-  snapshot<Topic extends Extract<keyof Topics, string>>(
+  snapshot<Topic extends Extract<keyof Topics, string>, Query extends object>(
     topic: Topic,
-    query: object,
+    query: Query,
   ): Effect.Effect<LiveQueryResult<object>, ColumnLiveViewEngineError> {
     return this.snapshotQuery(
       topic,
@@ -496,9 +497,9 @@ class InMemoryColumnLiveViewEngine<
     };
   });
 
-  private readonly subscribeRuntimeQuery = <Topic extends Extract<keyof Topics, string>>(
+  private readonly subscribeRuntimeQuery = <Topic extends Extract<keyof Topics, string>, Query>(
     topic: Topic,
-    query: unknown,
+    query: Query,
     terminalObserver: ColumnLiveViewTerminalObserver,
     partition?: ColumnLiveViewEngineQueryPartition,
   ) =>
@@ -516,9 +517,9 @@ class InMemoryColumnLiveViewEngine<
     ColumnLiveViewSubscription<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
     ColumnLiveViewEngineError
   >;
-  subscribe<Topic extends Extract<keyof Topics, string>>(
+  subscribe<Topic extends Extract<keyof Topics, string>, Query extends object>(
     topic: Topic,
-    query: object,
+    query: Query,
   ): Effect.Effect<ColumnLiveViewSubscription<object>, ColumnLiveViewEngineError> {
     return this.subscribeRuntimeQuery(topic, query, unobservedTerminal);
   }
@@ -534,9 +535,9 @@ class InMemoryColumnLiveViewEngine<
     ColumnLiveViewSubscription<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
     ColumnLiveViewEngineError
   >;
-  subscribeObserved<Topic extends Extract<keyof Topics, string>>(
+  subscribeObserved<Topic extends Extract<keyof Topics, string>, Query extends object>(
     topic: Topic,
-    query: object,
+    query: Query,
     observer: ColumnLiveViewTerminalObserver,
   ): Effect.Effect<ColumnLiveViewSubscription<object>, ColumnLiveViewEngineError> {
     return this.subscribeRuntimeQuery(topic, query, observer);

@@ -722,23 +722,26 @@ const makeKafkaConformanceDriver = Effect.fn("KafkaSourceAdapter.conformance.dri
   return makeSourceAdapterConformanceDriver(conformanceDriverInput);
 });
 
-const callable = (value: unknown, label: string) => {
+const assertCallable = <Value>(value: Value, label: string) => {
   if (typeof value !== "function") {
     throw new TypeError(`${label} is not callable.`);
   }
   return value;
 };
 
-const member = (value: unknown, key: string, label: string): unknown => {
+const readMember = <Value>(value: Value, key: string, label: string): unknown => {
   if ((typeof value !== "object" || value === null) && typeof value !== "function") {
     throw new TypeError(`${label} is not an object.`);
   }
   return Reflect.get(value, key);
 };
 
-const definitionInput = (contractModule: object): unknown => {
-  const builtKafka = member(contractModule, "kafka", "Kafka contract module");
-  const stringCodec = callable(member(builtKafka, "string", "Kafka helper"), "kafka.string");
+const definitionInput = <Module extends object>(contractModule: Module) => {
+  const builtKafka = readMember(contractModule, "kafka", "Kafka contract module");
+  const stringCodec = assertCallable(
+    readMember(builtKafka, "string", "Kafka helper"),
+    "kafka.string",
+  );
   return {
     cleanupPolicy: "delete",
     retentionPolicy: "Infinity",
@@ -755,9 +758,9 @@ const definitionInput = (contractModule: object): unknown => {
   };
 };
 
-const builtDefinition = (contractModule: object): unknown => {
-  const builtKafka = member(contractModule, "kafka", "Kafka contract module");
-  const source = callable(member(builtKafka, "source", "Kafka helper"), "kafka.source");
+const builtDefinition = <Module extends object>(contractModule: Module): unknown => {
+  const builtKafka = readMember(contractModule, "kafka", "Kafka contract module");
+  const source = assertCallable(readMember(builtKafka, "source", "Kafka helper"), "kafka.source");
   return Reflect.apply(source, undefined, [definitionInput(contractModule)]);
 };
 
@@ -836,7 +839,7 @@ const packageInspection: SourceAdapterPackageInspectionOptions = {
       export: "./node",
       exactLayerAcquisition: "external-validation-failure",
       externalValidationFailure: kafkaExternalValidationFailure,
-      viewServer: (contractModule: object) => ({
+      viewServer: <Module extends object>(contractModule: Module) => ({
         topics: {
           rows: {
             source: builtDefinition(contractModule),

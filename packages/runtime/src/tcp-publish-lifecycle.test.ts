@@ -733,7 +733,7 @@ describe("TCP publish lifecycle ownership", () => {
           },
         },
         state,
-        { ok: "cancelled" },
+        { ok: true },
       ).pipe(Effect.forkChild({ startImmediately: true }));
       yield* Effect.yieldNow;
       expect(Object.keys(cancelledListeners)).toStrictEqual(["close", "error"]);
@@ -742,7 +742,7 @@ describe("TCP publish lifecycle ownership", () => {
         cancelledChunks,
         cancelledListeners: Object.keys(cancelledListeners),
       }).toStrictEqual({
-        cancelledChunks: ['{"ok":"cancelled"}\n'],
+        cancelledChunks: ['{"ok":true}\n'],
         cancelledListeners: [],
       });
       yield* writeTcpJsonLine(
@@ -757,7 +757,7 @@ describe("TCP publish lifecycle ownership", () => {
           },
         },
         state,
-        { ok: false },
+        { ok: false, error: { _tag: "TestError", message: "test" } },
       );
       state.closed = true;
       yield* writeTcpJsonLine(
@@ -772,7 +772,7 @@ describe("TCP publish lifecycle ownership", () => {
           },
         },
         state,
-        { ok: false },
+        { ok: false, error: { _tag: "TestError", message: "test" } },
       );
 
       expect({

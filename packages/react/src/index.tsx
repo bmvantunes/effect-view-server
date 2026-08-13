@@ -170,8 +170,8 @@ export const createViewServerReact = <const Topics extends TopicDefinitions>(
   // This overload is the single typed adapter at the cache boundary. The key is
   // derived from the snapshotted topic and exact route, so one key cannot name
   // producers with different Source Health result types.
-  function sourceHealthEntry<Health extends SourceHealthResult>(
-    registry: object,
+  function sourceHealthEntry<Health extends SourceHealthResult, Registry extends object = object>(
+    registry: Registry,
     client: ViewServerLiveClient<Topics>,
     key: string,
     subscribe: () => Effect.Effect<
@@ -179,8 +179,8 @@ export const createViewServerReact = <const Topics extends TopicDefinitions>(
       ViewServerRuntimeError | ViewServerTransportError
     >,
   ): SourceHealthAtomEntry<Health>;
-  function sourceHealthEntry(
-    registry: object,
+  function sourceHealthEntry<Registry extends object>(
+    registry: Registry,
     client: ViewServerLiveClient<Topics>,
     key: string,
     subscribe: () => Effect.Effect<
@@ -285,9 +285,9 @@ export const createViewServerReact = <const Topics extends TopicDefinitions>(
     );
   }
 
-  const useSubscription = <Row,>(
+  const useSubscription = <Row, Owner extends object = object>(
     subscriptionKey: string,
-    subscriptionOwner: object,
+    subscriptionOwner: Owner,
     subscribe: () => Effect.Effect<ViewServerLiveSubscription<Row>, unknown>,
   ): LiveQueryResult<Row> => {
     const liveAtom = useMemo(

@@ -1,5 +1,5 @@
-export type RejectExtraKeys<Candidate, Shape> = {
-  readonly [Key in Exclude<keyof Candidate, keyof Shape>]: never;
+export type RejectExtraKeys<Candidate, Expected> = {
+  readonly [Key in Exclude<keyof Candidate, keyof Expected>]: never;
 };
 
 export type PresentPropertyValue<Candidate, Key extends PropertyKey> = Key extends keyof Candidate

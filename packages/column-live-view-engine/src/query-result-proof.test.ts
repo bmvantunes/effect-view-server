@@ -184,7 +184,7 @@ describe("ColumnLiveViewEngine query result proof", () => {
   it.effect("rejects a mixed runtime query before acquiring active state", () =>
     Effect.gen(function* () {
       const engine = yield* makeEngine();
-      const mixedQuery: unknown = {
+      const mixedQuery = {
         select: ["id"],
         groupBy: ["status"],
         aggregates: {

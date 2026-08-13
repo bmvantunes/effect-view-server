@@ -9,7 +9,7 @@ import {
   viewServerEncodeGroupedQuery,
   type ViewServerValidatedGroupedQuery,
 } from "./protocol-grouped-query-codec";
-import { isGroupedQueryInput, ownProtocolQueryInput } from "./protocol-query-common";
+import { isGroupedQueryInput, snapshotProtocolQueryInput } from "./protocol-query-common";
 import {
   viewServerDecodeRawQuery,
   viewServerEncodeRawQuery,
@@ -38,7 +38,7 @@ export const viewServerEncodeLiveQuery = Effect.fn("ViewServerProtocol.liveQuery
     topic: Topic,
     query: unknown,
   ) {
-    const ownedQuery = yield* ownProtocolQueryInput(topic, query);
+    const ownedQuery = yield* snapshotProtocolQueryInput(topic, query);
     if (isGroupedQueryInput(ownedQuery)) {
       return yield* viewServerEncodeGroupedQuery(config, topic, ownedQuery);
     }
@@ -51,7 +51,7 @@ const decodeLiveQuery = Effect.fn("ViewServerProtocol.liveQuery.decode")(functio
   topic: string,
   query: unknown,
 ) {
-  const ownedQuery = yield* ownProtocolQueryInput(topic, query);
+  const ownedQuery = yield* snapshotProtocolQueryInput(topic, query);
   if (isGroupedQueryInput(ownedQuery)) {
     return yield* viewServerDecodeGroupedQuery(config, topic, ownedQuery);
   }

@@ -390,6 +390,11 @@ export type SourceHealthContractResult<
       SourceHealth<AdapterFailure, Route, AdapterMetrics, RejectionLocation, "materialized">
     >;
 
+type SourceHealthContractSchemaImplementation = {
+  readonly health: Schema.Codec<unknown, unknown, never, never>;
+  readonly result: Schema.Codec<unknown, unknown, never, never>;
+};
+
 export function sourceHealthContractSchemas<
   AdapterFailure,
   Route extends Readonly<Record<string, unknown>>,
@@ -427,7 +432,7 @@ export function sourceHealthContractSchemas<
   readonly adapterMetrics: Schema.Codec<AdapterMetrics, unknown, never, never>;
   readonly rejectionLocation: Schema.Codec<RejectionLocation, unknown, never, never>;
   readonly lifecycle: SourceLifecycle;
-}): object {
+}): SourceHealthContractSchemaImplementation {
   const health = sourceHealthSchema(input);
   return {
     health,

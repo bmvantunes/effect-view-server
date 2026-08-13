@@ -181,8 +181,8 @@ const hostileNominalClone = <Value extends object>(
   return Object.freeze(clone);
 };
 
-const invokeUnknownMethod = (
-  receiver: unknown,
+const invokeUnknownMethod = <Receiver>(
+  receiver: Receiver,
   property: PropertyKey,
   args: ReadonlyArray<unknown>,
 ): unknown => {
@@ -1343,7 +1343,10 @@ describe("Source Adapter server SDK", () => {
         Reflect.apply(SourceAdapterServer.applicationState, undefined, [input]),
       ),
     ];
-    const bind = (registration: object, lifetimeScope: Scope.Scope) =>
+    const bind = <Registration extends object>(
+      registration: Registration,
+      lifetimeScope: Scope.Scope,
+    ) =>
       Reflect.apply(
         Reflect.get(
           Reflect.apply(resolveSourceApplicationStateRegistration, undefined, [registration]),
@@ -1359,7 +1362,7 @@ describe("Source Adapter server SDK", () => {
           },
         ],
       );
-    const applyPreparedTransition = (module: unknown, scope: Scope.Scope): void => {
+    const applyPreparedTransition = <Module>(module: Module, scope: Scope.Scope): void => {
       const preparedEffect = invokeUnknownMethod(module, "prepare", [{}]);
       if (!Effect.isEffect(preparedEffect)) {
         throw new TypeError("Expected prepare to return an Effect.");

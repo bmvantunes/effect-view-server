@@ -201,8 +201,8 @@ const snapshotTransport = (
 const nonNegativeFiniteNumber = (value: unknown): boolean =>
   typeof value === "number" && Number.isFinite(value) && value >= 0;
 
-function resourcePropertyIs(
-  value: object,
+function resourcePropertyIs<Value extends object>(
+  value: Value,
   key: string,
   predicate: (candidate: unknown) => boolean,
 ): boolean {
@@ -412,7 +412,7 @@ const runtimeClient = (
   return Object.freeze({
     endpoints: Object.freeze([options.baseUrl]),
     service,
-    invoke: (method: string, request: unknown, signal: AbortSignal): unknown => {
+    invoke: <Request>(method: string, request: Request, signal: AbortSignal): unknown => {
       const selected = Reflect.get(client, method);
       return Reflect.apply(selected, client, [request, { signal }]);
     },

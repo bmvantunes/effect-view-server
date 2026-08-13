@@ -212,10 +212,13 @@ const compareByCustomerIdAsc = (
   return left.key.localeCompare(right.key);
 };
 
-const rowHasCustomerId = (row: object, customerId: string): boolean =>
+const rowHasCustomerId = <Row extends object>(row: Row, customerId: string): boolean =>
   fieldValue(row, "customerId") === customerId;
 
-const rowHasAnyCustomerId = (row: object, customerIds: ReadonlyArray<string>): boolean => {
+const rowHasAnyCustomerId = <Row extends object>(
+  row: Row,
+  customerIds: ReadonlyArray<string>,
+): boolean => {
   const customerId = fieldValue(row, "customerId");
   for (const candidate of customerIds) {
     if (customerId === candidate) {
@@ -225,7 +228,7 @@ const rowHasAnyCustomerId = (row: object, customerIds: ReadonlyArray<string>): b
   return false;
 };
 
-const rowPriceInUpperTail = (row: object): boolean => {
+const rowPriceInUpperTail = <Row extends object>(row: Row): boolean => {
   const price = fieldValue(row, "price");
   return typeof price === "number" && price >= rowCount - 100;
 };

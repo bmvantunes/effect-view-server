@@ -52,8 +52,8 @@ export type ViewServerRuntimeOptions<
   readonly reporting?: ViewServerRuntimeReportingOptions;
 };
 
-type RejectExtraKeys<Candidate, Shape> = {
-  readonly [Key in Exclude<keyof Candidate, keyof Shape>]: never;
+type RejectExtraKeys<Candidate, Expected> = {
+  readonly [Key in Exclude<keyof Candidate, keyof Expected>]: never;
 };
 
 type RuntimeGroupedIncrementalAdmissionLimitsExactKeysConstraint<Options> = Options extends {

@@ -35,7 +35,9 @@ type HttpFailure = KafkaSchemaRegistryRequestFailure & {
   readonly retryable: boolean;
 };
 
-type KafkaSchemaRegistryDispatcher = object;
+interface KafkaSchemaRegistryDispatcher {
+  readonly close?: () => unknown;
+}
 
 const retriableSchemaRegistryStatuses = new Set([408, 425, 429, 500, 502, 503, 504]);
 

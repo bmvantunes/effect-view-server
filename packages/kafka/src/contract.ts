@@ -66,8 +66,8 @@ type RejectUnknown<Value> =
 
 type KafkaCandidateKeys<Candidate> = Candidate extends unknown ? keyof Candidate : never;
 
-type RejectExtraKeys<Candidate, Shape> = {
-  readonly [Key in Exclude<KafkaCandidateKeys<Candidate>, keyof Shape>]: never;
+type RejectExtraKeys<Candidate, Expected> = {
+  readonly [Key in Exclude<KafkaCandidateKeys<Candidate>, keyof Expected>]: never;
 };
 
 type KafkaRowSchema = Schema.Codec<object, unknown, never, never> & {
@@ -488,7 +488,20 @@ type KafkaSchemaRegistryGeneratedDescriptor<Descriptor> =
           readonly __kafkaSchemaRegistryRequiresGeneratedDescriptor: never;
         };
 
-const freezeDescriptorGraph = (value: unknown, visited = new WeakSet<object>()): void => {
+type DescriptorGraphValue =
+  | Parameters<typeof Reflect.get>[0]
+  | null
+  | undefined
+  | string
+  | number
+  | boolean
+  | bigint
+  | symbol;
+
+const freezeDescriptorGraph = (
+  value: DescriptorGraphValue,
+  visited = new WeakSet<object>(),
+): void => {
   if (
     (typeof value !== "object" && typeof value !== "function") ||
     value === null ||
@@ -1462,8 +1475,8 @@ type IsSafeMappedRow<Result> =
                 : true
           : false;
 
-type HasExactKeys<Candidate, Shape> =
-  Exclude<keyof Candidate, keyof Shape> extends never ? true : false;
+type HasExactKeys<Candidate, Expected> =
+  Exclude<keyof Candidate, keyof Expected> extends never ? true : false;
 
 type IsSafeKafkaStartPosition<Start> =
   IsAny<Start> extends true
@@ -1583,8 +1596,8 @@ type RejectUnsafeRetentionPolicy<Input> = Input extends {
     : { readonly retentionPolicy: never }
   : unknown;
 
-type KafkaSourceInputGuards<Input, Shape> = KafkaNotAny<Input> &
-  RejectExtraKeys<Input, Shape> &
+type KafkaSourceInputGuards<Input, Expected> = KafkaNotAny<Input> &
+  RejectExtraKeys<Input, Expected> &
   RejectAnySourceField<Input, "cleanupPolicy"> &
   RejectAnySourceField<Input, "topic"> &
   RejectUnsafeSourceRegions<Input> &
@@ -2113,8 +2126,8 @@ type RejectUnsafeCompactionKeyCodec<Input> =
       : { readonly key: never }
     : unknown;
 
-type KafkaCompactionSourceInputGuards<Input, Shape> = KafkaNotAny<Input> &
-  RejectExtraKeys<Input, Shape> &
+type KafkaCompactionSourceInputGuards<Input, Expected> = KafkaNotAny<Input> &
+  RejectExtraKeys<Input, Expected> &
   RejectAnySourceField<Input, "cleanupPolicy"> &
   RejectAnySourceField<Input, "topic"> &
   RejectUnsafeSourceRegions<Input> &
@@ -2580,10 +2593,10 @@ function makeKafkaSource<
   KafkaSourceRetryServices<Retry>
 >;
 
-function makeKafkaSource(
-  input: unknown,
-  retry?: unknown,
-  ..._unsupported: ReadonlyArray<unknown>
+function makeKafkaSource<Input extends object, Retry extends object>(
+  input: Input,
+  retry?: Retry,
+  ..._unsupported: ReadonlyArray<never>
 ): unknown {
   const envelope = captureOwnDataValues(input);
   const cleanupPolicy = envelope?.get("cleanupPolicy");

@@ -10,6 +10,7 @@ import type {
   SourceExecutionFailure,
   SourceLaneEvent,
   SourceLifecycleFactoryInput,
+  SourceTarget,
   SourceToolkit,
 } from "effect-view-server/source-adapter";
 import {
@@ -41,7 +42,7 @@ import { validateAndSnapshotGrpcRequest } from "./request";
 export type GrpcRuntimeClient = {
   readonly endpoints?: ReadonlyArray<string>;
   readonly service: DescService;
-  readonly invoke: (method: string, request: unknown, signal: AbortSignal) => unknown;
+  readonly invoke: <Request>(method: string, request: Request, signal: AbortSignal) => unknown;
 };
 
 export type GrpcRuntimeClients = Readonly<Record<string, GrpcRuntimeClient>>;
@@ -49,6 +50,7 @@ export type GrpcRuntimeClients = Readonly<Record<string, GrpcRuntimeClient>>;
 export type GrpcServerViewServer = SourceAdapterServerView;
 
 type GrpcDefinitionOptions = GrpcMaterializedDefinitionOptions | GrpcLeasedDefinitionOptions;
+type GrpcLogicalTarget = SourceTarget<Readonly<Record<string, unknown>>>;
 
 type MutableMetrics = {
   readonly logicalClient: string;
@@ -87,7 +89,7 @@ type LogicalState = {
 type GrpcRuntimeRegistryValue = {
   readonly clients: ReadonlyMap<string, GrpcRuntimeClient>;
   readonly definitions: WeakMap<object, GrpcDefinitionOptions>;
-  readonly logicalStates: WeakMap<object, LogicalState>;
+  readonly logicalStates: WeakMap<GrpcLogicalTarget, LogicalState>;
   readonly methods: WeakMap<object, DescMethodServerStreaming<DescMessage, DescMessage>>;
 };
 
@@ -115,6 +117,9 @@ const configurationFailure = (
   message,
   phase,
 });
+
+const isValidGrpcEndpoint = (endpoint: unknown): endpoint is string =>
+  typeof endpoint === "string" && endpoint.length > 0;
 
 const requestFailure = (
   definition: GrpcDefinitionOptions,
@@ -193,7 +198,7 @@ const initialMetrics = (definition: GrpcDefinitionOptions): MutableMetrics => ({
 
 const logicalState = (
   runtime: GrpcRuntimeRegistryValue,
-  target: object,
+  target: GrpcLogicalTarget,
   definition: GrpcDefinitionOptions,
 ): LogicalState => {
   const current = runtime.logicalStates.get(target);
@@ -235,7 +240,7 @@ const ensureRequest = Effect.fn("GrpcSourceAdapter.request.ensure")(function* (
   runtime: GrpcRuntimeRegistryValue,
   state: LogicalState,
   definition: GrpcDefinitionOptions,
-  target: object,
+  target: GrpcLogicalTarget,
 ) {
   if (state.request._tag === "Ready") {
     return state.request.request;
@@ -396,12 +401,13 @@ const mappedEvent = Effect.fnUntraced(function* <
   Row extends object,
   Services,
   Topic extends string,
+  Value,
 >(
   toolkit: SourceToolkit<Row, GrpcAdapterFailure, GrpcRejectionLocation, Services, Topic>,
   definition: GrpcDefinitionOptions,
   route: Readonly<Record<string, unknown>> | undefined,
   state: LogicalState,
-  value: unknown,
+  value: Value,
 ) {
   state.metrics.messageCount += 1n;
   const streamItemIndex = state.metrics.messageCount;
@@ -590,9 +596,7 @@ const acquireAttempt = Effect.fn("GrpcSourceAdapter.attempt.acquire")(function* 
   const events = Stream.fromAsyncIterable(owned.iterable, (cause) =>
     adapterFailure(streamFailure(definition, cause)),
   ).pipe(
-    Stream.mapEffect((value) =>
-      mappedEvent<Row, GrpcRuntimeRegistry, Topic>(input.toolkit, definition, route, state, value),
-    ),
+    Stream.mapEffect((value) => mappedEvent(input.toolkit, definition, route, state, value)),
     Stream.onExit((exit) =>
       Effect.sync(() => {
         if (Exit.isSuccess(exit)) {
@@ -879,9 +883,7 @@ const makeRegistry = Effect.fn("GrpcSourceAdapter.registry.make")(function* (
             (!endpointsDescriptor.enumerable ||
               !("value" in endpointsDescriptor) ||
               !Array.isArray(endpointsDescriptor.value) ||
-              endpointsDescriptor.value.some(
-                (endpoint: unknown) => typeof endpoint !== "string" || endpoint.length === 0,
-              )))
+              endpointsDescriptor.value.some((endpoint) => !isValidGrpcEndpoint(endpoint))))
         ) {
           throw new TypeError("Invalid gRPC aggregate client entry.");
         }
@@ -928,7 +930,7 @@ const makeRegistry = Effect.fn("GrpcSourceAdapter.registry.make")(function* (
       Object.freeze({
         ...(runtime.endpoints === undefined ? {} : { endpoints: runtime.endpoints }),
         service,
-        invoke: (method: string, request: unknown, signal: AbortSignal): unknown =>
+        invoke: <Request>(method: string, request: Request, signal: AbortSignal): unknown =>
           runtime.invoke(method, request, signal),
       }),
     );

@@ -683,7 +683,7 @@ describe("Grouped query compilation and evaluation", () => {
         expect(error.message).toContain(invalidCase.message);
       }
 
-      const nonNumericSumQuery: unknown = {
+      const nonNumericSumQuery = {
         groupBy: ["status"],
         aggregates: { total: { aggFunc: "sum", field: "status" } },
       };
@@ -698,7 +698,7 @@ describe("Grouped query compilation and evaluation", () => {
         }),
       );
 
-      const nonNumericAverageQuery: unknown = {
+      const nonNumericAverageQuery = {
         groupBy: ["status"],
         aggregates: { average: { aggFunc: "avg", field: "status" } },
       };

@@ -8,8 +8,74 @@ export type ParameterOwner =
 	| ESTree.TSCallSignatureDeclaration
 	| ESTree.TSConstructSignatureDeclaration
 	| ESTree.TSConstructorType
-	| ESTree.TSFunctionType
-	| ESTree.TSMethodSignature;
+  | ESTree.TSFunctionType
+  | ESTree.TSMethodSignature;
+
+export function isRuntimeParameterOwner(
+	owner: ParameterOwner,
+): owner is ESTree.ArrowFunctionExpression | ESTree.Function {
+	return (
+		owner.type === "ArrowFunctionExpression" ||
+		owner.type === "FunctionDeclaration" ||
+		owner.type === "FunctionExpression"
+	);
+}
+
+function ownerName(owner: ParameterOwner): string | null {
+	if (
+		"id" in owner &&
+		owner.id !== null &&
+		owner.id !== undefined &&
+		owner.id.type === "Identifier"
+	)
+		return owner.id.name;
+
+	let current: ESTree.Node | null = owner.parent;
+	while (current !== null && current.type !== "Program") {
+		if (current.type === "VariableDeclarator" && current.id.type === "Identifier") {
+			return current.id.name;
+		}
+		if (current.type === "Property") {
+			if (current.key.type === "Identifier") return current.key.name;
+			if (current.key.type === "Literal" && typeof current.key.value === "string") {
+				return current.key.value;
+			}
+		}
+		if (current.type === "MethodDefinition") {
+			if (current.key.type === "Identifier") return current.key.name;
+			if (current.key.type === "Literal" && typeof current.key.value === "string") {
+				return current.key.value;
+			}
+		}
+		current = current.parent;
+	}
+	return null;
+}
+
+export function isValidationOwner(owner: ParameterOwner): boolean {
+	if (
+		"returnType" in owner &&
+		owner.returnType !== null &&
+		owner.returnType !== undefined &&
+		owner.returnType.typeAnnotation.type === "TSTypePredicate"
+	)
+		return true;
+	const name = ownerName(owner);
+	return (
+		name !== null &&
+    /^(?:acquire|assert|capture|check|coerce|compare|decode|encode|guard|has|inspect|is|materialize|normalize|parse|prepare|read|snapshot|subscribeRuntime|supports|validate|viewServerDecode|viewServerEncode)/iu.test(
+			name,
+		)
+	);
+}
+
+export function hasTypedReturnContract(owner: ParameterOwner): boolean {
+	if (!isRuntimeParameterOwner(owner) || owner.returnType === null || owner.returnType === undefined) {
+		return false;
+	}
+	const returnType = owner.returnType.typeAnnotation;
+	return returnType.type !== "TSUnknownKeyword" && returnType.type !== "TSVoidKeyword";
+}
 
 export function parameterAnnotation(
 	parameter: Parameter,

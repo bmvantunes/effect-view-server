@@ -18,7 +18,7 @@ const platformatic = vi.hoisted(() => {
   const calls: Array<object> = [];
   let closes = 0;
   let mode: Mode = "normal";
-  const createUndiciAgent = (options: object) => {
+  const createUndiciAgent = <Options extends object>(options: Options) => {
     calls.push(options);
     if (mode === "throw") {
       throw new Error("dispatcher creation failed");

@@ -327,7 +327,11 @@ function snapshotRequest(value: unknown): unknown {
   return value;
 }
 
-const defineMaterializedField = (target: object, key: string, value: unknown): void => {
+const defineMaterializedField = <Target extends object, Value>(
+  target: Target,
+  key: string,
+  value: Value,
+): void => {
   Object.defineProperty(target, key, {
     configurable: true,
     enumerable: true,

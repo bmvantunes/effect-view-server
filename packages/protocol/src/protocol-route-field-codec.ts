@@ -155,7 +155,7 @@ type RouteScalarTransform<Value> = (
   value: unknown,
 ) => Effect.Effect<Value, ViewServerRuntimeError>;
 
-const transformRouteBy = Effect.fn("ViewServerProtocol.routeBy.transform")(function* <Value>(
+const normalizeRouteBy = Effect.fn("ViewServerProtocol.routeBy.transform")(function* <Value>(
   topic: string,
   rowSchema: RowSchema,
   routeBy: unknown,
@@ -184,7 +184,7 @@ export const encodeRouteBy = Effect.fn("ViewServerProtocol.routeBy.encode")(func
   rowSchema: RowSchema,
   routeBy: unknown,
 ) {
-  return yield* transformRouteBy(topic, rowSchema, routeBy, encodeRouteScalar);
+  return yield* normalizeRouteBy(topic, rowSchema, routeBy, encodeRouteScalar);
 });
 
 export const decodeRouteBy = Effect.fn("ViewServerProtocol.routeBy.decode")(function* (
@@ -192,5 +192,5 @@ export const decodeRouteBy = Effect.fn("ViewServerProtocol.routeBy.decode")(func
   rowSchema: RowSchema,
   routeBy: unknown,
 ) {
-  return yield* transformRouteBy(topic, rowSchema, routeBy, decodeRouteScalar);
+  return yield* normalizeRouteBy(topic, rowSchema, routeBy, decodeRouteScalar);
 });

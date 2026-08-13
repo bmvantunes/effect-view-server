@@ -48,7 +48,7 @@ describe("wire-safe BigDecimal", () => {
   });
 
   it("accepts a cross-bundle Effect prototype with data-backed fields", () => {
-    const foreignPrototype: object = {};
+    const foreignPrototype = {};
     Object.defineProperty(foreignPrototype, "~effect/BigDecimal", {
       enumerable: true,
       value: "~effect/BigDecimal",
@@ -71,7 +71,7 @@ describe("wire-safe BigDecimal", () => {
 
   it("rejects hostile branded-value reflection without invoking accessors", () => {
     let forgedReads = 0;
-    const forgedBrand: Record<string, unknown> = {
+    const forgedBrand: { "~effect/BigDecimal": string; value?: unknown } = {
       "~effect/BigDecimal": "~effect/BigDecimal",
     };
     Object.defineProperty(forgedBrand, "value", {
@@ -121,7 +121,7 @@ describe("wire-safe BigDecimal", () => {
     const invalidCoefficient = BigDecimal.make(123n, 2);
     Object.defineProperty(invalidCoefficient, "value", { value: 123 });
     const nullPrototype = Object.create(null);
-    const accessorBrandPrototype: object = {};
+    const accessorBrandPrototype = {};
     Object.defineProperty(accessorBrandPrototype, "~effect/BigDecimal", {
       get: () => {
         forgedReads += 1;

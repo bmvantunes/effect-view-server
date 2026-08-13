@@ -149,28 +149,29 @@ type IsAny<Value> = 0 extends 1 & Value ? true : false;
 type IsUnknown<Value> = IsAny<Value> extends true ? false : unknown extends Value ? true : false;
 type IsNever<Value> = [Value] extends [never] ? true : false;
 type NonUndefined<Value> = Exclude<Value, undefined>;
-type ArrayShape<Shape> = Shape extends ReadonlyArray<infer Item> ? ReadonlyArray<Item> : never;
-type ObjectShape<Shape> = Shape extends unknown
-  ? NonUndefined<Shape> extends Uint8Array | ReadonlyArray<unknown>
+type ArrayShape<Expected> =
+  Expected extends ReadonlyArray<infer Item> ? ReadonlyArray<Item> : never;
+type ObjectShape<Expected> = Expected extends unknown
+  ? NonUndefined<Expected> extends Uint8Array | ReadonlyArray<unknown>
     ? never
-    : NonUndefined<Shape> extends object
-      ? NonUndefined<Shape>
+    : NonUndefined<Expected> extends object
+      ? NonUndefined<Expected>
       : never
   : never;
-type ShapeForCandidate<Candidate, Shape> =
-  IsGeneratedOneof<NonUndefined<Shape>> extends true
+type ShapeForCandidate<Candidate, Expected> =
+  IsGeneratedOneof<NonUndefined<Expected>> extends true
     ? NonUndefined<Candidate> extends {
         readonly case: infer Case;
       }
-      ? Extract<NonUndefined<Shape>, { readonly case: Case }>
+      ? Extract<NonUndefined<Expected>, { readonly case: Case }>
       : never
     : NonUndefined<Candidate> extends ReadonlyArray<unknown>
-      ? ArrayShape<NonUndefined<Shape>>
+      ? ArrayShape<NonUndefined<Expected>>
       : NonUndefined<Candidate> extends object
-        ? ObjectShape<NonUndefined<Shape>>
-        : Shape extends unknown
-          ? NonUndefined<Candidate> extends NonUndefined<Shape>
-            ? NonUndefined<Shape>
+        ? ObjectShape<NonUndefined<Expected>>
+        : Expected extends unknown
+          ? NonUndefined<Candidate> extends NonUndefined<Expected>
+            ? NonUndefined<Expected>
             : never
           : never;
 
@@ -299,77 +300,77 @@ type MappingRow<Mapping> = Mapping extends (...arguments_: infer _Arguments) => 
     : never
   : never;
 
-type ExactFactoryOutputBranch<Candidate, Shape> =
+type ExactFactoryOutputBranch<Candidate, Expected> =
   ForbiddenFactoryOutput<Candidate> extends true
     ? never
     : NonUndefined<Candidate> extends Uint8Array
-      ? NonUndefined<Candidate> extends NonUndefined<Shape>
+      ? NonUndefined<Candidate> extends NonUndefined<Expected>
         ? Candidate
         : never
       : NonUndefined<Candidate> extends ReadonlyArray<infer CandidateItem>
-        ? ShapeForCandidate<Candidate, Shape> extends ReadonlyArray<infer ShapeItem>
+        ? ShapeForCandidate<Candidate, Expected> extends ReadonlyArray<infer ShapeItem>
           ? ReadonlyArray<ExactFactoryOutput<CandidateItem, ShapeItem>>
           : never
         : NonUndefined<Candidate> extends object
-          ? [ShapeForCandidate<Candidate, Shape>] extends [never]
+          ? [ShapeForCandidate<Candidate, Expected>] extends [never]
             ? never
-            : ShapeForCandidate<Candidate, Shape> extends object
+            : ShapeForCandidate<Candidate, Expected> extends object
               ? Candidate &
                   Record<
                     Exclude<
                       keyof NonUndefined<Candidate>,
-                      keyof ShapeForCandidate<Candidate, Shape>
+                      keyof ShapeForCandidate<Candidate, Expected>
                     >,
                     never
                   > & {
                     readonly [Key in keyof NonUndefined<Candidate>]: Key extends keyof ShapeForCandidate<
                       Candidate,
-                      Shape
+                      Expected
                     >
                       ? ExactFactoryOutput<
                           NonUndefined<Candidate>[Key],
-                          ShapeForCandidate<Candidate, Shape>[Key]
+                          ShapeForCandidate<Candidate, Expected>[Key]
                         >
                       : never;
                   }
               : never
-          : Candidate extends Shape
+          : Candidate extends Expected
             ? Candidate
             : never;
 
-type FactoryOutputBranchIsCompatible<Candidate, Shape> = Candidate extends undefined
+type FactoryOutputBranchIsCompatible<Candidate, Expected> = Candidate extends undefined
   ? true
   : NonUndefined<Candidate> extends Uint8Array
-    ? NonUndefined<Candidate> extends NonUndefined<Shape>
+    ? NonUndefined<Candidate> extends NonUndefined<Expected>
       ? true
       : false
     : NonUndefined<Candidate> extends ReadonlyArray<unknown>
-      ? [ArrayShape<NonUndefined<Shape>>] extends [never]
+      ? [ArrayShape<NonUndefined<Expected>>] extends [never]
         ? false
         : true
       : NonUndefined<Candidate> extends object
-        ? ShapeForCandidate<Candidate, Shape> extends infer SelectedShape extends object
+        ? ShapeForCandidate<Candidate, Expected> extends infer SelectedShape extends object
           ? Exclude<keyof NonUndefined<Candidate>, keyof SelectedShape> extends never
             ? true
             : false
           : false
-        : Candidate extends Shape
+        : Candidate extends Expected
           ? true
           : false;
 
-type ExactFactoryOutput<Candidate, Shape> =
+type ExactFactoryOutput<Candidate, Expected> =
   IsAny<Candidate> extends true
     ? never
     : false extends (
-          Candidate extends unknown ? FactoryOutputBranchIsCompatible<Candidate, Shape> : never
+          Candidate extends unknown ? FactoryOutputBranchIsCompatible<Candidate, Expected> : never
         )
       ? never
       : Candidate extends unknown
-        ? ExactFactoryOutputBranch<Candidate, Shape>
+        ? ExactFactoryOutputBranch<Candidate, Expected>
         : never;
 
-type ExactSourceKeys<Keys extends PropertyKey, Shape> = {
-  readonly [Key in Exclude<Keys, keyof Shape>]: never;
+type ExactSourceKeys<Keys extends PropertyKey, Expected> = {
+  readonly [Key in Exclude<Keys, keyof Expected>]: never;
 };
 
 type RouteHasDuplicates<

@@ -240,11 +240,11 @@ type DefineViewServerConfigValidationArguments<Topics extends ViewServerConfigTo
         },
       ];
 
-const hasDefinedOwnProperty = (value: object, key: string): boolean =>
+const hasDefinedOwnProperty = <Value extends object>(value: Value, key: string): boolean =>
   Object.prototype.hasOwnProperty.call(value, key) && Reflect.get(value, key) !== undefined;
 
-const ownPropertyNamesAreExact = (
-  value: object,
+const ownPropertyNamesAreExact = <Value extends object>(
+  value: Value,
   allowed: ReadonlySet<PropertyKey>,
 ): PropertyKey | undefined => Reflect.ownKeys(value).find((property) => !allowed.has(property));
 

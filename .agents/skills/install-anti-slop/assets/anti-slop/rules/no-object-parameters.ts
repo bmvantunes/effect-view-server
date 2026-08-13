@@ -8,6 +8,8 @@ import {
 } from "../shared/dictionary-types.ts";
 
 import {
+	isValidationOwner,
+	isRuntimeParameterOwner,
 	parameterAnnotation,
 	parameterName,
 	type Parameter,
@@ -80,6 +82,7 @@ export const noObjectParametersRule = defineRule({
 
 		const checkParameters = (node: ParameterOwner) => {
 			if (environment === null) return;
+			if (!isRuntimeParameterOwner(node) || isValidationOwner(node)) return;
 			const shadowedAliases = lexicalTypeParameterNames(node);
 			for (const parameter of node.params) {
 				const annotation = parameterAnnotation(parameter);

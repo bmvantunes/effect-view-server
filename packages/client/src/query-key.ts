@@ -73,7 +73,7 @@ const stableNumberValue = (value: number): string => {
   return String(value);
 };
 
-const stableObjectName = (_value: object): string => "object";
+const stableObjectName = <Value extends object>(_value: Value): string => "object";
 
 const stableTokenSortKey = (value: StableQueryToken): string => JSON.stringify(value);
 
@@ -243,8 +243,8 @@ type StableGraphWorkStack = {
   readonly next: StableGraphWorkStack | undefined;
 };
 
-const stableGraphQueryValue = (
-  query: object,
+const stableGraphQueryValue = <Query extends object>(
+  query: Query,
 ): readonly ["graph", StableGraphSlot, ReadonlyArray<StableGraphNode>] => {
   const root: StableGraphSlot = { value: undefined };
   const nodes: Array<StableGraphNode> = [];
@@ -412,10 +412,10 @@ const stableGraphQueryValue = (
   return ["graph", root, nodes];
 };
 
-const canonicalQueryInput = (
-  query: object,
+const canonicalQueryInput = <Query extends object>(
+  query: Query,
   fieldContracts?: CanonicalWhereFieldContracts,
-): object => {
+): Record<string, unknown> => {
   const canonical: Record<string, unknown> = {};
   for (const [key, value] of stableObjectEntries(query)) {
     if (key === "where") {
@@ -464,8 +464,8 @@ const canonicalWhereFieldContracts = (rowSchema: RowSchema): CanonicalWhereField
   return contracts;
 };
 
-const stableQueryKeyWithFields = (
-  query: object,
+const stableQueryKeyWithFields = <Query extends object>(
+  query: Query,
   fieldContracts?: CanonicalWhereFieldContracts,
 ): string => {
   const key = Result.try(() =>
@@ -474,7 +474,10 @@ const stableQueryKeyWithFields = (
   return Result.isFailure(key) ? invalidQueryKey : key.success;
 };
 
-export const stableQueryKey = (query: object): string => stableQueryKeyWithFields(query);
+export const stableQueryKey = <Query extends object>(query: Query): string =>
+  stableQueryKeyWithFields(query);
 
-export const stableQueryKeyForRowSchema = (query: object, rowSchema: RowSchema): string =>
-  stableQueryKeyWithFields(query, canonicalWhereFieldContracts(rowSchema));
+export const stableQueryKeyForRowSchema = <Query extends object>(
+  query: Query,
+  rowSchema: RowSchema,
+): string => stableQueryKeyWithFields(query, canonicalWhereFieldContracts(rowSchema));

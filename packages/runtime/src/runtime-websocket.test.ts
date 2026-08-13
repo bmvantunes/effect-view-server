@@ -573,7 +573,9 @@ describe("Runtime WebSocket and operational endpoints", () => {
             return defaults.makeRuntimeCore(config, options);
           },
         };
-        const invalidOptionsEffect = (options: object): Effect.Effect<unknown, unknown> =>
+        const invalidOptionsEffect = <Options extends object>(
+          options: Options,
+        ): Effect.Effect<unknown, unknown> =>
           Reflect.apply(makeViewServerRuntimeWithDependencies, undefined, [
             dependencies,
             viewServer,

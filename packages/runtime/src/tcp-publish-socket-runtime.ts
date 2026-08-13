@@ -47,6 +47,20 @@ type TcpPendingSocketReservation = {
   readonly releaseAdmission: () => void;
 };
 
+type TcpWireResponse =
+  | { readonly ok: true }
+  | {
+      readonly ok: false;
+      readonly error: {
+        readonly _tag: string;
+        readonly code?: string | undefined;
+        readonly message: string;
+        readonly phase?: string | undefined;
+        readonly status?: number | undefined;
+        readonly topic?: string | undefined;
+      };
+    };
+
 export type TcpPublishServerFactory = (
   connectionListener: (socket: Net.Socket) => void,
 ) => Net.Server;
@@ -72,7 +86,7 @@ const rejectedSocketDestroyTimeoutMs = 1_000;
 const isViewServerRuntimeError = (value: TcpPublishCommandError): value is ViewServerRuntimeError =>
   value._tag === "ViewServerRuntimeError" || value._tag === "ViewServerBackpressureError";
 
-const wireError = (cause: Cause.Cause<TcpPublishCommandError>): object => {
+const wireError = (cause: Cause.Cause<TcpPublishCommandError>): TcpWireResponse => {
   const failure = Cause.findErrorOption(cause);
   if (failure._tag === "Some") {
     if (isViewServerRuntimeError(failure.value)) {
@@ -127,11 +141,11 @@ const logUntypedTcpCommandCause = (
   );
 };
 
-const wireSuccess = (): object => ({ ok: true });
+const wireSuccess = (): TcpWireResponse => ({ ok: true });
 
-const jsonLine = (value: object): string => `${JSON.stringify(value)}\n`;
+const jsonLine = (value: TcpWireResponse): string => `${JSON.stringify(value)}\n`;
 
-const tcpErrorPayload = (error: ViewServerTcpPublishIngressError): object => ({
+const tcpErrorPayload = (error: ViewServerTcpPublishIngressError): TcpWireResponse => ({
   ok: false,
   error: {
     _tag: error._tag,
@@ -207,7 +221,7 @@ const waitForTcpSocketOperation = (
 export const writeTcpJsonLine = (
   socket: TcpResponseSocket,
   state: TcpResponseState,
-  value: object,
+  value: TcpWireResponse,
 ): Effect.Effect<void> => {
   if (state.closed || socket.destroyed) {
     return Effect.void;
@@ -217,7 +231,7 @@ export const writeTcpJsonLine = (
   });
 };
 
-const endTcpJsonLine = (socket: Net.Socket, value: object): Effect.Effect<void> =>
+const endTcpJsonLine = (socket: Net.Socket, value: TcpWireResponse): Effect.Effect<void> =>
   waitForTcpSocketOperation(socket, (complete) => {
     socket.end(jsonLine(value), complete);
   }).pipe(

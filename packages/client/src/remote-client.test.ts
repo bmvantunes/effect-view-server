@@ -600,7 +600,7 @@ const makeTestRpcServer = Effect.fn("ViewServerClient.remote.testServer.make")(f
       Effect.flatMap(trustedEvent(event), (trusted) => Queue.offer(healthSummaryEvents, trusted)),
     emitHealthTopic: (event: ViewServerWireEvent) =>
       Effect.flatMap(trustedEvent(event), (trusted) => Queue.offer(healthTopicEvents, trusted)),
-    emitSourceHealth: (value: unknown) =>
+    emitSourceHealth: <Value>(value: Value) =>
       Effect.flatMap(viewServerEncodeSourceHealth(sourceViewServer, "orders", value), (wire) =>
         Queue.offer(sourceHealthEvents, wire),
       ),
@@ -1728,7 +1728,7 @@ describe("remote ViewServer client", () => {
       );
       expect(invalidUnknownOperator.code).toBe("InvalidQuery");
 
-      const emptySelectQuery: object = {
+      const emptySelectQuery = {
         select: [],
       };
       const emptySelect = yield* Effect.flip(
@@ -1818,7 +1818,8 @@ describe("remote ViewServer client", () => {
     Effect.gen(function* () {
       const server = yield* makeTestRpcServer();
       const client = yield* makeViewServerClient(viewServer, { url: server.url });
-      const cyclicQuery: Record<string, unknown> = { select: ["id"] };
+      type CyclicQuery = { select: ReadonlyArray<string>; cycle?: CyclicQuery };
+      const cyclicQuery: CyclicQuery = { select: ["id"] };
       cyclicQuery["cycle"] = cyclicQuery;
       const error = yield* Effect.flip(
         // @ts-expect-error hostile callers can still submit cyclic query objects.

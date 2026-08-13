@@ -1900,7 +1900,7 @@ describe("Schema JSON identity", () => {
     );
 
     let descriptorReads = 0;
-    const wrap = (child: unknown): unknown => {
+    const wrap = (child: RecursiveNode | null): RecursiveNode => {
       const target = { child, metadata: { venue: "xnys" } };
       return new Proxy(target, {
         getOwnPropertyDescriptor: (object, key) => {
@@ -1909,7 +1909,7 @@ describe("Schema JSON identity", () => {
         },
       });
     };
-    let value: unknown = null;
+    let value: RecursiveNode | null = null;
     for (let index = 0; index < 24; index += 1) {
       value = wrap(value);
     }
@@ -2292,7 +2292,8 @@ describe("Schema JSON identity", () => {
       Schema.toCodecJson(Schema.Union([Schema.String, Schema.Struct({ value: Schema.String })]))
         .ast,
     );
-    const cyclicUnionValue: Record<string, unknown> = { value: "cyclic" };
+    type CyclicUnionValue = { value: string; self?: CyclicUnionValue };
+    const cyclicUnionValue: CyclicUnionValue = { value: "cyclic" };
     cyclicUnionValue["self"] = cyclicUnionValue;
     Object.defineProperty(cyclicUnionValue, Symbol("meta"), {
       configurable: true,

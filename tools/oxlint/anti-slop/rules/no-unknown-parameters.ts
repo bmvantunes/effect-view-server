@@ -1,5 +1,8 @@
 import { defineRule } from "@oxlint/plugins";
 import {
+	hasTypedReturnContract,
+	isValidationOwner,
+	isRuntimeParameterOwner,
 	parameterAnnotation,
 	parameterName,
 	type ParameterOwner,
@@ -19,7 +22,13 @@ export const noUnknownParametersRule = defineRule({
     },
   },
   create(context) {
-    const checkParameters = (node: ParameterOwner) => {
+	const checkParameters = (node: ParameterOwner) => {
+		if (
+			!isRuntimeParameterOwner(node) ||
+			isValidationOwner(node) ||
+			hasTypedReturnContract(node)
+		)
+			return;
       for (const parameter of node.params) {
         const annotation = parameterAnnotation(parameter);
         if (annotation?.typeAnnotation.type !== "TSUnknownKeyword") continue;

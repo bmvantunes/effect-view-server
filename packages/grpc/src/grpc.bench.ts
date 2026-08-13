@@ -164,7 +164,7 @@ const makeControlledClient = () => {
       };
     },
   };
-  const emit = (invocation: Invocation, value: unknown): void => {
+  const emit = <Value>(invocation: Invocation, value: Value): void => {
     const pending = invocation.pending.shift();
     if (pending === undefined) {
       invocation.values.push(value);
@@ -516,7 +516,7 @@ const memoryDelta = (
   rssBytes: after.rssBytes - before.rssBytes,
 });
 
-const writeJsonFile = (path: string, value: unknown): void => {
+const writeJsonFile = <Value>(path: string, value: Value): void => {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, `${JSON.stringify(value, undefined, 2)}\n`);
 };

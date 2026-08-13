@@ -214,8 +214,8 @@ const exportTarget = (manifestExports: unknown, exportName: string): string => {
   return target;
 };
 
-const contractExport = (
-  module: object,
+const contractExport = <Module extends object>(
+  module: Module,
   path: string | readonly [string, ...ReadonlyArray<string>],
   label: string,
 ): Effect.Effect<unknown, SourceAdapterPackageInspectionError> =>
@@ -234,9 +234,9 @@ const contractExport = (
     catch: (cause) => inspectionError(`${label} could not be inspected.`, cause),
   });
 
-const contractProbeValue = <Value>(
-  probe: Value | ((contractModule: object) => Value),
-  contractModule: object,
+const contractProbeValue = <Value, Module extends object>(
+  probe: Value | ((contractModule: Module) => Value),
+  contractModule: Module,
   label: string,
 ): Effect.Effect<Value, SourceAdapterPackageInspectionError> =>
   Effect.try({
@@ -644,8 +644,8 @@ export const classifySourceAdapterContractBrowserModules = (
   };
 };
 
-const invokeLayerConstructor = (
-  module: object,
+const invokeLayerConstructor = <Module extends object>(
+  module: Module,
   constructor: "layer" | "layerConfig",
   viewServer: unknown,
   resources: unknown,

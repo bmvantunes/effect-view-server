@@ -19,7 +19,11 @@ export const isPlainRecord = (value: unknown): value is Record<string, unknown> 
   return prototype === Object.prototype;
 };
 
-const setClonedField = (record: Record<string, unknown>, field: string, value: unknown): void => {
+const setClonedField = <Value>(
+  record: Record<string, Value>,
+  field: string,
+  value: Value,
+): void => {
   Object.defineProperty(record, field, {
     configurable: true,
     enumerable: true,
@@ -28,7 +32,7 @@ const setClonedField = (record: Record<string, unknown>, field: string, value: u
   });
 };
 
-export const cloneUnknown = (value: unknown): unknown => {
+export const cloneUnknown = <Value>(value: Value): unknown => {
   if (isBigDecimal(value)) {
     return value;
   }
@@ -54,7 +58,7 @@ export const cloneRecord = (value: Record<string, unknown>): Record<string, unkn
   return cloned;
 };
 
-export const fieldValue = (row: RowObject, field: string): unknown => {
+export const fieldValue = <Row extends RowObject>(row: Row, field: string): unknown => {
   if (!Object.hasOwn(row, field)) {
     return undefined;
   }
@@ -62,7 +66,7 @@ export const fieldValue = (row: RowObject, field: string): unknown => {
 };
 
 // Use only after the engine has decoded and shadowed schema fields as own properties.
-export const trustedFieldValue = (row: RowObject, field: string): unknown =>
+export const trustedFieldValue = <Row extends RowObject>(row: Row, field: string): unknown =>
   Reflect.get(row, field);
 
 export const valuesEqual = (left: unknown, right: unknown): boolean => {

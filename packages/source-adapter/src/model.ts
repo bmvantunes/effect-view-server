@@ -1639,11 +1639,14 @@ const snapshotMaintenanceWorkIds = (
   return Object.freeze(snapshot);
 };
 
-export const makeSourceApplicationTransition = <const Topic extends string>(
+export const makeSourceApplicationTransition = <
+  const Topic extends string,
+  Identity extends object,
+>(
   topic: Topic,
   apply: () => void,
   cancelledMaintenanceWorkIds: ReadonlyArray<string>,
-  lifetimeIdentity: object,
+  lifetimeIdentity: Identity,
 ): SourceApplicationTransition<Topic> => {
   const cancellationSnapshot = snapshotMaintenanceWorkIds(cancelledMaintenanceWorkIds);
   const transition: SourceApplicationTransition<Topic> = {

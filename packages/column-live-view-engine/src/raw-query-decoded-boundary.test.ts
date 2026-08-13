@@ -42,7 +42,8 @@ describe("Raw query decoded value boundary", () => {
         groupBy: ["id"],
         aggregates: { rowCount: { aggFunc: "count" } },
       });
-      const cyclicQuery: Record<string, unknown> = { select: ["id"] };
+      type CyclicQuery = { select: ReadonlyArray<string>; cycle?: CyclicQuery };
+      const cyclicQuery: CyclicQuery = { select: ["id"] };
       cyclicQuery["cycle"] = cyclicQuery;
       const cyclicError = yield* Effect.flip(engine.subscribeRuntime("orders", cyclicQuery));
       const hostileThrownValue = {

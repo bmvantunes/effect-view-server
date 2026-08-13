@@ -64,7 +64,7 @@ const hasBigDecimalPrototypeBrand = (value: object): boolean => {
   return descriptor !== undefined && "value" in descriptor && descriptor.value === bigDecimalTypeId;
 };
 
-const ownEnumerableDataValue = (value: object, key: string): unknown => {
+const ownEnumerableDataValue = <Value extends object>(value: Value, key: string): unknown => {
   const descriptor = Object.getOwnPropertyDescriptor(value, key);
   return descriptor !== undefined && descriptor.enumerable && "value" in descriptor
     ? descriptor.value

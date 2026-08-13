@@ -141,7 +141,7 @@ const isScalarArray = (
   value: RuntimeFilterScalar | ReadonlyArray<RuntimeFilterScalar>,
 ): value is ReadonlyArray<RuntimeFilterScalar> => Array.isArray(value);
 
-const fieldPathValue = (row: object, segments: ReadonlyArray<string>): unknown => {
+const fieldPathValue = <Row extends object>(row: Row, segments: ReadonlyArray<string>): unknown => {
   let value: unknown = row;
   for (const segment of segments) {
     if ((typeof value !== "object" || value === null) && typeof value !== "function") {
@@ -156,7 +156,10 @@ const fieldPathValue = (row: object, segments: ReadonlyArray<string>): unknown =
   return value;
 };
 
-const trustedFieldPathValue = (row: object, segments: ReadonlyArray<string>): unknown => {
+const trustedFieldPathValue = <Row extends object>(
+  row: Row,
+  segments: ReadonlyArray<string>,
+): unknown => {
   let value: unknown = row;
   for (const segment of segments) {
     if ((typeof value !== "object" || value === null) && typeof value !== "function") {

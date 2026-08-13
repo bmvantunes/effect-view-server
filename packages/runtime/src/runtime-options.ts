@@ -89,8 +89,8 @@ const runtimeOptionsError = (message: string): ViewServerRuntimeError => ({
   message,
 });
 
-const unsupportedOwnProperty = (
-  value: object,
+const unsupportedOwnProperty = <Value extends object>(
+  value: Value,
   allowedKeys: ReadonlySet<PropertyKey>,
 ): PropertyKey | undefined => Reflect.ownKeys(value).find((key) => !allowedKeys.has(key));
 

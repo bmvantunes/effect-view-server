@@ -133,7 +133,11 @@ export const makeRuntimeCoreMutationPipeline = <const Topics extends TopicDefini
     );
   });
   const patchDecodedFields = Effect.fn("ViewServerRuntimeCore.sourceMutation.patchDecodedFields")(
-    function* (topic: Extract<keyof Topics, string>, key: string, patch: object) {
+    function* <Patch extends object>(
+      topic: Extract<keyof Topics, string>,
+      key: string,
+      patch: Patch,
+    ) {
       yield* applyEngineMutation(
         engine.patchDecodedFields(topic, key, patch),
         requestHealthRefresh,

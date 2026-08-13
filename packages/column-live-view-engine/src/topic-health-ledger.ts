@@ -26,10 +26,10 @@ type TopicHealthLedger = {
     readonly rowsChanged: number;
     readonly occurredAt: number;
   }) => void;
-  readonly openSubscription: (subscription: object) => void;
-  readonly closeSubscription: (subscription: object) => void;
-  readonly updateQueueDepth: (subscription: object, queueDepth: number) => void;
-  readonly markBackpressure: (subscription: object) => void;
+  readonly openSubscription: (subscription: LiveTopicSubscriber) => void;
+  readonly closeSubscription: (subscription: LiveTopicSubscriber) => void;
+  readonly updateQueueDepth: (subscription: LiveTopicSubscriber, queueDepth: number) => void;
+  readonly markBackpressure: (subscription: LiveTopicSubscriber) => void;
   readonly reset: () => void;
   readonly snapshot: (now: number) => TopicHealthTotals;
 };
@@ -44,7 +44,7 @@ const mutationRateWindowMillis = 1_000;
 const maxMutationRateBuckets = mutationRateWindowMillis + 1;
 
 export const createTopicHealthLedger = (): TopicHealthLedger => {
-  const subscriptions = new Map<object, TopicHealthSubscription>();
+  const subscriptions = new Map<LiveTopicSubscriber, TopicHealthSubscription>();
   const mutationRateBuckets = Array.from(
     { length: maxMutationRateBuckets },
     (): MutationRateBucket | undefined => undefined,
@@ -58,8 +58,9 @@ export const createTopicHealthLedger = (): TopicHealthLedger => {
   let lastMutationAt: number | null = null;
   let pendingMutationBatches = 0;
 
-  const ensureSubscription = (subscription: object): TopicHealthSubscription | undefined =>
-    subscriptions.get(subscription);
+  const ensureSubscription = (
+    subscription: LiveTopicSubscriber,
+  ): TopicHealthSubscription | undefined => subscriptions.get(subscription);
 
   const mutationRateBucketIndex = (occurredAt: number): number => {
     return Math.abs(occurredAt % maxMutationRateBuckets);
@@ -97,7 +98,7 @@ export const createTopicHealthLedger = (): TopicHealthLedger => {
     };
   };
 
-  const openSubscription = (subscription: object): void => {
+  const openSubscription = (subscription: LiveTopicSubscriber): void => {
     subscriptions.set(subscription, {
       queuedEvents: 0,
       maxQueueDepth: 0,
@@ -106,7 +107,7 @@ export const createTopicHealthLedger = (): TopicHealthLedger => {
     activeSubscriptions += 1;
   };
 
-  const closeSubscription = (subscription: object): void => {
+  const closeSubscription = (subscription: LiveTopicSubscriber): void => {
     const tracked = ensureSubscription(subscription);
     if (tracked === undefined) {
       return;
@@ -116,7 +117,7 @@ export const createTopicHealthLedger = (): TopicHealthLedger => {
     queuedEvents = Math.max(0, queuedEvents - tracked.queuedEvents);
   };
 
-  const updateQueueDepth = (subscription: object, nextDepth: number): void => {
+  const updateQueueDepth = (subscription: LiveTopicSubscriber, nextDepth: number): void => {
     const tracked = ensureSubscription(subscription);
     if (tracked === undefined) {
       return;
@@ -131,7 +132,7 @@ export const createTopicHealthLedger = (): TopicHealthLedger => {
     }
   };
 
-  const markBackpressure = (subscription: object): void => {
+  const markBackpressure = (subscription: LiveTopicSubscriber): void => {
     const tracked = ensureSubscription(subscription);
     if (tracked === undefined) {
       return;
@@ -187,22 +188,23 @@ export const createTopicHealthLedger = (): TopicHealthLedger => {
     beginMutationBatch,
     endMutationBatch,
     recordMutation,
-    openSubscription: (subscription: object): void => {
+    openSubscription: (subscription: LiveTopicSubscriber): void => {
       if (subscriptions.has(subscription)) {
         return;
       }
       openSubscription(subscription);
     },
-    closeSubscription: (subscription: object): void => {
+    closeSubscription: (subscription: LiveTopicSubscriber): void => {
       closeSubscription(subscription);
     },
-    updateQueueDepth: (subscription: object, queueDepth: number): void => {
+    updateQueueDepth: (subscription: LiveTopicSubscriber, queueDepth: number): void => {
       updateQueueDepth(subscription, queueDepth);
     },
-    markBackpressure: (subscription: object): void => {
+    markBackpressure: (subscription: LiveTopicSubscriber): void => {
       markBackpressure(subscription);
     },
     reset,
     snapshot,
   };
 };
+import type { LiveTopicSubscriber } from "./topic-subscriber";

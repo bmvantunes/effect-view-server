@@ -405,7 +405,7 @@ describe("Kafka Source Adapter contract", () => {
   it("rejects ordinary and compaction codec brands that throw when invoked", () => {
     const ordinary = kafka.string();
     const compaction = kafka.compactionKey.string();
-    const throwingBrand = (codec: object, description: string) => {
+    const throwingBrand = <Codec extends object>(codec: Codec, description: string) => {
       const brand = Option.getOrThrow(
         Option.fromUndefinedOr(
           Reflect.ownKeys(codec).find(
@@ -451,7 +451,7 @@ describe("Kafka Source Adapter contract", () => {
           ),
         );
       };
-      const invoke = (description: string, input: unknown) =>
+      const invoke = <Input>(description: string, input: Input) =>
         Option.getOrThrow(
           Option.liftPredicate(
             Reflect.apply(decoder(description), codec, [input]),
@@ -474,7 +474,7 @@ describe("Kafka Source Adapter contract", () => {
           ),
         ),
       );
-      const hostile: object = {};
+      const hostile = {};
       for (const key of Reflect.ownKeys(codec)) {
         if (typeof key === "symbol") {
           Object.defineProperty(hostile, key, {
@@ -1690,7 +1690,7 @@ describe("Kafka Source Adapter contract", () => {
   });
 
   it("rejects malformed source declarations and start policies", () => {
-    const durationInput = (duration: unknown) => ({
+    const durationInput = <Duration>(duration: Duration) => ({
       ...validSourceInput(),
       startFrom: {
         mode: "durationAgo",
@@ -1757,7 +1757,7 @@ describe("Kafka Source Adapter contract", () => {
     const codecBrandDescription = "@effect-view-server/kafka/KafkaCodec";
     const compactionCodecBrandDescription = "@effect-view-server/kafka/KafkaCompactionKeyCodec";
     const ordinaryCodec = kafka.string();
-    const hostileDirectCodec: object = {};
+    const hostileDirectCodec = {};
     Object.defineProperties(hostileDirectCodec, {
       ...Object.getOwnPropertyDescriptors(ordinaryCodec),
       [Option.getOrThrow(
@@ -1780,7 +1780,7 @@ describe("Kafka Source Adapter contract", () => {
       },
     });
     const compactionCodec = kafka.compactionKey.string();
-    const hostileDirectCompactionKeyCodec: object = {};
+    const hostileDirectCompactionKeyCodec = {};
     Object.defineProperties(hostileDirectCompactionKeyCodec, {
       ...Object.getOwnPropertyDescriptors(compactionCodec),
       [Option.getOrThrow(

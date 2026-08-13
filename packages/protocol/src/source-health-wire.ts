@@ -153,7 +153,7 @@ const exactRouteKeys = (
   );
 };
 
-const requireExactRoute = Effect.fn("ViewServerProtocol.sourceHealth.route.exact")(function* (
+const validateExactRoute = Effect.fn("ViewServerProtocol.sourceHealth.route.exact")(function* (
   topic: string,
   routeFields: Readonly<Record<string, Schema.Codec<unknown, unknown, never, never>>>,
   candidate: unknown,
@@ -194,7 +194,7 @@ const exactAdapterIdentity = (
   );
 };
 
-export const requireExactSourceHealth = Effect.fn("ViewServerProtocol.sourceHealth.exact")(
+export const validateExactSourceHealth = Effect.fn("ViewServerProtocol.sourceHealth.exact")(
   function* (topic: string, contract: CompiledSourceHealthContract, candidate: unknown) {
     if (!exactAdapterIdentity(contract.adapterIdentity, readProperty(candidate, "adapter"))) {
       return yield* Effect.fail(
@@ -208,7 +208,7 @@ export const requireExactSourceHealth = Effect.fn("ViewServerProtocol.sourceHeal
       contract.lifecycle === "leased" &&
       readProperty(readProperty(candidate, "target"), "_tag") === "Leased"
     ) {
-      yield* requireExactRoute(
+      yield* validateExactRoute(
         topic,
         contract.routeFields,
         readProperty(readProperty(candidate, "target"), "route"),
@@ -228,22 +228,22 @@ const equalRouteValue = (left: unknown, right: unknown): boolean => {
   return Object.is(left, right);
 };
 
-const requireExactLeasedHealthRoutes = Effect.fn(
+const validateExactLeasedHealthRoutes = Effect.fn(
   "ViewServerProtocol.sourceHealth.leasedRoutes.exact",
 )(function* (topic: string, contract: CompiledSourceHealthContract, candidate: unknown) {
   const routeFields = contract.routeFields;
   const tag = readProperty(candidate, "_tag");
   if (tag === "Inactive") {
-    yield* requireExactRoute(topic, routeFields, readProperty(candidate, "route"));
+    yield* validateExactRoute(topic, routeFields, readProperty(candidate, "route"));
     return;
   }
   if (tag === "Active") {
     const outerRoute = readProperty(candidate, "route");
-    yield* requireExactRoute(topic, routeFields, outerRoute);
+    yield* validateExactRoute(topic, routeFields, outerRoute);
     const health = readProperty(candidate, "health");
     const target = readProperty(health, "target");
     const targetRoute = readProperty(target, "route");
-    yield* requireExactRoute(topic, routeFields, targetRoute);
+    yield* validateExactRoute(topic, routeFields, targetRoute);
     if (
       readProperty(target, "_tag") !== "Leased" ||
       !Object.keys(routeFields).every((field) =>
@@ -257,7 +257,7 @@ const requireExactLeasedHealthRoutes = Effect.fn(
         ),
       );
     }
-    yield* requireExactSourceHealth(topic, contract, health);
+    yield* validateExactSourceHealth(topic, contract, health);
   }
 });
 
@@ -283,7 +283,7 @@ export const viewServerEncodeSourceHealthRequest = Effect.fn(
       invalidSourceHealth(topic, `Leased Source Topic ${topic} requires exact routeBy.`),
     );
   }
-  yield* requireExactRoute(topic, contract.routeFields, candidate);
+  yield* validateExactRoute(topic, contract.routeFields, candidate);
   const routeBy: Record<string, Schema.Json> = {};
   for (const [field, fieldSchema] of Object.entries(contract.routeFields)) {
     routeBy[field] = yield* encodeJsonFieldValue(
@@ -321,7 +321,7 @@ export const viewServerDecodeSourceHealthRequest = Effect.fn(
       ),
     );
   }
-  yield* requireExactRoute(payload.topic, contract.routeFields, payload.routeBy);
+  yield* validateExactRoute(payload.topic, contract.routeFields, payload.routeBy);
   const routeBy = yield* decodeJsonFieldValue(
     contract.route,
     payload.routeBy,
@@ -338,9 +338,9 @@ export const viewServerEncodeSourceHealth = Effect.fn("ViewServerProtocol.source
   ) {
     const contract = yield* compileSourceHealthContract(config, topic);
     if (contract.lifecycle === "leased") {
-      yield* requireExactLeasedHealthRoutes(topic, contract, value);
+      yield* validateExactLeasedHealthRoutes(topic, contract, value);
     } else {
-      yield* requireExactSourceHealth(topic, contract, value);
+      yield* validateExactSourceHealth(topic, contract, value);
     }
     return yield* encodeJsonFieldValue(contract.result, value, codecErrors(topic));
   },
@@ -360,9 +360,9 @@ export const viewServerDecodeSourceHealth: <
   >(config: ViewServerTopicConfig<Topics>, topic: Topic, value: unknown) {
     const contract = yield* compileSourceHealthContract(config, topic);
     if (contract.lifecycle === "leased") {
-      yield* requireExactLeasedHealthRoutes(topic, contract, value);
+      yield* validateExactLeasedHealthRoutes(topic, contract, value);
     } else {
-      yield* requireExactSourceHealth(topic, contract, value);
+      yield* validateExactSourceHealth(topic, contract, value);
     }
     const decoded = yield* decodeJsonFieldValue(contract.result, value, codecErrors(topic));
     if (!isDecodedSourceHealth(contract.result, decoded)) {

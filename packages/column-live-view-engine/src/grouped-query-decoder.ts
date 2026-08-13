@@ -61,9 +61,12 @@ export type TypedRuntimeGroupedQuery<
   readonly [typedRuntimeGroupedQueryBrand]: TypedRuntimeGroupedQueryInvariant<Row, Query>;
 };
 
-export const typedRuntimeGroupedQueryMatchesSemantics = (
-  query: object,
-  valueSemantics: object,
+export const typedRuntimeGroupedQueryMatchesSemantics = <
+  Query extends object,
+  Semantics extends object,
+>(
+  query: Query,
+  valueSemantics: Semantics,
 ): boolean => typedRuntimeGroupedQueryMetadata.get(query)?.valueSemantics === valueSemantics;
 
 const groupedQueryKeys = new Set([

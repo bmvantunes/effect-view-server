@@ -230,7 +230,8 @@ describe("recursive filter expressions", () => {
       const oldShape = yield* Effect.flip(
         decodeWhere({ name: { type: "equals", filter: "Alice" } }),
       );
-      const cyclic: Record<string, unknown> = { type: "NOT" };
+      type CyclicFilterExpression = { type: "NOT"; condition?: CyclicFilterExpression };
+      const cyclic: CyclicFilterExpression = { type: "NOT" };
       cyclic["condition"] = cyclic;
       const cycle = yield* Effect.flip(decodeWhere([cyclic]));
 

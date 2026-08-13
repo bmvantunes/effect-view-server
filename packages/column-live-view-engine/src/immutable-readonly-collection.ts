@@ -18,9 +18,9 @@ export const immutableReadonlySet = <Value>(values: Iterable<Value>): ReadonlySe
     entries: (): SetIterator<[Value, Value]> => backing.entries(),
     keys: (): SetIterator<Value> => backing.keys(),
     values: (): SetIterator<Value> => backing.values(),
-    forEach: (
+    forEach: <ThisArg>(
       callback: (value: Value, key: Value, set: ReadonlySet<Value>) => void,
-      thisArg?: unknown,
+      thisArg?: ThisArg,
     ): void => {
       for (const value of backing) {
         callback.call(thisArg, value, value, immutable);
@@ -44,9 +44,9 @@ export const immutableReadonlyMap = <Key, Value>(
     entries: (): MapIterator<[Key, Value]> => backing.entries(),
     keys: (): MapIterator<Key> => backing.keys(),
     values: (): MapIterator<Value> => backing.values(),
-    forEach: (
+    forEach: <ThisArg>(
       callback: (value: Value, key: Key, map: ReadonlyMap<Key, Value>) => void,
-      thisArg?: unknown,
+      thisArg?: ThisArg,
     ): void => {
       for (const [key, value] of backing) {
         callback.call(thisArg, value, key, immutable);

@@ -106,7 +106,7 @@ const failInvalidWhere = (): never => {
   throw new TypeError("Query where cannot be used as a stable identity.");
 };
 
-const plainRecordSnapshot = (value: unknown) =>
+const plainRecordSnapshot = <Value>(value: Value) =>
   structuralPlainRecordSnapshot(value, failInvalidWhere, failInvalidWhere);
 
 const denseArrayValues = (value: unknown): ReadonlyArray<unknown> =>

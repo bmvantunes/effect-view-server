@@ -926,7 +926,7 @@ const isSourceAsynchronousValue = (value: unknown): boolean => {
   return Result.isFailure(then) || typeof then.success === "function";
 };
 
-const discardSourceAsynchronousValue = (value: unknown): void => {
+const discardSourceAsynchronousValue = <Value>(value: Value): void => {
   if (Effect.isEffect(value)) {
     return;
   }
@@ -986,12 +986,12 @@ type SourceApplicationStateRegistrationInput<State, Command, Metrics, SweepOutco
 
 type ApplicationStateCandidateKeys<Candidate> = Candidate extends unknown ? keyof Candidate : never;
 
-type RejectExtraApplicationStateKeys<Candidate, Shape> = {
-  readonly [Key in Exclude<ApplicationStateCandidateKeys<Candidate>, keyof Shape>]: never;
+type RejectExtraApplicationStateKeys<Candidate, Expected> = {
+  readonly [Key in Exclude<ApplicationStateCandidateKeys<Candidate>, keyof Expected>]: never;
 };
 
-type SourceApplicationStateAdditionalArguments<Candidate, Shape> =
-  Exclude<ApplicationStateCandidateKeys<Candidate>, keyof Shape> extends never
+type SourceApplicationStateAdditionalArguments<Candidate, Expected> =
+  Exclude<ApplicationStateCandidateKeys<Candidate>, keyof Expected> extends never
     ? readonly []
     : readonly [never];
 

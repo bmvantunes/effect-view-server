@@ -22,6 +22,15 @@ import {
 
 type Direction = "encode" | "decode";
 
+type ProtocolFilterConditionOutput = {
+  field: string;
+  type: string;
+  caseSensitive?: boolean;
+  accentSensitive?: boolean;
+  filter?: unknown;
+  filterTo?: unknown;
+};
+
 const invalidQuery = (topic: string, message: string): ViewServerRuntimeError => ({
   _tag: "ViewServerRuntimeError",
   code: "InvalidQuery",
@@ -57,7 +66,7 @@ const uniqueValues = (values: ReadonlyArray<unknown>): ReadonlyArray<unknown> =>
   return unique;
 };
 
-const ownFilterBigDecimal = Effect.fn("ViewServerProtocol.filter.bigDecimal.own")(function* (
+const normalizeFilterBigDecimal = Effect.fn("ViewServerProtocol.filter.bigDecimal.own")(function* (
   topic: string,
   field: string,
   value: unknown,
@@ -78,32 +87,34 @@ const ownFilterBigDecimal = Effect.fn("ViewServerProtocol.filter.bigDecimal.own"
     : value;
 });
 
-const transformFieldValue = Effect.fn("ViewServerProtocol.filter.fieldValue.transform")(function* (
-  direction: Direction,
-  topic: string,
-  field: string,
-  schema: JsonFieldSchema,
-  value: unknown,
-) {
-  const ownedValue = yield* ownFilterBigDecimal(topic, field, value);
-  const transformed =
-    direction === "encode"
-      ? yield* encodeTopicNamedJsonFieldValue(
-          topic,
-          field,
-          schema,
-          ownedValue,
-          filterJsonFieldContext,
-        )
-      : yield* decodeTopicNamedJsonFieldValue(
-          topic,
-          field,
-          schema,
-          ownedValue,
-          filterJsonFieldContext,
-        );
-  return yield* ownFilterBigDecimal(topic, field, transformed);
-});
+const normalizeFilterFieldValue = Effect.fn("ViewServerProtocol.filter.fieldValue.transform")(
+  function* (
+    direction: Direction,
+    topic: string,
+    field: string,
+    schema: JsonFieldSchema,
+    value: unknown,
+  ) {
+    const ownedValue = yield* normalizeFilterBigDecimal(topic, field, value);
+    const transformed =
+      direction === "encode"
+        ? yield* encodeTopicNamedJsonFieldValue(
+            topic,
+            field,
+            schema,
+            ownedValue,
+            filterJsonFieldContext,
+          )
+        : yield* decodeTopicNamedJsonFieldValue(
+            topic,
+            field,
+            schema,
+            ownedValue,
+            filterJsonFieldContext,
+          );
+    return yield* normalizeFilterBigDecimal(topic, field, transformed);
+  },
+);
 
 type TransformFrame =
   | { readonly _tag: "enter"; readonly value: unknown }
@@ -169,7 +180,7 @@ const transformCondition = Effect.fn("ViewServerProtocol.filter.condition.transf
   if (!exactKeys(condition, expected)) {
     return yield* Effect.fail(invalidQuery(topic, `Filter condition ${field} has invalid keys`));
   }
-  const output: Record<string, unknown> = { field, type };
+  const output: ProtocolFilterConditionOutput = { field, type };
   if (hasKey(condition, "caseSensitive")) {
     const caseSensitive = ownValue(condition, "caseSensitive");
     if (typeof caseSensitive !== "boolean") {
@@ -201,7 +212,7 @@ const transformCondition = Effect.fn("ViewServerProtocol.filter.condition.transf
     }
     output["filter"] = Object.freeze(
       yield* Effect.forEach(candidates, (candidate) =>
-        transformFieldValue(direction, topic, field, resolved.schema, candidate),
+        normalizeFilterFieldValue(direction, topic, field, resolved.schema, candidate),
       ),
     );
     return Object.freeze(output);
@@ -224,7 +235,7 @@ const transformCondition = Effect.fn("ViewServerProtocol.filter.condition.transf
     );
   }
   const operandSchema = numeric ? protocolNumericOperandSchema(resolved) : resolved.schema;
-  const transformedFilter = yield* transformFieldValue(
+  const transformedFilter = yield* normalizeFilterFieldValue(
     direction,
     topic,
     field,
@@ -234,7 +245,7 @@ const transformCondition = Effect.fn("ViewServerProtocol.filter.condition.transf
   output["filter"] = transformedFilter;
   if (inRange) {
     const filterTo = ownValue(condition, "filterTo");
-    const transformedFilterTo = yield* transformFieldValue(
+    const transformedFilterTo = yield* normalizeFilterFieldValue(
       direction,
       topic,
       field,
@@ -246,92 +257,96 @@ const transformCondition = Effect.fn("ViewServerProtocol.filter.condition.transf
   return Object.freeze(output);
 });
 
-const transformExpression = Effect.fn("ViewServerProtocol.filter.expression.transform")(function* (
-  direction: Direction,
-  topic: string,
-  rowSchema: RowSchema,
-  input: unknown,
-  state: TransformState,
-) {
-  const frames: Array<TransformFrame> = [{ _tag: "enter", value: input }];
-  const results: Array<unknown> = [];
-  while (frames.length > 0) {
-    const frame = frames.pop()!;
-    if (frame._tag === "exit") {
-      const children = results.splice(results.length - frame.childCount, frame.childCount);
-      const uniqueChildren = frame.type === "NOT" ? children : uniqueValues(children);
-      const output =
-        frame.type === "NOT"
-          ? Object.freeze({ type: "NOT", condition: children[0] })
-          : Object.freeze({ type: frame.type, conditions: Object.freeze(uniqueChildren) });
-      state.active.delete(frame.source);
-      state.memo.set(frame.source, output);
-      results.push(output);
-      continue;
-    }
-    const expression = frame.value;
-    if (typeof expression !== "object" || expression === null) {
-      return yield* Effect.fail(invalidQuery(topic, "Every filter expression must be an object"));
-    }
-    const cached = state.memo.get(expression);
-    if (cached !== undefined) {
-      results.push(cached);
-      continue;
-    }
-    if (state.active.has(expression)) {
-      return yield* Effect.fail(invalidQuery(topic, "Filter expressions must not contain cycles"));
-    }
-    const snapshot = protocolRecordSnapshot(expression);
-    if (snapshot === undefined) {
-      return yield* Effect.fail(invalidQuery(topic, "Every filter expression must be an object"));
-    }
-    const type = ownValue(snapshot, "type");
-    if (type === "AND" || type === "OR") {
-      if (!exactKeys(snapshot, new Set(["type", "conditions"]))) {
-        return yield* Effect.fail(invalidQuery(topic, `Filter group ${type} has invalid keys`));
+const normalizeFilterExpression = Effect.fn("ViewServerProtocol.filter.expression.transform")(
+  function* (
+    direction: Direction,
+    topic: string,
+    rowSchema: RowSchema,
+    input: unknown,
+    state: TransformState,
+  ) {
+    const frames: Array<TransformFrame> = [{ _tag: "enter", value: input }];
+    const results: Array<unknown> = [];
+    while (frames.length > 0) {
+      const frame = frames.pop()!;
+      if (frame._tag === "exit") {
+        const children = results.splice(results.length - frame.childCount, frame.childCount);
+        const uniqueChildren = frame.type === "NOT" ? children : uniqueValues(children);
+        const output =
+          frame.type === "NOT"
+            ? Object.freeze({ type: "NOT", condition: children[0] })
+            : Object.freeze({ type: frame.type, conditions: Object.freeze(uniqueChildren) });
+        state.active.delete(frame.source);
+        state.memo.set(frame.source, output);
+        results.push(output);
+        continue;
       }
-      const children = protocolDenseArray(ownValue(snapshot, "conditions"));
-      if (children === undefined) {
+      const expression = frame.value;
+      if (typeof expression !== "object" || expression === null) {
+        return yield* Effect.fail(invalidQuery(topic, "Every filter expression must be an object"));
+      }
+      const cached = state.memo.get(expression);
+      if (cached !== undefined) {
+        results.push(cached);
+        continue;
+      }
+      if (state.active.has(expression)) {
         return yield* Effect.fail(
-          invalidQuery(topic, `Filter group ${type} conditions must be an array`),
+          invalidQuery(topic, "Filter expressions must not contain cycles"),
         );
       }
-      state.active.add(expression);
-      frames.push({
-        _tag: "exit",
-        source: snapshot.source,
-        type,
-        childCount: children.length,
-      });
-      for (let index = children.length - 1; index >= 0; index -= 1) {
-        frames.push({ _tag: "enter", value: children[index] });
+      const snapshot = protocolRecordSnapshot(expression);
+      if (snapshot === undefined) {
+        return yield* Effect.fail(invalidQuery(topic, "Every filter expression must be an object"));
       }
-      continue;
-    }
-    if (type === "NOT") {
-      if (!exactKeys(snapshot, new Set(["type", "condition"]))) {
-        return yield* Effect.fail(invalidQuery(topic, "Filter NOT has invalid keys"));
+      const type = ownValue(snapshot, "type");
+      if (type === "AND" || type === "OR") {
+        if (!exactKeys(snapshot, new Set(["type", "conditions"]))) {
+          return yield* Effect.fail(invalidQuery(topic, `Filter group ${type} has invalid keys`));
+        }
+        const children = protocolDenseArray(ownValue(snapshot, "conditions"));
+        if (children === undefined) {
+          return yield* Effect.fail(
+            invalidQuery(topic, `Filter group ${type} conditions must be an array`),
+          );
+        }
+        state.active.add(expression);
+        frames.push({
+          _tag: "exit",
+          source: snapshot.source,
+          type,
+          childCount: children.length,
+        });
+        for (let index = children.length - 1; index >= 0; index -= 1) {
+          frames.push({ _tag: "enter", value: children[index] });
+        }
+        continue;
       }
-      state.active.add(expression);
-      frames.push({ _tag: "exit", source: snapshot.source, type: "NOT", childCount: 1 });
-      frames.push({ _tag: "enter", value: ownValue(snapshot, "condition") });
-      continue;
-    }
-    if (type === "FALSE") {
-      if (!exactKeys(snapshot, new Set(["type"]))) {
-        return yield* Effect.fail(invalidQuery(topic, "Filter FALSE has invalid keys"));
+      if (type === "NOT") {
+        if (!exactKeys(snapshot, new Set(["type", "condition"]))) {
+          return yield* Effect.fail(invalidQuery(topic, "Filter NOT has invalid keys"));
+        }
+        state.active.add(expression);
+        frames.push({ _tag: "exit", source: snapshot.source, type: "NOT", childCount: 1 });
+        frames.push({ _tag: "enter", value: ownValue(snapshot, "condition") });
+        continue;
       }
-      const transformed = Object.freeze({ type: "FALSE" });
+      if (type === "FALSE") {
+        if (!exactKeys(snapshot, new Set(["type"]))) {
+          return yield* Effect.fail(invalidQuery(topic, "Filter FALSE has invalid keys"));
+        }
+        const transformed = Object.freeze({ type: "FALSE" });
+        state.memo.set(expression, transformed);
+        results.push(transformed);
+        continue;
+      }
+      const transformed = yield* transformCondition(direction, topic, rowSchema, snapshot);
       state.memo.set(expression, transformed);
       results.push(transformed);
-      continue;
     }
-    const transformed = yield* transformCondition(direction, topic, rowSchema, snapshot);
-    state.memo.set(expression, transformed);
-    results.push(transformed);
-  }
-  return results[0];
-});
+    return results[0];
+  },
+);
 
 const transformWhere = Effect.fn("ViewServerProtocol.filter.where.transform")(function* (
   direction: Direction,
@@ -352,7 +367,9 @@ const transformWhere = Effect.fn("ViewServerProtocol.filter.where.transform")(fu
   };
   const transformed: Array<unknown> = [];
   for (const expression of roots) {
-    transformed.push(yield* transformExpression(direction, topic, rowSchema, expression, state));
+    transformed.push(
+      yield* normalizeFilterExpression(direction, topic, rowSchema, expression, state),
+    );
   }
   return Object.freeze(transformed);
 });

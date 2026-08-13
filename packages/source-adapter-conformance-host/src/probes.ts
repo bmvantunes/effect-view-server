@@ -156,8 +156,8 @@ export const snapshotHealth = (value: unknown): HostHealthSnapshot => {
 
 const emptyUnknownContext = Context.makeUnsafe<unknown>(new Map());
 
-export const invokeEffect = (
-  owner: object,
+export const invokeEffect = <Owner extends object>(
+  owner: Owner,
   methodName: string,
   arguments_: ReadonlyArray<unknown>,
 ): Effect.Effect<unknown, unknown> =>
@@ -172,10 +172,9 @@ export const invokeEffect = (
       : Effect.die(new TypeError(`Conformance host expected ${methodName} to return an Effect.`));
   });
 
-export const openHealth = Effect.fn("SourceAdapterConformanceHost.health.open")(function* (
-  liveClient: object,
-  route?: Readonly<Record<string, unknown>>,
-) {
+export const openHealth = Effect.fn("SourceAdapterConformanceHost.health.open")(function* <
+  LiveClient extends object,
+>(liveClient: LiveClient, route?: Readonly<Record<string, unknown>>) {
   const acquired = yield* invokeEffect(liveClient, "subscribeSourceHealth", [
     {
       topic: "rows",
@@ -233,10 +232,9 @@ export const rows = Effect.fn("SourceAdapterConformanceHost.runtime.rows")(funct
   });
 });
 
-export const openQuery = Effect.fn("SourceAdapterConformanceHost.query.open")(function* (
-  liveClient: object,
-  query: Readonly<Record<string, unknown>>,
-) {
+export const openQuery = Effect.fn("SourceAdapterConformanceHost.query.open")(function* <
+  LiveClient extends object,
+>(liveClient: LiveClient, query: Readonly<Record<string, unknown>>) {
   const acquired = yield* invokeEffect(liveClient, "subscribe", ["rows", query]);
   if (!isRecord(acquired) || !Stream.isStream(acquired["events"])) {
     return yield* Effect.die(new TypeError("Conformance host expected a live subscription."));

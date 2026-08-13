@@ -22,8 +22,8 @@ import {
   hasTopic,
   invalidQuery,
   invalidTopic,
-  ownProtocolQueryInput,
-  requireRouteByRecord,
+  snapshotProtocolQueryInput,
+  decodeRouteByRecord,
   shallowQueryInput,
   strictParseOptions,
   validateSourceRoute,
@@ -71,10 +71,10 @@ export const viewServerEncodeRawQuery = Effect.fn("ViewServerProtocol.query.enco
   if (!hasTopic(config, topic)) {
     return yield* Effect.fail(invalidTopic(topic));
   }
-  const ownedQuery = yield* ownProtocolQueryInput(topic, query);
+  const ownedQuery = yield* snapshotProtocolQueryInput(topic, query);
   const shallowQuery = yield* shallowQueryInput(topic, ownedQuery);
   const routeByInput = shallowQuery.hasRouteBy
-    ? yield* requireRouteByRecord(topic, shallowQuery.routeBy)
+    ? yield* decodeRouteByRecord(topic, shallowQuery.routeBy)
     : undefined;
   const decodedShell = yield* Schema.decodeUnknownEffect(LooseWireRawQuerySchema)(
     shallowQuery.input,
@@ -135,7 +135,7 @@ const decodeRawQuery = Effect.fn("ViewServerProtocol.query.decode")(function* (
 ) {
   const decodedTopic = yield* viewServerDecodeTopic(config, topic);
   const topicSchema = config.topics[decodedTopic]!.schema;
-  const ownedQuery = yield* ownProtocolQueryInput(topic, query);
+  const ownedQuery = yield* snapshotProtocolQueryInput(topic, query);
   const shallowQuery = yield* shallowQueryInput(topic, ownedQuery);
   const routeBy = shallowQuery.hasRouteBy
     ? yield* decodeRouteBy(topic, topicSchema, shallowQuery.routeBy)

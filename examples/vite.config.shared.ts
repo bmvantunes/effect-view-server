@@ -6,24 +6,24 @@ interface ExampleRouteGenerationRuntime {
   readonly mode: string;
 }
 
-type TanStackStartPluginFactory = (options: {
-  readonly router: {
-    readonly enableRouteGeneration: boolean;
-  };
-}) => Array<PluginOption>;
-
 const shouldGenerateExampleRoutes = ({ command, mode }: ExampleRouteGenerationRuntime): boolean =>
   !(command === "serve" && mode === "test");
+
+type TanStackStartPluginFactory = (enableRouteGeneration: boolean) => Array<PluginOption>;
+
+export const adaptTanStackStart =
+  (
+    tanstackStart: (options: {
+      readonly router: { readonly enableRouteGeneration: boolean };
+    }) => Array<PluginOption>,
+  ): TanStackStartPluginFactory =>
+  (enableRouteGeneration) =>
+    tanstackStart({ router: { enableRouteGeneration } });
 
 const createExampleTanStackStartPlugins = (
   tanstackStart: TanStackStartPluginFactory,
   environment: ExampleRouteGenerationRuntime,
-): Array<PluginOption> =>
-  tanstackStart({
-    router: {
-      enableRouteGeneration: shouldGenerateExampleRoutes(environment),
-    },
-  });
+): Array<PluginOption> => tanstackStart(shouldGenerateExampleRoutes(environment));
 
 interface TanStackReactExampleConfigOptions {
   readonly createTanStackStartPlugins: TanStackStartPluginFactory;

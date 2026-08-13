@@ -58,10 +58,10 @@ const publicPackageJson = {
   publishConfig: { provenance: true },
   dependencies: {
     "@effect-view-server/client": "workspace:*",
-    effect: "4.0.0-beta.106",
+    effect: "4.0.0-beta.107",
   },
   devDependencies: { "@effect-view-server/runtime": "workspace:*" },
-  peerDependencies: { react: "19.2.7" },
+  peerDependencies: { react: "19.2.8" },
   peerDependenciesMeta: { react: { optional: true } },
 };
 
@@ -289,8 +289,8 @@ declare module "effect/SchemaAST" {
       engines: { node: ">=26.0.0" },
       files: ["dist", "README.md"],
       publishConfig: { access: "public", provenance: true },
-      dependencies: { effect: "4.0.0-beta.106" },
-      peerDependencies: { react: "19.2.7" },
+      dependencies: { effect: "4.0.0-beta.107" },
+      peerDependencies: { react: "19.2.8" },
       peerDependenciesMeta: { react: { optional: true } },
     });
   });

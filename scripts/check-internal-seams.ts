@@ -2,7 +2,6 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import MarkdownIt from "markdown-it";
-import type Token from "markdown-it/lib/token.mjs";
 import {
   consumerPackageSpecifiers,
   expectedPackageSurfaces,
@@ -129,13 +128,15 @@ export const consumerImportViolationsFor = ({
   return violations;
 };
 
-type MarkdownFenceToken = Token & {
+type MarkdownToken = ReturnType<InstanceType<typeof MarkdownIt>["parse"]>[number];
+
+type MarkdownFenceToken = MarkdownToken & {
   readonly map: [number, number];
   readonly type: "fence";
 };
 
 const markdown = new MarkdownIt("commonmark");
-const isFenceToken = (token: Token): token is MarkdownFenceToken => token.type === "fence";
+const isFenceToken = (token: MarkdownToken): token is MarkdownFenceToken => token.type === "fence";
 
 const virtualFenceExtension = (info: string): string => {
   const language = info.trim().split(/\s+/, 1)[0]?.toLowerCase();

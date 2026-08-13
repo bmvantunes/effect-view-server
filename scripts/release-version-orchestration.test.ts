@@ -32,11 +32,11 @@ const initialGrpcPackage = {
   version: "0.0.0",
   private: true,
   devDependencies: {
-    effect: "4.0.0-beta.106",
+    effect: "4.0.0-beta.107",
     "effect-view-server": "0.0.6",
   },
   peerDependencies: {
-    effect: "4.0.0-beta.106",
+    effect: "4.0.0-beta.107",
     "effect-view-server": "0.0.6",
   },
 };
@@ -46,18 +46,18 @@ const initialKafkaPackage = {
   version: "0.0.0",
   private: true,
   devDependencies: {
-    effect: "4.0.0-beta.106",
+    effect: "4.0.0-beta.107",
     "effect-view-server": "0.0.6",
   },
   peerDependencies: {
-    effect: "4.0.0-beta.106",
+    effect: "4.0.0-beta.107",
     "effect-view-server": "0.0.6",
   },
 };
 
 const initialKafkaPeerMatrix = [
   {
-    effect: "4.0.0-beta.106",
+    effect: "4.0.0-beta.107",
     "effect-view-server": "0.0.6",
   },
   {
@@ -184,11 +184,11 @@ describe("release version orchestration", () => {
         version: "0.0.0",
         private: true,
         devDependencies: {
-          effect: "4.0.0-beta.106",
+          effect: "4.0.0-beta.107",
           "effect-view-server": "0.1.0",
         },
         peerDependencies: {
-          effect: "4.0.0-beta.106",
+          effect: "4.0.0-beta.107",
           "effect-view-server": "0.1.0",
         },
       },
@@ -197,17 +197,17 @@ describe("release version orchestration", () => {
         version: "0.0.0",
         private: true,
         devDependencies: {
-          effect: "4.0.0-beta.106",
+          effect: "4.0.0-beta.107",
           "effect-view-server": "0.1.0",
         },
         peerDependencies: {
-          effect: "4.0.0-beta.106",
+          effect: "4.0.0-beta.107",
           "effect-view-server": "0.1.0",
         },
       },
       kafkaPeerMatrix: [
         {
-          effect: "4.0.0-beta.106",
+          effect: "4.0.0-beta.107",
           "effect-view-server": "0.1.0",
         },
         {
@@ -300,7 +300,7 @@ describe("release version orchestration", () => {
       JSON.parse(readFileSync(join(scenario.rootDirectory, kafkaPeerMatrixPath), "utf8")),
     ).toStrictEqual([
       {
-        effect: "4.0.0-beta.106",
+        effect: "4.0.0-beta.107",
         "effect-view-server": "0.1.0",
       },
       {
@@ -459,7 +459,7 @@ describe("release version orchestration", () => {
       mutate: (rootDirectory: string) =>
         writeJson(join(rootDirectory, kafkaPeerMatrixPath), [
           {
-            effect: "4.0.0-beta.106",
+            effect: "4.0.0-beta.107",
           },
         ]),
     },

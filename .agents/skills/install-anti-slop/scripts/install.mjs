@@ -16,6 +16,6 @@ if (existsSync(target) && !force) {
 }
 
 mkdirSync(dirname(target), { recursive: true });
-cpSync(source, target, { recursive: true, force });
+cpSync(source, target, { recursive: true, force: true });
 console.log(`Copied the anti-slop plugin to ${target}`);
 console.log(`Configure Oxlint with: ${target}/index.ts`);

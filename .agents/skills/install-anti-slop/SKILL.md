@@ -30,12 +30,22 @@ Install the bundled Oxlint plugin into the current repository and integrate it w
    - `oxlint` is a development dependency. The copied source imports `@oxlint/plugins`, so install it as a development dependency for a local-only plugin.
    - Do not replace the package manager or rewrite unrelated dependency ranges.
 
-4. Register the plugin and enable the reviewed rules. For `oxlint.config.ts` or `.oxlintrc.json`, add:
+4. Register the plugin and enable the reviewed rules. For `oxlint.config.ts`, add:
 
    ```ts
    jsPlugins: [
      { name: "anti-slop", specifier: "./tools/oxlint/anti-slop/index.ts" },
    ],
+   ```
+
+   For `.oxlintrc.json`, use the equivalent JSON form:
+
+   ```json
+   {
+     "jsPlugins": [
+       { "name": "anti-slop", "specifier": "./tools/oxlint/anti-slop/index.ts" }
+     ]
+   }
    ```
 
    For Vite+, add that same entry to `lint.jsPlugins`. Merge it with existing entries instead of replacing them.

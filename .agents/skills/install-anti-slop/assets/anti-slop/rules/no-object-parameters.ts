@@ -1,35 +1,18 @@
 import { defineRule } from "@oxlint/plugins";
 
-import type { ESTree, SourceCode } from "@oxlint/plugins";
+import type { ESTree } from "@oxlint/plugins";
 
-type Parameter = ESTree.ParamPattern;
-type ParameterOwner =
-	| ESTree.ArrowFunctionExpression
-	| ESTree.Function
-	| ESTree.TSCallSignatureDeclaration
-	| ESTree.TSConstructSignatureDeclaration
-	| ESTree.TSConstructorType
-	| ESTree.TSFunctionType
-	| ESTree.TSMethodSignature;
+import {
+	createTypeEnvironment,
+	type TypeEnvironment,
+} from "../shared/dictionary-types.ts";
 
-function parameterAnnotation(parameter: Parameter): ESTree.TSTypeAnnotation | null | undefined {
-	if (parameter.type === "TSParameterProperty") {
-		return parameterAnnotation(parameter.parameter);
-	}
-	if (parameter.type === "RestElement") {
-		return parameter.typeAnnotation ?? parameterAnnotation(parameter.argument);
-	}
-	if (parameter.type === "AssignmentPattern") {
-		return parameter.typeAnnotation ?? parameter.left.typeAnnotation;
-	}
-	return parameter.typeAnnotation;
-}
-
-function parameterName(parameter: Parameter, sourceCode: SourceCode): string {
-	return parameter.type === "Identifier"
-		? parameter.name
-		: sourceCode.getText(parameter).replace(/\s*:\s*object\s*$/u, "");
-}
+import {
+	parameterAnnotation,
+	parameterName,
+	type Parameter,
+	type ParameterOwner,
+} from "../shared/parameter-analysis.ts";
 
 function lexicalTypeParameterNames(node: ESTree.Node): ReadonlySet<string> {
 	const names = new Set<string>();
@@ -61,19 +44,20 @@ export const noObjectParametersRule = defineRule({
 		},
 	},
 	create(context) {
-		const aliases = new Map<string, ESTree.TSType>();
+		let environment: TypeEnvironment | null = null;
 
 		const resolvesToObject = (
 			type: ESTree.TSType,
+			environment: TypeEnvironment,
 			shadowedAliases: ReadonlySet<string>,
 			visited = new Set<string>(),
 		): boolean => {
 			if (type.type === "TSObjectKeyword") return true;
 			if (type.type === "TSParenthesizedType")
-				return resolvesToObject(type.typeAnnotation, shadowedAliases, visited);
+				return resolvesToObject(type.typeAnnotation, environment, shadowedAliases, visited);
 			if (type.type === "TSUnionType") {
 				return type.types.some((member) =>
-					resolvesToObject(member, shadowedAliases, visited),
+					resolvesToObject(member, environment, shadowedAliases, visited),
 				);
 			}
 			if (
@@ -87,19 +71,20 @@ export const noObjectParametersRule = defineRule({
 			) {
 				return false;
 			}
-			const alias = aliases.get(type.typeName.name);
+			const alias = environment.aliases.get(type.typeName.name);
 			if (alias === undefined) return false;
 			const nextVisited = new Set(visited);
 			nextVisited.add(type.typeName.name);
-			return resolvesToObject(alias, shadowedAliases, nextVisited);
+			return resolvesToObject(alias.typeAnnotation, environment, shadowedAliases, nextVisited);
 		};
 
 		const checkParameters = (node: ParameterOwner) => {
+			if (environment === null) return;
 			const shadowedAliases = lexicalTypeParameterNames(node);
 			for (const parameter of node.params) {
 				const annotation = parameterAnnotation(parameter);
 				if (annotation === null || annotation === undefined) continue;
-				if (!resolvesToObject(annotation.typeAnnotation, shadowedAliases)) continue;
+				if (!resolvesToObject(annotation.typeAnnotation, environment, shadowedAliases)) continue;
 				context.report({
 					node: annotation.typeAnnotation,
 					messageId: "objectParameter",
@@ -110,16 +95,7 @@ export const noObjectParametersRule = defineRule({
 
 		return {
 			Program(node) {
-				for (const statement of node.body) {
-					const declaration =
-						statement.type === "ExportNamedDeclaration" ? statement.declaration : statement;
-					if (
-						declaration?.type === "TSTypeAliasDeclaration" &&
-						(declaration.typeParameters === null || declaration.typeParameters === undefined)
-					) {
-						aliases.set(declaration.id.name, declaration.typeAnnotation);
-					}
-				}
+				environment = createTypeEnvironment(node);
 			},
 			ArrowFunctionExpression: checkParameters,
 			FunctionDeclaration: checkParameters,

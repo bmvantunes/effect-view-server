@@ -6,6 +6,7 @@ import {
 	classifyUnsafeDictionaryValue,
 	createTypeEnvironment,
 	type TypeEnvironment,
+	type UnsafeDictionary,
 } from "../shared/dictionary-types.ts";
 
 import type { ESTree } from "@oxlint/plugins";
@@ -100,16 +101,29 @@ function isDirectExportedDictionaryContractType(node: ESTree.Node): boolean {
 	return false;
 }
 
-function shouldReportType(node: ESTree.TSType, environment: TypeEnvironment): boolean {
-	if (!isDirectExportedDictionaryContractType(node)) return false;
-	if (classifyUnsafeDictionary(node, environment) === null) return false;
+function directUnsafeDictionary(
+	node: ESTree.TSType,
+	classify: (node: ESTree.TSType) => UnsafeDictionary | null,
+): UnsafeDictionary | null {
+	if (!isDirectExportedDictionaryContractType(node)) return null;
+	const unsafe = classify(node);
+	if (unsafe === null) return null;
 	let current: ESTree.Node | null = node.parent;
 	while (current !== null && current.type !== "Program") {
-		if (isTypeNode(current) && classifyUnsafeDictionary(current, environment) !== null)
-			return false;
+		if (isTypeNode(current) && classify(current) !== null) return null;
 		current = current.parent;
 	}
-	return true;
+	return unsafe;
+}
+
+function exportedContractName(node: ESTree.Node): string {
+	let current: ESTree.Node | null = node.parent;
+	while (current !== null && current.type !== "Program") {
+		if (current.type === "TSTypeAliasDeclaration" || current.type === "TSInterfaceDeclaration")
+			return current.id.name;
+		current = current.parent;
+	}
+	return "<anonymous>";
 }
 
 /** Disallow direct exported object-dictionary contracts whose value type is an unsafe escape hatch. */
@@ -122,17 +136,28 @@ export const noUnsafeDictionaryTypeRule = defineRule({
 		},
 		messages: {
 			unsafeDictionary:
-				"This object dictionary's direct value type is an unsafe {{value}} escape hatch. Replace it with a concrete owner/schema-derived value type and parse external data at its boundary.",
+				'The exported object dictionary contract "{{name}}" has an unsafe {{value}} direct value type. Replace it with a concrete owner/schema-derived value type and parse external data at its boundary.',
 		},
 	},
 	createOnce(context) {
 		let environment: TypeEnvironment | null = null;
+		let cache = new WeakMap<ESTree.TSType, UnsafeDictionary | null>();
+		const classify = (node: ESTree.TSType): UnsafeDictionary | null => {
+			if (cache.has(node)) return cache.get(node) ?? null;
+			if (environment === null) return null;
+			const unsafe = classifyUnsafeDictionary(node, environment);
+			cache.set(node, unsafe);
+			return unsafe;
+		};
 		const report = (node: ESTree.Node, value: string) => {
-			context.report({ node, messageId: "unsafeDictionary", data: { value } });
+			context.report({
+				node,
+				messageId: "unsafeDictionary",
+				data: { name: exportedContractName(node), value },
+			});
 		};
 		const reportIfUnsafe = (node: ESTree.TSType) => {
-			if (environment === null || !shouldReportType(node, environment)) return;
-			const unsafe = classifyUnsafeDictionary(node, environment);
+			const unsafe = directUnsafeDictionary(node, classify);
 			if (unsafe === null) return;
 			report(node, unsafe.unsafeValue);
 		};
@@ -140,10 +165,14 @@ export const noUnsafeDictionaryTypeRule = defineRule({
 		return {
 			Program(node) {
 				environment = createTypeEnvironment(node);
+				cache = new WeakMap();
 			},
 			TSTypeReference: reportIfUnsafe,
 			TSTypeLiteral: reportIfUnsafe,
 			TSMappedType: reportIfUnsafe,
+			TSParenthesizedType: reportIfUnsafe,
+			TSUnionType: reportIfUnsafe,
+			TSIntersectionType: reportIfUnsafe,
 			TSInterfaceHeritage(node) {
 				if (environment === null || !isDirectExportedDictionaryContractType(node)) return;
 				const unsafe = classifyUnsafeDictionaryInterfaceReference(node, environment);
@@ -154,6 +183,7 @@ export const noUnsafeDictionaryTypeRule = defineRule({
 					environment === null ||
 					!isDirectExportedDictionaryContractType(node) ||
 					node.typeAnnotation === null ||
+					node.typeAnnotation === undefined ||
 					node.parent.type === "TSTypeLiteral"
 				)
 					return;

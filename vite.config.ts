@@ -259,16 +259,38 @@ export default defineConfig({
     "*": "vp check --fix",
   },
   fmt: {
-    ignorePatterns: [".agents/**", ".pnpm-store/**", ".repos/**", "scripts/**"],
+    ignorePatterns: [
+      ".agents/**",
+      ".pnpm-store/**",
+      ".repos/**",
+      // Standalone repository scripts use their own runtime/test formatting conventions.
+      "scripts/**",
+      // The plugin source is mirrored into the skill asset and must stay byte-for-byte identical.
+      "tools/oxlint/anti-slop/**",
+    ],
   },
   lint: {
+    jsPlugins: [
+      {
+        name: "anti-slop",
+        specifier: "./tools/oxlint/anti-slop/index.ts",
+      },
+    ],
     ignorePatterns: [
       ".pnpm-store/**",
       ".repos/**",
+      // Most repository scripts are outside the application type-aware lint project; keep the integration test covered.
       "scripts/**",
+      "!scripts/anti-slop-rule.test.ts",
+      // The bundled copy is an installation asset; lint the live plugin source instead.
+      ".agents/skills/install-anti-slop/**",
       "packages/source-adapter-testing/test-fixtures/package-adapter/invalid-types/**",
+      "tools/oxlint/anti-slop/**",
     ],
     options: { typeAware: true, typeCheck: true },
+    rules: {
+      "anti-slop/no-unsafe-dictionary-type": "error",
+    },
   },
   run: {
     cache: true,

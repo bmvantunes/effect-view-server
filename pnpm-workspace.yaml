@@ -43,6 +43,8 @@ catalog:
   "@changesets/cli": 3.0.0
   markdown-it: ^15.0.0
   tar: ^7.5.22
+  oxlint: 1.78.0
+  "@oxlint/plugins": 1.78.0
 overrides:
   "@effect-view-server/grpc>effect-view-server": "workspace:0.0.6"
   "@effect-view-server/kafka>effect-view-server": "workspace:0.0.6"

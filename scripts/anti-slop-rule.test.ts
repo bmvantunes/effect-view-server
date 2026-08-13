@@ -77,8 +77,12 @@ describe("anti-slop Oxlint integration", () => {
     const result = lintFixture(
       [
         "export type UnsafeRecord = Record<string, unknown>;",
+        "export type GlobalThisRecord = globalThis.Record<string, unknown>;",
         "export interface UnsafeInterface {",
         "  [key: string]: object;",
+        "}",
+        "export interface DefaultedInterface<T = unknown> {",
+        "  [key: string]: T;",
         "}",
         "export type UnsafeMapped = { [key: string]: any };",
         "type Local = Record<string, unknown>;",
@@ -105,6 +109,9 @@ describe("anti-slop Oxlint integration", () => {
         "export interface HeritagePublic extends HeritageAlias {}",
         "interface TransitiveHeritage extends HeritageAlias {}",
         "export type TransitiveHeritagePublic = TransitiveHeritage;",
+        "interface MergedEmpty {}",
+        "interface MergedEmpty {}",
+        "export type MergedEmptyPublic = Record<string, MergedEmpty>;",
         "function Record() {}",
         "export type FunctionShadowedRecord = Record<string, unknown>;",
         "export type Nested = { readonly values: Record<string, unknown> };",
@@ -113,7 +120,7 @@ describe("anti-slop Oxlint integration", () => {
 
     expect(result.error).toBeUndefined();
     expect(result.status).toBe(1);
-    expect(result.output.match(/anti-slop\(no-unsafe-dictionary-type\)/g)?.length).toBe(13);
+    expect(result.output.match(/anti-slop\(no-unsafe-dictionary-type\)/g)?.length).toBe(16);
     expect(
       Array.from(
         result.output.matchAll(/exported object dictionary contract (?:\\"|")([^"\\]+)(?:\\"|")/g),
@@ -121,7 +128,9 @@ describe("anti-slop Oxlint integration", () => {
       ),
     ).toStrictEqual([
       "UnsafeRecord",
+      "GlobalThisRecord",
       "UnsafeInterface",
+      "DefaultedInterface",
       "UnsafeMapped",
       "PublicAlias",
       "ExportedByList",
@@ -132,8 +141,21 @@ describe("anti-slop Oxlint integration", () => {
       "DerivedUnsafe",
       "HeritagePublic",
       "TransitiveHeritagePublic",
+      "MergedEmptyPublic",
       "FunctionShadowedRecord",
     ]);
+  }, 120_000);
+
+  it("recognizes export-assignment type contracts", () => {
+    const result = lintFixture([
+      "type Public = Record<string, unknown>;",
+      "declare const Public: Public;",
+      "export = Public;",
+    ].join("\n"));
+
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(1);
+    expect(result.output).toContain("anti-slop(no-unsafe-dictionary-type)");
   }, 120_000);
 
   it("keeps reviewed deferred rules precise when enabled", () => {

@@ -2,6 +2,7 @@ import { defineRule } from "@oxlint/plugins";
 
 import {
 	classifyUnsafeDictionary,
+	classifyUnsafeDictionaryInterfaceValue,
 	classifyUnsafeDictionaryInterfaceReference,
 	classifyUnsafeDictionaryValue,
 	createTypeEnvironment,
@@ -68,14 +69,17 @@ function isExportedTypeDeclaration(
 	if (current === null || current.type !== "Program") return false;
 	return current.body.some(
 		(statement) =>
-			statement.type === "ExportNamedDeclaration" &&
-			statement.source === null &&
-			statement.specifiers.some(
-				(specifier) =>
-					specifier.type === "ExportSpecifier" &&
-					specifier.local.type === "Identifier" &&
-					specifier.local.name === declaration.id.name,
-			),
+			(statement.type === "ExportNamedDeclaration" &&
+				statement.source === null &&
+				statement.specifiers.some(
+					(specifier) =>
+						specifier.type === "ExportSpecifier" &&
+						specifier.local.type === "Identifier" &&
+						specifier.local.name === declaration.id.name,
+				)) ||
+			(statement.type === "TSExportAssignment" &&
+				statement.expression.type === "Identifier" &&
+				statement.expression.name === declaration.id.name),
 	);
 }
 
@@ -187,10 +191,19 @@ export const noUnsafeDictionaryTypeRule = defineRule({
 					node.parent.type === "TSTypeLiteral"
 				)
 					return;
-				const unsafe = classifyUnsafeDictionaryValue(
-					node.typeAnnotation.typeAnnotation,
-					environment,
-				);
+				const declaration =
+					node.parent.type === "TSInterfaceBody" &&
+					node.parent.parent.type === "TSInterfaceDeclaration"
+						? node.parent.parent
+						: null;
+				const unsafe =
+					declaration === null
+						? classifyUnsafeDictionaryValue(node.typeAnnotation.typeAnnotation, environment)
+						: classifyUnsafeDictionaryInterfaceValue(
+								declaration,
+								node.typeAnnotation.typeAnnotation,
+								environment,
+							);
 				if (unsafe !== null) report(node, unsafe.unsafeValue);
 			},
 		};

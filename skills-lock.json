@@ -95,7 +95,7 @@
       "source": "dmmulroy/anti-slop",
       "sourceType": "github",
       "skillPath": "skills/install-anti-slop/SKILL.md",
-      "computedHash": "263d18b54b74c704ecc2d181813c00a14e4fe2d290386c61ec761797f6222e30"
+      "computedHash": "067ee0e4b75dc0e910964307b40618fb2f46990ca67330b2684d20fdbe0123ea"
     },
     "prototype": {
       "source": "mattpocock/skills",

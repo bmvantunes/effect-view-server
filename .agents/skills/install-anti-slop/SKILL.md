@@ -30,7 +30,7 @@ Install the bundled Oxlint plugin into the current repository and integrate it w
    - `oxlint` is a development dependency. The copied source imports `@oxlint/plugins`, so install it as a development dependency for a local-only plugin.
    - Do not replace the package manager or rewrite unrelated dependency ranges.
 
-4. Register the plugin and enable all rules. For `oxlint.config.ts` or `.oxlintrc.json`, add:
+4. Register the plugin and enable the reviewed rules. For `oxlint.config.ts` or `.oxlintrc.json`, add:
 
    ```ts
    jsPlugins: [
@@ -40,24 +40,20 @@ Install the bundled Oxlint plugin into the current repository and integrate it w
 
    For Vite+, add that same entry to `lint.jsPlugins`. Merge it with existing entries instead of replacing them.
 
-   Enable these rules at `"error"`:
+   Enable the rules that have been reviewed for the target repository at `"error"` severity. Keep
+   noisy or intentionally deferred rules disabled until their findings are addressed; do not lower
+   the severity of an enabled rule just to make the lint pass. For a focused rollout, the reviewed
+   configuration can be as small as:
 
    ```json
    {
-     "anti-slop/no-chained-type-assertions": "error",
-     "anti-slop/no-conditional-empty-object-spread": "error",
-     "anti-slop/no-known-value-widening": "error",
-     "anti-slop/no-object-parameters": "error",
-     "anti-slop/no-runtime-typeof": "error",
-     "anti-slop/no-shape-in-symbol-names": "error",
-     "anti-slop/no-unknown-parameters": "error",
-     "anti-slop/no-unknown-type-aliases": "error",
-     "anti-slop/no-unsafe-dictionary-type": "error",
-     "anti-slop/no-widen-then-assert": "error"
+     "anti-slop/no-unsafe-dictionary-type": "error"
    }
    ```
 
-5. Run the repository's lint command and typecheck. If findings appear, report them and fix them only when the user asked for migration/cleanup. Do not suppress rules, weaken rule severity, add unsafe casts, or mechanically launder types to make lint pass.
+   The other bundled rule IDs can be enabled individually after their findings have been reviewed.
+
+5. Run the repository's lint command and typecheck. If findings appear, report them and fix them only when the user asked for migration/cleanup. Do not suppress enabled rules, weaken enabled rule severity, add unsafe casts, or mechanically launder types to make lint pass.
 
 6. Review the final diff and clearly report:
    - copied path,

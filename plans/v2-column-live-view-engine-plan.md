@@ -45,12 +45,12 @@ This keeps initial snapshots and live deltas on one authoritative state model.
 
 ## Effect v4 Setup Rules
 
-Before implementing product code, set up Effect v4 beta and the Effect language service.
+Before implementing product code, set up Effect v4 RC and the Effect language service.
 
 Required package baseline:
 
-- Use the workspace-pinned `effect` v4 beta; do not update it as part of unrelated work.
-- Current workspace baseline: `effect@4.0.0-beta.107`.
+- Use the workspace-pinned `effect` v4 RC; do not update it as part of unrelated work.
+- Current workspace baseline: `effect@4.0.0-rc.109`.
 - Use `@effect/vitest` for all tests.
 - Run strict Effect language-service diagnostics before considering a change complete.
 

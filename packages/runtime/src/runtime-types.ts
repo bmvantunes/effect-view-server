@@ -40,6 +40,8 @@ export type ViewServerRuntimeOptions<
 > = {
   readonly host?: string;
   readonly websocketPort?: number;
+  /** Enable RFC 7692 per-message compression. Disabled by default. */
+  readonly websocketCompression?: boolean;
   readonly tcpPublishHost?: string;
   readonly tcpPublishMaxConnections?: number;
   readonly tcpPublishPort?: number;

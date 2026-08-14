@@ -482,6 +482,7 @@ describe("Runtime WebSocket and operational endpoints", () => {
           maxRetainedValueEntries: 4,
         },
         host: "0.0.0.0",
+        websocketCompression: true,
         websocketPort: 1234,
         tcpPublishHost: "127.0.0.1",
         tcpPublishMaxConnections: 9,
@@ -538,6 +539,7 @@ describe("Runtime WebSocket and operational endpoints", () => {
           path: "/custom-rpc",
           healthPath: "/custom-health",
           metricsPath: "/custom-metrics",
+          websocketCompression: true,
         },
         tcpPublishAuthType: "function",
         tcpPublishOptions: {
@@ -627,6 +629,9 @@ describe("Runtime WebSocket and operational endpoints", () => {
           invalidOptionsEffect({
             groupedIncrementalAdmissionLimits: { maxGroups: -1 },
           }),
+        );
+        const websocketCompressionError = yield* Effect.flip(
+          invalidOptionsEffect({ websocketCompression: "true" }),
         );
         const ownKeysError = yield* Effect.flip(
           invalidOptionsEffect(
@@ -745,6 +750,11 @@ describe("Runtime WebSocket and operational endpoints", () => {
           _tag: "ViewServerRuntimeError",
           code: "RuntimeUnavailable",
           message: "View Server runtime options could not be inspected.",
+        });
+        expect(websocketCompressionError).toStrictEqual({
+          _tag: "ViewServerRuntimeError",
+          code: "RuntimeUnavailable",
+          message: "View Server runtime option websocketCompression must be a boolean.",
         });
         expect(runtimeCoreAcquisitions).toBe(0);
       }),

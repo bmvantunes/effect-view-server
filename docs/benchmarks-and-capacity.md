@@ -42,6 +42,18 @@ real broker, or production-like capacity. Read-path improvements must be
 evaluated beside base and indexed write throughput. Fanout work should be
 shared by Topic/query/window/plan rather than cloned per subscriber.
 
+The WebSocket compression experiment uses the production Effect RPC + NDJSON path and measures
+TCP stream bytes through a local counting proxy. Across the 10- and 50-subscriber workloads,
+`permessage-deflate` reduced outbound bytes by about 96% while increasing mean localhost
+publish-and-fanout latency by 19–25%.
+Compression therefore remains an explicit runtime option rather than an unconditional default.
+The canonical WebSocket firehose gate runs both modes and rejects regressions in normalized
+outbound bytes per subscriber mutation as well as latency and memory regressions.
+Set `VIEW_SERVER_RUNTIME_BENCH_WEBSOCKET_COMPRESSION=true` when invoking the focused benchmark
+task with `vp run --no-cache runtime#bench:websocket-firehose` to measure the compressed path.
+Compressed package-task artifacts use a `-compressed` filename suffix so paired runs cannot
+overwrite each other.
+
 Update a committed baseline only for an accepted performance change, using the
 matching `:update` task. Never move a baseline merely to make a regression pass.
 

@@ -8,6 +8,7 @@ import {
   kafkaSourceAdapterTask,
   rawLargeMembershipTask,
   runtimeGrpcSourceAdapterTask,
+  runtimeWebSocketFirehoseTask,
 } from "./benchmark-baseline-task-catalog.mjs";
 
 describe("benchmark baseline runner", () => {
@@ -277,6 +278,7 @@ describe("benchmark baseline runner", () => {
         artifactKind: task.expectedArtifactKind,
         benchmarkCase: task.env["VIEW_SERVER_RUNTIME_BENCH_WEBSOCKET_CASE"],
         benchmarkScope: task.expectedBenchmarkScope,
+        compression: task.env["VIEW_SERVER_RUNTIME_BENCH_WEBSOCKET_COMPRESSION"],
         iterations: task.env["VIEW_SERVER_RUNTIME_BENCH_ITERATIONS"],
         outputJsonPath: task.packageOutputJsonPath,
         rowCount: task.env["VIEW_SERVER_RUNTIME_BENCH_WEBSOCKET_ROWS"],
@@ -289,6 +291,7 @@ describe("benchmark baseline runner", () => {
         artifactKind: "runtime-benchmark-summary",
         benchmarkCase: "same-window",
         benchmarkScope: "runtime-websocket-firehose",
+        compression: "false",
         iterations: "5",
         outputJsonPath: ".artifacts/websocket-firehose-same-window-1000rows-10subs.json",
         rowCount: "1000",
@@ -300,6 +303,7 @@ describe("benchmark baseline runner", () => {
         artifactKind: "runtime-benchmark-summary",
         benchmarkCase: "ten-window",
         benchmarkScope: "runtime-websocket-firehose",
+        compression: "false",
         iterations: "5",
         outputJsonPath: ".artifacts/websocket-firehose-ten-window-1000rows-10subs.json",
         rowCount: "1000",
@@ -307,7 +311,44 @@ describe("benchmark baseline runner", () => {
         task: ["run", "--no-cache", "runtime#bench:websocket-firehose"],
         timeMs: "1",
       },
+      {
+        artifactKind: "runtime-benchmark-summary",
+        benchmarkCase: "same-window",
+        benchmarkScope: "runtime-websocket-firehose",
+        compression: "true",
+        iterations: "5",
+        outputJsonPath:
+          ".artifacts/websocket-firehose-same-window-1000rows-10subs-compressed.json",
+        rowCount: "1000",
+        subscriberCount: "10",
+        task: ["run", "--no-cache", "runtime#bench:websocket-firehose"],
+        timeMs: "1",
+      },
+      {
+        artifactKind: "runtime-benchmark-summary",
+        benchmarkCase: "ten-window",
+        benchmarkScope: "runtime-websocket-firehose",
+        compression: "true",
+        iterations: "5",
+        outputJsonPath:
+          ".artifacts/websocket-firehose-ten-window-1000rows-10subs-compressed.json",
+        rowCount: "1000",
+        subscriberCount: "10",
+        task: ["run", "--no-cache", "runtime#bench:websocket-firehose"],
+        timeMs: "1",
+      },
     ]);
+
+    const compressedTask = runtimeWebSocketFirehoseTask("same-window", 1_000, 50, {
+      VIEW_SERVER_RUNTIME_BENCH_ITERATIONS: "5",
+      VIEW_SERVER_RUNTIME_BENCH_TIME_MS: "1",
+      VIEW_SERVER_RUNTIME_BENCH_WARMUP_ITERATIONS: "0",
+      VIEW_SERVER_RUNTIME_BENCH_WARMUP_TIME_MS: "0",
+      VIEW_SERVER_RUNTIME_BENCH_WEBSOCKET_COMPRESSION: "true",
+    });
+    expect(compressedTask.packageOutputJsonPath).toBe(
+      ".artifacts/websocket-firehose-same-window-1000rows-50subs-compressed.json",
+    );
   });
 
   it("defines the gRPC Source Adapter benchmark task", () => {

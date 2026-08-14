@@ -189,4 +189,22 @@ describe("Runtime reporting options", () => {
       });
     }),
   );
+
+  it.effect("captures a hostile WebSocket compression getter exactly once", () =>
+    Effect.gen(function* () {
+      let reads = 0;
+      const options = Object.defineProperty({}, "websocketCompression", {
+        enumerable: true,
+        get: () => {
+          reads += 1;
+          return reads === 1 ? true : "true";
+        },
+      });
+
+      const validated = yield* validateHostileOptions(options);
+
+      expect(reads).toBe(1);
+      expect(validated).toStrictEqual({ websocketCompression: true });
+    }),
+  );
 });

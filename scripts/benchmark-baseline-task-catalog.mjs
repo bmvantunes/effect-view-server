@@ -561,7 +561,10 @@ export const runtimeGrpcSourceAdapterTask = (batchSize, routeCount, retainedRowC
 };
 
 export const runtimeWebSocketFirehoseTask = (firehoseCase, rowCount, subscriberCount, env) => {
-  const outputJsonPath = `.artifacts/websocket-firehose-${firehoseCase}-${rowCount}rows-${subscriberCount}subs.json`;
+  const websocketCompression =
+    env.VIEW_SERVER_RUNTIME_BENCH_WEBSOCKET_COMPRESSION === "true";
+  const compressionSuffix = websocketCompression ? "-compressed" : "";
+  const outputJsonPath = `.artifacts/websocket-firehose-${firehoseCase}-${rowCount}rows-${subscriberCount}subs${compressionSuffix}.json`;
   return task({
     artifactKind: "runtime-benchmark-summary",
     benchmarkScope: "runtime-websocket-firehose",
@@ -572,7 +575,7 @@ export const runtimeWebSocketFirehoseTask = (firehoseCase, rowCount, subscriberC
       VIEW_SERVER_RUNTIME_BENCH_WEBSOCKET_SUBSCRIBERS: String(subscriberCount),
       ...env,
     },
-    label: `WebSocket firehose ${firehoseCase} ${rowCount} rows ${subscriberCount} subscribers`,
+    label: `WebSocket firehose ${firehoseCase} ${rowCount} rows ${subscriberCount} subscribers compression ${websocketCompression ? "on" : "off"}`,
     minimumSampleCount: minimumSampleCountFrom(env, "VIEW_SERVER_RUNTIME_BENCH_ITERATIONS"),
     outputJsonPath,
     packageDirectory: runtimePackageDirectory,

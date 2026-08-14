@@ -4,6 +4,7 @@
 Effect. Its options cover View Server concerns only:
 
 - WebSocket/HTTP host and port
+- optional WebSocket per-message compression
 - TCP publish host and port
 - authentication
 - admission and subscription limits
@@ -40,6 +41,7 @@ const GrpcLive = grpcNode.layerConfig(viewServer, {
 const program = runViewServerRuntime(viewServer, {
   host: "0.0.0.0",
   websocketPort: 8080,
+  websocketCompression: true,
   tcpPublishHost: "127.0.0.1",
   tcpPublishPort: 8081,
   reporting: {
@@ -53,6 +55,13 @@ const program = runViewServerRuntime(viewServer, {
 
 NodeRuntime.runMain(program);
 ```
+
+`websocketCompression: true` enables RFC 7692 `permessage-deflate` negotiation. It is disabled by
+default because compression trades server CPU and latency for network bandwidth. The production
+NDJSON firehose benchmark measured TCP stream bytes through a local counting proxy and found a
+roughly 96% reduction in outbound bytes with 19–25% higher
+mean publish-and-fanout latency on its localhost workload. Benchmark representative payloads and
+subscriber fanout before enabling it in production.
 
 `layer(...)` accepts resolved values. `layerConfig(...)` keeps Effect
 `Config.ConfigError` in the Layer construction channel. Runtime Effects retain

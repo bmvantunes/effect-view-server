@@ -8,11 +8,11 @@
       "benchmarks": [
         {
           "groupName": "src/websocket-firehose.bench.ts > WebSocket firehose runtime benchmark: same-window, 1000 rows, 10 subscribers",
-          "maxMs": 6.606459000000086,
-          "meanMs": 4.8670918000000025,
-          "minMs": 4.171083999999951,
+          "maxMs": 7.9576660000000174,
+          "meanMs": 5.755791599999998,
+          "minMs": 5.011708999999996,
           "name": "same-window remote websocket publish + fanout",
-          "p99Ms": 6.606459000000086,
+          "p99Ms": 7.9576660000000174,
           "sampleCount": 5
         }
       ],
@@ -21,7 +21,7 @@
       "benchmarkScope": "runtime-websocket-firehose",
       "cleanupLeakCount": 0,
       "latencySource": "vitest-output-json",
-      "memoryRssTotalDeltaBytes": 17432576,
+      "memoryRssTotalDeltaBytes": 25149440,
       "minimumSampleCount": 5,
       "mutationCount": 5,
       "outputJsonPath": "packages/runtime/.artifacts/websocket-firehose-same-window-1000rows-10subs.json",
@@ -29,8 +29,25 @@
       "rowCount": 1000,
       "subscriberCount": 10,
       "summaryPath": "packages/runtime/.artifacts/websocket-firehose-same-window-1000rows-10subs.summary.json",
-      "taskLabel": "WebSocket firehose same-window 1000 rows 10 subscribers",
-      "topics": ["orders"]
+      "taskLabel": "WebSocket firehose same-window 1000 rows 10 subscribers compression off",
+      "topics": ["orders"],
+      "wire": {
+        "afterBenchmark": {
+          "received": 13033,
+          "sent": 80784
+        },
+        "afterSetup": {
+          "received": 11278,
+          "sent": 61979
+        },
+        "measured": {
+          "received": 1755,
+          "sent": 18805
+        },
+        "sentBytesPerMutation": 3761,
+        "sentBytesPerSubscriberMutation": 376.1
+      },
+      "websocketCompression": false
     },
     {
       "artifactKind": "runtime-benchmark-summary",
@@ -38,11 +55,11 @@
       "benchmarks": [
         {
           "groupName": "src/websocket-firehose.bench.ts > WebSocket firehose runtime benchmark: ten-window, 1000 rows, 10 subscribers",
-          "maxMs": 6.256665999999996,
-          "meanMs": 4.674825199999987,
-          "minMs": 4.14220899999998,
+          "maxMs": 7.994542000000024,
+          "meanMs": 5.833225000000016,
+          "minMs": 5.0664580000000115,
           "name": "ten-window remote websocket publish + fanout",
-          "p99Ms": 6.256665999999996,
+          "p99Ms": 7.994542000000024,
           "sampleCount": 5
         }
       ],
@@ -51,7 +68,7 @@
       "benchmarkScope": "runtime-websocket-firehose",
       "cleanupLeakCount": 0,
       "latencySource": "vitest-output-json",
-      "memoryRssTotalDeltaBytes": 16662528,
+      "memoryRssTotalDeltaBytes": 25493504,
       "minimumSampleCount": 5,
       "mutationCount": 5,
       "outputJsonPath": "packages/runtime/.artifacts/websocket-firehose-ten-window-1000rows-10subs.json",
@@ -59,8 +76,119 @@
       "rowCount": 1000,
       "subscriberCount": 10,
       "summaryPath": "packages/runtime/.artifacts/websocket-firehose-ten-window-1000rows-10subs.summary.json",
-      "taskLabel": "WebSocket firehose ten-window 1000 rows 10 subscribers",
-      "topics": ["orders"]
+      "taskLabel": "WebSocket firehose ten-window 1000 rows 10 subscribers compression off",
+      "topics": ["orders"],
+      "wire": {
+        "afterBenchmark": {
+          "received": 13033,
+          "sent": 80084
+        },
+        "afterSetup": {
+          "received": 11278,
+          "sent": 61979
+        },
+        "measured": {
+          "received": 1755,
+          "sent": 18105
+        },
+        "sentBytesPerMutation": 3621,
+        "sentBytesPerSubscriberMutation": 362.1
+      },
+      "websocketCompression": false
+    },
+    {
+      "artifactKind": "runtime-benchmark-summary",
+      "backpressureCount": 0,
+      "benchmarks": [
+        {
+          "groupName": "src/websocket-firehose.bench.ts > WebSocket firehose runtime benchmark: same-window, 1000 rows, 10 subscribers",
+          "maxMs": 9.130499999999984,
+          "meanMs": 7.303866599999992,
+          "minMs": 6.510249999999928,
+          "name": "same-window remote websocket publish + fanout",
+          "p99Ms": 9.130499999999984,
+          "sampleCount": 5
+        }
+      ],
+      "benchmarkCases": ["same-window remote websocket publish + fanout"],
+      "benchmarkName": "WebSocket firehose runtime benchmark",
+      "benchmarkScope": "runtime-websocket-firehose",
+      "cleanupLeakCount": 0,
+      "latencySource": "vitest-output-json",
+      "memoryRssTotalDeltaBytes": 25706496,
+      "minimumSampleCount": 5,
+      "mutationCount": 5,
+      "outputJsonPath": "packages/runtime/.artifacts/websocket-firehose-same-window-1000rows-10subs-compressed.json",
+      "queuedEventCount": 0,
+      "rowCount": 1000,
+      "subscriberCount": 10,
+      "summaryPath": "packages/runtime/.artifacts/websocket-firehose-same-window-1000rows-10subs-compressed.summary.json",
+      "taskLabel": "WebSocket firehose same-window 1000 rows 10 subscribers compression on",
+      "topics": ["orders"],
+      "wire": {
+        "afterBenchmark": {
+          "received": 13033,
+          "sent": 2878
+        },
+        "afterSetup": {
+          "received": 11278,
+          "sent": 2002
+        },
+        "measured": {
+          "received": 1755,
+          "sent": 876
+        },
+        "sentBytesPerMutation": 175.2,
+        "sentBytesPerSubscriberMutation": 17.52
+      },
+      "websocketCompression": true
+    },
+    {
+      "artifactKind": "runtime-benchmark-summary",
+      "backpressureCount": 0,
+      "benchmarks": [
+        {
+          "groupName": "src/websocket-firehose.bench.ts > WebSocket firehose runtime benchmark: ten-window, 1000 rows, 10 subscribers",
+          "maxMs": 9.594459000000029,
+          "meanMs": 7.275600200000008,
+          "minMs": 6.595625000000041,
+          "name": "ten-window remote websocket publish + fanout",
+          "p99Ms": 9.594459000000029,
+          "sampleCount": 5
+        }
+      ],
+      "benchmarkCases": ["ten-window remote websocket publish + fanout"],
+      "benchmarkName": "WebSocket firehose runtime benchmark",
+      "benchmarkScope": "runtime-websocket-firehose",
+      "cleanupLeakCount": 0,
+      "latencySource": "vitest-output-json",
+      "memoryRssTotalDeltaBytes": 26001408,
+      "minimumSampleCount": 5,
+      "mutationCount": 5,
+      "outputJsonPath": "packages/runtime/.artifacts/websocket-firehose-ten-window-1000rows-10subs-compressed.json",
+      "queuedEventCount": 0,
+      "rowCount": 1000,
+      "subscriberCount": 10,
+      "summaryPath": "packages/runtime/.artifacts/websocket-firehose-ten-window-1000rows-10subs-compressed.summary.json",
+      "taskLabel": "WebSocket firehose ten-window 1000 rows 10 subscribers compression on",
+      "topics": ["orders"],
+      "wire": {
+        "afterBenchmark": {
+          "received": 13033,
+          "sent": 3454
+        },
+        "afterSetup": {
+          "received": 11278,
+          "sent": 2258
+        },
+        "measured": {
+          "received": 1755,
+          "sent": 1196
+        },
+        "sentBytesPerMutation": 239.2,
+        "sentBytesPerSubscriberMutation": 23.919999999999998
+      },
+      "websocketCompression": true
     }
   ],
   "thresholds": {
@@ -78,6 +206,10 @@
     },
     "throughputAggregateRowsPerSecond": {
       "minRatio": 0.5
+    },
+    "wireSentBytesPerSubscriberMutation": {
+      "maxAbsoluteDeltaBytes": 64,
+      "maxRatio": 1.25
     }
   }
 }

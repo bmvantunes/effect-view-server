@@ -80,6 +80,14 @@ const simpleObservation = {
   topics: ["orders"],
 };
 
+const websocketWire = {
+  afterBenchmark: { received: 1_100, sent: 2_100 },
+  afterSetup: { received: 1_000, sent: 2_000 },
+  measured: { received: 100, sent: 100 },
+  sentBytesPerMutation: 20,
+  sentBytesPerSubscriberMutation: 20,
+};
+
 const artifactWith = (tasks: ReadonlyArray<typeof simpleObservation>) => ({
   artifactKind: "view-server-benchmark-baseline",
   profile: "smoke",
@@ -239,7 +247,6 @@ describe("benchmark shared-query compatibility", () => {
     });
   });
 
-
   it("reports active-query sharing structural regressions", () => {
     const baseline = buildBenchmarkBaseline("active-query-sharing", [
       {
@@ -261,7 +268,6 @@ describe("benchmark shared-query compatibility", () => {
       ],
     });
   });
-
 
   it("does not force optional active-query structural counters onto older baselines", () => {
     const baseline = buildBenchmarkBaseline("smoke", [observation]);
@@ -1017,18 +1023,78 @@ describe("benchmark runtime and transport invariants", () => {
       benchmarkScope: "runtime-websocket-firehose",
       groupedWriteAdmission: undefined,
       mutationCount: 5,
+      websocketCompression: false,
+      wire: websocketWire,
     };
     const baseline = buildBenchmarkBaseline("websocket-firehose", [websocketObservation]);
     const increasedMutationCount = buildBenchmarkBaseline("websocket-firehose", [
       {
         ...websocketObservation,
         mutationCount: 10,
+        wire: {
+          ...websocketWire,
+          afterBenchmark: { ...websocketWire.afterBenchmark, sent: 2_200 },
+          measured: { ...websocketWire.measured, sent: 200 },
+        },
       },
     ]);
 
     expect(compareArtifacts(baseline, increasedMutationCount)).toStrictEqual({
       ok: false,
       regressions: ["task a: mutationCount changed from 5 to 10."],
+    });
+  });
+
+  it("rejects comparisons across WebSocket compression modes", () => {
+    const websocketObservation = {
+      ...observation,
+      artifactKind: "runtime-benchmark-summary",
+      benchmarkScope: "runtime-websocket-firehose",
+      groupedWriteAdmission: undefined,
+      mutationCount: 5,
+      websocketCompression: false,
+      wire: websocketWire,
+    };
+    const baseline = buildBenchmarkBaseline("websocket-firehose", [websocketObservation]);
+    const compressed = buildBenchmarkBaseline("websocket-firehose", [
+      { ...websocketObservation, websocketCompression: true },
+    ]);
+
+    expect(compareArtifacts(baseline, compressed)).toStrictEqual({
+      ok: false,
+      regressions: ["task a: websocketCompression changed from false to true."],
+    });
+  });
+
+  it("rejects WebSocket outbound payload regressions", () => {
+    const websocketObservation = {
+      ...observation,
+      artifactKind: "runtime-benchmark-summary",
+      benchmarkScope: "runtime-websocket-firehose",
+      groupedWriteAdmission: undefined,
+      mutationCount: 5,
+      websocketCompression: false,
+      wire: websocketWire,
+    };
+    const baseline = buildBenchmarkBaseline("websocket-firehose", [websocketObservation]);
+    const inflatedPayload = buildBenchmarkBaseline("websocket-firehose", [
+      {
+        ...websocketObservation,
+        wire: {
+          ...websocketWire,
+          afterBenchmark: { ...websocketWire.afterBenchmark, sent: 2_200 },
+          measured: { ...websocketWire.measured, sent: 200 },
+          sentBytesPerMutation: 40,
+          sentBytesPerSubscriberMutation: 40,
+        },
+      },
+    ]);
+
+    expect(compareArtifacts(baseline, inflatedPayload)).toStrictEqual({
+      ok: false,
+      regressions: [
+        "task a: outbound bytes per subscriber mutation regressed from 20 bytes to 40 bytes; allowed <= 25 bytes.",
+      ],
     });
   });
 

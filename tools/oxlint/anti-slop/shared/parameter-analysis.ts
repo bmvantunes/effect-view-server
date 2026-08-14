@@ -1,6 +1,8 @@
 import type { ESTree, Scope, SourceCode, Variable } from "@oxlint/plugins";
 import {
+	typeRequiresStructuralRuntimeEvidence,
 	typeResolvesToRuntimeTypeofTags,
+	typeResolvesToRuntimeTypeofTagsForPropertyPath,
 	type TypeEnvironment,
 } from "./dictionary-types.ts";
 
@@ -114,6 +116,9 @@ const trustedValidationImportExports = new Map<string, ReadonlySet<string>>([
 			"isWireSafeBigDecimal",
 		]),
 	],
+	["@effect-view-server/source-adapter/internal", new Set(["isSourceAdapterHandle", "isSourceDefinition"])],
+	["./adapter-brand", new Set(["hasSourceModelSelfBrand", "isSourceAdapterHandle"])],
+	["./definition-brand", new Set(["isSourceDefinition", "validateSourceDefinition"])],
 	[
 		"effect-view-server/value-semantics",
 		new Set([
@@ -214,6 +219,7 @@ type TypeofComparison = {
 	readonly node: ESTree.Node;
 	readonly operator: string;
 	readonly tag: string;
+	readonly operand: ESTree.Node;
 };
 
 function isTypeofComparison(node: ESTree.UnaryExpression): node is TypeofUnaryExpression {
@@ -229,7 +235,12 @@ function typeofComparisonForNode(node: ESTree.Node): TypeofComparison | undefine
 		if (node.operator !== "typeof" || !isTypeofComparison(node)) return undefined;
 		const other = node.parent.left === node ? node.parent.right : node.parent.left;
 		return other.type === "Literal" && typeof other.value === "string"
-			? { node: node.parent, operator: node.parent.operator, tag: other.value }
+			? {
+					 node: node.parent,
+					 operator: node.parent.operator,
+					 tag: other.value,
+					 operand: node.argument,
+				  }
 			: undefined;
 	}
 	if (node.type !== "BinaryExpression") return undefined;
@@ -242,7 +253,7 @@ function typeofComparisonForNode(node: ESTree.Node): TypeofComparison | undefine
 	if (typeofNode === undefined) return undefined;
 	const other = node.left === typeofNode ? node.right : node.left;
 	return other.type === "Literal" && typeof other.value === "string"
-		? { node, operator: node.operator, tag: other.value }
+		? { node, operator: node.operator, tag: other.value, operand: typeofNode.argument }
 		: undefined;
 }
 
@@ -250,6 +261,7 @@ type ValidationResolution = ReadonlySet<Variable> | undefined;
 
 const builtinValidationCalls = new Set([
 	"Array.isArray",
+	"Object.hasOwn",
 	"BigDecimal.isBigDecimal",
 	"Cause.hasDies",
 	"Cause.hasFails",
@@ -318,7 +330,14 @@ function isValidationOperation(
 ): boolean {
 	if (node.type === "UnaryExpression") return node.operator === "typeof" && isTypeofComparison(node);
 	if (node.type === "BinaryExpression") {
+		if (isPropertyPresenceOperation(node)) return true;
 		if (!["===", "!==", "==", "!="].includes(node.operator)) return false;
+		if (
+			isIdentityLookupShape(node) ||
+			isReflectiveBrandShape(node) ||
+			reflectedPropertyComparisonForNode(node) !== undefined
+		)
+			return true;
 		const left = node.left.type === "UnaryExpression" && isTypeofComparison(node.left);
 		const right = node.right.type === "UnaryExpression" && isTypeofComparison(node.right);
 		return left || right;
@@ -810,6 +829,593 @@ function isParameterGuardRejection(
 	) && containsParameterReference(node, bindings, sourceCode);
 }
 
+function unwrapRuntimeTypeofOperand(node: ESTree.Node): ESTree.Node {
+	let current = node;
+	while (
+		current.type === "ChainExpression" ||
+		current.type === "ParenthesizedExpression" ||
+		current.type === "TSAsExpression" ||
+		current.type === "TSSatisfiesExpression" ||
+		current.type === "TSTypeAssertion" ||
+		current.type === "TSNonNullExpression"
+	) {
+		current = current.expression;
+	}
+	return current;
+}
+
+function parameterPropertyPath(
+	node: ESTree.Node,
+	bindings: ParameterBindings,
+	sourceCode?: SourceCode,
+): readonly string[] | undefined {
+	const current = unwrapRuntimeTypeofOperand(node);
+	if (
+		current.type === "Identifier" &&
+		isReferenceIdentifier(current) &&
+		isParameterReference(current, bindings, sourceCode)
+	)
+		return [];
+	if (current.type !== "MemberExpression" || current.object.type === "Super") return undefined;
+	const propertyName = current.computed
+		? current.property.type === "Literal" && typeof current.property.value === "string"
+			? current.property.value
+			: undefined
+		: current.property.type === "Identifier"
+			? current.property.name
+			: undefined;
+	if (propertyName === undefined) return undefined;
+	const basePath = parameterPropertyPath(current.object, bindings, sourceCode);
+	return basePath === undefined ? undefined : [...basePath, propertyName];
+}
+
+function reflectedPropertyPath(
+	node: ESTree.Node,
+	bindings: ParameterBindings,
+	sourceCode?: SourceCode,
+): readonly string[] | undefined {
+	const current = unwrapRuntimeTypeofOperand(node);
+	if (current.type !== "CallExpression" || validationCallName(current) !== "Reflect.get") return undefined;
+	const object = current.arguments[0];
+	const property = current.arguments[1];
+	if (
+		object === undefined ||
+		property === undefined ||
+		property.type === "SpreadElement" ||
+		property.type !== "Literal" ||
+		typeof property.value !== "string"
+	)
+		return undefined;
+	return parameterPropertyPath(object, bindings, sourceCode) === undefined
+		? undefined
+		: [...(parameterPropertyPath(object, bindings, sourceCode) ?? []), property.value];
+}
+
+function observedPropertyPath(
+	node: ESTree.Node,
+	bindings: ParameterBindings,
+	sourceCode?: SourceCode,
+): readonly string[] | undefined {
+	return parameterPropertyPath(node, bindings, sourceCode) ?? reflectedPropertyPath(node, bindings, sourceCode);
+}
+
+function isImportedPredicateType(
+	type: ESTree.TSType,
+	environment: TypeEnvironment,
+): boolean {
+	const current = unwrapRuntimeTypeofOperand(type);
+	return (
+		current.type === "TSTypeReference" &&
+		current.typeName.type === "Identifier" &&
+		environment.resolveImportedType(current, current.typeName.name) !== undefined
+	);
+}
+
+function isSchemaType(
+	type: ESTree.TSType,
+	environment: TypeEnvironment,
+	resolving: ReadonlySet<string> = new Set(),
+): boolean {
+	const current = unwrapRuntimeTypeofOperand(type);
+	if (current.type !== "TSTypeReference") return false;
+	if (
+		current.typeName.type === "TSQualifiedName" &&
+		current.typeName.left.type === "Identifier" &&
+		current.typeName.left.name === "Schema" &&
+		current.typeName.right.type === "Identifier" &&
+		(current.typeName.right.name === "Codec" || current.typeName.right.name === "Schema")
+	)
+		return true;
+	if (current.typeName.type !== "Identifier" || resolving.has(current.typeName.name)) return false;
+	const alias = environment.resolveAlias(current, current.typeName.name);
+	if (alias !== undefined) {
+		return isSchemaType(alias.typeAnnotation, environment, new Set([...resolving, current.typeName.name]));
+	}
+	return environment.resolveInterfaces(current, current.typeName.name).some((declaration) =>
+		declaration.extends.some(
+			(heritage) =>
+				heritage.expression.type === "MemberExpression" &&
+				!heritage.expression.computed &&
+				heritage.expression.object.type === "Identifier" &&
+				heritage.expression.object.name === "Schema" &&
+				heritage.expression.property.type === "Identifier" &&
+				heritage.expression.property.name === "Codec",
+		),
+	);
+}
+
+function isPropertyPresenceOperation(node: ESTree.Node): node is ESTree.BinaryExpression {
+	return (
+		node.type === "BinaryExpression" &&
+		node.operator === "in" &&
+		node.left.type === "Literal" &&
+		typeof node.left.value === "string"
+	);
+}
+
+function reflectedPropertyComparisonForNode(
+	node: ESTree.Node,
+): { readonly node: ESTree.BinaryExpression; readonly operator: string; readonly operand: ESTree.Node } | undefined {
+	if (node.type !== "BinaryExpression" || !["==", "===", "!=", "!=="].includes(node.operator))
+		return undefined;
+	const reflected = [node.left, node.right].find(
+		(candidate): candidate is ESTree.CallExpression =>
+			candidate.type === "CallExpression" && validationCallName(candidate) === "Reflect.get",
+	);
+	return reflected === undefined
+		? undefined
+		: { node, operator: node.operator, operand: reflected };
+}
+
+function isIdentityLookupShape(node: ESTree.Node): boolean {
+	if (node.type !== "BinaryExpression" || !["==", "==="].includes(node.operator)) return false;
+	return [node.left, node.right].some(
+		(candidate) =>
+			candidate.type === "CallExpression" &&
+			candidate.callee.type === "MemberExpression" &&
+			!candidate.callee.computed &&
+			candidate.callee.property.type === "Identifier" &&
+			candidate.callee.property.name === "get",
+	);
+}
+
+function isReflectiveBrandShape(node: ESTree.Node): boolean {
+	if (node.type !== "BinaryExpression" || !["==", "==="].includes(node.operator)) return false;
+	const names = [node.left, node.right].map((candidate) =>
+		candidate.type === "CallExpression" ? validationCallName(candidate) : null,
+	);
+	return names.includes("Reflect.apply") && names.includes("Reflect.get");
+}
+
+function propertyPresenceMatchesPredicate(
+	node: ESTree.Node,
+	predicateType: ESTree.TSType | undefined,
+	bindings: ParameterBindings,
+	sourceCode: SourceCode | undefined,
+	environment: TypeEnvironment | undefined,
+): boolean {
+	let current = unwrapRuntimeTypeofOperand(node);
+	if (current.type === "UnaryExpression" && current.operator === "!") {
+		current = unwrapRuntimeTypeofOperand(current.argument);
+	}
+	if (!isPropertyPresenceOperation(current)) return false;
+	const path = parameterPropertyPath(current.right, bindings, sourceCode);
+	return (
+		path !== undefined &&
+		predicateType !== undefined &&
+		environment !== undefined &&
+		(typeResolvesToRuntimeTypeofTagsForPropertyPath(
+			predicateType,
+			[...path, current.left.value],
+			environment,
+		) !== undefined || isImportedPredicateType(predicateType, environment))
+	);
+}
+
+function reflectedPropertyMatchesPredicate(
+	node: ESTree.Node,
+	predicateType: ESTree.TSType | undefined,
+	bindings: ParameterBindings,
+	sourceCode: SourceCode | undefined,
+	environment: TypeEnvironment | undefined,
+): boolean {
+	const comparison = reflectedPropertyComparisonForNode(node);
+	if (comparison === undefined || predicateType === undefined || environment === undefined) return false;
+	const path = reflectedPropertyPath(comparison.operand, bindings, sourceCode);
+	return (
+		path !== undefined &&
+		(typeResolvesToRuntimeTypeofTagsForPropertyPath(predicateType, path, environment) !== undefined ||
+			isImportedPredicateType(predicateType, environment))
+	);
+}
+
+function parameterGuardAcceptsValue(
+	node: ESTree.Node,
+	bindings: ParameterBindings,
+	sourceCode?: SourceCode,
+): boolean {
+	if (node.type !== "BinaryExpression" || !["!=", "!=="].includes(node.operator)) return false;
+	const other = node.left.type === "Literal" ? node.left : node.right;
+	return (
+		(other.type === "Literal" && other.value === null) ||
+		(other.type === "Identifier" && other.name === "undefined")
+	) && containsParameterReference(node, bindings, sourceCode);
+}
+
+type SchemaEvidence = {
+	readonly tags: ReadonlySet<string>;
+	readonly structural: boolean;
+	readonly arrayLike: boolean;
+	readonly broadObject?: boolean;
+};
+
+function schemaEvidence(node: ESTree.Node): SchemaEvidence | undefined {
+	const current = unwrapRuntimeTypeofOperand(node);
+	if (
+		current.type === "MemberExpression" &&
+		!current.computed &&
+		current.object.type === "Identifier" &&
+		current.object.name === "Schema" &&
+		current.property.type === "Identifier"
+	) {
+		switch (current.property.name) {
+			case "BigInt":
+				return { tags: new Set(["bigint"]), structural: false, arrayLike: false };
+			case "Boolean":
+				return { tags: new Set(["boolean"]), structural: false, arrayLike: false };
+			case "Number":
+				return { tags: new Set(["number"]), structural: false, arrayLike: false };
+			case "String":
+				return { tags: new Set(["string"]), structural: false, arrayLike: false };
+			case "Symbol":
+				return { tags: new Set(["symbol"]), structural: false, arrayLike: false };
+			case "Undefined":
+				return { tags: new Set(["undefined"]), structural: false, arrayLike: false };
+			case "Array":
+			case "ReadonlyArray":
+				return { tags: new Set(["object"]), structural: false, arrayLike: true };
+			case "Object":
+				return { tags: new Set(["object"]), structural: false, arrayLike: false, broadObject: true };
+			default:
+				return undefined;
+		}
+	}
+	if (current.type !== "CallExpression") return undefined;
+	const name = validationCallName(current);
+	if (name === "Schema.Array" || name === "Schema.Tuple") {
+		return { tags: new Set(["object"]), structural: false, arrayLike: true };
+	}
+	if (name === "Schema.Struct" || name === "Schema.Record") {
+		return { tags: new Set(["object"]), structural: true, arrayLike: false };
+	}
+	return undefined;
+}
+
+function isArrayPredicateType(type: ESTree.TSType): boolean {
+	const current = unwrapRuntimeTypeofOperand(type);
+	return (
+		current.type === "TSArrayType" ||
+		current.type === "TSTupleType" ||
+		(current.type === "TSTypeReference" &&
+			current.typeName.type === "Identifier" &&
+			(current.typeName.name === "Array" || current.typeName.name === "ReadonlyArray"))
+	);
+}
+
+function localPredicateTypeMatches(
+	node: ESTree.CallExpression,
+	predicateType: ESTree.TSType,
+	sourceCode: SourceCode | undefined,
+): boolean {
+	if (sourceCode === undefined || node.callee.type !== "Identifier") return false;
+	const variable = resolvedVariable(sourceCode, node.callee);
+	if (variable === undefined) return false;
+	const expected = sourceCode.getText(predicateType);
+	return variable.defs.some((definition) => {
+		const functionValue = functionValueFromDefinition(definition);
+		if (functionValue === undefined || functionValue.returnType === null || functionValue.returnType === undefined)
+			return false;
+		const returnType = functionValue.returnType.typeAnnotation;
+		return (
+			returnType.type === "TSTypePredicate" &&
+			returnType.typeAnnotation?.typeAnnotation !== undefined &&
+			sourceCode.getText(returnType.typeAnnotation.typeAnnotation) === expected
+		);
+	});
+}
+
+function typePredicateCallEvidenceMatches(
+	node: ESTree.CallExpression,
+	predicateType: ESTree.TSType,
+	expectedTypeofTags: ReadonlySet<string> | undefined,
+	sourceCode: SourceCode | undefined,
+	environment: TypeEnvironment | undefined,
+	resolving: ValidationResolution,
+): boolean {
+	const name = validationCallName(node);
+	if (
+		name === "Result.isSuccess" ||
+		name === "Result.isFailure" ||
+		name === "Result.isResult" ||
+		name === "Option.isSome" ||
+		name === "Option.isNone" ||
+		name === "Option.isOption" ||
+		name === "Cause.isCause" ||
+		name === "Exit.isExit"
+	)
+		return false;
+	if (name === "Array.isArray") return isArrayPredicateType(predicateType);
+	if (node.callee.type === "CallExpression" && validationCallName(node.callee) === "Schema.is") {
+		const schemaNode = node.callee.arguments[0];
+		if (schemaNode === undefined || schemaNode.type === "SpreadElement") return false;
+		if (
+			schemaNode.type === "MemberExpression" &&
+			!schemaNode.computed &&
+			schemaNode.object.type === "Identifier" &&
+			schemaNode.object.name === "Schema" &&
+			schemaNode.property.type === "Identifier" &&
+			schemaNode.property.name === "Unknown"
+		)
+			return false;
+		const evidence = schemaEvidence(schemaNode);
+		if (evidence === undefined) {
+			return (
+				schemaNode.type === "Identifier" &&
+				(expectedTypeofTags === undefined ||
+					expectedTypeofTags.has("object") ||
+					expectedTypeofTags.has("function"))
+			);
+		}
+		if (evidence.arrayLike) return isArrayPredicateType(predicateType);
+		if (evidence.broadObject) {
+			return (
+				expectedTypeofTags?.has("object") === true &&
+				environment !== undefined &&
+				!typeRequiresStructuralRuntimeEvidence(predicateType, environment)
+			);
+		}
+		if (evidence.structural) {
+			return (
+				expectedTypeofTags?.has("object") === true &&
+				environment !== undefined &&
+				typeRequiresStructuralRuntimeEvidence(predicateType, environment)
+			);
+		}
+		return expectedTypeofTags !== undefined && Array.from(evidence.tags).every((tag) => expectedTypeofTags.has(tag));
+	}
+	if (name === "Schema.isSchema") {
+		return environment !== undefined && isSchemaType(predicateType, environment);
+	}
+	if (name === "Object.hasOwn") {
+		return environment !== undefined && typeRequiresStructuralRuntimeEvidence(predicateType, environment);
+	}
+	if (isLocallyTrustedValidationCall(node, sourceCode, resolving, environment)) {
+		return localPredicateTypeMatches(node, predicateType, sourceCode);
+	}
+	if (expectedTypeofTags === undefined || environment === undefined) {
+		return (
+			(name !== null && isBuiltinValidationName(name)) ||
+			(name !== null && knownValidationCalls.has(name)) ||
+			isTrustedValidationCall(node, sourceCode, resolving, environment)
+		);
+	}
+	return (
+		(name !== null && isBuiltinValidationName(name)) ||
+		(name !== null && knownValidationCalls.has(name)) ||
+		isTrustedValidationCall(node, sourceCode, resolving, environment)
+	);
+}
+
+function isIdentityLookupEvidence(
+	node: ESTree.Node,
+	bindings: ParameterBindings,
+	sourceCode: SourceCode | undefined,
+): boolean {
+	const current = unwrapRuntimeTypeofOperand(node);
+	if (current.type !== "BinaryExpression" || !["==", "==="].includes(current.operator)) return false;
+	const isLookup = (candidate: ESTree.Node): boolean => {
+		const expression = unwrapRuntimeTypeofOperand(candidate);
+		return (
+			expression.type === "CallExpression" &&
+			expression.callee.type === "MemberExpression" &&
+			!expression.callee.computed &&
+			expression.callee.property.type === "Identifier" &&
+			expression.callee.property.name === "get"
+		);
+	};
+	return (
+		(isLookup(current.left) &&
+			(containsParameterReference(current.left, bindings, sourceCode) ||
+				containsParameterReference(current.right, bindings, sourceCode))) ||
+		(isLookup(current.right) &&
+			(containsParameterReference(current.right, bindings, sourceCode) ||
+				containsParameterReference(current.left, bindings, sourceCode)))
+	);
+}
+
+function isReflectiveBrandEvidence(
+	node: ESTree.Node,
+	bindings: ParameterBindings,
+	sourceCode: SourceCode | undefined,
+): boolean {
+	const current = unwrapRuntimeTypeofOperand(node);
+	if (current.type !== "BinaryExpression" || !["==", "==="].includes(current.operator)) return false;
+	const isReflectApply = (candidate: ESTree.Node): boolean => {
+		const expression = unwrapRuntimeTypeofOperand(candidate);
+		return (
+			expression.type === "CallExpression" &&
+			validationCallName(expression) === "Reflect.apply" &&
+			expression.arguments[1] !== undefined &&
+			containsParameterReference(expression.arguments[1], bindings, sourceCode)
+		);
+	};
+	const isReflectGet = (candidate: ESTree.Node): boolean => {
+		const expression = unwrapRuntimeTypeofOperand(candidate);
+		return reflectedPropertyPath(expression, bindings, sourceCode) !== undefined;
+	};
+	return (
+		(isReflectApply(current.left) && isReflectGet(current.right)) ||
+		(isReflectApply(current.right) && isReflectGet(current.left))
+	);
+}
+
+function hasStructuralRuntimeEvidence(
+	node: ESTree.Node,
+	bindings: ParameterBindings,
+	sourceCode: SourceCode | undefined,
+	typeofTagMatches: (comparison: TypeofComparison) => boolean,
+	predicateType: ESTree.TSType | undefined,
+	environment: TypeEnvironment | undefined,
+	resolving: ValidationResolution | undefined,
+): boolean {
+	const current = unwrapRuntimeTypeofOperand(node);
+	if (predicateType === undefined) return false;
+	const comparison = typeofComparisonForNode(current);
+	if (comparison !== undefined) {
+		const path = observedPropertyPath(comparison.operand, bindings, sourceCode);
+		return path !== undefined && path.length > 0 && typeofTagMatches(comparison);
+	}
+	if (reflectedPropertyComparisonForNode(current) !== undefined) {
+		return reflectedPropertyMatchesPredicate(current, predicateType, bindings, sourceCode, environment);
+	}
+	if (isPropertyPresenceOperation(current)) {
+		return propertyPresenceMatchesPredicate(current, predicateType, bindings, sourceCode, environment);
+	}
+	if (isIdentityLookupEvidence(current, bindings, sourceCode) || isReflectiveBrandEvidence(current, bindings, sourceCode)) {
+		return true;
+	}
+	if (current.type === "CallExpression") {
+		const name = validationCallName(current);
+		if (
+			name === "Reflect.apply" &&
+			!isReflectiveBrandEvidence(current.parent, bindings, sourceCode)
+		)
+			return false;
+		return (
+			validationReferencesParameter(current, bindings, sourceCode, resolving, environment) &&
+			typePredicateCallEvidenceMatches(
+				current,
+				predicateType,
+				undefined,
+				sourceCode,
+				environment,
+				resolving,
+			)
+		);
+	}
+	if (current.type === "LogicalExpression" && current.operator === "&&") {
+		return (
+			hasStructuralRuntimeEvidence(
+				current.left,
+				bindings,
+				sourceCode,
+				typeofTagMatches,
+				predicateType,
+				environment,
+				resolving,
+			) ||
+			hasStructuralRuntimeEvidence(
+				current.right,
+				bindings,
+				sourceCode,
+				typeofTagMatches,
+				predicateType,
+				environment,
+				resolving,
+			)
+		);
+	}
+	return false;
+}
+
+function isPositivePredicateCondition(
+	node: ESTree.Node,
+	bindings: ParameterBindings,
+	sourceCode: SourceCode | undefined,
+	typeofTagMatches: (comparison: TypeofComparison) => boolean,
+	predicateType: ESTree.TSType | undefined,
+	environment: TypeEnvironment | undefined,
+): boolean {
+	const current = unwrapRuntimeTypeofOperand(node);
+	const comparison = typeofComparisonForNode(current);
+	if (comparison !== undefined) {
+		if (comparison.operator !== "==" && comparison.operator !== "===") return false;
+		const propertyPath = parameterPropertyPath(comparison.operand, bindings, sourceCode);
+		if (propertyPath === undefined) return true;
+		if (typeofTagMatches(comparison)) return true;
+		return (
+			comparison.tag === "object" &&
+			propertyPath?.length === 0 &&
+			predicateType !== undefined &&
+			environment !== undefined &&
+			 typeRequiresStructuralRuntimeEvidence(predicateType, environment)
+		);
+	}
+	const reflectedComparison = reflectedPropertyComparisonForNode(current);
+	if (reflectedComparison !== undefined) {
+		return (
+			(reflectedComparison.operator === "==" || reflectedComparison.operator === "===") &&
+			reflectedPropertyMatchesPredicate(current, predicateType, bindings, sourceCode, environment)
+		);
+	}
+	if (isPropertyPresenceOperation(current)) {
+		return propertyPresenceMatchesPredicate(current, predicateType, bindings, sourceCode, environment);
+	}
+	if (current.type === "BinaryExpression" && isParameterGuardRejection(current, bindings, sourceCode)) {
+		return false;
+	}
+	if (parameterGuardAcceptsValue(current, bindings, sourceCode)) return true;
+	if (current.type === "LogicalExpression" && current.operator === "&&") {
+		return (
+			isPositivePredicateCondition(
+				current.left,
+				bindings,
+				sourceCode,
+				typeofTagMatches,
+				predicateType,
+				environment,
+			) &&
+			isPositivePredicateCondition(
+				current.right,
+				bindings,
+				sourceCode,
+								typeofTagMatches,
+								predicateType,
+								environment,
+							)
+		);
+	}
+	return true;
+}
+
+function containsConsumedValidationEvidence(
+	node: ESTree.Node,
+	bindings: ParameterBindings,
+	sourceCode: SourceCode | undefined,
+	resolving: ValidationResolution | undefined,
+	environment: TypeEnvironment | undefined,
+): boolean {
+	const pending: ESTree.Node[] = [node];
+	while (pending.length > 0) {
+		const current = pending.pop();
+		if (current === undefined) continue;
+		if (
+			isValidationOperation(current, sourceCode, resolving, environment) &&
+			validationReferencesParameter(current, bindings, sourceCode, resolving, environment)
+		)
+			return true;
+		for (const [key, value] of Object.entries(current)) {
+			if (key === "parent") continue;
+			if (Array.isArray(value)) {
+				for (const entry of value) if (isNode(entry)) pending.push(entry);
+			} else if (isNode(value)) {
+				pending.push(value);
+			}
+		}
+	}
+	return false;
+}
+
 /**
  * Returns whether a validation operation is known to constrain the value
  * returned by a type predicate. `typeof value !== ...` is validation, but it
@@ -819,17 +1425,103 @@ function isParameterGuardRejection(
 function typePredicateEvidencePolarity(
 	node: ESTree.Node,
 	expectedTypeofTags: ReadonlySet<string> | undefined,
+	predicateType: ESTree.TSType | undefined,
 	bindings: ParameterBindings,
 	sourceCode?: SourceCode,
+	environment?: TypeEnvironment,
+	resolving?: ValidationResolution,
 ): boolean | undefined {
 	const comparison = typeofComparisonForNode(node);
-	const typeofTagMatches = (tag: string): boolean =>
-		expectedTypeofTags !== undefined && expectedTypeofTags.has(tag);
-	if (comparison !== undefined && !typeofTagMatches(comparison.tag))
+	const reflectedComparison = reflectedPropertyComparisonForNode(node);
+	const identityLookupShape = isIdentityLookupShape(node) || isReflectiveBrandShape(node);
+	const structuralIdentityEvidence =
+		identityLookupShape &&
+		predicateType !== undefined &&
+		environment !== undefined &&
+		typeRequiresStructuralRuntimeEvidence(predicateType, environment);
+	const comparisonPropertyPath =
+		comparison === undefined ? undefined : observedPropertyPath(comparison.operand, bindings, sourceCode);
+	const requiresStructuralEvidence =
+		comparison !== undefined &&
+		comparison.tag === "object" &&
+		comparisonPropertyPath?.length === 0 &&
+		predicateType !== undefined &&
+		environment !== undefined &&
+		typeRequiresStructuralRuntimeEvidence(predicateType, environment);
+	const typeofTagMatches = (candidate: TypeofComparison): boolean => {
+		const propertyPath = observedPropertyPath(candidate.operand, bindings, sourceCode);
+		if (propertyPath === undefined) return false;
+		if (propertyPath.length === 0) {
+			if (expectedTypeofTags?.has(candidate.tag) !== true) return false;
+			return !(candidate.tag === "object" && requiresStructuralEvidence);
+		}
+		const propertyTags =
+			predicateType === undefined || environment === undefined
+				? undefined
+				: typeResolvesToRuntimeTypeofTagsForPropertyPath(predicateType, propertyPath, environment);
+		return (
+			propertyTags?.has(candidate.tag) === true ||
+			(propertyTags === undefined &&
+				predicateType !== undefined &&
+				environment !== undefined &&
+				isImportedPredicateType(predicateType, environment) &&
+				expectedTypeofTags?.has(candidate.tag) === true)
+		);
+	};
+	const propertyPresence = isPropertyPresenceOperation(node)
+		? {
+			propertyName: node.left.value,
+			propertyPath: parameterPropertyPath(node.right, bindings, sourceCode),
+		}
+		: undefined;
+	if (
+		comparison !== undefined &&
+		!typeofTagMatches(comparison) &&
+		!(requiresStructuralEvidence && comparisonPropertyPath?.length === 0 && comparison.tag === "object")
+	)
+		return undefined;
+	if (
+		comparison === undefined &&
+		reflectedComparison !== undefined &&
+		!reflectedPropertyMatchesPredicate(node, predicateType, bindings, sourceCode, environment)
+	)
+		return undefined;
+	if (identityLookupShape && !structuralIdentityEvidence) return undefined;
+	if (
+		comparison === undefined &&
+		node.type === "CallExpression" &&
+		(predicateType === undefined ||
+			!typePredicateCallEvidenceMatches(
+				node,
+				predicateType,
+				expectedTypeofTags,
+				sourceCode,
+				environment,
+				resolving,
+			))
+	)
+		return undefined;
+	if (
+		comparison === undefined &&
+		(propertyPresence === undefined ||
+			propertyPresence.propertyPath === undefined ||
+			predicateType === undefined ||
+			environment === undefined ||
+			!propertyPresenceMatchesPredicate(node, predicateType, bindings, sourceCode, environment)) &&
+		reflectedComparison === undefined &&
+		node.type !== "CallExpression"
+	)
 		return undefined;
 	let current: ESTree.Node = comparison?.node ?? node;
-	let polarity = comparison === undefined || comparison.operator === "==" || comparison.operator === "===";
-	if (comparison === undefined && node.type !== "CallExpression") return undefined;
+	let polarity =
+		comparison === undefined
+			? reflectedComparison === undefined ||
+				reflectedComparison.operator === "==" ||
+				reflectedComparison.operator === "==="
+			: comparison.operator === "==" || comparison.operator === "===";
+	let hasStructuralEvidence = !requiresStructuralEvidence;
+	const finish = (value: boolean): boolean | undefined =>
+		!requiresStructuralEvidence || hasStructuralEvidence ? value : undefined;
 
 	while (current.parent !== null) {
 		const parent: ESTree.Node = current.parent;
@@ -853,26 +1545,179 @@ function typePredicateEvidencePolarity(
 				const other = parent.left === current ? parent.right : parent.left;
 				const otherComparison = typeofComparisonForNode(other);
 				if (
+					propertyPresence !== undefined &&
+					!polarity &&
+					propertyPresenceMatchesPredicate(
+						node,
+						predicateType,
+						bindings,
+						 sourceCode,
+						environment,
+					)
+				) {
+					if (
+						requiresStructuralEvidence &&
+						hasStructuralRuntimeEvidence(
+							node,
+							bindings,
+							sourceCode,
+							typeofTagMatches,
+							predicateType,
+							environment,
+							resolving,
+						)
+					)
+						hasStructuralEvidence = true;
+					current = parent;
+					continue;
+				}
+				if (
 					otherComparison !== undefined &&
 					otherComparison.operator !== "!=" &&
 					otherComparison.operator !== "!==" &&
-					typeofTagMatches(otherComparison.tag)
+					typeofTagMatches(otherComparison)
+				) {
+					if (
+						requiresStructuralEvidence &&
+						hasStructuralRuntimeEvidence(
+							other,
+							bindings,
+							sourceCode,
+							typeofTagMatches,
+							predicateType,
+							environment,
+							resolving,
+						)
+					)
+						hasStructuralEvidence = true;
+					current = parent;
+					continue;
+				}
+				if (
+					!polarity &&
+					reflectedPropertyMatchesPredicate(other, predicateType, bindings, sourceCode, environment)
+				) {
+					if (
+						requiresStructuralEvidence &&
+						hasStructuralRuntimeEvidence(
+							other,
+							bindings,
+							sourceCode,
+							typeofTagMatches,
+							predicateType,
+							environment,
+							resolving,
+						)
+					)
+						hasStructuralEvidence = true;
+					current = parent;
+					continue;
+				}
+				if (
+					!polarity &&
+					isParameterGuardRejection(other, bindings, sourceCode)
 				) {
 					current = parent;
 					continue;
 				}
 				if (
-					comparison !== undefined &&
-					comparison.operator !== "==" &&
-					comparison.operator !== "===" &&
-					isParameterGuardRejection(other, bindings, sourceCode)
+					!polarity &&
+					other.type === "UnaryExpression" &&
+					other.operator === "!" &&
+					propertyPresenceMatchesPredicate(
+						other,
+						predicateType,
+						bindings,
+						 sourceCode,
+						environment,
+					)
 				) {
+					if (
+						requiresStructuralEvidence &&
+						hasStructuralRuntimeEvidence(
+							other,
+							bindings,
+							sourceCode,
+							typeofTagMatches,
+							predicateType,
+							environment,
+							resolving,
+						)
+					)
+						hasStructuralEvidence = true;
+					current = parent;
+					continue;
+				}
+				if (
+					!polarity &&
+					other.type === "CallExpression" &&
+					["Array.isArray", "Object.hasOwn"].includes(validationCallName(other) ?? "") &&
+					validationReferencesParameter(other, bindings, sourceCode, resolving, environment)
+				) {
+					if (
+						requiresStructuralEvidence &&
+						hasStructuralRuntimeEvidence(
+							other,
+							bindings,
+							sourceCode,
+							typeofTagMatches,
+							predicateType,
+							environment,
+							resolving,
+						)
+					)
+						hasStructuralEvidence = true;
+					current = parent;
+					continue;
+				}
+				if (
+					!polarity &&
+					containsConsumedValidationEvidence(other, bindings, sourceCode, resolving, environment)
+				) {
+					if (
+						requiresStructuralEvidence &&
+						hasStructuralRuntimeEvidence(
+							other,
+							bindings,
+							sourceCode,
+							typeofTagMatches,
+							predicateType,
+							environment,
+							resolving,
+						)
+					)
+						hasStructuralEvidence = true;
 					current = parent;
 					continue;
 				}
 				return undefined;
 			}
 			if (parent.operator !== "&&") return undefined;
+			const other = parent.left === current ? parent.right : parent.left;
+			if (
+				!isPositivePredicateCondition(
+					other,
+					bindings,
+					sourceCode,
+					typeofTagMatches,
+					predicateType,
+					environment,
+				)
+			)
+				return undefined;
+			if (
+				requiresStructuralEvidence &&
+				hasStructuralRuntimeEvidence(
+					other,
+					bindings,
+					sourceCode,
+					typeofTagMatches,
+					predicateType,
+					environment,
+					resolving,
+				)
+			)
+				hasStructuralEvidence = true;
 			current = parent;
 			continue;
 		}
@@ -899,14 +1744,14 @@ function typePredicateEvidencePolarity(
 						? undefined
 						: booleanReturnValue(following)
 					: booleanReturnValue(parent.alternate);
-			if (consequent === true && alternate === false) return polarity;
-			if (consequent === false && alternate === true) return !polarity;
+			if (consequent === true && alternate === false) return finish(polarity);
+			if (consequent === false && alternate === true) return finish(!polarity);
 			if (parent.alternate === null && consequent === false && nextStatement(parent) !== undefined)
-				return !polarity;
+				return finish(!polarity);
 			return undefined;
 		}
-		if (parent.type === "ReturnStatement" && parent.argument === current) return polarity;
-		if (parent.type === "ArrowFunctionExpression" && parent.body === current) return polarity;
+		if (parent.type === "ReturnStatement" && parent.argument === current) return finish(polarity);
+		if (parent.type === "ArrowFunctionExpression" && parent.body === current) return finish(polarity);
 		return undefined;
 	}
 	return undefined;
@@ -948,8 +1793,11 @@ function hasValidationEvidence(
 				const polarity = typePredicateEvidencePolarity(
 					current,
 					expectedTypeofTags,
+					predicateType,
 					bindings,
 					sourceCode,
+					environment,
+					resolving,
 				);
 				if (polarity === true) return true;
 				if (polarity === false) hasOppositeTypeofEvidence = true;
@@ -971,8 +1819,21 @@ function hasValidationEvidence(
 		if (current === undefined) continue;
 		const isTypeofOperation = current.type === "UnaryExpression" || current.type === "BinaryExpression";
 		const isStrictTypeofPredicate = isTypePredicateOwner;
+		const isUnverifiedTypePredicateCall =
+			isTypePredicateOwner &&
+			current.type === "CallExpression" &&
+			(predicateType === undefined ||
+				!typePredicateCallEvidenceMatches(
+					current,
+					predicateType,
+					expectedTypeofTags,
+					sourceCode,
+					environment,
+					resolving,
+				));
 		if (
 			(!isTypeofOperation || (allowTypeof && !isStrictTypeofPredicate)) &&
+			!isUnverifiedTypePredicateCall &&
 			isValidationOperation(current, sourceCode, resolving, environment) &&
 			validationReferencesParameter(current, bindings, sourceCode, resolving, environment)
 		)

@@ -495,6 +495,82 @@ function runtimePropertyType(
 	return undefined;
 }
 
+function typeHasRuntimeObjectStructure(
+	type: ESTree.TSType,
+	environment: TypeEnvironment,
+	substitutions: TypeAliasEnvironment,
+	resolvingAliases: ReadonlySet<string>,
+): boolean {
+	const unwrapped = unwrapTransparentType(type);
+	switch (unwrapped.type) {
+		case "TSTypeLiteral":
+			return unwrapped.members.length > 0;
+		case "TSMappedType":
+			return true;
+		case "TSIntersectionType":
+			return unwrapped.types.some((member) =>
+				typeHasRuntimeObjectStructure(member, environment, substitutions, resolvingAliases),
+			);
+		case "TSUnionType":
+			return unwrapped.types.some((member) =>
+				typeHasRuntimeObjectStructure(member, environment, substitutions, resolvingAliases),
+			);
+		case "TSTypeReference": {
+			const name = typeReferenceName(unwrapped);
+			if (name === null) return false;
+			const substitution = substitutions.get(name);
+			if (substitution !== undefined && !isUnappliedReferenceTo(substitution, name)) {
+				return typeHasRuntimeObjectStructure(
+					substitution,
+					environment,
+					substitutions,
+					resolvingAliases,
+				);
+			}
+			if (resolvingAliases.has(name)) return false;
+			const alias = environment.resolveAlias(unwrapped, name);
+			if (alias !== undefined) {
+				const nextSubstitutions = aliasSubstitution(alias, unwrapped, substitutions);
+				if (nextSubstitutions === null) return false;
+				const nextResolving = new Set(resolvingAliases);
+				nextResolving.add(name);
+				return typeHasRuntimeObjectStructure(
+					alias.typeAnnotation,
+					environment,
+					nextSubstitutions,
+					nextResolving,
+				);
+			}
+			return environment.resolveInterfaces(unwrapped, name).some((declaration) =>
+				declaration.body.body.length > 0,
+			);
+		}
+		default:
+			return false;
+	}
+}
+
+export function typeRequiresStructuralRuntimeEvidence(
+	type: ESTree.TSType,
+	environment: TypeEnvironment,
+): boolean {
+	return typeHasRuntimeObjectStructure(type, environment, new Map(), new Set());
+}
+
+export function typeResolvesToRuntimeTypeofTagsForPropertyPath(
+	type: ESTree.TSType,
+	propertyPath: readonly string[],
+	environment: TypeEnvironment,
+): ReadonlySet<RuntimeTypeofTag> | undefined {
+	let current = type;
+	for (const propertyName of propertyPath) {
+		const propertyType = runtimePropertyType(current, propertyName, environment, new Map(), new Set());
+		if (propertyType === undefined) return undefined;
+		current = propertyType;
+	}
+	return runtimeTypeofTagsForType(current, environment, new Map(), new Set());
+}
+
 function runtimeTypeofTagsForType(
 	type: ESTree.TSType,
 	environment: TypeEnvironment,

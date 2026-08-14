@@ -288,8 +288,23 @@ describe("anti-slop Oxlint integration", () => {
 				"function dishonestUnion(value: unknown): value is string | number { return typeof value === 'boolean'; }",
 				"function honestUnion(value: unknown): value is string | number { return typeof value === 'string' || typeof value === 'number'; }",
 				"type RecordValue = { readonly value: string };",
+				"const registry = new Map<unknown, unknown>();",
 				"function dishonestCustom(value: unknown): value is RecordValue { return typeof value === 'boolean'; }",
-				"function honestCustom(value: unknown): value is RecordValue { return typeof value === 'object' && value !== null; }",
+				"function dishonestStructural(value: unknown): value is RecordValue { return typeof value === 'object' && value !== null; }",
+				"function dishonestStructuralProperty(value: unknown): value is RecordValue { return typeof value === 'object' && value !== null && 'other' in value; }",
+				"function dishonestStructuralReflect(value: unknown): value is RecordValue { return typeof value === 'object' && value !== null && typeof Reflect.get(value, 'other') === 'string'; }",
+				"function honestCustom(value: unknown): value is RecordValue { return typeof value === 'object' && value !== null && 'value' in value && typeof value.value === 'string'; }",
+				"function honestStructuralReflect(value: unknown): value is RecordValue { return typeof value === 'object' && value !== null && typeof Reflect.get(value, 'value') === 'string'; }",
+				"function honestRegistry(value: unknown): value is RecordValue { return typeof value === 'object' && value !== null && registry.get(value) === value; }",
+				"function dishonestRegistryPrimitive(value: unknown): value is string { return registry.get(value) === value; }",
+				"function honestOwn(value: unknown): value is RecordValue { return typeof value === 'object' && value !== null && Object.hasOwn(value, 'value'); }",
+				"function dishonestOwnPrimitive(value: unknown): value is string { return Object.hasOwn(value, 'value'); }",
+				"function dishonestSchemaObject(value: unknown): value is RecordValue { return Schema.is(Schema.Object)(value); }",
+				"function dishonestAnd(value: unknown): value is string { return typeof value === 'string' && value === null; }",
+				"function dishonestSchemaUnknown(value: unknown): value is string { return Schema.is(Schema.Unknown)(value); }",
+				"function dishonestResultPredicate(value: unknown): value is string | number { return Result.isSuccess(Result.succeed(value)); }",
+				"function delegatedString(value: unknown): value is string { return typeof value === 'string'; }",
+				"function honestDelegatedString(value: unknown): value is string { return delegatedString(value); }",
 				"function dishonestSwitch(value: unknown): value is string { switch (value) { case 1: return false; default: return true; } }",
 				"const honest = (value: unknown): value is string => typeof value === 'string';",
 			].join("\n"),
@@ -299,7 +314,7 @@ describe("anti-slop Oxlint integration", () => {
 
 		expect(result.error).toBeUndefined();
 		expect(result.status).toBe(1);
-		expect(diagnosticsFor(result, "no-unknown-parameters")).toHaveLength(10);
+		expect(diagnosticsFor(result, "no-unknown-parameters")).toHaveLength(19);
 	}, 120_000);
 
 	it("does not trust nested validators, shadowed validation names, or overload implementations", () => {

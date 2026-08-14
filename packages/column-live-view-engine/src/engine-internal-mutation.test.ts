@@ -317,6 +317,12 @@ describe("ColumnLiveViewEngine internal mutation", () => {
           },
         ]),
       );
+      const patchError = yield* Effect.flip(
+        engine.patchDecodedFields("orders", "stable", {
+          // @ts-expect-error This internal source boundary must reject encoded values at runtime.
+          amount: "44",
+        }),
+      );
       const keyError = yield* Effect.flip(
         engine.publishManyDecodedRows("orders", [{ id: 1, amount: 45n }]),
       );
@@ -327,10 +333,12 @@ describe("ColumnLiveViewEngine internal mutation", () => {
 
       expect(publishError).toBeInstanceOf(InvalidRowError);
       expect(storageKeyError).toBeInstanceOf(InvalidRowError);
+      expect(patchError).toBeInstanceOf(InvalidRowError);
       expect(keyError).toBeInstanceOf(InvalidRowError);
       expect({
         publishError,
         storageKeyError,
+        patchError,
         keyError,
         snapshot,
       }).toStrictEqual({
@@ -341,6 +349,10 @@ describe("ColumnLiveViewEngine internal mutation", () => {
         storageKeyError: InvalidRowError.make({
           topic: "orders",
           message: 'SchemaError(Expected bigint, got "43"\n  at ["amount"])',
+        }),
+        patchError: InvalidRowError.make({
+          topic: "orders",
+          message: 'SchemaError(Expected bigint, got "44"\n  at ["amount"])',
         }),
         keyError: InvalidRowError.make({
           topic: "orders",

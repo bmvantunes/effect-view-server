@@ -26,6 +26,7 @@ NodeRuntime.runMain(
   runViewServerRuntime(viewServer, {
     host: "0.0.0.0",
     websocketPort: 8080,
+    websocketCompression: true,
     tcpPublishHost: "127.0.0.1",
     tcpPublishPort: 8081,
   }),
@@ -34,6 +35,10 @@ NodeRuntime.runMain(
 
 `runViewServerRuntime` keeps the process alive until interrupted. Its options
 configure only the runtime server and optional TCP publisher.
+
+WebSocket compression is opt-in. `websocketCompression: true` enables RFC 7692
+`permessage-deflate`; benchmark its CPU and latency cost with representative
+payloads and fanout before enabling it.
 
 ## Source Adapter Layers
 

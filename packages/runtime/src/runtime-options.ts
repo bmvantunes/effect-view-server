@@ -41,6 +41,7 @@ const runtimeOptionKeyRecord = {
   tcpPublishHost: true,
   tcpPublishMaxConnections: true,
   tcpPublishPort: true,
+  websocketCompression: true,
   websocketPort: true,
 } satisfies {
   readonly [Key in keyof ViewServerRuntimeOptions<ViewServerRuntimeTopicDefinitions>]-?: true;
@@ -210,6 +211,10 @@ export const validateViewServerRuntimeOptions = Effect.fn("ViewServerRuntime.opt
                   ? {}
                   : { maxRetainedValueEntries: groupedLimits.maxRetainedValueEntries }),
               };
+        const websocketCompression = options.websocketCompression;
+        if (websocketCompression !== undefined && typeof websocketCompression !== "boolean") {
+          throw new TypeError("View Server runtime option websocketCompression must be a boolean.");
+        }
         return {
           ...(options.auth === undefined ? {} : { auth: options.auth }),
           ...(capturedGroupedLimits === undefined
@@ -237,6 +242,7 @@ export const validateViewServerRuntimeOptions = Effect.fn("ViewServerRuntime.opt
             ? {}
             : { tcpPublishPort: options.tcpPublishPort }),
           ...(options.websocketPort === undefined ? {} : { websocketPort: options.websocketPort }),
+          ...(websocketCompression === undefined ? {} : { websocketCompression }),
         } satisfies ViewServerRuntimeOptions<Topics>;
       },
       catch: (error) =>
@@ -266,6 +272,9 @@ export const resolveViewServerRuntimeBaseOptions = <
   serverOptions: {
     ...(options.host === undefined ? {} : { host: options.host }),
     ...(options.websocketPort === undefined ? {} : { port: options.websocketPort }),
+    ...(options.websocketCompression === undefined
+      ? {}
+      : { websocketCompression: options.websocketCompression }),
     ...(options.rpcPath === undefined ? {} : { path: options.rpcPath }),
     ...(options.healthPath === undefined ? {} : { healthPath: options.healthPath }),
     ...(options.metricsPath === undefined ? {} : { metricsPath: options.metricsPath }),

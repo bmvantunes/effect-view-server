@@ -64,6 +64,14 @@ type PostGcMemoryField =
   | "heapUsedBytes"
   | "rssBytes";
 
+const websocketWire = {
+  afterBenchmark: { received: 1_300, sent: 8_000 },
+  afterSetup: { received: 1_000, sent: 2_000 },
+  measured: { received: 300, sent: 6_000 },
+  sentBytesPerMutation: 60,
+  sentBytesPerSubscriberMutation: 6,
+};
+
 const postGcObservationFixture = () => {
   const directory = mkdtempSync(join(tmpdir(), "view-server-benchmark-post-gc-"));
   const summaryPath = join(directory, "actual.summary.json");
@@ -686,6 +694,9 @@ describe("benchmark baseline artifacts", () => {
         ...summary,
         artifactKind: "runtime-benchmark-summary",
         benchmarkScope: "runtime-websocket-firehose",
+        subscriberCount: 10,
+        websocketCompression: true,
+        wire: websocketWire,
         groupedWriteAdmission: undefined,
         health: {
           engine: {
@@ -715,8 +726,63 @@ describe("benchmark baseline artifacts", () => {
       benchmarkScope: "runtime-websocket-firehose",
       groupedWriteAdmission: undefined,
       outputJsonPath,
+      subscriberCount: 10,
       summaryPath,
+      wire: websocketWire,
+      websocketCompression: true,
     });
+  });
+
+  it("rejects a non-boolean WebSocket compression marker", () => {
+    const directory = mkdtempSync(join(tmpdir(), "view-server-benchmark-observation-"));
+    const summaryPath = join(directory, "actual.summary.json");
+    const outputJsonPath = join(directory, "actual.json");
+    writeFileSync(
+      summaryPath,
+      `${JSON.stringify({ ...summary, websocketCompression: "true" })}\n`,
+    );
+    writeFileSync(outputJsonPath, `${JSON.stringify(vitestOutput)}\n`);
+
+    expect(() => readBenchmarkObservation(taskPaths(summaryPath, outputJsonPath))).toThrow(
+      `Benchmark artifact field ${summaryPath}.websocketCompression must be a boolean.`,
+    );
+  });
+
+  it("requires WebSocket compression and wire evidence for WebSocket firehose summaries", () => {
+    const directory = mkdtempSync(join(tmpdir(), "view-server-benchmark-observation-"));
+    const summaryPath = join(directory, "actual.summary.json");
+    const outputJsonPath = join(directory, "actual.json");
+    const websocketSummary = {
+      ...summary,
+      artifactKind: "runtime-benchmark-summary",
+      benchmarkScope: "runtime-websocket-firehose",
+      groupedWriteAdmission: undefined,
+      mutationCount: 100,
+      subscriberCount: 10,
+      wire: websocketWire,
+    };
+    writeFileSync(summaryPath, `${JSON.stringify(websocketSummary)}\n`);
+    writeFileSync(outputJsonPath, `${JSON.stringify(vitestOutput)}\n`);
+
+    expect(() =>
+      readBenchmarkObservation({
+        ...runtimeTaskPaths(summaryPath, outputJsonPath),
+        expectedBenchmarkScope: "runtime-websocket-firehose",
+      }),
+    ).toThrow(
+      `Benchmark artifact field ${summaryPath}.websocketCompression is required for runtime-websocket-firehose.`,
+    );
+
+    writeFileSync(
+      summaryPath,
+      `${JSON.stringify({ ...websocketSummary, websocketCompression: false, wire: undefined })}\n`,
+    );
+    expect(() =>
+      readBenchmarkObservation({
+        ...runtimeTaskPaths(summaryPath, outputJsonPath),
+        expectedBenchmarkScope: "runtime-websocket-firehose",
+      }),
+    ).toThrow(`Benchmark artifact field ${summaryPath}.wire must be an object.`);
   });
 
   it("accepts duplicate throughput benchmark names across groups with matching sample counts", () => {
@@ -1968,9 +2034,87 @@ describe("benchmark baseline artifacts", () => {
   });
 
   it("validates baseline manifests with the default diagnostic path", () => {
-    const baseline = buildBenchmarkBaseline("smoke", [observation]);
+    const baseline = buildBenchmarkBaseline("websocket-firehose", [
+      {
+        ...observation,
+        artifactKind: "runtime-benchmark-summary",
+        benchmarkScope: "runtime-websocket-firehose",
+        groupedWriteAdmission: undefined,
+        mutationCount: 100,
+        subscriberCount: 10,
+        websocketCompression: false,
+        wire: websocketWire,
+      },
+    ]);
 
     expect(validateBenchmarkBaseline(baseline)).toStrictEqual(baseline);
+  });
+
+  it("validates WebSocket wire accounting", () => {
+    const websocketObservation = {
+      ...observation,
+      artifactKind: "runtime-benchmark-summary",
+      benchmarkScope: "runtime-websocket-firehose",
+      groupedWriteAdmission: undefined,
+      mutationCount: 100,
+      subscriberCount: 10,
+      websocketCompression: false,
+      wire: websocketWire,
+    };
+    const validateWire = (wire: unknown, overrides = {}) =>
+      validateBenchmarkBaseline(
+        buildBenchmarkBaseline("websocket-firehose", [
+          { ...websocketObservation, ...overrides, wire },
+        ]),
+      );
+
+    expect(() => validateWire(websocketWire, { websocketCompression: undefined })).toThrow(
+      "Benchmark artifact field baseline.tasks[0].websocketCompression is required for runtime-websocket-firehose.",
+    );
+    expect(() =>
+      validateWire({
+        ...websocketWire,
+        measured: { ...websocketWire.measured, sent: 5_999 },
+      }),
+    ).toThrow(
+      "Benchmark artifact field baseline.tasks[0].wire.measured must equal afterBenchmark minus afterSetup.",
+    );
+    expect(() =>
+      validateWire({
+        ...websocketWire,
+        afterBenchmark: { ...websocketWire.afterSetup },
+        measured: { received: 0, sent: 0 },
+        sentBytesPerMutation: 0,
+        sentBytesPerSubscriberMutation: 0,
+      }),
+    ).toThrow(
+      "Benchmark artifact field baseline.tasks[0].wire.measured.sent must be positive when mutationCount is positive.",
+    );
+    expect(() =>
+      validateWire({ ...websocketWire, sentBytesPerMutation: 61 }),
+    ).toThrow(
+      "Benchmark artifact field baseline.tasks[0].wire.sentBytesPerMutation must equal measured.sent / mutationCount.",
+    );
+    expect(() =>
+      validateWire({ ...websocketWire, sentBytesPerSubscriberMutation: 7 }),
+    ).toThrow(
+      "Benchmark artifact field baseline.tasks[0].wire.sentBytesPerSubscriberMutation must equal measured.sent / mutationCount / subscriberCount.",
+    );
+    expect(() => validateWire(websocketWire, { subscriberCount: 0 })).toThrow(
+      "Benchmark artifact field baseline.tasks[0].wire.subscriberCount must be a positive integer.",
+    );
+    expect(
+      validateWire(
+        {
+          afterBenchmark: { received: 1_000, sent: 2_000 },
+          afterSetup: { received: 1_000, sent: 2_000 },
+          measured: { received: 0, sent: 0 },
+          sentBytesPerMutation: 0,
+          sentBytesPerSubscriberMutation: 0,
+        },
+        { mutationCount: 0 },
+      ),
+    ).toBeDefined();
   });
 
   it("rejects unsupported measurement protocol values in baselines", () => {

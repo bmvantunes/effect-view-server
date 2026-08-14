@@ -348,6 +348,67 @@ describe("benchmark baseline runner", () => {
     });
   });
 
+  it("refreshes WebSocket wire evidence for a selected baseline task", async () => {
+    const directory = makeDirectory();
+    const task = {
+      ...makeTask(directory),
+      expectedArtifactKind: "runtime-benchmark-summary",
+      expectedBenchmarkScope: "runtime-websocket-firehose",
+    };
+    const baselineFile = join(directory, "baseline.json");
+    const { logger } = silentLogger();
+    const wire = (sent: number) => ({
+      afterBenchmark: { received: 1_300, sent: 2_000 + sent },
+      afterSetup: { received: 1_000, sent: 2_000 },
+      measured: { received: 300, sent },
+      sentBytesPerMutation: sent / 100,
+      sentBytesPerSubscriberMutation: sent / 100,
+    });
+    let sent = 6_000;
+    const runTask = async (currentTask: typeof task) => {
+      writeArtifacts(currentTask, {
+        ...summary,
+        artifactKind: "runtime-benchmark-summary",
+        benchmarkScope: "runtime-websocket-firehose",
+        websocketCompression: false,
+        wire: wire(sent),
+      });
+      return 0;
+    };
+
+    await runBenchmarkBaseline({
+      argv: ["node", "script", "--profile=websocket-firehose", "--update-baseline"],
+      baselinePathForProfile: () => baselineFile,
+      environment: {},
+      logger,
+      profileMap: new Map([["websocket-firehose", [task]]]),
+      runTask,
+    });
+    sent = 5_000;
+    const exitCode = await runBenchmarkBaseline({
+      argv: [
+        "node",
+        "script",
+        "--profile=websocket-firehose",
+        "--update-baseline",
+        "--update-baseline-task=task a",
+      ],
+      baselinePathForProfile: () => baselineFile,
+      environment: {},
+      logger,
+      profileMap: new Map([["websocket-firehose", [task]]]),
+      runTask,
+    });
+
+    expect({
+      exitCode,
+      wire: readBenchmarkBaseline(baselineFile).tasks[0]?.wire,
+    }).toStrictEqual({
+      exitCode: 0,
+      wire: wire(5_000),
+    });
+  });
+
   it("refreshes nested runtime operation samples for a selected baseline task", async () => {
     const directory = makeDirectory();
     const task = {

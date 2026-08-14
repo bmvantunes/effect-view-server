@@ -27,6 +27,19 @@ describe("Runtime server and TCP option contracts", () => {
       tcpPublishPort: 8081,
     });
 
+    const compressedWebSocketOptions = makeViewServerRuntime(viewServer, {
+      websocketCompression: true,
+    });
+
+    expectTypeOf<Effect.Success<typeof compressedWebSocketOptions>>().toExtend<
+      ViewServerRuntime<typeof viewServer.topics>
+    >();
+
+    // @ts-expect-error runtime WebSocket compression rejects string values.
+    const _invalidWebSocketCompressionOptions = makeViewServerRuntime(viewServer, {
+      websocketCompression: "true",
+    });
+
     expectTypeOf<Effect.Success<typeof tcpPublishPortOptions>>().toMatchTypeOf<
       ViewServerRuntime<typeof viewServer.topics>
     >();

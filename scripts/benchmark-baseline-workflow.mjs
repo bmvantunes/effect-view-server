@@ -50,6 +50,7 @@ const scopedMutableTaskFields = new Set([
   "minimumSampleCount",
   "runtimeOperationCases",
   "samplingPolicy",
+  "wire",
 ]);
 
 const updateBaselineTaskSelectionFrom = (argv) => {

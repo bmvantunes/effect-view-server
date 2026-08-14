@@ -132,6 +132,10 @@ export const websocketFirehoseBenchmarkThresholds = {
   memoryRssTotalDelta: defaultBenchmarkThresholds.memoryRssTotalDelta,
   throughputAggregateRowsPerSecond:
     defaultBenchmarkThresholds.throughputAggregateRowsPerSecond,
+  wireSentBytesPerSubscriberMutation: {
+    maxAbsoluteDeltaBytes: 64,
+    maxRatio: 1.25,
+  },
 };
 
 export const grpcRuntimeBenchmarkThresholds = {
@@ -235,6 +239,10 @@ const metricDefinitions = {
     applicability: "kafka-throughput-case",
     direction: "lower-is-better",
   },
+  wireSentBytesPerSubscriberMutation: {
+    applicability: "websocket-wire",
+    direction: "lower-is-better",
+  },
 };
 
 const latencyToleranceDefinition = {
@@ -258,6 +266,10 @@ const toleranceDefinitions = {
   },
   throughputReadSnapshotMax: latencyToleranceDefinition,
   throughputReadSnapshotMean: latencyToleranceDefinition,
+  wireSentBytesPerSubscriberMutation: {
+    maxAbsoluteDeltaBytes: "non-negative",
+    maxRatio: "positive",
+  },
 };
 
 const comparisonPolicy = (profile, thresholds) => {
@@ -425,6 +437,16 @@ const compareRss = (regressions, taskLabel, threshold, baseline, actual) => {
       `${taskLabel}: total RSS delta regressed from ${baseline} bytes to ${actual} bytes; allowed <= ${Math.round(
         limit,
       )} bytes.`,
+    );
+  }
+};
+
+const compareWireSentBytes = (regressions, taskLabel, threshold, baseline, actual) => {
+  const limit = byteMetricLimit(baseline, threshold);
+  if (actual > limit) {
+    pushRegression(
+      regressions,
+      `${taskLabel}: outbound bytes per subscriber mutation regressed from ${baseline} bytes to ${actual} bytes; allowed <= ${limit} bytes.`,
     );
   }
 };
@@ -670,6 +692,25 @@ export const compareBenchmarkArtifacts = ({
       actualTask.subscriberCount,
     );
     compareExactJson(regressions, taskLabel, "topics", baselineTask.topics, actualTask.topics);
+    compareExact(
+      regressions,
+      taskLabel,
+      "websocketCompression",
+      baselineTask.websocketCompression,
+      actualTask.websocketCompression,
+    );
+    if (
+      baselineTask.benchmarkScope === "runtime-websocket-firehose" &&
+      actualTask.benchmarkScope === "runtime-websocket-firehose"
+    ) {
+      compareWireSentBytes(
+        regressions,
+        taskLabel,
+        thresholds.wireSentBytesPerSubscriberMutation,
+        baselineTask.wire.sentBytesPerSubscriberMutation,
+        actualTask.wire.sentBytesPerSubscriberMutation,
+      );
+    }
     compareExact(
       regressions,
       taskLabel,

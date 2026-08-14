@@ -11,9 +11,17 @@ import {
   defineViewServerConfig,
   type ViewServerHealth,
 } from "@effect-view-server/config";
+import { Buffer } from "node:buffer";
 import { mkdirSync, writeFileSync } from "node:fs";
+import {
+  connect as connectTcp,
+  createServer as createTcpServer,
+  type Server as TcpServer,
+  type Socket as TcpSocket,
+} from "node:net";
 import { dirname, join } from "node:path";
 import { Cause, Effect, Exit, Schema, Scope, Stream } from "effect";
+import { booleanFromBenchmarkEnvironment } from "./benchmark-environment";
 import { makeViewServerRuntime, type ViewServerRuntime } from "./index";
 
 declare const process: {
@@ -35,6 +43,16 @@ type BenchmarkMemorySnapshot = {
   readonly rssBytes: number;
 };
 
+type BenchmarkWireBytes = {
+  readonly received: number;
+  readonly sent: number;
+};
+
+type BenchmarkWireProxy = {
+  readonly snapshot: () => BenchmarkWireBytes;
+  readonly url: string;
+};
+
 type WebSocketCaseName = "same-window" | "ten-window";
 
 type BenchmarkProfile = {
@@ -47,6 +65,8 @@ type BenchmarkProfile = {
   scope: Scope.Closeable | undefined;
   subscriptions: ReadonlyArray<OrderSubscription>;
   timedMutationCount: number;
+  wireBytesAfterSetup: BenchmarkWireBytes | undefined;
+  wireProxy: BenchmarkWireProxy | undefined;
 };
 
 type OrderRow = typeof Order.Type;
@@ -130,6 +150,11 @@ const caseNameFromEnv = (): WebSocketCaseName => {
 };
 
 const caseName = caseNameFromEnv();
+const websocketCompression = booleanFromBenchmarkEnvironment(
+  process.env["VIEW_SERVER_RUNTIME_BENCH_WEBSOCKET_COMPRESSION"],
+  "VIEW_SERVER_RUNTIME_BENCH_WEBSOCKET_COMPRESSION",
+  false,
+);
 const rowCount = positiveIntegerFromEnv(
   "VIEW_SERVER_RUNTIME_BENCH_WEBSOCKET_ROWS",
   defaultRowCount,
@@ -139,7 +164,7 @@ const subscriberCount = positiveIntegerFromEnv(
   defaultSubscriberCount,
 );
 const outputJsonPath = benchmarkOutputJsonPath(
-  `websocket-firehose-${caseName}-${rowCount}rows-${subscriberCount}subs.json`,
+  `websocket-firehose-${caseName}-${rowCount}rows-${subscriberCount}subs${websocketCompression ? "-compressed" : ""}.json`,
 );
 const benchOptions = {
   iterations: positiveIntegerFromEnv("VIEW_SERVER_RUNTIME_BENCH_ITERATIONS", defaultIterations),
@@ -164,6 +189,8 @@ const profile: BenchmarkProfile = {
   scope: undefined,
   subscriptions: [],
   timedMutationCount: 0,
+  wireBytesAfterSetup: undefined,
+  wireProxy: undefined,
 };
 
 function memorySnapshot(): BenchmarkMemorySnapshot {
@@ -189,6 +216,101 @@ function memoryDelta(
     rssBytes: after.rssBytes - before.rssBytes,
   };
 }
+
+function wireBytesDelta(before: BenchmarkWireBytes, after: BenchmarkWireBytes): BenchmarkWireBytes {
+  return {
+    received: after.received - before.received,
+    sent: after.sent - before.sent,
+  };
+}
+
+const listenTcpServer = (server: TcpServer): Effect.Effect<number> =>
+  Effect.callback((resume, signal) => {
+    let active = true;
+    const onError = (error: Error): void => {
+      if (active === false || signal.aborted) {
+        return;
+      }
+      active = false;
+      resume(Effect.die(error));
+    };
+    server.once("error", onError);
+    server.listen(0, "127.0.0.1", () => {
+      if (active === false || signal.aborted) {
+        server.off("error", onError);
+        server.close();
+        return;
+      }
+      active = false;
+      server.off("error", onError);
+      const address = server.address();
+      if (address === null || typeof address === "string") {
+        server.close();
+        resume(Effect.die(new Error("WebSocket benchmark TCP proxy has no numeric address.")));
+        return;
+      }
+      resume(Effect.succeed(address.port));
+    });
+    return Effect.sync(() => {
+      active = false;
+      if (server.listening) {
+        server.off("error", onError);
+        server.close();
+      }
+    });
+  });
+
+const closeTcpServer = (server: TcpServer, sockets: ReadonlySet<TcpSocket>): Effect.Effect<void> =>
+  Effect.callback((resume) => {
+    for (const socket of sockets) {
+      socket.destroy();
+    }
+    server.close((error) => {
+      resume(error === undefined ? Effect.void : Effect.die(error));
+    });
+  });
+
+const makeWireProxy = Effect.fn("ViewServerRuntime.websocketFirehose.bench.wireProxy")(function* (
+  targetUrl: string,
+) {
+  const target = new URL(targetUrl);
+  const targetPort = Number.parseInt(target.port, 10);
+  if (!Number.isSafeInteger(targetPort) || targetPort <= 0) {
+    return yield* Effect.die(new Error("WebSocket benchmark target URL has no valid port."));
+  }
+  let received = 0;
+  let sent = 0;
+  const sockets = new Set<TcpSocket>();
+  const port = yield* Effect.acquireRelease(
+    Effect.gen(function* () {
+      const server = createTcpServer((downstream) => {
+        const upstream = connectTcp({ host: target.hostname, port: targetPort });
+        sockets.add(downstream);
+        sockets.add(upstream);
+        downstream.on("data", (chunk) => {
+          received += typeof chunk === "string" ? Buffer.byteLength(chunk) : chunk.byteLength;
+        });
+        upstream.on("data", (chunk) => {
+          sent += typeof chunk === "string" ? Buffer.byteLength(chunk) : chunk.byteLength;
+        });
+        downstream.on("close", () => sockets.delete(downstream));
+        upstream.on("close", () => sockets.delete(upstream));
+        downstream.on("error", () => upstream.destroy());
+        upstream.on("error", () => downstream.destroy());
+        downstream.pipe(upstream);
+        upstream.pipe(downstream);
+      });
+      const port = yield* listenTcpServer(server);
+      return { port, server };
+    }),
+    ({ server }) => closeTcpServer(server, sockets),
+    { interruptible: true },
+  ).pipe(Effect.map(({ port }) => port));
+  return {
+    snapshot: () => ({ received, sent }),
+    url: `ws://127.0.0.1:${port}${target.pathname}`,
+  } satisfies BenchmarkWireProxy;
+});
 
 function benchmarkOutputJsonPath(fallbackName: string): string {
   const configured = process.env["VIEW_SERVER_RUNTIME_BENCH_OUTPUT_JSON"];
@@ -423,13 +545,20 @@ const setupBenchmark = Effect.fn("ViewServerRuntime.websocketFirehose.bench.setu
   const runtime = yield* makeViewServerRuntime(viewServer, {
     host: "127.0.0.1",
     subscriptionQueueCapacity: 1024,
+    websocketCompression,
     websocketPort: 0,
   });
   profile.runtime = runtime;
   yield* runtime.client.publishMany("orders", seedRows);
+  const scope = yield* Scope.make("parallel");
+  profile.scope = scope;
+  const wireProxy = yield* makeWireProxy(runtime.url).pipe(
+    Effect.provideService(Scope.Scope, scope),
+  );
+  profile.wireProxy = wireProxy;
   const client = yield* makeViewServerClient(viewServer, {
     subscriptionBufferSize: 1024,
-    url: runtime.url,
+    url: wireProxy.url,
   });
   profile.client = client;
   const subscriptions = yield* Effect.forEach(
@@ -448,8 +577,6 @@ const setupBenchmark = Effect.fn("ViewServerRuntime.websocketFirehose.bench.setu
     { concurrency: "unbounded" },
   );
   profile.subscriptions = subscriptions;
-  const scope = yield* Scope.make("parallel");
-  profile.scope = scope;
   const readers = yield* Effect.forEach(subscriptions, (subscription) =>
     makeEventReader(subscription, scope),
   );
@@ -458,6 +585,7 @@ const setupBenchmark = Effect.fn("ViewServerRuntime.websocketFirehose.bench.setu
     concurrency: "unbounded",
   });
   profile.memoryAfterSetup = memorySnapshot();
+  profile.wireBytesAfterSetup = wireProxy.snapshot();
 });
 
 const benchmarkRuntime = Effect.fn("ViewServerRuntime.websocketFirehose.bench.publishAndRead")(
@@ -537,17 +665,18 @@ beforeAll(async () => {
 }, 15_000);
 
 afterAll(async () => {
+  const wireBytesAfterBenchmark = profile.wireProxy?.snapshot();
   const closeSubscriptionsExit = await Effect.runPromiseExit(
     Effect.forEach(profile.subscriptions, (subscription) => subscription.close(), {
       concurrency: "unbounded",
     }),
   );
+  const closeClientExit =
+    profile.client === undefined ? Exit.void : await Effect.runPromiseExit(profile.client.close);
   const closeScopeExit =
     profile.scope === undefined
       ? Exit.void
       : await Effect.runPromiseExit(Scope.close(profile.scope, Exit.void));
-  const closeClientExit =
-    profile.client === undefined ? Exit.void : await Effect.runPromiseExit(profile.client.close);
   let finalHealth: ViewServerHealth<Topics> | undefined;
   let finalHealthFailure: string | undefined;
   if (profile.runtime === undefined) {
@@ -564,6 +693,11 @@ afterAll(async () => {
     profile.runtime === undefined ? Exit.void : await Effect.runPromiseExit(profile.runtime.close);
   const memoryAfterSetup = profile.memoryAfterSetup ?? memoryBefore;
   const memoryAfterBenchmark = memorySnapshot();
+  const wireBytesAfterSetup = profile.wireBytesAfterSetup ?? { received: 0, sent: 0 };
+  const measuredWireBytes = wireBytesDelta(
+    wireBytesAfterSetup,
+    wireBytesAfterBenchmark ?? wireBytesAfterSetup,
+  );
   const cleanupLeakCount = finalHealth === undefined ? 0 : cleanupLeakCountFromHealth(finalHealth);
   const backpressureCount =
     finalHealth === undefined ? 0 : backpressureCountFromHealth(finalHealth);
@@ -593,26 +727,39 @@ afterAll(async () => {
       "Benchmark uses the production Effect RPC WebSocket transport with NDJSON serialization.",
       "Runtime mutation client publishes rows; remote client subscriptions consume deltas through WebSocket.",
       "rowCount is the seeded table size; mutationCount is the number of measured publish+fanout iterations.",
+      "Wire byte counters are TCP stream bytes measured by a local proxy after setup and before cleanup.",
     ],
     queuedEventCount,
     rowCount,
     seedRowCount: rowCount,
     subscriberCount,
     topics: ["orders"],
+    wire: {
+      afterBenchmark: wireBytesAfterBenchmark ?? null,
+      afterSetup: profile.wireBytesAfterSetup ?? null,
+      measured: measuredWireBytes,
+      sentBytesPerMutation:
+        profile.timedMutationCount === 0 ? 0 : measuredWireBytes.sent / profile.timedMutationCount,
+      sentBytesPerSubscriberMutation:
+        profile.timedMutationCount === 0
+          ? 0
+          : measuredWireBytes.sent / profile.timedMutationCount / subscriberCount,
+    },
+    websocketCompression,
   });
   if (Exit.isFailure(closeSubscriptionsExit)) {
     throw new Error(
       `WebSocket firehose benchmark subscription cleanup failed: ${Cause.pretty(closeSubscriptionsExit.cause)}`,
     );
   }
-  if (Exit.isFailure(closeScopeExit)) {
-    throw new Error(
-      `WebSocket firehose benchmark scope cleanup failed: ${Cause.pretty(closeScopeExit.cause)}`,
-    );
-  }
   if (Exit.isFailure(closeClientExit)) {
     throw new Error(
       `WebSocket firehose benchmark client cleanup failed: ${Cause.pretty(closeClientExit.cause)}`,
+    );
+  }
+  if (Exit.isFailure(closeScopeExit)) {
+    throw new Error(
+      `WebSocket firehose benchmark scope cleanup failed: ${Cause.pretty(closeScopeExit.cause)}`,
     );
   }
   if (finalHealthFailure !== undefined) {

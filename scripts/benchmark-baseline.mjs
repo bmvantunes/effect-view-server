@@ -51,6 +51,77 @@ const optionalObjectValue = (value, path) =>
 const optionalFiniteNumber = (value, path) =>
   value === undefined ? undefined : finiteNumber(value, path);
 
+const optionalBooleanValue = (value, path) => {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== "boolean") {
+    throw new Error(`Benchmark artifact field ${path} must be a boolean.`);
+  }
+  return value;
+};
+
+const benchmarkWireBytesValue = (value, path) => {
+  const bytes = objectValue(value, path);
+  return {
+    received: nonNegativeInteger(bytes.received, `${path}.received`),
+    sent: nonNegativeInteger(bytes.sent, `${path}.sent`),
+  };
+};
+
+const websocketWireValue = (value, path, mutationCount, subscriberCount) => {
+  const wire = objectValue(value, path);
+  const afterBenchmark = benchmarkWireBytesValue(wire.afterBenchmark, `${path}.afterBenchmark`);
+  const afterSetup = benchmarkWireBytesValue(wire.afterSetup, `${path}.afterSetup`);
+  const measured = benchmarkWireBytesValue(wire.measured, `${path}.measured`);
+  const sentBytesPerMutation = nonNegativeFiniteNumber(
+    wire.sentBytesPerMutation,
+    `${path}.sentBytesPerMutation`,
+  );
+  const sentBytesPerSubscriberMutation = nonNegativeFiniteNumber(
+    wire.sentBytesPerSubscriberMutation,
+    `${path}.sentBytesPerSubscriberMutation`,
+  );
+  const expectedMeasured = {
+    received: afterBenchmark.received - afterSetup.received,
+    sent: afterBenchmark.sent - afterSetup.sent,
+  };
+  if (
+    measured.received !== expectedMeasured.received ||
+    measured.sent !== expectedMeasured.sent
+  ) {
+    throw new Error(
+      `Benchmark artifact field ${path}.measured must equal afterBenchmark minus afterSetup.`,
+    );
+  }
+  if (mutationCount > 0 && measured.sent === 0) {
+    throw new Error(
+      `Benchmark artifact field ${path}.measured.sent must be positive when mutationCount is positive.`,
+    );
+  }
+  const expectedSentBytesPerMutation = mutationCount === 0 ? 0 : measured.sent / mutationCount;
+  if (sentBytesPerMutation !== expectedSentBytesPerMutation) {
+    throw new Error(
+      `Benchmark artifact field ${path}.sentBytesPerMutation must equal measured.sent / mutationCount.`,
+    );
+  }
+  const validatedSubscriberCount = positiveInteger(subscriberCount, `${path}.subscriberCount`);
+  const expectedSentBytesPerSubscriberMutation =
+    mutationCount === 0 ? 0 : expectedSentBytesPerMutation / validatedSubscriberCount;
+  if (sentBytesPerSubscriberMutation !== expectedSentBytesPerSubscriberMutation) {
+    throw new Error(
+      `Benchmark artifact field ${path}.sentBytesPerSubscriberMutation must equal measured.sent / mutationCount / subscriberCount.`,
+    );
+  }
+  return {
+    afterBenchmark,
+    afterSetup,
+    measured,
+    sentBytesPerMutation,
+    sentBytesPerSubscriberMutation,
+  };
+};
+
 const stringArrayValue = (value, path) =>
   arrayValue(value, path).map((item, index) => stringValue(item, `${path}[${index}]`));
 
@@ -961,6 +1032,23 @@ export const decodeBenchmarkObservation = (task, summaryArtifact, vitestOutput) 
     summary.cases === undefined
       ? undefined
       : runtimeOperationCasesValue(summary.cases, `${task.summaryPath}.cases`, benchmarkScope);
+  const websocketCompression = optionalBooleanValue(
+    summary.websocketCompression,
+    `${task.summaryPath}.websocketCompression`,
+  );
+  const subscriberCount = finiteNumber(
+    summary.subscriberCount,
+    `${task.summaryPath}.subscriberCount`,
+  );
+  const isWebsocketFirehose = benchmarkScope === "runtime-websocket-firehose";
+  if (isWebsocketFirehose && websocketCompression === undefined) {
+    throw new Error(
+      `Benchmark artifact field ${task.summaryPath}.websocketCompression is required for ${benchmarkScope}.`,
+    );
+  }
+  const wire = isWebsocketFirehose
+    ? websocketWireValue(summary.wire, `${task.summaryPath}.wire`, mutationCount, subscriberCount)
+    : undefined;
   if (requiresGrpcOperationCases && runtimeOperationCases === undefined) {
     throw new Error(
       `Benchmark artifact field ${task.summaryPath}.cases is required for ${benchmarkScope}.`,
@@ -1035,12 +1123,14 @@ export const decodeBenchmarkObservation = (task, summaryArtifact, vitestOutput) 
         }),
     seedBatchSize: optionalFiniteNumber(summary.seedBatchSize, `${task.summaryPath}.seedBatchSize`),
     ...(seedMutationCount === undefined ? {} : { seedMutationCount }),
-    subscriberCount: finiteNumber(summary.subscriberCount, `${task.summaryPath}.subscriberCount`),
+    subscriberCount,
     summaryPath: task.summaryPath,
     ...(samplingPolicy === undefined ? {} : { samplingPolicy }),
     taskLabel: task.label,
     throughputCases,
     topics,
+    ...(wire === undefined ? {} : { wire }),
+    ...(websocketCompression === undefined ? {} : { websocketCompression }),
   };
 };
 
@@ -1168,6 +1258,12 @@ const thresholdsValue = (value, path, expectedThresholds) => {
       `${path}.throughputReadSnapshotMean`,
     );
   }
+  if (expectedThresholds.wireSentBytesPerSubscriberMutation !== undefined) {
+    validatedThresholds.wireSentBytesPerSubscriberMutation = memoryThresholdValue(
+      thresholds.wireSentBytesPerSubscriberMutation,
+      `${path}.wireSentBytesPerSubscriberMutation`,
+    );
+  }
   if (JSON.stringify(validatedThresholds) !== JSON.stringify(expectedThresholds)) {
     throw new Error(`Benchmark artifact field ${path} must match code-owned profile thresholds.`);
   }
@@ -1278,6 +1374,20 @@ export const validateBenchmarkObservation = (task, path) => {
   }
   const benchmarkCases = stringArrayValue(task.benchmarkCases, `${path}.benchmarkCases`);
   const minimumSampleCount = positiveInteger(task.minimumSampleCount, `${path}.minimumSampleCount`);
+  const websocketCompression = optionalBooleanValue(
+    task.websocketCompression,
+    `${path}.websocketCompression`,
+  );
+  const subscriberCount = finiteNumber(task.subscriberCount, `${path}.subscriberCount`);
+  const isWebsocketFirehose = benchmarkScope === "runtime-websocket-firehose";
+  if (isWebsocketFirehose && websocketCompression === undefined) {
+    throw new Error(
+      `Benchmark artifact field ${path}.websocketCompression is required for ${benchmarkScope}.`,
+    );
+  }
+  const wire = isWebsocketFirehose
+    ? websocketWireValue(task.wire, `${path}.wire`, mutationCount, subscriberCount)
+    : undefined;
   const samplingPolicy = decodeBenchmarkSamplingPolicy(
     task.samplingPolicy,
     `${path}.samplingPolicy`,
@@ -1353,12 +1463,14 @@ export const validateBenchmarkObservation = (task, path) => {
         }),
     seedBatchSize: optionalFiniteNumber(task.seedBatchSize, `${path}.seedBatchSize`),
     ...(seedMutationCount === undefined ? {} : { seedMutationCount }),
-    subscriberCount: finiteNumber(task.subscriberCount, `${path}.subscriberCount`),
+    subscriberCount,
     summaryPath: stringValue(task.summaryPath, `${path}.summaryPath`),
     ...(samplingPolicy === undefined ? {} : { samplingPolicy }),
     taskLabel,
     throughputCases,
     topics: stringArrayValue(task.topics, `${path}.topics`),
+    ...(wire === undefined ? {} : { wire }),
+    ...(websocketCompression === undefined ? {} : { websocketCompression }),
   };
 };
 

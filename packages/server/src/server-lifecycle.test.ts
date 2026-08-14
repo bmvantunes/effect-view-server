@@ -95,6 +95,45 @@ describe("Real View Server lifecycle", () => {
     }).pipe(Effect.scoped),
   );
 
+  it.live("negotiates per-message compression only when enabled", () =>
+    Effect.gen(function* () {
+      const inMemory = createServerTestRuntime(viewServer);
+      const closeInMemory = yield* makeRetryableClose(inMemory.close);
+      yield* Effect.addFinalizer(() => closeInMemory);
+
+      const defaultServer = yield* makeViewServerWebSocketServer(viewServer, {
+        liveClient: inMemory.liveClient,
+        runtime: inMemory.client,
+      });
+      const closeDefaultServer = yield* makeRetryableClose(defaultServer.close);
+      yield* Effect.addFinalizer(() => closeDefaultServer);
+      const defaultSocket = yield* openRawWebSocket(defaultServer.url);
+      yield* Effect.addFinalizer(() => Effect.sync(() => defaultSocket.close()));
+
+      expect(defaultSocket.extensions).toBe("");
+      defaultSocket.close();
+      yield* closeDefaultServer;
+
+      const compressedServer = yield* makeViewServerWebSocketServer(
+        viewServer,
+        {
+          liveClient: inMemory.liveClient,
+          runtime: inMemory.client,
+        },
+        { websocketCompression: true },
+      );
+      const closeCompressedServer = yield* makeRetryableClose(compressedServer.close);
+      yield* Effect.addFinalizer(() => closeCompressedServer);
+      const compressedSocket = yield* openRawWebSocket(compressedServer.url);
+      yield* Effect.addFinalizer(() => Effect.sync(() => compressedSocket.close()));
+
+      expect(compressedSocket.extensions).toBe("permessage-deflate");
+      compressedSocket.close();
+      yield* closeCompressedServer;
+      yield* closeInMemory;
+    }).pipe(Effect.scoped),
+  );
+
   it.live("fails when the websocket server port is unavailable", () =>
     Effect.scoped(
       Effect.gen(function* () {

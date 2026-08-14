@@ -120,6 +120,9 @@ export const makeViewServerWebSocketServer: <const Topics extends TopicDefinitio
       NodeHttpServer.layer(Http.createServer, {
         host: options.host,
         port: options.port ?? 0,
+        ...(options.websocketCompression === true
+          ? { websocket: { perMessageDeflate: true } }
+          : {}),
       }),
     ),
     Layer.provide(RpcSerialization.layerNdjson),

@@ -207,4 +207,11 @@ describe("Runtime reporting options", () => {
       expect(validated).toStrictEqual({ websocketCompression: true });
     }),
   );
+
+  it("leaves the compression default at the server seam and preserves the runtime opt-out", () => {
+    expect(resolveViewServerRuntimeBaseOptions({}).serverOptions).toStrictEqual({});
+    expect(
+      resolveViewServerRuntimeBaseOptions({ websocketCompression: false }).serverOptions,
+    ).toStrictEqual({ websocketCompression: false });
+  });
 });

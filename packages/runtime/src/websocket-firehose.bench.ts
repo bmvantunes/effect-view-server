@@ -153,7 +153,7 @@ const caseName = caseNameFromEnv();
 const websocketCompression = booleanFromBenchmarkEnvironment(
   process.env["VIEW_SERVER_RUNTIME_BENCH_WEBSOCKET_COMPRESSION"],
   "VIEW_SERVER_RUNTIME_BENCH_WEBSOCKET_COMPRESSION",
-  false,
+  true,
 );
 const rowCount = positiveIntegerFromEnv(
   "VIEW_SERVER_RUNTIME_BENCH_WEBSOCKET_ROWS",

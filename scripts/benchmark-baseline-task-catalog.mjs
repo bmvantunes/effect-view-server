@@ -95,6 +95,20 @@ const task = ({
 
 const minimumSampleCountFrom = (env, key) => Number.parseInt(env[key] ?? "5", 10);
 
+const booleanFromEnvironment = (raw, name, defaultValue) => {
+  if (raw === undefined || raw.trim() === "") {
+    return defaultValue;
+  }
+  const trimmed = raw.trim();
+  if (trimmed === "true") {
+    return true;
+  }
+  if (trimmed === "false") {
+    return false;
+  }
+  throw new Error(`${name} must be true or false.`);
+};
+
 const timedReadSamplingPolicyFrom = (env, iterationBoundBenchmarkName) => {
   const minimumTimedReadSampleCount = env["VIEW_SERVER_ENGINE_BENCH_TIMED_READ_MINIMUM_SAMPLES"];
   const memoryRssMetric = env["VIEW_SERVER_ENGINE_BENCH_MEMORY_RSS_METRIC"];
@@ -561,8 +575,11 @@ export const runtimeGrpcSourceAdapterTask = (batchSize, routeCount, retainedRowC
 };
 
 export const runtimeWebSocketFirehoseTask = (firehoseCase, rowCount, subscriberCount, env) => {
-  const websocketCompression =
-    env.VIEW_SERVER_RUNTIME_BENCH_WEBSOCKET_COMPRESSION === "true";
+  const websocketCompression = booleanFromEnvironment(
+    env.VIEW_SERVER_RUNTIME_BENCH_WEBSOCKET_COMPRESSION,
+    "VIEW_SERVER_RUNTIME_BENCH_WEBSOCKET_COMPRESSION",
+    true,
+  );
   const compressionSuffix = websocketCompression ? "-compressed" : "";
   const outputJsonPath = `.artifacts/websocket-firehose-${firehoseCase}-${rowCount}rows-${subscriberCount}subs${compressionSuffix}.json`;
   return task({

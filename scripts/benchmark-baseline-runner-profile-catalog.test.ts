@@ -349,6 +349,64 @@ describe("benchmark baseline runner", () => {
     expect(compressedTask.packageOutputJsonPath).toBe(
       ".artifacts/websocket-firehose-same-window-1000rows-50subs-compressed.json",
     );
+
+    const directTaskEnvironment = {
+      VIEW_SERVER_RUNTIME_BENCH_ITERATIONS: "5",
+      VIEW_SERVER_RUNTIME_BENCH_TIME_MS: "1",
+      VIEW_SERVER_RUNTIME_BENCH_WARMUP_ITERATIONS: "0",
+      VIEW_SERVER_RUNTIME_BENCH_WARMUP_TIME_MS: "0",
+    };
+    const defaultTask = runtimeWebSocketFirehoseTask(
+      "same-window",
+      1_000,
+      50,
+      directTaskEnvironment,
+    );
+    const blankTask = runtimeWebSocketFirehoseTask("same-window", 1_000, 50, {
+      ...directTaskEnvironment,
+      VIEW_SERVER_RUNTIME_BENCH_WEBSOCKET_COMPRESSION: "   ",
+    });
+    const disabledTask = runtimeWebSocketFirehoseTask("same-window", 1_000, 50, {
+      ...directTaskEnvironment,
+      VIEW_SERVER_RUNTIME_BENCH_WEBSOCKET_COMPRESSION: " false ",
+    });
+    const paddedEnabledTask = runtimeWebSocketFirehoseTask("same-window", 1_000, 50, {
+      ...directTaskEnvironment,
+      VIEW_SERVER_RUNTIME_BENCH_WEBSOCKET_COMPRESSION: " true ",
+    });
+
+    expect(
+      [defaultTask, blankTask, disabledTask, paddedEnabledTask].map((task) => ({
+        label: task.label,
+        outputJsonPath: task.packageOutputJsonPath,
+      })),
+    ).toStrictEqual([
+      {
+        label: "WebSocket firehose same-window 1000 rows 50 subscribers compression on",
+        outputJsonPath:
+          ".artifacts/websocket-firehose-same-window-1000rows-50subs-compressed.json",
+      },
+      {
+        label: "WebSocket firehose same-window 1000 rows 50 subscribers compression on",
+        outputJsonPath:
+          ".artifacts/websocket-firehose-same-window-1000rows-50subs-compressed.json",
+      },
+      {
+        label: "WebSocket firehose same-window 1000 rows 50 subscribers compression off",
+        outputJsonPath: ".artifacts/websocket-firehose-same-window-1000rows-50subs.json",
+      },
+      {
+        label: "WebSocket firehose same-window 1000 rows 50 subscribers compression on",
+        outputJsonPath:
+          ".artifacts/websocket-firehose-same-window-1000rows-50subs-compressed.json",
+      },
+    ]);
+    expect(() =>
+      runtimeWebSocketFirehoseTask("same-window", 1_000, 50, {
+        ...directTaskEnvironment,
+        VIEW_SERVER_RUNTIME_BENCH_WEBSOCKET_COMPRESSION: "yes",
+      }),
+    ).toThrow("VIEW_SERVER_RUNTIME_BENCH_WEBSOCKET_COMPRESSION must be true or false.");
   });
 
   it("defines the gRPC Source Adapter benchmark task", () => {

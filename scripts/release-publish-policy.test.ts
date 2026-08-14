@@ -2,7 +2,6 @@ import { describe, expect, it } from "@effect/vitest";
 import { readFileSync } from "node:fs";
 import {
   compareReleaseTags,
-  effectSchemaAstCompatibilityDeclaration,
   incrementReleaseVersion,
   internalPublishViolations,
   oidcPublishEnvironmentViolations,
@@ -58,7 +57,7 @@ const publicPackageJson = {
   publishConfig: { provenance: true },
   dependencies: {
     "@effect-view-server/client": "workspace:*",
-    effect: "4.0.0-beta.107",
+    effect: "4.0.0-rc.109",
   },
   devDependencies: { "@effect-view-server/runtime": "workspace:*" },
   peerDependencies: { react: "19.2.8" },
@@ -66,20 +65,6 @@ const publicPackageJson = {
 };
 
 describe("release publish policy", () => {
-  it("keeps the beta106 SchemaAST declaration compatibility source explicit", () => {
-    expect(effectSchemaAstCompatibilityDeclaration).toBe(
-      `export {};
-
-declare module "effect/SchemaAST" {
-  export interface Sentinel {
-    readonly key: PropertyKey;
-    readonly literal: LiteralValue | symbol;
-  }
-}
-`,
-    );
-  });
-
   it("refuses the placeholder version before trusted publishing", () => {
     expect(
       publishDecision({
@@ -289,7 +274,7 @@ declare module "effect/SchemaAST" {
       engines: { node: ">=26.0.0" },
       files: ["dist", "README.md"],
       publishConfig: { access: "public", provenance: true },
-      dependencies: { effect: "4.0.0-beta.107" },
+      dependencies: { effect: "4.0.0-rc.109" },
       peerDependencies: { react: "19.2.8" },
       peerDependenciesMeta: { react: { optional: true } },
     });

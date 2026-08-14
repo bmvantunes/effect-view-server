@@ -94,13 +94,13 @@ Apply these core principles when writing Effect code.
 
 When installing Effect packages in a user repository:
 
-- use `effect@beta`
+- use `effect@rc`
 - keep all `@effect/*` packages on aligned versions
 - install only the packages needed for the user's runtime and actual task
 
 ### Version Rules
 
-- `effect` should be installed as `effect@beta`
+- `effect` should be installed as `effect@rc`
 - if you install any `@effect/*` package, make sure all `@effect/*` packages use matching versions
 - do not mix unrelated `@effect/*` versions in the same project
 
@@ -108,7 +108,7 @@ When installing Effect packages in a user repository:
 
 Choose packages based on the runtime and the work being done.
 
-- core library: `effect@beta`
+- core library: `effect@rc`
 - Node.js runtime needs: install the matching `@effect/platform-node`
 - browser runtime needs: install the matching `@effect/platform-browser`
 - Bun runtime needs: install the matching `@effect/platform-bun`
@@ -119,7 +119,7 @@ Install additional `@effect/*` packages only when the user task actually needs t
 
 ### Practical Rule
 
-- start with `effect@beta`
+- start with `effect@rc`
 - add `@effect/*` packages as needed by runtime and features
 - keep the full installed Effect package set version-aligned
 

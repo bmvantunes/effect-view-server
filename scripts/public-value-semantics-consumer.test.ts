@@ -270,7 +270,7 @@ describe("published value semantics consumer", () => {
       const packedPaths = packResult.files.map((file) => file.path);
       expect(packedPaths).toContain("dist/value-semantics.js");
       expect(packedPaths).toContain("dist/value-semantics.d.ts");
-      expect(packedPaths).toContain("dist/effect-schemaast-compat.d.ts");
+      expect(packedPaths).not.toContain("dist/effect-schemaast-compat.d.ts");
 
       extract({
         cwd: installedPackageDirectory,
@@ -291,25 +291,13 @@ describe("published value semantics consumer", () => {
         realpathSync(join(dirname(fastCheckDirectory), "pure-rand")),
         join(consumerEffectDirectory, "node_modules", "pure-rand"),
       );
-      const schemaAstDeclarationPath = join(consumerEffectDirectory, "dist", "SchemaAST.d.ts");
-      const schemaAstDeclaration = readFileSync(schemaAstDeclarationPath, "utf8");
-      const unpatchedSchemaAstDeclaration = schemaAstDeclaration.replace(
-        /\n\/\*\* @internal \*\/\nexport interface Sentinel \{\n    readonly key: PropertyKey;\n    readonly literal: LiteralValue \| symbol;\n\}\n/,
-        "\n",
-      );
-      expect(
-        unpatchedSchemaAstDeclaration,
-        `Expected the beta106 Effect fixture to contain its patched Sentinel declaration.\nOriginal: ${schemaAstDeclaration}\nResult: ${unpatchedSchemaAstDeclaration}`,
-      ).not.toBe(schemaAstDeclaration);
-      writeFileSync(schemaAstDeclarationPath, unpatchedSchemaAstDeclaration);
-
       const installedManifest = decodePackageManifest(
         readFileSync(join(installedPackageDirectory, "package.json"), "utf8"),
       );
       const valueSemanticsExport = installedManifest.exports["./value-semantics"];
       const entryTarget = valueSemanticsExport.import;
       const declarationTarget = valueSemanticsExport.types;
-      expect(installedManifest.peerDependencies.effect).toBe("4.0.0-beta.107");
+      expect(installedManifest.peerDependencies.effect).toBe("4.0.0-rc.109");
 
       const graph = collectStaticModuleGraph(
         join(installedPackageDirectory, entryTarget.replace(/^\.\//, "")),
@@ -327,9 +315,7 @@ describe("published value semantics consumer", () => {
         join(installedPackageDirectory, declarationTarget.replace(/^\.\//, "")),
         "utf8",
       );
-      expect(declarationSource).toContain(
-        '/// <reference path="./effect-schemaast-compat.d.ts" />',
-      );
+      expect(declarationSource).not.toContain("effect-schemaast-compat.d.ts");
       expect(declarationSource).not.toContain("@effect-view-server/");
 
       writeFileSync(
@@ -397,21 +383,6 @@ describe("published value semantics consumer", () => {
           2,
         )}\n`,
       );
-      execFileSync(
-        process.execPath,
-        [
-          join(repositoryRoot, "node_modules", "typescript", "bin", "tsc"),
-          "-p",
-          join(consumerDirectory, "tsconfig.json"),
-        ],
-        { cwd: consumerDirectory, stdio: "inherit" },
-      );
-
-      writeFileSync(schemaAstDeclarationPath, schemaAstDeclaration);
-      expect(readFileSync(schemaAstDeclarationPath, "utf8")).toBe(schemaAstDeclaration);
-      execFileSync(process.execPath, [join(consumerDirectory, "runtime.mjs")], {
-        cwd: consumerDirectory,
-      });
       execFileSync(
         process.execPath,
         [

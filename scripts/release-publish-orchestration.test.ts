@@ -77,7 +77,7 @@ const makeReleaseTree = (version = "0.0.6") => {
     publishConfig: { provenance: true },
     dependencies: {
       "@effect-view-server/client": "workspace:*",
-      effect: "4.0.0-beta.107",
+      effect: "4.0.0-rc.109",
     },
     scripts: { build: "vp pack" },
   });
@@ -278,8 +278,7 @@ describe("release publish orchestration", () => {
       version: "0.0.7",
     });
     expect(scenario.publishedArtifact()).toStrictEqual({
-      declaration:
-        '/// <reference path="./effect-schemaast-compat.d.ts" />\nexport declare const ready: true;\n',
+      declaration: "export declare const ready: true;\n",
       files: ["README.md", "dist", "package.json"],
       manifest: {
         name: "effect-view-server",
@@ -291,10 +290,9 @@ describe("release publish orchestration", () => {
         },
         files: ["dist", "README.md"],
         publishConfig: { access: "public", provenance: true },
-        dependencies: { effect: "4.0.0-beta.107" },
+        dependencies: { effect: "4.0.0-rc.109" },
       },
-      nestedDeclaration:
-        '/// <reference path="../effect-schemaast-compat.d.ts" />\nexport declare const nested: true;\n',
+      nestedDeclaration: "export declare const nested: true;\n",
       nestedFile: "ready\n",
       readme: "# Public package\n",
       runtime: "export const ready = true;\n",

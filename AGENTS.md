@@ -55,7 +55,7 @@ This is a single-context repository using root `CONTEXT.md` and `docs/adr/`. See
 
 ## Effect Rules
 
-- Use Effect v4 beta APIs. When in doubt, check `.repos/effect` first.
+- Use Effect v4 RC APIs. When in doubt, check `.repos/effect` first.
 - Use `Effect.gen` for workflows.
 - Use named `Effect.fn` for reusable operations and important runtime paths so spans/diagnostics are useful.
 - Prefer plain `return value` for plain values inside `Effect.gen`; prefer `return yield* effect` when the final value comes from an Effect.

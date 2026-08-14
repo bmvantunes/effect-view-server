@@ -604,7 +604,8 @@ describe("Source Health wire contract", () => {
           _tag: "ViewServerRuntimeError",
           code: "InvalidQuery",
           topic: "materialized",
-          message: 'Invalid Source Health value: Expected 1\n  at ["status"]["attempt"]',
+          message:
+            'Invalid Source Health value: Expected { readonly "_tag": "Starting", readonly "attempt": 1, ... } | { readonly "_tag": "Ready", ... } | { readonly "_tag": "Degraded", ... } | { readonly "_tag": "WaitingToRetry", ... } | { readonly "_tag": "Reacquiring", ... } | { readonly "_tag": "Exhausted", ... } | { readonly "_tag": "Stopping", ... }\n  at ["status"]',
         },
         {
           _tag: "ViewServerRuntimeError",

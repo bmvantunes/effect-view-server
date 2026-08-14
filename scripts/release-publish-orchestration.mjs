@@ -7,10 +7,9 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join, relative } from "node:path";
+import { join, relative } from "node:path";
 import {
   compareReleaseTags,
-  effectSchemaAstCompatibilityDeclaration,
   incrementReleaseVersion,
   isTrustedPublishEnvironment,
   oidcPublishEnvironmentViolations,
@@ -129,37 +128,6 @@ const stripPublishedSourceMapReferences = (directory) => {
 
     writeFileSync(path, stripSourceMapReference(readFileSync(path, "utf8")));
   }
-};
-
-const installEffectSchemaAstCompatibility = (directory) => {
-  const compatibilityPath = join(directory, "effect-schemaast-compat.d.ts");
-  writeFileSync(compatibilityPath, effectSchemaAstCompatibilityDeclaration);
-
-  const visit = (currentDirectory) => {
-    for (const entry of readdirSync(currentDirectory, { withFileTypes: true })) {
-      const path = join(currentDirectory, entry.name);
-      if (entry.isDirectory()) {
-        visit(path);
-        continue;
-      }
-      if (!path.endsWith(".d.ts") || path === compatibilityPath) {
-        continue;
-      }
-      const relativeCompatibilityPath = relative(dirname(path), compatibilityPath).replaceAll(
-        "\\",
-        "/",
-      );
-      const referencePath = relativeCompatibilityPath.startsWith(".")
-        ? relativeCompatibilityPath
-        : `./${relativeCompatibilityPath}`;
-      writeFileSync(
-        path,
-        `/// <reference path="${referencePath}" />\n${readFileSync(path, "utf8")}`,
-      );
-    }
-  };
-
-  visit(directory);
 };
 
 const assertCleanPublishedFiles = (publishDirectory) => {
@@ -437,7 +405,6 @@ const preparePublicPackage = ({
     recursive: true,
     filter: (source) => !source.endsWith(".map"),
   });
-  installEffectSchemaAstCompatibility(distDirectory);
   stripPublishedSourceMapReferences(distDirectory);
   cpSync(join(publicPackageDirectory, "README.md"), join(publishDirectory, "README.md"));
   writeFileSync(

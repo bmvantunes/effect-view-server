@@ -49,7 +49,6 @@ type BenchmarkWireBytes = {
 };
 
 type BenchmarkWireProxy = {
-  readonly close: Effect.Effect<void>;
   readonly snapshot: () => BenchmarkWireBytes;
   readonly url: string;
 };
@@ -282,26 +281,32 @@ const makeWireProxy = Effect.fn("ViewServerRuntime.websocketFirehose.bench.wireP
   let received = 0;
   let sent = 0;
   const sockets = new Set<TcpSocket>();
-  const server = createTcpServer((downstream) => {
-    const upstream = connectTcp({ host: target.hostname, port: targetPort });
-    sockets.add(downstream);
-    sockets.add(upstream);
-    downstream.on("data", (chunk) => {
-      received += typeof chunk === "string" ? Buffer.byteLength(chunk) : chunk.byteLength;
-    });
-    upstream.on("data", (chunk) => {
-      sent += typeof chunk === "string" ? Buffer.byteLength(chunk) : chunk.byteLength;
-    });
-    downstream.on("close", () => sockets.delete(downstream));
-    upstream.on("close", () => sockets.delete(upstream));
-    downstream.on("error", () => upstream.destroy());
-    upstream.on("error", () => downstream.destroy());
-    downstream.pipe(upstream);
-    upstream.pipe(downstream);
-  });
-  const port = yield* listenTcpServer(server);
+  const port = yield* Effect.acquireRelease(
+    Effect.gen(function* () {
+      const server = createTcpServer((downstream) => {
+        const upstream = connectTcp({ host: target.hostname, port: targetPort });
+        sockets.add(downstream);
+        sockets.add(upstream);
+        downstream.on("data", (chunk) => {
+          received += typeof chunk === "string" ? Buffer.byteLength(chunk) : chunk.byteLength;
+        });
+        upstream.on("data", (chunk) => {
+          sent += typeof chunk === "string" ? Buffer.byteLength(chunk) : chunk.byteLength;
+        });
+        downstream.on("close", () => sockets.delete(downstream));
+        upstream.on("close", () => sockets.delete(upstream));
+        downstream.on("error", () => upstream.destroy());
+        upstream.on("error", () => downstream.destroy());
+        downstream.pipe(upstream);
+        upstream.pipe(downstream);
+      });
+      const port = yield* listenTcpServer(server);
+      return { port, server };
+    }),
+    ({ server }) => closeTcpServer(server, sockets),
+    { interruptible: true },
+  ).pipe(Effect.map(({ port }) => port));
   return {
-    close: closeTcpServer(server, sockets),
     snapshot: () => ({ received, sent }),
     url: `ws://127.0.0.1:${port}${target.pathname}`,
   } satisfies BenchmarkWireProxy;
@@ -545,7 +550,11 @@ const setupBenchmark = Effect.fn("ViewServerRuntime.websocketFirehose.bench.setu
   });
   profile.runtime = runtime;
   yield* runtime.client.publishMany("orders", seedRows);
-  const wireProxy = yield* makeWireProxy(runtime.url);
+  const scope = yield* Scope.make("parallel");
+  profile.scope = scope;
+  const wireProxy = yield* makeWireProxy(runtime.url).pipe(
+    Effect.provideService(Scope.Scope, scope),
+  );
   profile.wireProxy = wireProxy;
   const client = yield* makeViewServerClient(viewServer, {
     subscriptionBufferSize: 1024,
@@ -568,8 +577,6 @@ const setupBenchmark = Effect.fn("ViewServerRuntime.websocketFirehose.bench.setu
     { concurrency: "unbounded" },
   );
   profile.subscriptions = subscriptions;
-  const scope = yield* Scope.make("parallel");
-  profile.scope = scope;
   const readers = yield* Effect.forEach(subscriptions, (subscription) =>
     makeEventReader(subscription, scope),
   );
@@ -664,16 +671,12 @@ afterAll(async () => {
       concurrency: "unbounded",
     }),
   );
+  const closeClientExit =
+    profile.client === undefined ? Exit.void : await Effect.runPromiseExit(profile.client.close);
   const closeScopeExit =
     profile.scope === undefined
       ? Exit.void
       : await Effect.runPromiseExit(Scope.close(profile.scope, Exit.void));
-  const closeClientExit =
-    profile.client === undefined ? Exit.void : await Effect.runPromiseExit(profile.client.close);
-  const closeWireProxyExit =
-    profile.wireProxy === undefined
-      ? Exit.void
-      : await Effect.runPromiseExit(profile.wireProxy.close);
   let finalHealth: ViewServerHealth<Topics> | undefined;
   let finalHealthFailure: string | undefined;
   if (profile.runtime === undefined) {
@@ -749,19 +752,14 @@ afterAll(async () => {
       `WebSocket firehose benchmark subscription cleanup failed: ${Cause.pretty(closeSubscriptionsExit.cause)}`,
     );
   }
-  if (Exit.isFailure(closeScopeExit)) {
-    throw new Error(
-      `WebSocket firehose benchmark scope cleanup failed: ${Cause.pretty(closeScopeExit.cause)}`,
-    );
-  }
   if (Exit.isFailure(closeClientExit)) {
     throw new Error(
       `WebSocket firehose benchmark client cleanup failed: ${Cause.pretty(closeClientExit.cause)}`,
     );
   }
-  if (Exit.isFailure(closeWireProxyExit)) {
+  if (Exit.isFailure(closeScopeExit)) {
     throw new Error(
-      `WebSocket firehose benchmark TCP proxy cleanup failed: ${Cause.pretty(closeWireProxyExit.cause)}`,
+      `WebSocket firehose benchmark scope cleanup failed: ${Cause.pretty(closeScopeExit.cause)}`,
     );
   }
   if (finalHealthFailure !== undefined) {

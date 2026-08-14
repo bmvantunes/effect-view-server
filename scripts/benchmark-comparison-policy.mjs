@@ -699,7 +699,10 @@ export const compareBenchmarkArtifacts = ({
       baselineTask.websocketCompression,
       actualTask.websocketCompression,
     );
-    if (baselineTask.benchmarkScope === "runtime-websocket-firehose") {
+    if (
+      baselineTask.benchmarkScope === "runtime-websocket-firehose" &&
+      actualTask.benchmarkScope === "runtime-websocket-firehose"
+    ) {
       compareWireSentBytes(
         regressions,
         taskLabel,

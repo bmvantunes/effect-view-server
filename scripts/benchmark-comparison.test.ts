@@ -1066,6 +1066,35 @@ describe("benchmark runtime and transport invariants", () => {
     });
   });
 
+  it("reports a WebSocket scope mismatch without reading absent wire evidence", () => {
+    const websocketObservation = {
+      ...observation,
+      artifactKind: "runtime-benchmark-summary",
+      benchmarkScope: "runtime-websocket-firehose",
+      groupedWriteAdmission: undefined,
+      mutationCount: 5,
+      websocketCompression: false,
+      wire: websocketWire,
+    };
+    const baseline = buildBenchmarkBaseline("websocket-firehose", [websocketObservation]);
+    const changedScope = buildBenchmarkBaseline("websocket-firehose", [
+      {
+        ...websocketObservation,
+        benchmarkScope: "engine-raw-snapshot",
+        websocketCompression: undefined,
+        wire: undefined,
+      },
+    ]);
+
+    expect(compareArtifacts(baseline, changedScope)).toStrictEqual({
+      ok: false,
+      regressions: [
+        "task a: benchmarkScope changed from runtime-websocket-firehose to engine-raw-snapshot.",
+        "task a: websocketCompression changed from false to undefined.",
+      ],
+    });
+  });
+
   it("rejects WebSocket outbound payload regressions", () => {
     const websocketObservation = {
       ...observation,

@@ -78,6 +78,11 @@ type StatusAggregateDeltaOperation = StatusAggregateDeltaEvent["operations"][num
 type StatusAggregateEventReader = (
   count: number,
 ) => Effect.Effect<ReadonlyArray<StatusAggregateEvent>, Cause.Done>;
+type InitialSnapshotValidation = {
+  readonly totalRows: number;
+  readonly type: "snapshot";
+  readonly version: number;
+};
 type ValidationSummary = {
   readonly filteredMatchedRows: string;
   readonly filteredTotalRows: number;
@@ -492,11 +497,7 @@ const groupedBigintField = (
 
 const initialSnapshotValidation = (
   events: ReadonlyArray<StatusAggregateEvent>,
-): {
-  readonly totalRows: number;
-  readonly type: "snapshot";
-  readonly version: number;
-} => {
+): InitialSnapshotValidation => {
   const event = events[0];
   if (events.length !== 1 || event === undefined || event.type !== "snapshot") {
     throw new Error("Expected exactly one grouped initial snapshot event.");

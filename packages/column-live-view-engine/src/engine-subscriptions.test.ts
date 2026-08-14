@@ -467,14 +467,15 @@ describe("ColumnLiveViewEngine subscriptions", () => {
       yield* engine.publish("orders", order("1", "open", 10, 1));
       const openStatus: OrderRow["status"] = "open";
 
-      const query: {
+      type MutableSubscriptionQuery = {
         select: typeof orderSelect;
         where: Array<{
           field: "status";
           type: "equals";
           filter: OrderRow["status"];
         }>;
-      } = {
+      };
+      const query: MutableSubscriptionQuery = {
         select: orderSelect,
         where: [{ field: "status", type: "equals", filter: openStatus }],
       };

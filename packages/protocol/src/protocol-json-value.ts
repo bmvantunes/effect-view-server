@@ -17,7 +17,7 @@ const recordValues = (
   return entries?.map(([, entry]) => entry);
 };
 
-export const isProtocolJson = (value: unknown): value is Schema.Json => {
+export const isProtocolJson = <Value>(value: Value): value is Value & Schema.Json => {
   const frames: Array<JsonFrame> = [{ _tag: "enter", value }];
   const active = new WeakSet<object>();
   const complete = new WeakSet<object>();

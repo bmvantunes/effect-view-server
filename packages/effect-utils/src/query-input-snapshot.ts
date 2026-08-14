@@ -1,5 +1,5 @@
 import { make as makeBigDecimal } from "effect/BigDecimal";
-import { Result } from "effect";
+import { Result, Schema } from "effect";
 import {
   hasPlainRecordPrototype,
   inspectArrayData,
@@ -8,6 +8,7 @@ import {
 import { inspectWireSafeBigDecimal } from "./wire-safe-big-decimal";
 
 type QueryRecord = Readonly<Record<string, unknown>>;
+type QueryInput = Schema.Schema.Type<typeof Schema.Unknown>;
 
 const ownedQuerySnapshots = new WeakSet<object>();
 
@@ -58,7 +59,7 @@ type SnapshotFrame =
       readonly keys: ReadonlyArray<string>;
     };
 
-const snapshotQueryValue = (input: unknown): unknown => {
+const snapshotQueryValue = (input: QueryInput): unknown => {
   const frames: Array<SnapshotFrame> = [{ _tag: "enter", value: input }];
   const results: Array<unknown> = [];
   const active = new WeakSet<object>();
@@ -165,8 +166,8 @@ const snapshotQueryValue = (input: unknown): unknown => {
 };
 
 export function snapshotViewServerQuery<Query extends object>(query: Query): Query;
-export function snapshotViewServerQuery(query: unknown): Readonly<Record<string, unknown>>;
-export function snapshotViewServerQuery(query: unknown): unknown {
+export function snapshotViewServerQuery(query: QueryInput): Readonly<Record<string, unknown>>;
+export function snapshotViewServerQuery(query: QueryInput): unknown {
   if (isPlainRecord(query) && ownedQuerySnapshots.has(query)) {
     return query;
   }
@@ -194,19 +195,19 @@ export type CapturedSourceHealthInput<Topic extends string = string> = {
 /**
  * Captures an owned Source Health request without invoking input accessors.
  *
- * The `Topic` parameter preserves the caller's already-validated public input
+ * The typed overload preserves the caller's already-validated public topic
  * type; this utility proves only that the captured runtime value is a string.
  * Runtime/client adapters must still validate configured Source ownership
  * before using the result.
  */
 export function captureSourceHealthInput<const Topic extends string>(
-  input: unknown,
+  input: QueryRecord & { readonly topic: Topic },
 ): Result.Result<CapturedSourceHealthInput<Topic>, unknown>;
 export function captureSourceHealthInput(
-  input: unknown,
+  input: QueryInput,
 ): Result.Result<CapturedSourceHealthInput<string>, unknown>;
 export function captureSourceHealthInput(
-  input: unknown,
+  input: QueryInput,
 ): Result.Result<CapturedSourceHealthInput<string>, unknown> {
   return Result.try(() => {
     const captured = snapshotViewServerQuery(input);

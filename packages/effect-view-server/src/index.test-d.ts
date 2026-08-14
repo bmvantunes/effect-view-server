@@ -418,8 +418,8 @@ describe("public effect-view-server subpath type contracts", () => {
     expectTypeOf(sourceAdapterConformanceDefinitionIsLinked).not.toBeAny();
     expectTypeOf<SourceAdapterConformanceOptions>().not.toBeAny();
     expectTypeOf<SourceAdapterPackageConformanceOptions>().not.toBeAny();
-    expectTypeOf(inspectWireSafeBigDecimal).toEqualTypeOf<
-      (value: unknown) => WireSafeBigDecimalInspection
+    expectTypeOf<typeof inspectWireSafeBigDecimal>().toEqualTypeOf<
+      (value: Schema.Schema.Type<typeof Schema.Unknown>) => WireSafeBigDecimalInspection
     >();
     expectTypeOf<WireSafeBigDecimalInspection>().toEqualTypeOf<
       | { readonly _tag: "NotBigDecimal" }
@@ -433,19 +433,24 @@ describe("public effect-view-server subpath type contracts", () => {
           readonly semanticKey: string;
         }
     >();
-    expectTypeOf(isWireSafeBigDecimal).toEqualTypeOf<
-      (value: unknown) => value is WireSafeBigDecimal
+    expectTypeOf<typeof isWireSafeBigDecimal>().toEqualTypeOf<
+      (value: Schema.Schema.Type<typeof Schema.Unknown>) => value is WireSafeBigDecimal
     >();
     expectTypeOf<BigDecimal>().toMatchTypeOf<WireSafeBigDecimal>();
     expectTypeOf<WireSafeBigDecimal>().not.toMatchTypeOf<BigDecimal>();
-    expectTypeOf(compareWireSafeBigDecimal).toEqualTypeOf<
-      (left: unknown, right: unknown) => number | undefined
+    expectTypeOf<typeof compareWireSafeBigDecimal>().toEqualTypeOf<
+      (
+        left: Schema.Schema.Type<typeof Schema.Unknown>,
+        right: Schema.Schema.Type<typeof Schema.Unknown>,
+      ) => number | undefined
     >();
     expectTypeOf(compareTrustedWireSafeBigDecimal).toEqualTypeOf<
       (left: BigDecimal, right: BigDecimal) => number | undefined
     >();
-    expectTypeOf(wireSafeBigDecimalComparisonMetadata).toEqualTypeOf<
-      (value: unknown) => WireSafeBigDecimalComparisonMetadata | undefined
+    expectTypeOf<typeof wireSafeBigDecimalComparisonMetadata>().toEqualTypeOf<
+      (
+        value: Schema.Schema.Type<typeof Schema.Unknown>,
+      ) => WireSafeBigDecimalComparisonMetadata | undefined
     >();
     expectTypeOf(trustedWireSafeBigDecimalComparisonMetadata).toEqualTypeOf<
       (value: BigDecimal) => WireSafeBigDecimalComparisonMetadata | undefined
@@ -456,8 +461,8 @@ describe("public effect-view-server subpath type contracts", () => {
         right: WireSafeBigDecimalComparisonMetadata,
       ) => number | undefined
     >();
-    expectTypeOf(wireSafeBigDecimalSemanticKey).toEqualTypeOf<
-      (value: unknown) => string | undefined
+    expectTypeOf<typeof wireSafeBigDecimalSemanticKey>().toEqualTypeOf<
+      (value: Schema.Schema.Type<typeof Schema.Unknown>) => string | undefined
     >();
     expectTypeOf(PublicValueSemantics).not.toHaveProperty("isTrustedWireSafeBigDecimal");
     expectTypeOf(PublicValueSemantics).not.toHaveProperty("trustedWireSafeBigDecimalSemanticKey");

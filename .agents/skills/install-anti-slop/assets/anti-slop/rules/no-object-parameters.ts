@@ -4,12 +4,12 @@ import type { ESTree } from "@oxlint/plugins";
 
 import {
 	createTypeEnvironment,
+	typeResolvesToBroadType,
 	type TypeEnvironment,
 } from "../shared/dictionary-types.ts";
 
 import {
-	isValidationOwner,
-	isRuntimeParameterOwner,
+	isValidationParameter,
 	parameterAnnotation,
 	parameterName,
 	type Parameter,
@@ -48,46 +48,14 @@ export const noObjectParametersRule = defineRule({
 	create(context) {
 		let environment: TypeEnvironment | null = null;
 
-		const resolvesToObject = (
-			type: ESTree.TSType,
-			environment: TypeEnvironment,
-			shadowedAliases: ReadonlySet<string>,
-			visited = new Set<string>(),
-		): boolean => {
-			if (type.type === "TSObjectKeyword") return true;
-			if (type.type === "TSParenthesizedType")
-				return resolvesToObject(type.typeAnnotation, environment, shadowedAliases, visited);
-			if (type.type === "TSUnionType") {
-				return type.types.some((member) =>
-					resolvesToObject(member, environment, shadowedAliases, visited),
-				);
-			}
-			if (
-				type.type !== "TSTypeReference" ||
-				type.typeName.type !== "Identifier" ||
-				(type.typeArguments !== null &&
-					type.typeArguments !== undefined &&
-					type.typeArguments.params.length > 0) ||
-				visited.has(type.typeName.name) ||
-				shadowedAliases.has(type.typeName.name)
-			) {
-				return false;
-			}
-			const alias = environment.aliases.get(type.typeName.name);
-			if (alias === undefined) return false;
-			const nextVisited = new Set(visited);
-			nextVisited.add(type.typeName.name);
-			return resolvesToObject(alias.typeAnnotation, environment, shadowedAliases, nextVisited);
-		};
-
 		const checkParameters = (node: ParameterOwner) => {
 			if (environment === null) return;
-			if (!isRuntimeParameterOwner(node) || isValidationOwner(node)) return;
 			const shadowedAliases = lexicalTypeParameterNames(node);
 			for (const parameter of node.params) {
 				const annotation = parameterAnnotation(parameter);
 				if (annotation === null || annotation === undefined) continue;
-				if (!resolvesToObject(annotation.typeAnnotation, environment, shadowedAliases)) continue;
+				if (!typeResolvesToBroadType(annotation.typeAnnotation, environment, "object", shadowedAliases)) continue;
+				if (isValidationParameter(node, parameter, context.sourceCode)) continue;
 				context.report({
 					node: annotation.typeAnnotation,
 					messageId: "objectParameter",

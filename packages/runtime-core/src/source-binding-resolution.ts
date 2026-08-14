@@ -36,21 +36,22 @@ export type TopicSourceBinding = {
   readonly topic: string;
 };
 
-const hasDefinedOwnProperty = (value: object, key: string): boolean =>
+type TopicDefinitionInput = Schema.Schema.Type<typeof Schema.Unknown>;
+
+const hasDefinedOwnProperty = <Value extends object>(value: Value, key: string): boolean =>
   Object.prototype.hasOwnProperty.call(value, key) && Reflect.get(value, key) !== undefined;
 
-const isRowSchema = (value: unknown): value is RowSchema =>
+const isRowSchema = (value: TopicDefinitionInput): value is RowSchema =>
   Schema.isSchema(value) &&
   (typeof value === "object" || typeof value === "function") &&
   value !== null &&
   "fields" in value;
 
 const topicCanonicalSourceFromUnknown = (
-  topicDefinition: unknown,
+  topicDefinition: TopicDefinitionInput,
 ): SourceDefinitionAny | undefined => {
   if (
-    typeof topicDefinition !== "object" ||
-    topicDefinition === null ||
+    !isTopicDefinitionObject(topicDefinition) ||
     !hasDefinedOwnProperty(topicDefinition, "source")
   ) {
     return undefined;
@@ -59,11 +60,15 @@ const topicCanonicalSourceFromUnknown = (
   return isSourceDefinition(source) ? source : undefined;
 };
 
-const topicSourceBinding = (topic: string, definition: unknown): TopicSourceBinding => {
+const isTopicDefinitionObject = (value: TopicDefinitionInput): value is object =>
+  typeof value === "object" && value !== null;
+
+const topicSourceBinding = (
+  topic: string,
+  definition: TopicDefinitionInput,
+): TopicSourceBinding => {
   const sourceDeclared =
-    typeof definition === "object" &&
-    definition !== null &&
-    hasDefinedOwnProperty(definition, "source");
+    isTopicDefinitionObject(definition) && hasDefinedOwnProperty(definition, "source");
   const source = topicCanonicalSourceFromUnknown(definition);
   const owners: ReadonlyArray<TopicSourceOwner> = sourceDeclared
     ? [
@@ -73,10 +78,9 @@ const topicSourceBinding = (topic: string, definition: unknown): TopicSourceBind
         },
       ]
     : [];
-  const schema =
-    typeof definition === "object" && definition !== null
-      ? Reflect.get(definition, "schema")
-      : undefined;
+  const schema = isTopicDefinitionObject(definition)
+    ? Reflect.get(definition, "schema")
+    : undefined;
   return {
     schema: isRowSchema(schema) ? schema : undefined,
     source,

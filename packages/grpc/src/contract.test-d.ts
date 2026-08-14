@@ -76,6 +76,18 @@ type OrderEventMessage = Message<"grpc.contract.OrderEvent"> & {
   readonly region: string;
 };
 
+type LeasedOrderRow = {
+  readonly id: string;
+  readonly price: number;
+  readonly region: string;
+};
+
+type MaterializedStrategyRow = {
+  readonly id: string;
+  readonly price: number;
+  readonly region: string;
+};
+
 type StrategyRequestMessage = Message<"grpc.contract.StrategyRequest"> & {
   readonly strategyId: string;
 };
@@ -441,14 +453,7 @@ const leased = sources.leased({
   client: "orders",
   method: "streamOrders",
   routeBy: ["region"],
-  map: ({
-    value,
-    route,
-  }): {
-    readonly id: string;
-    readonly price: number;
-    readonly region: string;
-  } => {
+  map: ({ value, route }): LeasedOrderRow => {
     expectTypeOf(route.region).toEqualTypeOf<string>();
     return {
       id: value.orderId,
@@ -486,13 +491,7 @@ const materializedStrategies = sources.materialized({
   client: "strategies",
   method: "streamStrategies",
   request: () => ({ strategyId: "all" }),
-  map: ({
-    value,
-  }): {
-    readonly id: string;
-    readonly price: number;
-    readonly region: string;
-  } => ({
+  map: ({ value }): MaterializedStrategyRow => ({
     id: value.strategyId,
     price: 0,
     region: "global",

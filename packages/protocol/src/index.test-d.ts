@@ -14,15 +14,21 @@ import {
   viewServerDecodeLiveEvent,
   viewServerDecodeHealthSummaryEvent,
   viewServerDecodeHealthTopicEvent,
+  viewServerDecodeGroupedQuery,
+  viewServerDecodeLiveQuery,
+  viewServerDecodeRawQuery,
+  viewServerDecodeSourceHealth,
   viewServerDecodeTrustedLiveEvent,
   viewServerEncodeHealth,
   viewServerEncodeHealthSummaryEvent,
   viewServerEncodeHealthTopicEvent,
+  viewServerEncodeSourceHealth,
 } from "./index";
 
 const TypeOrder = Schema.Struct({
   id: ViewServerId,
 });
+type TypeOrderRow = typeof TypeOrder.Type;
 
 const typeViewServer = defineViewServerConfig({
   topics: {
@@ -70,8 +76,58 @@ const typeSourceViewServer = defineViewServerConfig({
 declare const wireEvent: Protocol.ViewServerWireEvent;
 declare const trustedWireEvent: Protocol.ViewServerTrustedWireEvent;
 declare const aggregateHealth: ViewServerHealth<typeof typeSourceViewServer.topics>;
+declare const unknownQuery: unknown;
+declare const unknownSourceHealth: unknown;
 
 describe("@effect-view-server/protocol type contract", () => {
+  it("preserves topic row types through query and Source Health decoders", () => {
+    const raw = viewServerDecodeRawQuery(typeViewServer, "orders", unknownQuery);
+    const grouped = viewServerDecodeGroupedQuery(typeViewServer, "orders", unknownQuery);
+    const live = viewServerDecodeLiveQuery(typeViewServer, "orders", unknownQuery);
+    const decodedSourceHealth = viewServerDecodeSourceHealth(
+      typeSourceViewServer,
+      "materialized",
+      unknownSourceHealth,
+    );
+    const encodedSourceHealth = viewServerEncodeSourceHealth(
+      typeSourceViewServer,
+      "materialized",
+      unknownSourceHealth,
+    );
+
+    expectTypeOf<Effect.Success<typeof raw>>().toEqualTypeOf<
+      Protocol.ViewServerValidatedRawQuery<TypeOrderRow>
+    >();
+    expectTypeOf<Effect.Success<typeof grouped>>().toEqualTypeOf<
+      Protocol.ViewServerValidatedGroupedQuery<TypeOrderRow>
+    >();
+    expectTypeOf<Effect.Success<typeof live>>().toEqualTypeOf<
+      Protocol.ViewServerValidatedLiveQuery<TypeOrderRow>
+    >();
+    expectTypeOf<Effect.Success<typeof decodedSourceHealth>>().toEqualTypeOf<
+      Protocol.ViewServerDecodedSourceHealth<typeof typeSourceViewServer.topics, "materialized">
+    >();
+    expectTypeOf<Effect.Success<typeof encodedSourceHealth>>().toEqualTypeOf<Schema.Json>();
+
+    const invalidTopic = "missing" as const;
+    // @ts-expect-error configured query decoders reject topics absent from the view-server config.
+    const _invalidRaw = viewServerDecodeRawQuery(typeViewServer, invalidTopic, unknownQuery);
+    const _invalidGrouped = viewServerDecodeGroupedQuery(
+      typeViewServer,
+      // @ts-expect-error configured query decoders reject topics absent from the view-server config.
+      invalidTopic,
+      unknownQuery,
+    );
+    // @ts-expect-error configured query decoders reject topics absent from the view-server config.
+    const _invalidLive = viewServerDecodeLiveQuery(typeViewServer, invalidTopic, unknownQuery);
+    const _invalidSourceHealth = viewServerDecodeSourceHealth(
+      typeSourceViewServer,
+      // @ts-expect-error configured Source Health decoders reject topics absent from the view-server config.
+      invalidTopic,
+      unknownSourceHealth,
+    );
+  });
+
   it("types aggregate Source Health encoder cardinality and topic ownership", () => {
     const valid = viewServerEncodeHealth(typeSourceViewServer, aggregateHealth);
     expectTypeOf(valid).toEqualTypeOf<

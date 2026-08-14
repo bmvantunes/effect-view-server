@@ -15,6 +15,20 @@ type SourceLifecycleDeclarationAny = SourceLifecycleDeclaration<
   SourceDefinitionOptionsFamily
 >;
 
+type AnySourceDefinition = SourceDefinition<
+  SourceAdapterHandle<
+    string,
+    string | undefined,
+    unknown,
+    SourceLifecycleDeclarationAny | undefined,
+    SourceLifecycleDeclarationAny | undefined
+  >,
+  SourceLifecycle,
+  unknown,
+  ReadonlyArray<string>,
+  never
+>;
+
 export const SourceDefinitionTypeId: unique symbol = Symbol(
   "@effect-view-server/source-adapter/SourceDefinition",
 );
@@ -31,8 +45,8 @@ export const registerSourceDefinition = <Definition extends object>(
   return definition;
 };
 
-const hasExactDefinitionDataKeys = (
-  value: object,
+const hasExactDefinitionDataKeys = <Value extends object>(
+  value: Value,
   expectedKeys: ReadonlyArray<PropertyKey>,
 ): boolean => {
   const keys = Result.try(() => Reflect.ownKeys(value));
@@ -116,23 +130,12 @@ const validateSourceDefinitionEnvelope = (value: unknown): boolean => {
         Schedule.isSchedule(Reflect.get(retry, "policy"));
 };
 
-export const validateSourceDefinition = (value: unknown): boolean => {
+export const validateSourceDefinition = <Value>(
+  value: Value,
+): value is Value & AnySourceDefinition => {
   const validation = Result.try(() => validateSourceDefinitionEnvelope(value));
   return Result.isSuccess(validation) && validation.success;
 };
 
-export const isSourceDefinition = (
-  value: unknown,
-): value is SourceDefinition<
-  SourceAdapterHandle<
-    string,
-    string | undefined,
-    unknown,
-    SourceLifecycleDeclarationAny | undefined,
-    SourceLifecycleDeclarationAny | undefined
-  >,
-  SourceLifecycle,
-  unknown,
-  ReadonlyArray<string>,
-  never
-> => validateSourceDefinition(value);
+export const isSourceDefinition = <Value>(value: Value): value is Value & AnySourceDefinition =>
+  validateSourceDefinition(value);

@@ -268,18 +268,18 @@ const scalarKey = (value: string): string => {
   return key;
 };
 
-const countedMatch = (
+const countedMatch = <Row extends object>(
   counter: RowCallbackCounter,
-  predicate: (row: object) => boolean,
-): ((row: object) => boolean) => {
-  return (row) => {
+  predicate: (row: Row) => boolean,
+): ((row: Row) => boolean) => {
+  return (row: Row) => {
     counter.count += 1;
     return predicate(row);
   };
 };
 
-const unexpectedCallback = (message: string): ((row: object) => boolean) => {
-  return () => {
+const unexpectedCallback = (message: string): (<Row extends object>(row: Row) => boolean) => {
+  return <Row extends object>(_row: Row) => {
     throw new Error(message);
   };
 };

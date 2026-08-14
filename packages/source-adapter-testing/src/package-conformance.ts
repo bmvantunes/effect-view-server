@@ -1,3 +1,4 @@
+import { definedFields } from "./optional-fields";
 import {
   isSourceAdapterHandle,
   isSourceDefinition,
@@ -16,6 +17,10 @@ import { build, type Plugin } from "vite";
 import { browserBuildChunks } from "./browser-build-output";
 import { sourceAdapterConformanceDefinitionIsLinked } from "./conformance";
 import { importPackageExportModule } from "./package-export-loader";
+type PackageContractModule = Readonly<Record<string, unknown>>;
+
+const isObjectLike = (value: unknown): value is object =>
+  (typeof value === "object" && value !== null) || typeof value === "function";
 
 export type SourceAdapterPackageSchemaProbe = {
   readonly valid: Exit.Exit<unknown, unknown>;
@@ -82,7 +87,7 @@ export type SourceAdapterPackageLifecycleProbe = {
   readonly definitionExport: string | readonly [string, ...ReadonlyArray<string>];
   readonly definitionArguments:
     | ReadonlyArray<unknown>
-    | ((contractModule: object) => ReadonlyArray<unknown>);
+    | ((contractModule: PackageContractModule) => ReadonlyArray<unknown>);
   readonly metrics: SourceAdapterPackageValueProbe;
   readonly rejectionLocation: SourceAdapterPackageValueProbe;
 };
@@ -101,6 +106,11 @@ export type SourceAdapterPackageBrowserBundleProbe = {
   readonly budgetBytes: number;
   readonly additionalForbiddenModulePatterns?: ReadonlyArray<string>;
   readonly additionalPeerRuntimeModulePatterns?: ReadonlyArray<string>;
+};
+
+type SourceAdapterContractBrowserModuleClassification = {
+  readonly forbiddenContractModules: ReadonlyArray<string>;
+  readonly bundledPeerRuntimeModules: ReadonlyArray<string>;
 };
 
 export type SourceAdapterPackagePlatformProbe = {
@@ -165,7 +175,7 @@ export class SourceAdapterPackageInspectionError extends Data.TaggedError(
 const inspectionError = (message: string, cause?: unknown): SourceAdapterPackageInspectionError =>
   new SourceAdapterPackageInspectionError({
     message,
-    ...(cause === undefined ? {} : { cause }),
+    ...definedFields(cause, (cause) => ({ cause })),
   });
 
 type JsonObject = Readonly<Record<string, unknown>>;
@@ -224,7 +234,7 @@ const contractExport = <Module extends object>(
       const segments = typeof path === "string" ? [path] : path;
       let current: unknown = module;
       for (const segment of segments) {
-        if ((typeof current !== "object" || current === null) && typeof current !== "function") {
+        if (!isObjectLike(current)) {
           return undefined;
         }
         current = Reflect.get(current, segment);
@@ -569,10 +579,7 @@ export const classifySourceAdapterContractBrowserModules = (
     readonly forbiddenResolvedTargets?: ReadonlyArray<string>;
     readonly peerPackageNames?: ReadonlyArray<string>;
   } = {},
-): {
-  readonly forbiddenContractModules: ReadonlyArray<string>;
-  readonly bundledPeerRuntimeModules: ReadonlyArray<string>;
-} => {
+): SourceAdapterContractBrowserModuleClassification => {
   const cleanModuleId = (module: string): string => module.replace(/\?.*$/u, "");
   const normalizedBuiltins = builtinModules.map((module) =>
     module.startsWith("node:") ? module.slice("node:".length) : module,
@@ -644,11 +651,11 @@ export const classifySourceAdapterContractBrowserModules = (
   };
 };
 
-const invokeLayerConstructor = <Module extends object>(
+const invokeLayerConstructor = <Module extends object, ViewServer, Resources>(
   module: Module,
   constructor: "layer" | "layerConfig",
-  viewServer: unknown,
-  resources: unknown,
+  viewServer: ViewServer,
+  resources: Resources,
 ): Effect.Effect<Context.Context<unknown>, SourceAdapterPackageInspectionError> =>
   Effect.try({
     try: () => {
@@ -677,7 +684,10 @@ const invokeLayerConstructor = <Module extends object>(
     ),
   );
 
-const runtimeLifecycleMatches = (declaration: unknown, implementation: unknown): boolean => {
+const runtimeLifecycleMatches = <Declaration, Implementation>(
+  declaration: Declaration,
+  implementation: Implementation,
+): boolean => {
   if (declaration === undefined) {
     return implementation === undefined;
   }
@@ -703,8 +713,8 @@ const runtimeServiceMatchesAdapter = (
   runtimeLifecycleMatches(adapter.materialized, Reflect.get(service, "materialized")) &&
   runtimeLifecycleMatches(adapter.leased, Reflect.get(service, "leased"));
 
-const inspectPlatform = (
-  module: object,
+const inspectPlatform = <Module extends object>(
+  module: Module,
   probe: SourceAdapterPackagePlatformProbe,
   adapter: import("@effect-view-server/source-adapter").SourceAdapterDescriptor<
     string,

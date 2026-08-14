@@ -1,3 +1,4 @@
+import { definedFields } from "./optional-fields";
 import { create, toBinary } from "@bufbuild/protobuf";
 import { describe, expect, it } from "@effect/vitest";
 import { Admin, Producer } from "@platformatic/kafka";
@@ -98,8 +99,8 @@ const send = Effect.fn("KafkaSourceAdapter.integration.messages.send")(function*
             topic: message.topic,
             key: message.key === null ? null : Buffer.from(message.key),
             value: message.value === null ? null : Buffer.from(message.value),
-            ...(message.partition === undefined ? {} : { partition: message.partition }),
-            ...(message.timestamp === undefined ? {} : { timestamp: message.timestamp }),
+            ...definedFields(message.partition, (partition) => ({ partition })),
+            ...definedFields(message.timestamp, (timestamp) => ({ timestamp })),
           })),
         }),
       ),

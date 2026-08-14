@@ -1,3 +1,4 @@
+import { definedFields } from "./optional-fields";
 import type { DescMessage, DescMethodServerStreaming, DescService } from "@bufbuild/protobuf";
 import { Code, ConnectError } from "@connectrpc/connect";
 import {
@@ -306,29 +307,25 @@ const iteratorDone = (): IteratorReturnResult<undefined> => ({
   value: undefined,
 });
 
+type GrpcFinalizationOutcome =
+  | {
+      readonly _tag: "Success";
+    }
+  | {
+      readonly _tag: "Failure";
+    };
+
+type OwnedGrpcIterable = {
+  readonly iterable: AsyncIterable<unknown>;
+  readonly finalize: () => Promise<GrpcFinalizationOutcome>;
+};
+
 export const makeOwnedGrpcIterable = (
   iterator: AsyncIterator<unknown>,
   controller: AbortController,
-): {
-  readonly iterable: AsyncIterable<unknown>;
-  readonly finalize: () => Promise<
-    | {
-        readonly _tag: "Success";
-      }
-    | {
-        readonly _tag: "Failure";
-      }
-  >;
-} => {
-  type FinalizationOutcome =
-    | {
-        readonly _tag: "Success";
-      }
-    | {
-        readonly _tag: "Failure";
-      };
-  let finalization: Promise<FinalizationOutcome> | undefined;
-  const finalize = (): Promise<FinalizationOutcome> => {
+): OwnedGrpcIterable => {
+  let finalization: Promise<GrpcFinalizationOutcome> | undefined;
+  const finalize = (): Promise<GrpcFinalizationOutcome> => {
     if (finalization !== undefined) {
       return finalization;
     }
@@ -888,9 +885,9 @@ const makeRegistry = Effect.fn("GrpcSourceAdapter.registry.make")(function* (
           throw new TypeError("Invalid gRPC aggregate client entry.");
         }
         entries.set(key, {
-          ...(endpointsDescriptor === undefined
-            ? {}
-            : { endpoints: Object.freeze([...endpointsDescriptor.value]) }),
+          ...definedFields(endpointsDescriptor, (endpointsDescriptor) => ({
+            endpoints: Object.freeze([...endpointsDescriptor.value]),
+          })),
           invoke: (...arguments_) =>
             Reflect.apply(invokeDescriptor.value, descriptor.value, arguments_),
           service: serviceDescriptor.value,
@@ -928,7 +925,7 @@ const makeRegistry = Effect.fn("GrpcSourceAdapter.registry.make")(function* (
     runtimeClients.set(
       client,
       Object.freeze({
-        ...(runtime.endpoints === undefined ? {} : { endpoints: runtime.endpoints }),
+        ...definedFields(runtime.endpoints, (endpoints) => ({ endpoints })),
         service,
         invoke: <Request>(method: string, request: Request, signal: AbortSignal): unknown =>
           runtime.invoke(method, request, signal),

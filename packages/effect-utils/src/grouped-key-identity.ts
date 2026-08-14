@@ -3,10 +3,13 @@ import {
   presentSchemaValuePresenceToken,
   schemaValuePresenceKey,
 } from "./schema-value-presence";
+import { Schema } from "effect";
+
+type GroupedKeyInput = Schema.Schema.Type<typeof Schema.Unknown>;
 
 export type GroupedKeyIdentityField = {
   readonly field: string;
-  readonly canonicalKey: (value: unknown) => string;
+  readonly canonicalKey: (value: GroupedKeyInput) => string;
 };
 
 export type CompiledGroupedKeyIdentity<Row extends object, Key extends string | undefined> = {
@@ -27,10 +30,16 @@ const compileGroupedKeyFrames = (
     prefix: `[${JSON.stringify(field.field)},`,
   }));
 
-const groupedKeyFromRow = <Row extends object>(
+const isReflectableObject = (value: GroupedKeyInput): value is object =>
+  (typeof value === "object" && value !== null) || typeof value === "function";
+
+const groupedKeyFromRow = (
   fields: ReadonlyArray<CompiledGroupedKeyFrame>,
-  row: Row,
+  row: GroupedKeyInput,
 ): string => {
+  if (!isReflectableObject(row)) {
+    throw new TypeError("Grouped key rows must be objects.");
+  }
   const tokens: Array<string> = [];
   for (const field of fields) {
     const presenceKey = Object.prototype.propertyIsEnumerable.call(row, field.field)

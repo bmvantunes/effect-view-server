@@ -67,7 +67,9 @@ const routeFieldDomain = (ast: SchemaAST.AST, active: Set<SchemaAST.AST>): Route
   return domain;
 };
 
-export const viewServerRouteFieldSchemaHasCompleteScalarDomain = (schema: unknown): boolean => {
+export const viewServerRouteFieldSchemaHasCompleteScalarDomain = <SchemaValue>(
+  schema: SchemaValue,
+): boolean => {
   const result = Result.try(() =>
     Schema.isSchema(schema)
       ? routeFieldDomain(SchemaAST.toType(schema.ast), new Set()) === "scalar"

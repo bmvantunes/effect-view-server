@@ -40,10 +40,10 @@ export type ViewServerRuntimeCoreInternalMutations<Topics extends TopicDefinitio
     key: string,
     partitionKey: string,
   ) => Effect.Effect<void, ViewServerRuntimeError>;
-  readonly patchDecodedFields: (
-    topic: Extract<keyof Topics, string>,
+  readonly patchDecodedFields: <Topic extends Extract<keyof Topics, string>>(
+    topic: Topic,
     key: string,
-    patch: object,
+    patch: Partial<Topics[Topic]["schema"]["Type"]>,
   ) => Effect.Effect<void, ViewServerRuntimeError>;
   readonly publishManyDecodedRows: (
     topic: Extract<keyof Topics, string>,
@@ -133,10 +133,10 @@ export const makeRuntimeCoreMutationPipeline = <const Topics extends TopicDefini
     );
   });
   const patchDecodedFields = Effect.fn("ViewServerRuntimeCore.sourceMutation.patchDecodedFields")(
-    function* <Patch extends object>(
-      topic: Extract<keyof Topics, string>,
+    function* <Topic extends Extract<keyof Topics, string>>(
+      topic: Topic,
       key: string,
-      patch: Patch,
+      patch: Partial<Topics[Topic]["schema"]["Type"]>,
     ) {
       yield* applyEngineMutation(
         engine.patchDecodedFields(topic, key, patch),

@@ -12,6 +12,8 @@ import type {
 } from "effect-view-server/source-adapter";
 import { SourceAdapter } from "effect-view-server/source-adapter";
 
+type KafkaContractInput = Schema.Schema.Type<typeof Schema.Unknown>;
+
 const KafkaCodecTypeId: unique symbol = Symbol("@effect-view-server/kafka/KafkaCodec");
 const KafkaCodecDecodeTypeId: unique symbol = Symbol("@effect-view-server/kafka/KafkaCodecDecode");
 const KafkaCompactionKeyCodecTypeId: unique symbol = Symbol(
@@ -390,7 +392,9 @@ type SupportedKafkaJsonFactory<Factory extends KafkaJsonFactory> =
 type KafkaJsonDecoderState<SourceSchema extends KafkaRowSchema> =
   | {
       readonly _tag: "Ready";
-      readonly decode: (input: unknown) => Effect.Effect<SourceSchema["Type"], Schema.SchemaError>;
+      readonly decode: <Input>(
+        input: Input,
+      ) => Effect.Effect<SourceSchema["Type"], Schema.SchemaError>;
     }
   | {
       readonly _tag: "Failed";
@@ -625,6 +629,7 @@ type KafkaCustomCodecShape = {
 
 const isKafkaCustomDecode = (value: unknown): value is KafkaCustomCodecShape["decode"] =>
   typeof value === "function";
+const isString = (value: unknown): value is string => typeof value === "string";
 
 type KafkaCustomCodecAdditionalArguments<Definition> =
   IsAny<Definition> extends true ? readonly [never] : readonly [];
@@ -652,7 +657,7 @@ const captureCustomCodecDefinition = (definition: unknown): KafkaCustomCodecShap
     }
     const name: unknown = nameDescriptor.value;
     const decode: unknown = decodeDescriptor.value;
-    if (typeof name !== "string" || name.length === 0 || !isKafkaCustomDecode(decode)) {
+    if (!isString(name) || name.length === 0 || !isKafkaCustomDecode(decode)) {
       return undefined;
     }
     return Object.freeze({
@@ -1747,9 +1752,17 @@ export class KafkaSourceConfigurationError extends Error {
   override readonly name = "KafkaSourceConfigurationError";
 }
 
-const captureOwnDataValues = (value: unknown): ReadonlyMap<PropertyKey, unknown> | undefined =>
+const isKafkaObjectInput = (value: KafkaContractInput): value is object =>
+  typeof value === "object" && value !== null;
+
+const isKafkaBigIntInput = (value: KafkaContractInput): value is bigint =>
+  typeof value === "bigint";
+
+const captureOwnDataValues = (
+  value: KafkaContractInput,
+): ReadonlyMap<PropertyKey, unknown> | undefined =>
   Result.try(() => {
-    if (typeof value !== "object" || value === null) {
+    if (!isKafkaObjectInput(value)) {
       return undefined;
     }
     const captured = new Map<PropertyKey, unknown>();
@@ -1769,7 +1782,7 @@ const captureOwnDataValues = (value: unknown): ReadonlyMap<PropertyKey, unknown>
   );
 
 const captureExactOwnDataValues = (
-  value: unknown,
+  value: KafkaContractInput,
   expected: ReadonlyArray<string>,
 ): ReadonlyMap<PropertyKey, unknown> | undefined => {
   const captured = captureOwnDataValues(value);
@@ -1780,7 +1793,7 @@ const captureExactOwnDataValues = (
     : undefined;
 };
 
-const validateFallback = (fallback: unknown): fallback is KafkaStartFallback =>
+const validateFallback = <Value>(fallback: Value): fallback is Value & KafkaStartFallback =>
   fallback === "earliest" || fallback === "latest" || fallback === "fail";
 
 const validateConsumerGroupId = (groupId: unknown): groupId is string =>
@@ -1800,14 +1813,14 @@ const isDurationString = (value: unknown): value is KafkaDurationString =>
 const isFiniteNumber = (value: unknown): value is number =>
   typeof value === "number" && Number.isFinite(value);
 
-export const decodeKafkaDurationInput = (input: unknown): Option.Option<Duration.Duration> =>
+export const decodeKafkaDurationInput = (
+  input: KafkaContractInput,
+): Option.Option<Duration.Duration> =>
   Result.try(() => {
-    if (typeof input === "number") {
-      return isFiniteNumber(input) || input === Number.POSITIVE_INFINITY
-        ? Duration.fromInput(input)
-        : Option.none();
+    if (isFiniteNumber(input) || input === Number.POSITIVE_INFINITY) {
+      return Duration.fromInput(input);
     }
-    if (typeof input === "bigint" || isDurationString(input) || Duration.isDuration(input)) {
+    if (isKafkaBigIntInput(input) || isDurationString(input) || Duration.isDuration(input)) {
       return Duration.fromInput(input);
     }
     if (Array.isArray(input)) {
@@ -1876,9 +1889,9 @@ export const decodeKafkaDurationInput = (input: unknown): Option.Option<Duration
     }),
   );
 
-const captureStartPosition = (start: unknown): KafkaCapturedStartPosition => {
+const captureStartPosition = (start: KafkaContractInput): KafkaCapturedStartPosition => {
   if (start === "earliest" || start === "latest") {
-    return start;
+    return start === "earliest" ? "earliest" : "latest";
   }
   const captured = captureOwnDataValues(start);
   if (captured === undefined) {
@@ -2348,7 +2361,7 @@ type KafkaSourceApi = {
   >;
 };
 
-const captureRetentionPolicy = (input: unknown): KafkaCapturedRetentionPolicy => {
+const captureRetentionPolicy = (input: KafkaContractInput): KafkaCapturedRetentionPolicy => {
   if (input === "match-kafka-retention") {
     return Object.freeze({ _tag: "MatchKafkaRetention" });
   }
@@ -2768,10 +2781,10 @@ type KafkaDeleteRowIdInputGuards<Input> = KafkaNotAny<Input> &
   RejectAnySourceField<Input, "partition"> &
   RejectAnySourceField<Input, "localRowKey">;
 
-const makeKafkaDeleteRowId = (
-  region: unknown,
-  partition: unknown,
-  localRowKey: unknown,
+const makeKafkaDeleteRowId = <Region, Partition, LocalRowKey>(
+  region: Region,
+  partition: Partition,
+  localRowKey: LocalRowKey,
 ): string => {
   if (!validateRegion(region)) {
     throw new KafkaSourceConfigurationError(
@@ -2921,10 +2934,10 @@ type KafkaCompactionRowIdInputGuards<Input> = KafkaNotAny<Input> &
   RejectAnySourceField<Input, "partition"> &
   RejectAnySourceField<Input, "serializedKeyBytes">;
 
-const makeKafkaCompactionRowId = (
-  region: unknown,
-  partition: unknown,
-  serializedKeyBytes: unknown,
+const makeKafkaCompactionRowId = <Region, Partition, SerializedKeyBytes>(
+  region: Region,
+  partition: Partition,
+  serializedKeyBytes: SerializedKeyBytes,
 ): string => {
   if (!validateRegion(region) || !validatePartition(partition)) {
     throw new KafkaSourceConfigurationError(
@@ -3080,7 +3093,7 @@ export function decodeKafkaRowId<const Policy extends KafkaCleanupPolicy>(
   id: string,
   cleanupPolicy: Policy & RejectAny<NoInfer<Policy>>,
 ): KafkaDecodedRowIdForPolicy<Policy>;
-export function decodeKafkaRowId(id: string, cleanupPolicy: unknown): KafkaDecodedRowId {
+export function decodeKafkaRowId<Policy>(id: string, cleanupPolicy: Policy): KafkaDecodedRowId {
   if (cleanupPolicy === "delete") {
     return decodeKafkaDeleteRowId(id);
   }

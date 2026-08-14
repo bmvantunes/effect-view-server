@@ -12,7 +12,10 @@ import {
   type Message,
 } from "@bufbuild/protobuf";
 import { FeatureSet_FieldPresence, isWrapperDesc } from "@bufbuild/protobuf/wkt";
+import { Schema } from "effect";
 import { exactArrayValues, exactDataEntries, type DataEntry } from "./exact-shape";
+
+type GrpcRequestInput = Schema.Schema.Type<typeof Schema.Unknown>;
 
 const int32Minimum = -2_147_483_648;
 const int32Maximum = 2_147_483_647;
@@ -301,8 +304,8 @@ function messageInitIsValid(
 function snapshotRequest(
   value: Readonly<Record<string, unknown>>,
 ): Readonly<Record<string, unknown>>;
-function snapshotRequest(value: unknown): unknown;
-function snapshotRequest(value: unknown): unknown {
+function snapshotRequest(value: GrpcRequestInput): unknown;
+function snapshotRequest(value: GrpcRequestInput): unknown {
   if (value instanceof Uint8Array) {
     return Uint8Array.from(value);
   }
@@ -350,7 +353,7 @@ const usesNativeJsonRepresentation = (field: MessageBearingField): boolean =>
   field.message.typeName === "google.protobuf.Value" ||
   field.message.typeName === "google.protobuf.ListValue";
 
-const materializeNativeJsonMessage = (message: DescMessage, value: unknown): unknown => {
+const materializeNativeJsonMessage = (message: DescMessage, value: GrpcRequestInput): unknown => {
   if (!jsonValueIsValid(value, new WeakSet<object>())) {
     throw new TypeError("The validated native JSON request value is invalid.");
   }
@@ -518,7 +521,10 @@ const materializeGeneratedMessage = (
   return freezeGeneratedRequestGraph(materialized);
 };
 
-export const validateAndSnapshotGrpcRequest = (message: DescMessage, value: unknown): unknown => {
+export const validateAndSnapshotGrpcRequest = (
+  message: DescMessage,
+  value: GrpcRequestInput,
+): unknown => {
   if (!messageInitIsValid(message, value, new WeakSet<object>())) {
     throw new TypeError("The request-init value does not match its generated descriptor.");
   }

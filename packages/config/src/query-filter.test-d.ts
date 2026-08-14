@@ -453,16 +453,7 @@ describe("query filter types", () => {
     // @ts-expect-error exact field conditions reject surplus properties.
     const _surplus: ExactWhere<FilterRow, typeof surplus> = surplus;
 
-    const optionalUndefinedSurplus: {
-      readonly where: readonly [
-        {
-          readonly field: "id";
-          readonly type: "equals";
-          readonly filter: "a";
-          readonly unexpected?: undefined;
-        },
-      ];
-    } = {
+    const optionalUndefinedSurplus = {
       where: [
         {
           field: "id",
@@ -471,12 +462,23 @@ describe("query filter types", () => {
           unexpected: undefined,
         },
       ],
+    } satisfies {
+      readonly where: readonly [
+        {
+          readonly field: "id";
+          readonly type: "equals";
+          readonly filter: "a";
+          readonly unexpected?: undefined;
+        },
+      ];
     };
     // @ts-expect-error present optional-undefined surplus properties are still extra properties.
     const _optionalUndefinedSurplus: ExactWhere<FilterRow, typeof optionalUndefinedSurplus> =
       optionalUndefinedSurplus;
 
-    const leafWithGroupKey: {
+    const leafWithGroupKey = {
+      where: [{ field: "id", type: "equals", filter: "a", conditions: undefined }],
+    } satisfies {
       readonly where: readonly [
         {
           readonly field: "id";
@@ -485,13 +487,13 @@ describe("query filter types", () => {
           readonly conditions?: undefined;
         },
       ];
-    } = {
-      where: [{ field: "id", type: "equals", filter: "a", conditions: undefined }],
     };
     // @ts-expect-error group-only keys are forbidden on field conditions, even when optional.
     const _leafWithGroupKey: ExactWhere<FilterRow, typeof leafWithGroupKey> = leafWithGroupKey;
 
-    const groupWithLeafKey: {
+    const groupWithLeafKey = {
+      where: [{ type: "OR", conditions: [], field: undefined }],
+    } satisfies {
       readonly where: readonly [
         {
           readonly type: "OR";
@@ -499,13 +501,19 @@ describe("query filter types", () => {
           readonly field?: undefined;
         },
       ];
-    } = {
-      where: [{ type: "OR", conditions: [], field: undefined }],
     };
     // @ts-expect-error leaf-only keys are forbidden on groups, even when optional.
     const _groupWithLeafKey: ExactWhere<FilterRow, typeof groupWithLeafKey> = groupWithLeafKey;
 
-    const notWithLeafKey: {
+    const notWithLeafKey = {
+      where: [
+        {
+          type: "NOT",
+          condition: { field: "active", type: "equals", filter: false },
+          filter: undefined,
+        },
+      ],
+    } satisfies {
       readonly where: readonly [
         {
           readonly type: "NOT";
@@ -517,14 +525,6 @@ describe("query filter types", () => {
           readonly filter?: undefined;
         },
       ];
-    } = {
-      where: [
-        {
-          type: "NOT",
-          condition: { field: "active", type: "equals", filter: false },
-          filter: undefined,
-        },
-      ],
     };
     // @ts-expect-error leaf-only keys are forbidden on NOT, even when optional.
     const _notWithLeafKey: ExactWhere<FilterRow, typeof notWithLeafKey> = notWithLeafKey;

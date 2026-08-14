@@ -14,5 +14,5 @@ export type ColumnLiveViewEngineQueryPartition = {
    * The storage key is authoritative for source ownership. Callers may omit it only when
    * exercising the row-level predicate directly; engine evaluation always supplies it.
    */
-  readonly matches: (row: object, storageKey?: string) => boolean;
+  readonly matches: <Row extends object>(row: Row, storageKey?: string) => boolean;
 };

@@ -1,3 +1,4 @@
+import { definedFields } from "./optional-fields";
 import { fileURLToPath } from "node:url";
 import {
   SourceAdapterConformanceDriver,
@@ -31,6 +32,8 @@ import {
   Stream,
   SubscriptionRef,
 } from "effect";
+
+const isString = (value: unknown): value is string => typeof value === "string";
 import {
   KafkaSourceAdapter,
   kafka,
@@ -179,10 +182,10 @@ const recordMetadata = (
   headers: {},
 });
 
-const nominalOverride = <Value extends object>(
+const nominalOverride = <Value extends object, Override>(
   source: Value,
   property: string,
-  value: unknown,
+  value: Override,
 ): Value => {
   const clone: Value = Object.create(Object.getPrototypeOf(source));
   Object.assign(clone, source);
@@ -327,12 +330,10 @@ const makeKafkaConformanceDriver = Effect.fn("KafkaSourceAdapter.conformance.dri
         reporting: service.reporting,
         leased: service.leased,
         materialized: {
-          ...(materialized.applicationState === undefined
-            ? {}
-            : { applicationState: materialized.applicationState }),
-          ...(materialized.initialLaneIds === undefined
-            ? {}
-            : { initialLaneIds: materialized.initialLaneIds }),
+          ...definedFields(materialized.applicationState, (applicationState) => ({
+            applicationState,
+          })),
+          ...definedFields(materialized.initialLaneIds, (initialLaneIds) => ({ initialLaneIds })),
           acquire: (input) =>
             Effect.gen(function* () {
               const attempt = yield* materialized.acquire(input);
@@ -402,7 +403,7 @@ const makeKafkaConformanceDriver = Effect.fn("KafkaSourceAdapter.conformance.dri
                             continue;
                           }
                           const id: unknown = Reflect.get(mutation.row, "id");
-                          if (typeof id !== "string") {
+                          if (!isString(id)) {
                             continue;
                           }
                           const corruption = corruptions.get(id);
@@ -434,10 +435,10 @@ const makeKafkaConformanceDriver = Effect.fn("KafkaSourceAdapter.conformance.dri
               if (fault === undefined) {
                 return nominalOverride(attempt, "lanes", Object.freeze(decoratedLanes));
               }
-              const faultedLane = <Lane extends object>(
+              const faultedLane = <Lane extends object, Override>(
                 lane: Lane,
                 property: "id" | "bufferMetrics",
-                value: unknown,
+                value: Override,
               ): Lane => nominalOverride(lane, property, value);
               const faultedLanes =
                 fault === "EmptyLanes"

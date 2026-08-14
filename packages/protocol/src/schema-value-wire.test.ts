@@ -47,6 +47,8 @@ const semanticWireRow = {
   amount: "1234567890.123456789",
 };
 
+type TransportedEventInput = Schema.Schema.Type<typeof Schema.Unknown>;
+
 const summarizeSemanticRow = (row: typeof SemanticRow.Type) => ({
   id: row.id,
   venue: row.venue.code,
@@ -70,7 +72,7 @@ const semanticRowSummary = {
 };
 
 const decodeTransportedEvent = Effect.fn("ViewServerProtocol.test.transport")(function* (
-  value: unknown,
+  value: TransportedEventInput,
 ) {
   const jsonText = yield* Schema.encodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(value);
   const parsed = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(jsonText);

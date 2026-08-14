@@ -1,3 +1,4 @@
+import { definedFields } from "@effect-view-server/effect-utils";
 import {
   collectCanonicalFilterGraphLeaves,
   compareCanonicalFilterGraphs,
@@ -14,7 +15,7 @@ import {
   normalize as normalizeBigDecimal,
   type BigDecimal,
 } from "effect/BigDecimal";
-import { Result } from "effect";
+import { Result, Schema } from "effect";
 import type { FilterFieldMetadata, FilterNumericKind } from "./filter-field-metadata";
 import { compareFilterValue, stableQueryValueString } from "./query-value";
 
@@ -77,6 +78,8 @@ export type RuntimeFilterExpression =
   | RuntimeFilterFalse
   | RuntimeFilterTrue;
 
+type RuntimeFilterInput = Schema.Schema.Type<typeof Schema.Unknown>;
+
 export class FilterExpressionError extends Error {}
 
 type DeferredExpressionSequence =
@@ -121,7 +124,7 @@ const numericComparisonTypes = new Set<RuntimeFilterConditionType>([
   "lessThanOrEqual",
 ]);
 const blankTypes = new Set<RuntimeFilterConditionType>(["blank", "notBlank"]);
-const isConditionType = (value: unknown): value is RuntimeFilterConditionType => {
+const isConditionType = <Value>(value: Value): value is Value & RuntimeFilterConditionType => {
   switch (value) {
     case "equals":
     case "notEqual":
@@ -273,9 +276,9 @@ const normalizeText = (value: string, caseSensitive: boolean, accentSensitive: b
   return caseSensitive ? normalized : normalized.toLowerCase();
 };
 
-const textOptions = (
-  record: PlainRecordShapeSnapshot,
-): { readonly caseSensitive: boolean; readonly accentSensitive: boolean } => {
+type TextOptions = { readonly caseSensitive: boolean; readonly accentSensitive: boolean };
+
+const textOptions = (record: PlainRecordShapeSnapshot): TextOptions => {
   const caseSensitive = record.stringKeys.includes("caseSensitive")
     ? ownEnumerableDataValue(record, "caseSensitive")
     : false;
@@ -503,7 +506,7 @@ const complementCondition = (
     type,
     caseSensitive: condition.caseSensitive,
     accentSensitive: condition.accentSensitive,
-    ...(condition.filter === undefined ? {} : { filter: condition.filter }),
+    ...definedFields(condition.filter, (filter) => ({ filter })),
   });
 
 const boundedExpressionKey = (
@@ -847,8 +850,8 @@ type ExitFrame = {
 };
 type NormalizeFrame = EnterFrame | ExitFrame;
 
-const normalizeExpression = (
-  value: unknown,
+const normalizeExpression = <Value>(
+  value: Value,
   fields: ReadonlyMap<string, FilterFieldMetadata>,
   memo: WeakMap<object, NormalizedExpression>,
   completed: WeakSet<object>,
@@ -930,7 +933,7 @@ const normalizeExpression = (
 };
 
 export const normalizeWhere = (
-  where: unknown,
+  where: RuntimeFilterInput,
   fields: ReadonlyMap<string, FilterFieldMetadata>,
 ): RuntimeFilterExpression | undefined => {
   const roots = denseArraySnapshot(where, "Query where");

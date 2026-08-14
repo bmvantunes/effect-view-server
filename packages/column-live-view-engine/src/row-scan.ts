@@ -41,7 +41,7 @@ export const topicRowChangedFieldsFromRows = <Previous extends RowObject, Next e
   previous: Previous,
   next: Next,
   fields: Iterable<string>,
-  equivalent: (field: string, left: unknown, right: unknown) => boolean,
+  equivalent: <Left, Right>(field: string, left: Left, right: Right) => boolean,
 ): TopicRowChangedFields | undefined => {
   const changedFields = new Set<string>();
   for (const field of fields) {

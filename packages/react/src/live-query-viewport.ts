@@ -197,13 +197,16 @@ const invalidQueryChrome = (message: string): LiveQueryViewportChrome => ({
   message,
 });
 
+type MessageFailure = { readonly message: string };
+
+const isMessageFailure = (value: unknown): value is MessageFailure =>
+  typeof value === "object" &&
+  value !== null &&
+  "message" in value &&
+  typeof value.message === "string";
+
 export const liveQueryViewportFailureMessage = (failure: unknown): string => {
-  if (
-    typeof failure === "object" &&
-    failure !== null &&
-    "message" in failure &&
-    typeof failure.message === "string"
-  ) {
+  if (isMessageFailure(failure)) {
     return failure.message;
   }
   return String(failure);
@@ -601,7 +604,12 @@ type SinkCleanup = {
   readonly run: () => void;
 };
 
-const makeSinkCleanup = (sink: unknown, clear: () => void): SinkCleanup => {
+type InstalledActiveRequest = {
+  readonly request: number;
+  readonly activate: () => boolean;
+};
+
+const makeSinkCleanup = <Value>(sink: Value, clear: () => void): SinkCleanup => {
   let pending = true;
   return {
     sink,
@@ -696,7 +704,7 @@ export const makeLiveQueryViewport = <
     readonly latestTotalRows: { value: number };
     readonly sink: LiveQueryViewportSink<SinkRow>;
     readonly live: boolean;
-  }): { readonly request: number; readonly activate: () => boolean } => {
+  }): InstalledActiveRequest => {
     const request = ++requestCounter;
     const previous = active;
     if (previous !== undefined) {

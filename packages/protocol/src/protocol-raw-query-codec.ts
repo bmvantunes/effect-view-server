@@ -1,3 +1,4 @@
+import { definedFields } from "@effect-view-server/effect-utils";
 import type {
   FieldKey,
   OrderBy,
@@ -48,6 +49,8 @@ type TrustedRawQuery<Row> = {
 export type ViewServerValidatedRawQuery<Row extends object> = TrustedRawQuery<Row> &
   ValidatedRuntimeQuery;
 
+type ProtocolQueryInput = Schema.Schema.Type<typeof Schema.Unknown>;
+
 const isRawQueryForTopic = (schema: RowSchema, query: LooseWireRawQuery): boolean => {
   if (!hasOnlyKnownFields(schema, query.select)) {
     return false;
@@ -67,7 +70,7 @@ const isRawQueryForTopic = (schema: RowSchema, query: LooseWireRawQuery): boolea
 export const viewServerEncodeRawQuery = Effect.fn("ViewServerProtocol.query.encode")(function* <
   const Topics extends TopicDefinitions,
   Topic extends Extract<keyof Topics, string>,
->(config: { readonly topics: Topics }, topic: Topic, query: unknown) {
+>(config: { readonly topics: Topics }, topic: Topic, query: ProtocolQueryInput) {
   if (!hasTopic(config, topic)) {
     return yield* Effect.fail(invalidTopic(topic));
   }
@@ -112,11 +115,11 @@ export const viewServerEncodeRawQuery = Effect.fn("ViewServerProtocol.query.enco
     routeByInput === undefined ? undefined : yield* encodeRouteBy(config, topic, routeByInput);
   const wireQuery: ViewServerWireRawQuery = {
     select: decoded.select,
-    ...(where === undefined ? {} : { where }),
-    ...(routeBy === undefined ? {} : { routeBy }),
-    ...(decoded.orderBy === undefined ? {} : { orderBy: decoded.orderBy }),
-    ...(decoded.offset === undefined ? {} : { offset: decoded.offset }),
-    ...(decoded.limit === undefined ? {} : { limit: decoded.limit }),
+    ...definedFields(where, (where) => ({ where })),
+    ...definedFields(routeBy, (routeBy) => ({ routeBy })),
+    ...definedFields(decoded.orderBy, (orderBy) => ({ orderBy })),
+    ...definedFields(decoded.offset, (offset) => ({ offset })),
+    ...definedFields(decoded.limit, (limit) => ({ limit })),
   };
   return wireQuery;
 });
@@ -131,7 +134,7 @@ function validatedRawQuery(query: LooseWireRawQuery) {
 const decodeRawQuery = Effect.fn("ViewServerProtocol.query.decode")(function* (
   config: { readonly topics: TopicDefinitions },
   topic: string,
-  query: unknown,
+  query: ProtocolQueryInput,
 ) {
   const decodedTopic = yield* viewServerDecodeTopic(config, topic);
   const topicSchema = config.topics[decodedTopic]!.schema;
@@ -157,11 +160,11 @@ const decodeRawQuery = Effect.fn("ViewServerProtocol.query.decode")(function* (
     const where = yield* decodeWhere(topic, topicSchema, decoded.where);
     const trusted = validatedRawQuery<object>({
       select: decoded.select,
-      ...(where === undefined ? {} : { where }),
-      ...(routeBy === undefined ? {} : { routeBy }),
-      ...(decoded.orderBy === undefined ? {} : { orderBy: decoded.orderBy }),
-      ...(decoded.offset === undefined ? {} : { offset: decoded.offset }),
-      ...(decoded.limit === undefined ? {} : { limit: decoded.limit }),
+      ...definedFields(where, (where) => ({ where })),
+      ...definedFields(routeBy, (routeBy) => ({ routeBy })),
+      ...definedFields(decoded.orderBy, (orderBy) => ({ orderBy })),
+      ...definedFields(decoded.offset, (offset) => ({ offset })),
+      ...definedFields(decoded.limit, (limit) => ({ limit })),
     });
     yield* validateSourceRoute(config, topic, trusted);
     return trusted;
@@ -177,12 +180,12 @@ export function viewServerDecodeRawQuery<
 >(
   config: { readonly topics: Topics },
   topic: Topic,
-  query: unknown,
+  query: ProtocolQueryInput,
 ): Effect.Effect<ViewServerValidatedRawQuery<TopicRow<Topics, Topic>>, ViewServerRuntimeError>;
 export function viewServerDecodeRawQuery(
   config: { readonly topics: TopicDefinitions },
   topic: string,
-  query: unknown,
+  query: ProtocolQueryInput,
 ): Effect.Effect<unknown, ViewServerRuntimeError> {
   return decodeRawQuery(config, topic, query);
 }

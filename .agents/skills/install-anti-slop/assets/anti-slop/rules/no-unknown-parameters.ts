@@ -1,8 +1,13 @@
 import { defineRule } from "@oxlint/plugins";
+import type { ESTree } from "@oxlint/plugins";
 import {
-	hasTypedReturnContract,
-	isValidationOwner,
-	isRuntimeParameterOwner,
+	createTypeEnvironment,
+	typeResolvesToBroadType,
+	typeResolvesToSchemaUnknownBoundary,
+	type TypeEnvironment,
+} from "../shared/dictionary-types.ts";
+import {
+	isValidationParameter,
 	parameterAnnotation,
 	parameterName,
 	type ParameterOwner,
@@ -20,29 +25,35 @@ export const noUnknownParametersRule = defineRule({
       unknownParameter:
         "Parameter `{{parameter}}` accepts `unknown` without establishing its contract. Define the expected schema or parser so the value becomes a strongly typed domain type at the earliest possible point, as close as possible to the I/O boundary where the data originated.",
     },
-  },
-  create(context) {
-	const checkParameters = (node: ParameterOwner) => {
-		if (
-			!isRuntimeParameterOwner(node) ||
-			isValidationOwner(node) ||
-			hasTypedReturnContract(node)
-		)
-			return;
+	},
+	create(context) {
+		let environment: TypeEnvironment | null = null;
+		const checkParameters = (node: ParameterOwner) => {
+			if (environment === null) return;
       for (const parameter of node.params) {
         const annotation = parameterAnnotation(parameter);
-        if (annotation?.typeAnnotation.type !== "TSUnknownKeyword") continue;
-		const name = parameterName(parameter, context.sourceCode);
+        if (
+				annotation === null ||
+				annotation === undefined ||
+				!typeResolvesToBroadType(annotation.typeAnnotation, environment, "unknown") ||
+				typeResolvesToSchemaUnknownBoundary(annotation.typeAnnotation, environment)
+			)
+			continue;
+        const name = parameterName(parameter, context.sourceCode);
         if (name === "cause") continue;
+		if (isValidationParameter(node, parameter, context.sourceCode)) continue;
         context.report({
           node: annotation.typeAnnotation,
           messageId: "unknownParameter",
           data: { parameter: name },
         });
       }
-    };
+		};
 
-    return {
+		return {
+			Program(node: ESTree.Program) {
+				environment = createTypeEnvironment(node);
+			},
       ArrowFunctionExpression: checkParameters,
       FunctionDeclaration: checkParameters,
       FunctionExpression: checkParameters,

@@ -112,7 +112,7 @@ const toolkit: SourceToolkit<
 > = markSourceToolkit({
   topic: "orders",
   upsert: (row) => Effect.succeed(makeSourceUpsert<{ readonly id: string }>(row)),
-  decodeUpsert: (row: unknown) => Effect.succeed(makeSourceUpsert({ id: String(row) })),
+  decodeUpsert: <Row>(row: Row) => Effect.succeed(makeSourceUpsert({ id: String(row) })),
   delete: (id: string) => Effect.succeed(makeSourceDelete(id)),
   delivery: toolkitDelivery,
   reject: (input) => Effect.succeed(makeSourceItemRejection(input)),

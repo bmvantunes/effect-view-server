@@ -1,3 +1,4 @@
+import { definedFields } from "./optional-fields";
 import { create, toBinary, type JsonValue, type Message } from "@bufbuild/protobuf";
 import { fileDesc, messageDesc, serviceDesc } from "@bufbuild/protobuf/codegenv2";
 import {
@@ -184,7 +185,7 @@ type StreamCommand =
 
 type Pending = {
   readonly resolve: (result: IteratorResult<unknown>) => void;
-  readonly reject: (error: unknown) => void;
+  readonly reject: <ErrorValue>(error: ErrorValue) => void;
 };
 
 type Invocation = {
@@ -327,7 +328,10 @@ const makeControlledClient = (input?: {
         if (invocation === undefined) {
           throw new TypeError(`Missing controlled invocation ${index}.`);
         }
-        applyCommand(invocation, { _tag: "Fail", ...(cause === undefined ? {} : { cause }) });
+        applyCommand(invocation, {
+          _tag: "Fail",
+          ...definedFields(cause, (cause) => ({ cause })),
+        });
       }),
     complete: (index: number) =>
       Effect.sync(() => {

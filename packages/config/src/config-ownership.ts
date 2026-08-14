@@ -1,3 +1,4 @@
+import { definedFields } from "./optional-fields";
 import { Schema, SchemaAST } from "effect";
 import type { RowSchema } from "./topic-contract";
 
@@ -76,7 +77,9 @@ export const viewServerRowSchemaFieldsMatchAst = (schema: RowSchema): boolean =>
   return true;
 };
 
-const snapshotOwnProperties = (value: object): { [key: PropertyKey]: unknown } => {
+const snapshotOwnProperties = <Value extends object>(
+  value: Value,
+): { [key: PropertyKey]: unknown } => {
   const copied: { [key: PropertyKey]: unknown } = {};
   for (const property of Reflect.ownKeys(value)) {
     Object.defineProperty(copied, property, {
@@ -94,7 +97,9 @@ const snapshotTopicDefinition = (definition: TopicRegistry[string]) => {
   const schema = copied["schema"];
   return Object.freeze({
     ...copied,
-    ...(isViewServerRowSchema(schema) ? { schema: snapshotViewServerRowSchema(schema) } : {}),
+    ...definedFields(isViewServerRowSchema(schema) ? schema : undefined, (schema) => ({
+      schema: snapshotViewServerRowSchema(schema),
+    })),
   });
 };
 

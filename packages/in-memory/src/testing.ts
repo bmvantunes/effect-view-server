@@ -1,3 +1,4 @@
+import { definedFields } from "./optional-fields";
 import type {
   ViewServerConfig,
   ViewServerRuntimeClient,
@@ -29,15 +30,18 @@ export type ViewServerInMemoryTestingInstance<Topics extends ViewServerInMemoryT
 const toRuntimeCoreInternalOptions = <const Topics extends ViewServerInMemoryTopicDefinitions>(
   input: ViewServerInMemoryOptions<Topics>,
 ): ViewServerRuntimeCoreInternalOptionsFor<Topics> => ({
-  ...(input.groupedIncrementalAdmissionLimits === undefined
-    ? {}
-    : { groupedIncrementalAdmissionLimits: input.groupedIncrementalAdmissionLimits }),
-  ...(input.subscriptionQueueCapacity === undefined
-    ? {}
-    : { subscriptionQueueCapacity: input.subscriptionQueueCapacity }),
-  ...(input.healthRefreshCadence === undefined
-    ? {}
-    : { healthRefreshCadence: input.healthRefreshCadence }),
+  ...definedFields(
+    input.groupedIncrementalAdmissionLimits,
+    (groupedIncrementalAdmissionLimits) => ({
+      groupedIncrementalAdmissionLimits,
+    }),
+  ),
+  ...definedFields(input.subscriptionQueueCapacity, (subscriptionQueueCapacity) => ({
+    subscriptionQueueCapacity,
+  })),
+  ...definedFields(input.healthRefreshCadence, (healthRefreshCadence) => ({
+    healthRefreshCadence,
+  })),
 });
 
 const makeInMemoryTestingLiveClient = <Topics extends ViewServerInMemoryTopicDefinitions>(

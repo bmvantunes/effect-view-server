@@ -71,7 +71,8 @@ describe("wire-safe BigDecimal", () => {
 
   it("rejects hostile branded-value reflection without invoking accessors", () => {
     let forgedReads = 0;
-    const forgedBrand: { "~effect/BigDecimal": string; value?: unknown } = {
+    type ForgedBigDecimal = { "~effect/BigDecimal": string; value?: unknown };
+    const forgedBrand: ForgedBigDecimal = {
       "~effect/BigDecimal": "~effect/BigDecimal",
     };
     Object.defineProperty(forgedBrand, "value", {

@@ -3,7 +3,7 @@ import { Effect, Schema } from "effect";
 import { ViewServerSubscribePayloadSchema } from "./index";
 import { decodeQueryGraph, encodeQueryGraph } from "./protocol-query-schema";
 
-const graphEnvelope = (root: unknown, nodes: ReadonlyArray<unknown>): string =>
+const graphEnvelope = <Root>(root: Root, nodes: ReadonlyArray<unknown>): string =>
   JSON.stringify({ format: "effect-view-server-query-graph-v1", nodes, root });
 
 describe("subscription query graph codec", () => {

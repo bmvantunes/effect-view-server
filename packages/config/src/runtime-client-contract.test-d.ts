@@ -509,10 +509,14 @@ describe("Runtime client and configuration generic contracts", () => {
         // @ts-expect-error decoded patch variables retain exact topic-field checking
         patch: patchWithExtraField,
       });
-      const patchWithOptionalExtraField: {
+      type OptionalUndefinedSurplusPatch = {
         readonly status?: "closed";
         readonly unexpected?: true;
-      } = { status: "closed", unexpected: true };
+      };
+      const patchWithOptionalExtraField: OptionalUndefinedSurplusPatch = {
+        status: "closed",
+        unexpected: true,
+      };
       const invalidOptionalExtraPatchVariableEffect = runtime.execute({
         _tag: "PatchDecodedFields",
         topic: "orders",

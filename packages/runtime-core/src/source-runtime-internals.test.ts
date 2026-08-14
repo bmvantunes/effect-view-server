@@ -140,7 +140,8 @@ describe("Source Runtime internal contracts", () => {
   it("rejects cyclic and non-data values while freezing decoded metrics", () => {
     const cyclicArray: Array<unknown> = [];
     cyclicArray.push(cyclicArray);
-    const cyclicObject: { self?: object } = {};
+    type CyclicObject = { self?: CyclicObject };
+    const cyclicObject: CyclicObject = {};
     cyclicObject.self = cyclicObject;
     const symbolKeyed = {
       [Symbol("metric")]: 1,

@@ -359,7 +359,10 @@ export class TopicRowStorage {
       compareSlotsByStorageOrder(this.rawWindowScanState, left, right, orderColumns);
   }
 
-  #projectRawRow(slot: number, projectionPlan: ReadonlyArray<RawProjectionColumn>): RowObject {
+  #projectRawRow(
+    slot: number,
+    projectionPlan: ReadonlyArray<RawProjectionColumn>,
+  ): Record<string, unknown> {
     const projected: Record<string, unknown> = {};
     const row = this.slots[slot]!.row;
     for (const projection of projectionPlan) {

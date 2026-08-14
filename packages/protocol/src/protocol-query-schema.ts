@@ -26,7 +26,9 @@ type QueryGraphCycleFrame =
   | { readonly _tag: "enter"; readonly id: number }
   | { readonly _tag: "exit"; readonly id: number };
 
-const denseUnknownArray = (value: unknown): ReadonlyArray<unknown> => {
+type QueryGraphInput = Schema.Schema.Type<typeof Schema.Unknown>;
+
+const denseUnknownArray = (value: QueryGraphInput): ReadonlyArray<unknown> => {
   const output = protocolDenseArray(value);
   if (output === undefined) {
     throw new TypeError("Expected a plain dense data array without extra properties.");
@@ -34,7 +36,7 @@ const denseUnknownArray = (value: unknown): ReadonlyArray<unknown> => {
   return output;
 };
 
-const plainUnknownRecord = (value: unknown): Readonly<Record<string, unknown>> => {
+const plainUnknownRecord = (value: QueryGraphInput): Readonly<Record<string, unknown>> => {
   if (!isProtocolPlainRecord(value)) {
     throw new TypeError("Expected a plain record.");
   }
@@ -100,7 +102,7 @@ const requireAcyclicQueryGraph = (
   }
 };
 
-export const encodeQueryGraph = (input: unknown): string => {
+export const encodeQueryGraph = (input: QueryGraphInput): string => {
   const nodes: Array<QueryGraphNode> = [];
   const pending: Array<PendingQueryGraphNode> = [];
   const ids = new WeakMap<object, number>();
@@ -218,7 +220,10 @@ const requireValidDecodedQueryGraph = (
   }
 };
 
-const decodeQueryGraphValue = (input: unknown, nodeCount: number): DecodedQueryGraphValue => {
+const decodeQueryGraphValue = (
+  input: QueryGraphInput,
+  nodeCount: number,
+): DecodedQueryGraphValue => {
   const value = denseUnknownArray(input);
   const tag = value[0];
   if (tag === "null" && value.length === 1) {

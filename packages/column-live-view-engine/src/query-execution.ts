@@ -1,3 +1,4 @@
+import { definedFields } from "@effect-view-server/effect-utils";
 import { Effect } from "effect";
 import type { ColumnLiveViewTerminalObserver } from "./engine-contract";
 import { makeLiveSubscription } from "./live-subscription";
@@ -40,7 +41,11 @@ export const isGroupedQuery = (query: unknown): boolean =>
 
 export const prepareRuntimeExecutableQuery = Effect.fn(
   "ColumnLiveViewEngine.queryExecution.prepareRuntime",
-)(function* (store: TopicStore, query: unknown, partition?: ColumnLiveViewEngineQueryPartition) {
+)(function* <Query>(
+  store: TopicStore,
+  query: Query,
+  partition?: ColumnLiveViewEngineQueryPartition,
+) {
   if (isGroupedQuery(query)) {
     const compiled = yield* prepareTopicStoreRuntimeGroupedQuery(store, query, partition);
     return Object.freeze({
@@ -57,7 +62,7 @@ export const prepareRuntimeExecutableQuery = Effect.fn(
 
 export const snapshotRuntimeExecutableQuery = Effect.fn(
   "ColumnLiveViewEngine.queryExecution.snapshotRuntime",
-)(function* (store: TopicStore, query: unknown) {
+)(function* <Query>(store: TopicStore, query: Query) {
   const executable = yield* prepareRuntimeExecutableQuery(store, query);
   return executable.kind === "raw"
     ? evaluateTopicStoreRawQueryResult(store, executable.compiled)
@@ -77,8 +82,8 @@ type SubscribeExecutableQueryInput = {
 
 export const subscribeRuntimeExecutableQuery = Effect.fn(
   "ColumnLiveViewEngine.queryExecution.subscribeRuntime",
-)(function* (
-  query: unknown,
+)(function* <Query>(
+  query: Query,
   input: SubscribeExecutableQueryInput,
   partition?: ColumnLiveViewEngineQueryPartition,
 ) {
@@ -89,7 +94,7 @@ export const subscribeRuntimeExecutableQuery = Effect.fn(
       permit: input.permit,
       queryId: input.queryId,
       execution: acquired.execution,
-      ...(partition === undefined ? {} : { partitionKey: partition.key }),
+      ...definedFields(partition, (partition) => ({ partitionKey: partition.key })),
       queueCapacity: input.queueCapacity,
       release: releaseTopicStoreRawQueryExecution(store, acquired.releaseToken),
       terminalObserver: input.terminalObserver,
@@ -106,7 +111,7 @@ export const subscribeRuntimeExecutableQuery = Effect.fn(
     permit: input.permit,
     queryId: input.queryId,
     execution: acquired.execution,
-    ...(partition === undefined ? {} : { partitionKey: partition.key }),
+    ...definedFields(partition, (partition) => ({ partitionKey: partition.key })),
     queueCapacity: input.queueCapacity,
     release: releaseTopicStoreMaterializedQueryExecutionToken(store, acquired.releaseToken),
     terminalObserver: input.terminalObserver,

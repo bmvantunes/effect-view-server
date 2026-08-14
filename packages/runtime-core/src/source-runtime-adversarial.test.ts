@@ -113,9 +113,12 @@ type FixtureRuntimeService = Context.Service.Shape<Fixture["adapter"]["runtimeSe
 const materializedLifecycle = (service: FixtureRuntimeService) =>
   Option.getOrThrow(Option.fromUndefinedOr(service.materialized));
 
-const invokeHostile = <Operation extends (...arguments_: ReadonlyArray<never>) => unknown>(
+const invokeHostile = <
+  Operation extends (...arguments_: ReadonlyArray<never>) => unknown,
+  Receiver,
+>(
   operation: Operation,
-  receiver: unknown,
+  receiver: Receiver,
   arguments_: ReadonlyArray<unknown>,
 ): ReturnType<Operation> => Reflect.apply(operation, receiver, arguments_);
 
@@ -537,7 +540,8 @@ describe("Runtime Core adversarial Source runtime", () => {
       });
       const cyclicArray: Array<object> = [];
       cyclicArray.push(cyclicArray);
-      const cyclicObject: { self?: object } = {};
+      type CyclicObject = { self?: CyclicObject };
+      const cyclicObject: CyclicObject = {};
       cyclicObject.self = cyclicObject;
 
       for (const cyclic of [cyclicArray, cyclicObject]) {

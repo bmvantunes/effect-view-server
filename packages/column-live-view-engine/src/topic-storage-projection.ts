@@ -7,7 +7,7 @@ import type { TopicRowValueSemantics } from "./topic-row-value-semantics";
 
 type RowObject = object;
 
-type TopicStorageProjector = (slot: number) => RowObject;
+type TopicStorageProjector = (slot: number) => Record<string, unknown>;
 
 type TopicStorageProjectionBinder = (
   selectedFields: ReadonlyArray<string>,

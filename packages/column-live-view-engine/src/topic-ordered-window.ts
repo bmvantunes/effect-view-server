@@ -294,8 +294,8 @@ export const orderedWindowSpansInIndexOrder = (
     .toSorted((left, right) => left.startIndex - right.startIndex);
 };
 
-export const equalityValueSatisfiesRangeBounds = (
-  value: unknown,
+export const equalityValueSatisfiesRangeBounds = <Value>(
+  value: Value,
   rangeBounds: OrderedRangeBounds,
 ): boolean => {
   if (rangeBounds.lower !== undefined) {
@@ -425,7 +425,7 @@ const intersectOrderedEqualityValues = (
   return intersection;
 };
 
-const compareOrderedRangeValue = (left: unknown, right: unknown): number =>
+const compareOrderedRangeValue = <Left, Right>(left: Left, right: Right): number =>
   compareQueryValue(left, right);
 
 const isEqualityFilterPlan = (

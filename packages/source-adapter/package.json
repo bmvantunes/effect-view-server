@@ -32,6 +32,7 @@
     "effect": "catalog:"
   },
   "devDependencies": {
+    "@effect-view-server/effect-utils": "workspace:*",
     "@effect/vitest": "catalog:",
     "@vitest/coverage-istanbul": "catalog:",
     "@vitest/runner": "catalog:",

@@ -348,7 +348,7 @@ const snapshotMetadata = <const Region extends string>(
 const invalidRecordMessage = (region: string): string =>
   `Kafka Region ${JSON.stringify(region)} returned an invalid record.`;
 
-const snapshotPayload = (value: unknown, region: string): Uint8Array | null => {
+const snapshotPayload = <Value>(value: Value, region: string): Uint8Array | null => {
   if (value === null) {
     return null;
   }
@@ -426,7 +426,7 @@ const codecRejectionMessage = (
     : `Kafka ${role} codec rejected the record.`;
 };
 
-const captureCompleteMappedRow = (id: string, value: unknown): Option.Option<object> =>
+const captureCompleteMappedRow = <Value>(id: string, value: Value): Option.Option<object> =>
   Result.try(() => {
     if (typeof value !== "object" || value === null || Array.isArray(value)) {
       return Option.none<object>();

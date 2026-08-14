@@ -5,9 +5,9 @@ import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstab
 import { validateViewServerHttpRequest, viewServerAuthErrorResponse } from "./auth";
 import type { ViewServerWebSocketServerInput } from "./server-types";
 
-const jsonStringify = (value: unknown): string => JSON.stringify(value);
+const jsonStringify = <Value>(value: Value): string => JSON.stringify(value);
 
-const jsonResponse = (status: number, value: unknown): HttpServerResponse.HttpServerResponse =>
+const jsonResponse = <Value>(status: number, value: Value): HttpServerResponse.HttpServerResponse =>
   HttpServerResponse.text(jsonStringify(value), {
     status,
     contentType: "application/json",

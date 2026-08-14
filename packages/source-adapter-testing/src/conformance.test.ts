@@ -64,7 +64,7 @@ const toolkit: SourceToolkit<
 > = markSourceToolkit({
   topic: "rows",
   upsert: (row) => Effect.succeed(makeSourceUpsert<SourceAdapterConformanceRow>(row)),
-  decodeUpsert: (row: unknown) =>
+  decodeUpsert: <Row>(row: Row) =>
     Effect.succeed(
       makeSourceUpsert({
         id: String(row),

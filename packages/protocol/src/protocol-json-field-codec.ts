@@ -6,6 +6,7 @@ import {
 import { Effect, Result, Schema, SchemaAST } from "effect";
 
 export type JsonFieldSchema = Schema.Codec<unknown, unknown, never, never>;
+type JsonFieldInput = Schema.Schema.Type<typeof Schema.Unknown>;
 
 type JsonFieldCodecErrors<E> = {
   readonly invalid: (message: string) => E;
@@ -42,15 +43,15 @@ type TopicNamedJsonFieldEncodeContext<E> = TopicNamedJsonFieldCodecContext<E> & 
 };
 
 type CompiledJsonFieldCodec<Row> = {
-  readonly accepts: (value: unknown) => boolean;
+  readonly accepts: (value: JsonFieldInput) => boolean;
   readonly hasObjectKeyword: boolean;
   readonly strictJsonSnapshot: StrictJsonSchemaCodec["strictJsonSnapshot"];
   readonly strictEncodedJson: StrictJsonSchemaCodec["strictEncodedJson"];
-  readonly decode: (value: unknown) => Effect.Effect<Row, Schema.SchemaError>;
-  readonly encode: (value: unknown) => Effect.Effect<Schema.Json, Schema.SchemaError>;
-  readonly encodeRaw: (value: unknown) => Effect.Effect<unknown, Schema.SchemaError>;
+  readonly decode: (value: JsonFieldInput) => Effect.Effect<Row, Schema.SchemaError>;
+  readonly encode: (value: JsonFieldInput) => Effect.Effect<Schema.Json, Schema.SchemaError>;
+  readonly encodeRaw: (value: JsonFieldInput) => Effect.Effect<unknown, Schema.SchemaError>;
   readonly encodeJson: (
-    value: unknown,
+    value: JsonFieldInput,
     options?: SchemaAST.ParseOptions,
   ) => Effect.Effect<Schema.Json, Schema.SchemaError>;
 };
@@ -90,7 +91,7 @@ function compiledJsonFieldCodec(schema: JsonFieldSchema): CompiledJsonFieldCodec
 }
 
 export const materializeJsonFieldValue = Effect.fn("ViewServerProtocol.jsonField.materialize")(
-  function* <E>(value: unknown, invalid: (message: string) => E) {
+  function* <E>(value: JsonFieldInput, invalid: (message: string) => E) {
     return yield* Result.match(materializeStrictJson(value), {
       onSuccess: Effect.succeed,
       onFailure: (error) => Effect.fail(invalid(error.message)),
@@ -100,11 +101,11 @@ export const materializeJsonFieldValue = Effect.fn("ViewServerProtocol.jsonField
 
 export const encodeJsonFieldValue = Effect.fn("ViewServerProtocol.jsonField.encode")(function* <E>(
   schema: JsonFieldSchema,
-  value: unknown,
+  value: JsonFieldInput,
   errors: JsonFieldCodecErrors<E>,
 ) {
   const compiled = compiledJsonFieldCodec(schema);
-  const encodeFailure = (checkedValue: unknown) => (error: Schema.SchemaError) => {
+  const encodeFailure = (checkedValue: JsonFieldInput) => (error: Schema.SchemaError) => {
     const message = schemaErrorMessage(error);
     if (!compiled.accepts(checkedValue)) {
       return Effect.fail(errors.invalid(message));
@@ -158,7 +159,7 @@ export const decodeJsonFieldValue = Effect.fn("ViewServerProtocol.jsonField.deco
   E,
 >(
   schema: Schema.Codec<Row, unknown, never, never>,
-  value: unknown,
+  value: JsonFieldInput,
   errors: Pick<JsonFieldCodecErrors<E>, "invalid">,
 ) {
   const materialized = yield* materializeJsonFieldValue(value, errors.invalid);
@@ -167,7 +168,11 @@ export const decodeJsonFieldValue = Effect.fn("ViewServerProtocol.jsonField.deco
 
 export const encodeContextualJsonFieldValue = Effect.fn(
   "ViewServerProtocol.jsonField.contextual.encode",
-)(function* <E>(schema: JsonFieldSchema, value: unknown, context: JsonFieldEncodeContext<E>) {
+)(function* <E>(
+  schema: JsonFieldSchema,
+  value: JsonFieldInput,
+  context: JsonFieldEncodeContext<E>,
+) {
   return yield* encodeJsonFieldValue(schema, value, {
     invalid: (message) => context.invalid(context.invalidMessage(message)),
     notJsonSafe: (message) => context.notJsonSafe(context.notJsonSafeMessage(message)),
@@ -178,7 +183,7 @@ export const decodeContextualJsonFieldValue = Effect.fn(
   "ViewServerProtocol.jsonField.contextual.decode",
 )(function* <Row, E>(
   schema: Schema.Codec<Row, unknown, never, never>,
-  value: unknown,
+  value: JsonFieldInput,
   context: JsonFieldCodecContext<E>,
 ) {
   return yield* decodeJsonFieldValue(schema, value, {
@@ -189,7 +194,7 @@ export const decodeContextualJsonFieldValue = Effect.fn(
 export const encodeNamedJsonFieldValue = Effect.fn("ViewServerProtocol.jsonField.named.encode")(
   function* <E>(
     schema: JsonFieldSchema,
-    value: unknown,
+    value: JsonFieldInput,
     { field, invalid, invalidPrefix, notJsonSafePrefix }: NamedJsonFieldEncodeContext<E>,
   ) {
     return yield* encodeContextualJsonFieldValue(schema, value, {
@@ -204,7 +209,7 @@ export const encodeNamedJsonFieldValue = Effect.fn("ViewServerProtocol.jsonField
 export const decodeNamedJsonFieldValue = Effect.fn("ViewServerProtocol.jsonField.named.decode")(
   function* <Row, E>(
     schema: Schema.Codec<Row, unknown, never, never>,
-    value: unknown,
+    value: JsonFieldInput,
     { field, invalid, invalidPrefix }: NamedJsonFieldCodecContext<E>,
   ) {
     return yield* decodeContextualJsonFieldValue(schema, value, {
@@ -220,7 +225,7 @@ export const encodeTopicNamedJsonFieldValue = Effect.fn(
   topic: string,
   field: string,
   schema: JsonFieldSchema,
-  value: unknown,
+  value: JsonFieldInput,
   context: TopicNamedJsonFieldEncodeContext<E>,
 ) {
   return yield* encodeNamedJsonFieldValue(schema, value, {
@@ -237,7 +242,7 @@ export const decodeTopicNamedJsonFieldValue = Effect.fn(
   topic: string,
   field: string,
   schema: Schema.Codec<Row, unknown, never, never>,
-  value: unknown,
+  value: JsonFieldInput,
   context: TopicNamedJsonFieldCodecContext<E>,
 ) {
   return yield* decodeNamedJsonFieldValue(schema, value, {

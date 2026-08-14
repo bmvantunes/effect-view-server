@@ -14,6 +14,8 @@ type RouteShape<Row, RouteBy extends string> = {
   readonly [Field in Extract<RouteBy, RouteFieldKey<Row>>]-?: RouteFieldValue<Row, Field>;
 };
 
+type SourceQueryInput = Schema.Schema.Type<typeof Schema.Unknown>;
+
 type ExactRouteObject<Row, RouteBy extends string, Candidate> =
   Candidate extends RouteShape<Row, RouteBy>
     ? Candidate & RejectExtraKeys<Candidate, RouteShape<Row, RouteBy>>
@@ -137,7 +139,7 @@ export type ExactLiveQueryInputForTopic<Topics, Topic extends keyof Topics, Quer
 const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-const isPlainRecord = (value: unknown): value is Readonly<Record<string, unknown>> => {
+const isPlainRecord = <Value>(value: Value): value is Value & Readonly<Record<string, unknown>> => {
   if (!isRecord(value)) {
     return false;
   }
@@ -192,7 +194,7 @@ const routeBigDecimalIsWireRoundtrippable = (value: unknown): boolean => {
 };
 
 export const sourceLeasedRouteBy = (
-  source: unknown,
+  source: SourceQueryInput,
 ): ReadonlyArray<string> | "invalid" | undefined => {
   const inspected = Result.try(() => {
     const candidate: unknown = source;
@@ -234,10 +236,10 @@ const ownEnumerableDataProperty = (
     : undefined;
 };
 
-const validateLiveQuerySourceRouteUnsafe = <Topics extends TopicDefinitions>(
+const validateLiveQuerySourceRouteUnsafe = <Topics extends TopicDefinitions, Query>(
   topics: Topics,
   topic: string,
-  query: unknown,
+  query: Query,
 ): string | undefined => {
   const topicDefinition = topics[topic];
   if (topicDefinition === undefined) {
@@ -297,7 +299,7 @@ const validateLiveQuerySourceRouteUnsafe = <Topics extends TopicDefinitions>(
 export const validateLiveQuerySourceRoute = <Topics extends TopicDefinitions>(
   topics: Topics,
   topic: string,
-  query: unknown,
+  query: SourceQueryInput,
 ): string | undefined => {
   const validation = Result.try(() => validateLiveQuerySourceRouteUnsafe(topics, topic, query));
   return Result.isFailure(validation)

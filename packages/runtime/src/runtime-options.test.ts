@@ -5,8 +5,11 @@ import {
   resolveViewServerRuntimeBaseOptions,
   validateViewServerRuntimeOptions,
 } from "./runtime-options";
+type RuntimeOptionsInput = Readonly<Record<string, unknown>>;
 
-const validateHostileOptions = (options: object): Effect.Effect<unknown, ViewServerRuntimeError> =>
+const validateHostileOptions = (
+  options: RuntimeOptionsInput,
+): Effect.Effect<unknown, ViewServerRuntimeError> =>
   Reflect.apply(validateViewServerRuntimeOptions, undefined, [options]);
 
 describe("Runtime reporting options", () => {

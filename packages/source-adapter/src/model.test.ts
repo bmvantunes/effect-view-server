@@ -1,3 +1,4 @@
+import { conditionalFields } from "@effect-view-server/effect-utils";
 import { describe, expect, it } from "@effect/vitest";
 import { Chunk, Effect, Exit, Option, Schedule, Schema, Stream } from "effect";
 import type {
@@ -8,6 +9,7 @@ import type {
   SourceMutation,
   SourceSettlement,
 } from "./index";
+import { definedFields } from "./optional-fields";
 import {
   decodeSourceToolkitUpsert,
   isSourceAdapterHandle,
@@ -129,17 +131,17 @@ const nominalClone = <Value extends object>(
     }
     const next: PropertyDescriptor = {
       ...descriptor,
-      ...(input.nonEnumerable?.has(property) === true ? { enumerable: false } : {}),
-      ...("value" in descriptor
-        ? {
-            value:
-              typeof property === "symbol" && typeof descriptor.value === "function"
-                ? () => clone
-                : input.overrides?.has(property) === true
-                  ? input.overrides.get(property)
-                  : descriptor.value,
-          }
-        : {}),
+      ...conditionalFields(input.nonEnumerable?.has(property) === true, () => ({
+        enumerable: false,
+      })),
+      ...conditionalFields("value" in descriptor, () => ({
+        value:
+          typeof property === "symbol" && typeof descriptor.value === "function"
+            ? () => clone
+            : input.overrides?.has(property) === true
+              ? input.overrides.get(property)
+              : descriptor.value,
+      })),
     };
     Object.defineProperty(clone, property, next);
   }
@@ -153,6 +155,16 @@ const nominalClone = <Value extends object>(
 };
 
 describe("Source Adapter portable model", () => {
+  it("omits undefined optional fields", () => {
+    expect(definedFields(undefined, () => ({ omitted: true }))).toStrictEqual({});
+    expect(
+      definedFields("value", () => ({
+        omitted: undefined,
+        present: "value",
+      })),
+    ).toStrictEqual({ present: "value" });
+  });
+
   it("rejects malformed nominal Application State lifecycle capabilities", () => {
     const validInput = () => ({
       bind: () => undefined,
@@ -494,7 +506,8 @@ describe("Source Adapter portable model", () => {
     expect(Object.isFrozen(definition.options.nested)).toBe(true);
     expect(isSourceDefinition(definition)).toBe(true);
 
-    const cyclic: { self?: unknown } = {};
+    type CyclicOptions = { self?: CyclicOptions };
+    const cyclic: CyclicOptions = {};
     cyclic.self = cyclic;
     expect(() => Reflect.apply(adapter.materializedSource, adapter, [cyclic])).toThrow(
       "must not contain cycles",
@@ -836,7 +849,7 @@ describe("Source Adapter portable model", () => {
       const toolkit = markSourceToolkit({
         topic: "orders",
         upsert: (row: { readonly row: unknown }) => Effect.succeed(makeSourceUpsert(row)),
-        decodeUpsert: (row: unknown) => Effect.succeed(makeSourceUpsert({ row })),
+        decodeUpsert: <Row>(row: Row) => Effect.succeed(makeSourceUpsert<ToolkitRow>({ row })),
         delete: (id: string) => Effect.succeed(makeSourceDelete(id)),
         delivery: toolkitDelivery,
         reject: (input) => Effect.succeed(makeSourceItemRejection(input)),

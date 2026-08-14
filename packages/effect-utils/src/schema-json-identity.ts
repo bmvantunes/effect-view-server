@@ -14,9 +14,13 @@ import {
   materializeStrictJson,
   StrictJsonMaterializationError,
 } from "./strict-json-materialization";
-
+type CanonicalIterator = () => Iterator<unknown>;
 type ValueSchema<Type = unknown> = Schema.Codec<Type, unknown, never, never>;
 type JsonNormalizer = (value: Schema.Json) => Schema.Json;
+type SchemaValueInput = Schema.Schema.Type<typeof Schema.Unknown>;
+
+const isObjectLike = (value: unknown): value is object =>
+  (typeof value === "object" && value !== null) || typeof value === "function";
 
 export type StrictJsonSchemaCodec<Type = unknown> = {
   readonly codec: Schema.Codec<Type, Schema.Json, never, never>;
@@ -26,18 +30,18 @@ export type StrictJsonSchemaCodec<Type = unknown> = {
   readonly strictJsonSnapshot: StrictJsonSchemaSnapshot;
   readonly strictEncodedJson: StrictJsonSchemaSnapshot;
   readonly strictEncoded: (
-    value: unknown,
+    value: SchemaValueInput,
   ) => Result.Result<
-    (encodedValue: unknown) => Result.Result<unknown, StrictJsonMaterializationError>,
+    (encodedValue: SchemaValueInput) => Result.Result<unknown, StrictJsonMaterializationError>,
     StrictJsonMaterializationError
   >;
 };
 
 export type SchemaJsonIdentity<Type = unknown> = {
-  readonly canonicalJson: (value: unknown) => Schema.Json;
-  readonly canonicalKey: (value: unknown) => string;
-  readonly decodeEncoded: (value: unknown) => Type;
-  readonly materializeDecoded: (value: unknown) => Type;
+  readonly canonicalJson: (value: SchemaValueInput) => Schema.Json;
+  readonly canonicalKey: (value: SchemaValueInput) => string;
+  readonly decodeEncoded: (value: SchemaValueInput) => Type;
+  readonly materializeDecoded: (value: SchemaValueInput) => Type;
 };
 
 const typeConstructorTag = (ast: SchemaAST.AST): unknown => {
@@ -222,7 +226,7 @@ export const makeSchemaJsonNormalizer = (root: SchemaAST.AST): JsonNormalizer =>
   return compile(root);
 };
 
-const strictJson = (value: unknown): Schema.Json => {
+const strictJson = (value: SchemaValueInput): Schema.Json => {
   const materialized = materializeStrictJson(value);
   if (Result.isFailure(materialized)) {
     throw materialized.failure;
@@ -230,7 +234,7 @@ const strictJson = (value: unknown): Schema.Json => {
   return materialized.success;
 };
 
-type StrictJsonObjectKeywordGuard = (value: unknown, path: string) => unknown;
+type StrictJsonObjectKeywordGuard = (value: SchemaValueInput, path: string) => unknown;
 type StrictJsonGuardSide = "decoded" | "encoded";
 type StrictJsonGuardMode = "validate" | "snapshot";
 
@@ -292,8 +296,8 @@ type OwnDataProperty =
   | { readonly present: true; readonly value: unknown };
 type StrictJsonKey = string | symbol;
 
-const readOwnDataProperty = (
-  value: object,
+const readOwnDataProperty = <Value extends object>(
+  value: Value,
   key: StrictJsonKey,
   path: string,
   requireEnumerable = true,
@@ -316,8 +320,8 @@ const readOwnDataProperty = (
   return { present: true, value: descriptor.value };
 };
 
-const readVisibleDataProperty = (
-  value: object,
+const readVisibleDataProperty = <Value extends object>(
+  value: Value,
   key: StrictJsonKey,
   path: string,
 ): OwnDataProperty => {
@@ -336,8 +340,8 @@ const readVisibleDataProperty = (
   return { present: false };
 };
 
-const readIterableValues = (
-  value: object,
+const readIterableValues = <Value extends object>(
+  value: Value,
   path: string,
   maxEntries = strictJsonMaxIterableEntries,
   expectedEntries?: number,
@@ -353,7 +357,7 @@ const readIterableValues = (
   } catch {
     throw strictJsonReflectionFailure(path);
   }
-  if (iterator === null || (typeof iterator !== "object" && typeof iterator !== "function")) {
+  if (!isObjectLike(iterator)) {
     throw strictJsonReflectionFailure(iteratorPath);
   }
   const nextProperty = readVisibleDataProperty(iterator, "next", `${iteratorPath}.next`);
@@ -369,7 +373,7 @@ const readIterableValues = (
     } catch {
       throw strictJsonReflectionFailure(path);
     }
-    if (result === null || (typeof result !== "object" && typeof result !== "function")) {
+    if (!isObjectLike(result)) {
       throw strictJsonReflectionFailure(`${iteratorPath}[${index}]`);
     }
     const resultPath = `${iteratorPath}[${index}]`;
@@ -389,10 +393,10 @@ const readIterableValues = (
   }
 };
 
-const readCollectionValues = (
-  value: object,
+const readCollectionValues = <Value extends object>(
+  value: Value,
   path: string,
-  canonicalIterator: unknown,
+  canonicalIterator: CanonicalIterator,
   size: () => number,
 ): ReadonlyArray<unknown> => {
   const iteratorPath = strictJsonPropertyPath(path, Symbol.iterator);
@@ -418,7 +422,10 @@ type CapturedOwnProperties = {
   readonly prototype: object | null;
 };
 
-const captureOwnProperties = (value: object, path: string): CapturedOwnProperties => {
+const captureOwnProperties = <Value extends object>(
+  value: Value,
+  path: string,
+): CapturedOwnProperties => {
   let keys: ReadonlyArray<StrictJsonKey>;
   try {
     keys = Reflect.ownKeys(value);
@@ -529,7 +536,7 @@ const readCapturedArrayLength = (captured: CapturedOwnProperties, path: string):
   return arrayLengthFromDescriptor(captured.descriptors.get("length"), path);
 };
 
-const assertNoOwnIteratorOverride = (value: object, path: string): void => {
+const assertNoOwnIteratorOverride = <Value extends object>(value: Value, path: string): void => {
   const iteratorPath = strictJsonPropertyPath(path, Symbol.iterator);
   const iteratorProperty = readOwnDataProperty(value, Symbol.iterator, iteratorPath, false);
   if (iteratorProperty.present) {
@@ -539,12 +546,12 @@ const assertNoOwnIteratorOverride = (value: object, path: string): void => {
 
 // Schema.is recursively walks union members. For recursive unions, give it one
 // descriptor-captured graph so matching cannot rescan stateful proxies at every depth.
-const makeAccessorSafeSnapshot = <Value>(
-  value: Value,
+const makeAccessorSafeSnapshot = (
+  value: SchemaValueInput,
   path: string,
   snapshots: WeakMap<object, unknown>,
 ): unknown => {
-  if (value === null || (typeof value !== "object" && typeof value !== "function")) {
+  if (!isObjectLike(value)) {
     return value;
   }
   const existing = snapshots.get(value);
@@ -604,7 +611,7 @@ const assertNoAccessorProperties = (
   path: string,
   active: WeakSet<object>,
 ): void => {
-  if (value === null || (typeof value !== "object" && typeof value !== "function")) {
+  if (!isObjectLike(value)) {
     return;
   }
   if (active.has(value)) {
@@ -638,7 +645,7 @@ const assertNoAccessorProperties = (
 
 const guardDeclarationValue = (
   guard: StrictJsonObjectKeywordGuard,
-  value: unknown,
+  value: SchemaValueInput,
   path: string,
 ): unknown => guard(value, path);
 
@@ -957,7 +964,7 @@ const makeStrictJsonObjectKeywordGuard = (
         errorGuard: StrictJsonObjectKeywordGuard,
         defectGuard: StrictJsonObjectKeywordGuard,
       ): Cause.Reason<unknown> => {
-        if (reason === null || (typeof reason !== "object" && typeof reason !== "function")) {
+        if (!isObjectLike(reason)) {
           throw strictJsonReflectionFailure(path);
         }
         const tagProperty = readVisibleDataProperty(reason, "_tag", `${path}._tag`);
@@ -996,15 +1003,16 @@ const makeStrictJsonObjectKeywordGuard = (
         errorGuard: StrictJsonObjectKeywordGuard,
         defectGuard: StrictJsonObjectKeywordGuard,
       ): unknown =>
-        reason === null || (typeof reason !== "object" && typeof reason !== "function")
+        !isObjectLike(reason)
           ? reason
           : guardKnownCauseReason(reason, path, errorGuard, defectGuard);
+      type GuardCauseResult = { readonly value: unknown; readonly changed: boolean };
       const guardCause = (
         value: unknown,
         path: string,
         errorGuard: StrictJsonObjectKeywordGuard,
         defectGuard: StrictJsonObjectKeywordGuard,
-      ): { readonly value: unknown; readonly changed: boolean } => {
+      ): GuardCauseResult => {
         if (!Cause.isCause(value)) {
           return { value, changed: false };
         }
@@ -1349,12 +1357,8 @@ const makeStrictJsonObjectKeywordGuard = (
         guard: compile(member),
       }));
       implementation = (value, path) => {
-        let memberValue = value;
-        if (
-          isRecursiveUnion &&
-          value !== null &&
-          (typeof value === "object" || typeof value === "function")
-        ) {
+        let memberValue: unknown = value;
+        if (isRecursiveUnion && isObjectLike(value)) {
           const snapshots = accessorSafeSnapshots;
           if (snapshots === undefined || !snapshots.has(value)) {
             throw strictJsonReflectionFailure(path);
@@ -1492,15 +1496,11 @@ const makeStrictJsonObjectKeywordGuard = (
   const guard = compile(root);
   const containsUnion = schemaAstContainsUnion(root, side);
   const containsRecursiveUnion = schemaAstContainsRecursiveUnion(root, side, recursiveUnionCache);
-  return <Value>(value: Value): unknown => {
+  return (value: SchemaValueInput): unknown => {
     const previousAccessorSafeSnapshots = accessorSafeSnapshots;
     accessorSafeSnapshots = containsRecursiveUnion ? new WeakMap<object, unknown>() : undefined;
     try {
-      if (
-        accessorSafeSnapshots !== undefined &&
-        value !== null &&
-        (typeof value === "object" || typeof value === "function")
-      ) {
+      if (accessorSafeSnapshots !== undefined && isObjectLike(value)) {
         makeAccessorSafeSnapshot(value, "$", accessorSafeSnapshots);
       } else if (containsUnion) {
         assertNoAccessorProperties(value, "$", new WeakSet());
@@ -1513,11 +1513,11 @@ const makeStrictJsonObjectKeywordGuard = (
 };
 
 export type StrictJsonSchemaGuard = (
-  value: unknown,
+  value: SchemaValueInput,
 ) => Result.Result<void, StrictJsonMaterializationError>;
 
 export type StrictJsonSchemaSnapshot = (
-  value: unknown,
+  value: SchemaValueInput,
 ) => Result.Result<unknown, StrictJsonMaterializationError>;
 
 export const makeStrictJsonSchemaSnapshot = (
@@ -1582,9 +1582,7 @@ export const makeStrictJsonSchemaCodec = <Type>(
       if (Result.isFailure(guardResult)) {
         return Result.fail(guardResult.failure);
       }
-      return Result.succeed(<EncodedValue>(encodedValue: EncodedValue) =>
-        strictEncodedJson(encodedValue),
-      );
+      return Result.succeed((encodedValue: SchemaValueInput) => strictEncodedJson(encodedValue));
     },
   };
 };
@@ -1597,7 +1595,7 @@ export const makeSchemaJsonIdentity = <Type>(
   const encode = Schema.encodeUnknownSync(compiled.codec);
   const encodeRaw = Schema.encodeUnknownSync(schema);
   const encodeJson = Schema.encodeUnknownSync(compiled.encodedCodec);
-  const strictEncoded = (value: unknown): Schema.Json => {
+  const strictEncoded = (value: SchemaValueInput): Schema.Json => {
     if (!compiled.hasObjectKeyword) {
       return strictJson(encode(value));
     }
@@ -1613,18 +1611,18 @@ export const makeSchemaJsonIdentity = <Type>(
     return strictJson(encodeJson(encodedSnapshotResult.success));
   };
   const normalize = makeSchemaJsonNormalizer(compiled.codec.ast);
-  const canonicalJson = (value: unknown): Schema.Json => normalize(strictEncoded(value));
+  const canonicalJson = (value: SchemaValueInput): Schema.Json => normalize(strictEncoded(value));
   const canonicalKey =
     SchemaAST.isString(compiled.codec.ast) &&
     compiled.codec.ast.encoding === undefined &&
     (compiled.codec.ast.checks?.length ?? 0) === 0
-      ? (value: unknown): string =>
+      ? (value: SchemaValueInput): string =>
           typeof value === "string"
             ? canonicalJsonString(value)
             : canonicalJsonString(canonicalJson(value))
-      : (value: unknown): string => canonicalJsonString(canonicalJson(value));
-  const materializeDecoded = (value: unknown): Type => decode(strictEncoded(value));
-  const decodeEncoded = (value: unknown): Type => {
+      : (value: SchemaValueInput): string => canonicalJsonString(canonicalJson(value));
+  const materializeDecoded = (value: SchemaValueInput): Type => decode(strictEncoded(value));
+  const decodeEncoded = (value: SchemaValueInput): Type => {
     const decoded = decode(strictJson(value));
     return materializeDecoded(decoded);
   };

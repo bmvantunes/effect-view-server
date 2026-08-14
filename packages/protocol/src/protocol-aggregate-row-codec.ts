@@ -22,6 +22,8 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 const isBigIntFieldSchema = (schema: JsonFieldSchema): boolean =>
   viewServerSchemaFieldMetadata(schema).sumResultKind === "bigint";
 
+const isBigInt = (value: unknown): value is bigint => typeof value === "bigint";
+
 const bigintPattern = /^-?\d+$/;
 
 type BigIntAggregateEnvelope = {
@@ -93,7 +95,7 @@ const decodeAggregateEnvelope = Effect.fn("ViewServerProtocol.row.aggregate.enve
 
 const encodeAggregateJsonFieldValue = Effect.fn(
   "ViewServerProtocol.row.aggregate.jsonField.encode",
-)(function* (topic: string, field: string, schema: JsonFieldSchema, value: unknown) {
+)(function* <Value>(topic: string, field: string, schema: JsonFieldSchema, value: Value) {
   return yield* encodeContextualJsonFieldValue(schema, value, {
     invalid: (message) => invalidRow(topic, message),
     invalidMessage: (message) => `Invalid field ${field}: ${message}`,
@@ -104,7 +106,7 @@ const encodeAggregateJsonFieldValue = Effect.fn(
 
 const encodeBigIntAggregateValue = Effect.fn("ViewServerProtocol.row.aggregate.bigint.encode")(
   function* (topic: string, field: string, value: unknown) {
-    if (typeof value !== "bigint") {
+    if (!isBigInt(value)) {
       return yield* Effect.fail(invalidRow(topic, `Aggregate ${field} must be a bigint.`));
     }
     return encodeBigIntAggregateEnvelope(value);
@@ -147,7 +149,7 @@ const decodeBigDecimalAggregateValue = Effect.fn(
 });
 
 const encodeJsonAggregateValue = Effect.fn("ViewServerProtocol.row.aggregate.json.encode")(
-  function* (topic: string, field: string, schema: JsonFieldSchema, value: unknown) {
+  function* <Value>(topic: string, field: string, schema: JsonFieldSchema, value: Value) {
     const encoded = yield* encodeAggregateJsonFieldValue(topic, field, schema, value);
     return encodeJsonAggregateEnvelope(encoded);
   },
@@ -205,12 +207,13 @@ const invalidUndefinedAggregate = (
 
 export const encodeAggregateValue = Effect.fn("ViewServerProtocol.row.aggregate.encode")(function* <
   const Topics extends TopicDefinitions,
+  Value,
 >(
   config: { readonly topics: Topics },
   topic: Extract<keyof Topics, string>,
   field: string,
   aggregate: ViewServerWireAggregate,
-  value: unknown,
+  value: Value,
 ) {
   if (aggregate.aggFunc === "count" || aggregate.aggFunc === "countDistinct") {
     return yield* encodeBigIntAggregateValue(topic, field, value);

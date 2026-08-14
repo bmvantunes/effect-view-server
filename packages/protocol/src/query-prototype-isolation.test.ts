@@ -8,9 +8,9 @@ import {
 } from "./protocol-event-codec";
 import { viewServerEncodeGroupedQuery } from "./protocol-grouped-query-codec";
 
-const withObjectPrototypeValue = <Value, Error, Requirements>(
+const withObjectPrototypeValue = <Value, Error, Requirements, PropertyValue>(
   field: string,
-  value: unknown,
+  value: PropertyValue,
   effect: Effect.Effect<Value, Error, Requirements>,
 ): Effect.Effect<Value, Error, Requirements> =>
   Effect.acquireUseRelease(

@@ -1730,6 +1730,9 @@ describe("Kafka Source Adapter Server", () => {
         "Kafka broker contract for Topic orders Region eu does not match its Source Definition. Kafka broker contract for Topic orders Region us is unavailable.",
       );
       expect(kafkaServerInternals.isKafkaRuntimeDefinition(forever)).toBe(true);
+      expect(
+        kafkaServerInternals.isKafkaRuntimeDefinition(Object.assign(() => undefined, forever)),
+      ).toBe(false);
       expect(kafkaServerInternals.isKafkaRuntimeDefinition(null)).toBe(false);
       expect(kafkaServerInternals.isKafkaRuntimeDefinition({ cleanupPolicy: "delete" })).toBe(
         false,
@@ -1952,11 +1955,9 @@ describe("Kafka Source Adapter Server", () => {
           users: 0,
         });
 
-        const waiterToInterrupt: {
-          current?: {
-            interruptUnsafe(): void;
-          };
-        } = {};
+        type InterruptibleFiber = { interruptUnsafe(): void };
+        type WaiterHolder = { current?: InterruptibleFiber };
+        const waiterToInterrupt: WaiterHolder = {};
         const transferRegistry = kafkaServerInternals.makeKafkaKeyLeaseRegistry(Effect.void, () => {
           waiterToInterrupt.current?.interruptUnsafe();
         });
@@ -6846,9 +6847,9 @@ describe("Kafka Source Adapter Server", () => {
         metadata: metadata("eu", 1n),
         settlement: () => Effect.void,
       });
-      const recordWithValue = (
+      const recordWithValue = <Value>(
         property: keyof KafkaServerRecord,
-        value: unknown,
+        value: Value,
       ): KafkaServerRecord =>
         new Proxy(validRecord(), {
           get: (target, current, receiver) =>
@@ -6858,9 +6859,9 @@ describe("Kafka Source Adapter Server", () => {
         acquire: () => Effect.succeed(consumer(Stream.make(record))),
         metrics: () => Effect.succeed(metrics),
       });
-      const metadataWithValue = (
+      const metadataWithValue = <Value>(
         property: keyof KafkaMessageMetadata,
-        value: unknown,
+        value: Value,
       ): KafkaMessageMetadata =>
         new Proxy(metadata("eu", 1n), {
           get: (target, current, receiver) =>

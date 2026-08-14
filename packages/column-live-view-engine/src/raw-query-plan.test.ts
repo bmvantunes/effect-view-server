@@ -5,14 +5,13 @@ import type { RuntimeRawQuery } from "./raw-query-decoder";
 import { makeRawQueryPlan } from "./raw-query-plan";
 import { runtimeRawQueryResultSemantics } from "./query-result-semantics";
 
+type SourceOrder = { field: string; direction: "asc" | "desc" };
+
 describe("Raw Query Plan", () => {
   it("owns and freezes selected fields, order, row order, and window", () => {
     const metadata = rawQueryCompilerMetadata(Order);
     const selectedFields = ["id", "price"];
-    const sourceOrder: {
-      field: string;
-      direction: "asc" | "desc";
-    } = {
+    const sourceOrder: SourceOrder = {
       field: "price",
       direction: "asc",
     };

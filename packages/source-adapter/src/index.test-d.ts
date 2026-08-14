@@ -29,7 +29,13 @@ import {
   type SourceMutation,
   type SourceStatus,
   type SourceToolkit,
+  type SourceUpsert,
 } from "./index";
+import {
+  decodeSourceToolkitUpsert,
+  isSourceDelivery,
+  makeSourceApplicationTransition,
+} from "./model";
 import {
   SourceAdapterServer,
   SourceBuffer,
@@ -645,6 +651,7 @@ declare const extraFieldMutation: SourceMutation<{
   readonly value: number;
   readonly extra: boolean;
 }>;
+declare const unknownDelivery: unknown;
 type ErasedAnyLifecycle = SourceLifecycleDeclaration<
   typeof Metrics.Type,
   typeof Location.Type,
@@ -985,6 +992,27 @@ describe("Source Adapter public type contracts", () => {
       readonly id: string;
       readonly value: number;
     }>();
+    const decoded = topicToolkit.decodeUpsert({ id: "decoded", value: 2 });
+    const decodedThroughHelper = decodeSourceToolkitUpsert(topicToolkit, {
+      id: "decoded-helper",
+      value: 3,
+    });
+    expectTypeOf<Effect.Success<typeof decoded>>().toEqualTypeOf<
+      SourceUpsert<{ readonly id: string; readonly value: number }>
+    >();
+    expectTypeOf<Effect.Success<typeof decodedThroughHelper>>().toEqualTypeOf<
+      SourceUpsert<{ readonly id: string; readonly value: number }>
+    >();
+    const transition = makeSourceApplicationTransition("orders", () => {}, [], {
+      lifetime: "orders",
+    });
+    expectTypeOf(transition).toEqualTypeOf<SourceApplicationTransition<"orders">>();
+    // @ts-expect-error transition identity is an object-owned identity, not a primitive.
+    makeSourceApplicationTransition("orders", () => {}, [], "orders");
+    if (isSourceDelivery(unknownDelivery)) {
+      const narrowedDelivery = unknownDelivery;
+      expectTypeOf(narrowedDelivery).toEqualTypeOf<SourceDelivery<object, unknown, unknown>>();
+    }
     const extraRow = {
       id: "variable-extra",
       value: 1,

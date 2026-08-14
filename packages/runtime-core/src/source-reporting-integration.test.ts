@@ -28,9 +28,9 @@ const Row = Schema.Struct({
 
 const materializedTarget: SourceFixtureTarget = { _tag: "Materialized" };
 
-const hostileTarget = (
+const hostileTarget = <Value>(
   property: "dependency" | "target" | "endpoints",
-  value: unknown,
+  value: Value,
 ): SourceDependencyTarget =>
   new Proxy(
     { target: "orders", endpoints: ["fixture://orders"] },
@@ -40,7 +40,7 @@ const hostileTarget = (
     },
   );
 
-const malformedTargets = (value: unknown): ReadonlyArray<SourceDependencyTarget> =>
+const malformedTargets = <Value>(value: Value): ReadonlyArray<SourceDependencyTarget> =>
   Reflect.apply((targets: ReadonlyArray<SourceDependencyTarget>) => targets, undefined, [value]);
 
 const throwingTarget = malformedTargets([
@@ -134,8 +134,8 @@ describe("Runtime Core Source reporting integration", () => {
     }),
   );
 
-  const malformedDependencyEffect = (
-    value: unknown,
+  const malformedDependencyEffect = <Value>(
+    value: Value,
   ): Effect.Effect<ReadonlyArray<SourceDependencyTarget>> =>
     Reflect.apply(
       (effect: Effect.Effect<ReadonlyArray<SourceDependencyTarget>>) => effect,

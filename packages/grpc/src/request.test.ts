@@ -31,13 +31,16 @@ const scalarField = (
     readonly jstype?: FieldOptions_JSType;
     readonly label?: FieldDescriptorProto_Label;
   },
-) => ({
-  name,
-  number,
-  type,
-  ...(options?.jstype === undefined ? {} : { options: { jstype: options.jstype } }),
-  ...(options?.label === undefined ? {} : { label: options.label }),
-});
+) => {
+  if (options?.jstype !== undefined) {
+    return options.label === undefined
+      ? { name, number, type, options: { jstype: options.jstype } }
+      : { name, number, type, options: { jstype: options.jstype }, label: options.label };
+  }
+  return options?.label === undefined
+    ? { name, number, type }
+    : { name, number, type, label: options.label };
+};
 
 const descriptorFile = fileDesc(
   globalThis.btoa(
@@ -572,7 +575,7 @@ const validRequest = () => ({
 const isObjectRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-const wireBytes = (message: DescMessage, value: unknown): Uint8Array => {
+const wireBytes = <Value>(message: DescMessage, value: Value): Uint8Array => {
   if (!isObjectRecord(value)) {
     throw new TypeError("Expected an object-valued request.");
   }

@@ -135,7 +135,8 @@ export const topicRowKey = Effect.fn("ColumnLiveViewEngine.topicRow.key")(functi
 
 const inspectTopicPatch = Effect.fn("ColumnLiveViewEngine.topicRow.patch.inspect")(function* <
   Error,
->(context: TopicRowPreparationContext, patch: unknown, invalidRow: InvalidRowErrorFactory<Error>) {
+  Patch,
+>(context: TopicRowPreparationContext, patch: Patch, invalidRow: InvalidRowErrorFactory<Error>) {
   const record = yield* Effect.try({
     try: () => (isPlainRecord(patch) ? patch : undefined),
     catch: () => invalidRow(context.topic, "Could not inspect patch object."),
@@ -232,7 +233,7 @@ const preparePatchedTopicRow = Effect.fn("ColumnLiveViewEngine.topicRow.patch.pr
     current: Row | undefined,
     patch: Patch,
     invalidRow: InvalidRowErrorFactory<Error>,
-    preparePatchedRow: (row: RowObject) => Effect.Effect<RowObject, Error>,
+    preparePatchedRow: (row: Row) => Effect.Effect<RowObject, Error>,
   ) {
     const inspectedPatch = yield* inspectTopicPatch(context, patch, invalidRow);
     if (current === undefined) {

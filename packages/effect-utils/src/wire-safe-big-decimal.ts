@@ -1,4 +1,7 @@
 import { isBigDecimal, type BigDecimal } from "effect/BigDecimal";
+import type { Schema } from "effect";
+
+type WireSafeBigDecimalInput = Schema.Schema.Type<typeof Schema.Unknown>;
 
 export type WireSafeBigDecimal = {
   readonly "~effect/BigDecimal": "~effect/BigDecimal";
@@ -52,10 +55,17 @@ const unsafeBigDecimal: WireSafeBigDecimalInspection = { _tag: "UnsafeBigDecimal
 const reflectionFailure: WireSafeBigDecimalInspection = { _tag: "ReflectionFailure" };
 const bigDecimalTypeId = "~effect/BigDecimal";
 
-const hasBigDecimalPrototype = (value: unknown): value is WireSafeBigDecimal =>
-  typeof value === "object" && value !== null && hasBigDecimalPrototypeBrand(value);
+const isBigInt = (value: unknown): value is bigint => typeof value === "bigint";
+const isNumber = (value: unknown): value is number => typeof value === "number";
 
-const hasBigDecimalPrototypeBrand = (value: object): boolean => {
+const hasBigDecimalPrototype = (value: WireSafeBigDecimalInput): value is WireSafeBigDecimal =>
+  hasBigDecimalPrototypeBrand(value);
+
+const isObjectInput = (value: WireSafeBigDecimalInput): value is object =>
+  typeof value === "object" && value !== null;
+
+const hasBigDecimalPrototypeBrand = (value: WireSafeBigDecimalInput): value is object => {
+  if (!isObjectInput(value)) return false;
   const prototype = Object.getPrototypeOf(value);
   if (typeof prototype !== "object" || prototype === null) {
     return false;
@@ -64,7 +74,7 @@ const hasBigDecimalPrototypeBrand = (value: object): boolean => {
   return descriptor !== undefined && "value" in descriptor && descriptor.value === bigDecimalTypeId;
 };
 
-const ownEnumerableDataValue = <Value extends object>(value: Value, key: string): unknown => {
+const ownEnumerableDataValue = (value: WireSafeBigDecimal, key: string): unknown => {
   const descriptor = Object.getOwnPropertyDescriptor(value, key);
   return descriptor !== undefined && descriptor.enumerable && "value" in descriptor
     ? descriptor.value
@@ -119,7 +129,9 @@ const canonicalWireSafeBigDecimalParts = (
   };
 };
 
-export const inspectWireSafeBigDecimal = (value: unknown): WireSafeBigDecimalInspection => {
+export const inspectWireSafeBigDecimal = (
+  value: WireSafeBigDecimalInput,
+): WireSafeBigDecimalInspection => {
   try {
     if (!hasBigDecimalPrototype(value)) {
       return notBigDecimal;
@@ -144,11 +156,15 @@ export const inspectWireSafeBigDecimal = (value: unknown): WireSafeBigDecimalIns
   }
 };
 
-export const isWireSafeBigDecimal = (value: unknown): value is WireSafeBigDecimal => {
+export const isWireSafeBigDecimal = (
+  value: WireSafeBigDecimalInput,
+): value is WireSafeBigDecimal => {
   return inspectWireSafeBigDecimal(value)._tag === "Success";
 };
 
-export const wireSafeBigDecimalSemanticKey = (value: unknown): string | undefined => {
+export const wireSafeBigDecimalSemanticKey = (
+  value: WireSafeBigDecimalInput,
+): string | undefined => {
   const inspection = inspectWireSafeBigDecimal(value);
   return inspection._tag === "Success" ? inspection.semanticKey : undefined;
 };
@@ -220,7 +236,7 @@ const makeComparisonMetadata = (
 
 /** Builds opaque, cacheable comparison evidence after hostile-input admission. */
 export const wireSafeBigDecimalComparisonMetadata = (
-  value: unknown,
+  value: WireSafeBigDecimalInput,
 ): WireSafeBigDecimalComparisonMetadata | undefined => {
   const inspection = inspectWireSafeBigDecimal(value);
   if (inspection._tag !== "Success") {
@@ -245,8 +261,8 @@ export const trustedWireSafeBigDecimalComparisonMetadata = (
   }
 
   if (
-    typeof coefficient !== "bigint" ||
-    typeof scale !== "number" ||
+    !isBigInt(coefficient) ||
+    !isNumber(scale) ||
     canonicalWireSafeBigDecimalParts(coefficient, scale) === undefined
   ) {
     return undefined;
@@ -362,12 +378,17 @@ export const compareTrustedWireSafeBigDecimal = (
   }
 };
 
-export const compareWireSafeBigDecimal = (left: unknown, right: unknown): number | undefined => {
+export const compareWireSafeBigDecimal = (
+  left: WireSafeBigDecimalInput,
+  right: WireSafeBigDecimalInput,
+): number | undefined => {
   const leftInspection = inspectWireSafeBigDecimal(left);
   if (leftInspection._tag !== "Success") {
     return undefined;
   }
-  const rightInspection = left === right ? leftInspection : inspectWireSafeBigDecimal(right);
+  const rightInspection = Object.is(left, right)
+    ? leftInspection
+    : inspectWireSafeBigDecimal(right);
   return rightInspection._tag === "Success"
     ? compareWireSafeBigDecimalParts(
         leftInspection.coefficient,

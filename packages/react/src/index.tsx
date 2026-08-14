@@ -1,3 +1,4 @@
+import { definedFields } from "@effect-view-server/effect-utils";
 import * as AtomReact from "@effect/atom-react";
 import {
   ignoreLoggedTypedFailuresPreserveNonTypedFailures,
@@ -271,9 +272,9 @@ export const createViewServerReact = <const Topics extends TopicDefinitions>(
   function ViewServerProvider(props: ViewServerProviderProps): ReactNode {
     const options = {
       url: props.url,
-      ...(props.subscriptionBufferSize === undefined
-        ? {}
-        : { subscriptionBufferSize: props.subscriptionBufferSize }),
+      ...definedFields(props.subscriptionBufferSize, (subscriptionBufferSize) => ({
+        subscriptionBufferSize,
+      })),
     } satisfies ViewServerClientOptions;
     const providerKey = [props.url, String(props.subscriptionBufferSize ?? "")].join(":");
     return (

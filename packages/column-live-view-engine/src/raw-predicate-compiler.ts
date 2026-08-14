@@ -13,6 +13,8 @@ import { scalarEqualityKey } from "./row-values";
 
 type RowObject = object;
 
+const isString = (value: unknown): value is string => typeof value === "string";
+
 const constantPredicateValues = {
   false: false,
   true: true,
@@ -141,10 +143,13 @@ const isScalarArray = (
   value: RuntimeFilterScalar | ReadonlyArray<RuntimeFilterScalar>,
 ): value is ReadonlyArray<RuntimeFilterScalar> => Array.isArray(value);
 
+const isObjectLike = (value: unknown): value is object | Function =>
+  (typeof value === "object" && value !== null) || typeof value === "function";
+
 const fieldPathValue = <Row extends object>(row: Row, segments: ReadonlyArray<string>): unknown => {
   let value: unknown = row;
   for (const segment of segments) {
-    if ((typeof value !== "object" || value === null) && typeof value !== "function") {
+    if (!isObjectLike(value)) {
       return undefined;
     }
     const descriptor = Object.getOwnPropertyDescriptor(value, segment);
@@ -162,7 +167,7 @@ const trustedFieldPathValue = <Row extends object>(
 ): unknown => {
   let value: unknown = row;
   for (const segment of segments) {
-    if ((typeof value !== "object" || value === null) && typeof value !== "function") {
+    if (!isObjectLike(value)) {
       return undefined;
     }
     if (!Object.hasOwn(value, segment)) {
@@ -173,7 +178,8 @@ const trustedFieldPathValue = <Row extends object>(
   return value;
 };
 
-const blank = (value: unknown): boolean => value === undefined || value === null || value === "";
+const blank = <Value>(value: Value): boolean =>
+  value === undefined || value === null || value === "";
 
 const compileCondition = <Row extends RowObject>(
   condition: RuntimeFilterCondition,
@@ -190,7 +196,7 @@ const compileCondition = <Row extends RowObject>(
       ? new Set(filter.map(scalarEqualityKey))
       : undefined;
   const textValue = (value: unknown): string | undefined =>
-    typeof value === "string"
+    isString(value)
       ? normalizeFilterText(value, condition.caseSensitive, condition.accentSensitive)
       : undefined;
   const equals = (value: unknown, operand: RuntimeFilterScalar): boolean => {
@@ -203,14 +209,14 @@ const compileCondition = <Row extends RowObject>(
     return field.semantics.is(value) && field.semantics.equivalent(value, operand);
   };
   const membershipKey = (value: unknown): string | undefined => {
-    if (typeof value === "string") {
+    if (isString(value)) {
       return scalarEqualityKey(
         normalizeFilterText(value, condition.caseSensitive, condition.accentSensitive),
       );
     }
     return field.semantics.is(value) ? scalarEqualityKey(value) : undefined;
   };
-  const matchesValue = (value: unknown): boolean => {
+  const matchesValue = <Value>(value: Value): boolean => {
     switch (condition.type) {
       case "blank":
         return blank(value);

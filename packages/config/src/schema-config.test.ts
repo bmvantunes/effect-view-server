@@ -198,11 +198,9 @@ describe("Topic schema configuration", () => {
     }) {}
     viewSchema.admitClass(OwnedProfile);
 
-    const topic: {
-      schema: typeof OwnedProfile;
-    } = {
+    const topic = {
       schema: OwnedProfile,
-    };
+    } satisfies { readonly schema: typeof OwnedProfile };
     const topics = { profiles: topic };
     const input = { topics };
     const originalAst = OwnedProfile.ast;

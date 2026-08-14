@@ -41,12 +41,12 @@ export type RuntimeSourceReportingSnapshot = {
   readonly dependencies: ReadonlyArray<RuntimeDependency>;
 };
 
-export type RuntimeSourceReportingDefinition = {
+export type RuntimeSourceReportingDefinition<Failure = unknown> = {
   readonly source: string;
   readonly dependency: string;
   readonly lifecycle: "materialized" | "leased";
   readonly targets: ReadonlyArray<SourceDependencyTarget>;
-  readonly classifyFailure: (failure: unknown) => SourceFailureClassification;
+  readonly classifyFailure: (failure: Failure) => SourceFailureClassification;
 };
 
 export type RuntimeSourceReportingState = {
@@ -72,6 +72,15 @@ type FailureClassificationOutcome =
       readonly _tag: "Invalid";
       readonly issue: SourceDependencyIssue;
     };
+
+type CapturedDependencyClassification = {
+  readonly problem: "dependency";
+  targets?: ReadonlyArray<SourceDependencyFailureTarget>;
+  issue?: SourceDependencyIssue;
+};
+
+const isNonNullObject = (value: unknown): value is object =>
+  typeof value === "object" && value !== null;
 
 const emptyEvidence: StatusEvidence = {
   problems: [],
@@ -160,14 +169,14 @@ const captureClassificationIssue = (
   return Object.freeze({ code, message, attributes: Object.freeze(capturedAttributes) });
 };
 
-const classification = (
+const classification = <Failure>(
   classifyFailure: RuntimeSourceReportingDefinition["classifyFailure"],
-  failure: unknown,
+  failure: Failure,
 ): FailureClassificationOutcome =>
   Result.match(
     Result.try((): SourceFailureClassification => {
       const candidate: unknown = classifyFailure(failure);
-      if (typeof candidate !== "object" || candidate === null || Array.isArray(candidate)) {
+      if (!isNonNullObject(candidate) || Array.isArray(candidate)) {
         throw new TypeError("Source failure classification must be an object.");
       }
       const problem = Reflect.get(candidate, "problem");
@@ -182,11 +191,7 @@ const classification = (
       }
       const targets = captureClassificationTargets(Reflect.get(candidate, "targets"));
       const issue = captureClassificationIssue(Reflect.get(candidate, "issue"));
-      const captured: {
-        readonly problem: "dependency";
-        targets?: ReadonlyArray<SourceDependencyFailureTarget>;
-        issue?: SourceDependencyIssue;
-      } = { problem: "dependency" };
+      const captured: CapturedDependencyClassification = { problem: "dependency" };
       if (targets !== undefined) {
         captured.targets = targets;
       }

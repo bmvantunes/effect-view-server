@@ -1,3 +1,4 @@
+import { definedFields } from "./optional-fields";
 import type { DescService } from "@bufbuild/protobuf";
 import { createClient, type Interceptor } from "@connectrpc/connect";
 import {
@@ -204,7 +205,7 @@ const nonNegativeFiniteNumber = (value: unknown): boolean =>
 function resourcePropertyIs<Value extends object>(
   value: Value,
   key: string,
-  predicate: (candidate: unknown) => boolean,
+  predicate: <Candidate>(candidate: Candidate) => boolean,
 ): boolean {
   return predicate(Reflect.get(value, key));
 }
@@ -368,16 +369,16 @@ const captureOptions = (
       enumerable: true,
       value: Object.freeze({
         baseUrl,
-        ...(interceptors === undefined
-          ? {}
-          : {
-              interceptors: Object.freeze(
-                interceptors.filter(
-                  (interceptor): interceptor is Interceptor => typeof interceptor === "function",
-                ),
-              ),
-            }),
-        ...(transport === undefined ? {} : { transport: snapshotTransport(transport) }),
+        ...definedFields(interceptors, (interceptors) => ({
+          interceptors: Object.freeze(
+            interceptors.filter(
+              (interceptor): interceptor is Interceptor => typeof interceptor === "function",
+            ),
+          ),
+        })),
+        ...definedFields(transport, (transport) => ({
+          transport: snapshotTransport(transport),
+        })),
       }),
     });
   }
@@ -405,8 +406,10 @@ const runtimeClient = (
   const transport = createGrpcTransport({
     ...options.transport,
     baseUrl: options.baseUrl,
-    ...(options.interceptors === undefined ? {} : { interceptors: [...options.interceptors] }),
-    ...(ownedSessionManager === undefined ? {} : { sessionManager: ownedSessionManager }),
+    ...definedFields(options.interceptors, (interceptors) => ({
+      interceptors: [...interceptors],
+    })),
+    ...definedFields(ownedSessionManager, (sessionManager) => ({ sessionManager })),
   });
   const client = createClient(service, transport);
   return Object.freeze({

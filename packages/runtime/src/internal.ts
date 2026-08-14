@@ -1,3 +1,4 @@
+import { definedFields } from "@effect-view-server/effect-utils";
 import type { ViewServerLiveClient, ViewServerRuntimeLiveClient } from "@effect-view-server/client";
 import type { ViewServerConfig, ViewServerRuntimeError } from "@effect-view-server/config";
 import { ignoreLoggedTypedFailuresPreserveNonTypedFailures } from "@effect-view-server/effect-utils";
@@ -205,7 +206,7 @@ const makeViewServerRuntimeFromResolvedOptions = Effect.fn(
               dependencies.makeServer(
                 dependencyConfig,
                 {
-                  ...(resolvedOptions.auth === undefined ? {} : { auth: resolvedOptions.auth }),
+                  ...definedFields(resolvedOptions.auth, (auth) => ({ auth })),
                   liveClient: {
                     subscribeHealth: runtimeCore.liveClient.subscribeHealth,
                     subscribeHealthSummary: runtimeCore.liveClient.subscribeHealthSummary,
@@ -244,9 +245,7 @@ const makeViewServerRuntimeFromResolvedOptions = Effect.fn(
                       runtimeCore.decodedMutationClient,
                       {
                         ...resolvedOptions.tcpPublishOptions,
-                        ...(resolvedOptions.auth === undefined
-                          ? {}
-                          : { auth: resolvedOptions.auth }),
+                        ...definedFields(resolvedOptions.auth, (auth) => ({ auth })),
                       },
                     ),
                     (resource) => resource.close,
@@ -292,9 +291,9 @@ const makeViewServerRuntimeFromResolvedOptions = Effect.fn(
           url: transports.server.url,
           healthUrl: transports.server.healthUrl,
           metricsUrl: transports.server.metricsUrl,
-          ...(transports.tcpPublishIngress === undefined
-            ? {}
-            : { tcpPublishUrl: transports.tcpPublishIngress.url }),
+          ...definedFields(transports.tcpPublishIngress, (tcpPublishIngress) => ({
+            tcpPublishUrl: tcpPublishIngress.url,
+          })),
           client: runtimeCore.client,
           liveClient: publicLiveClient,
           health: runtimeCore.client.health,

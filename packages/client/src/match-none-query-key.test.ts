@@ -17,8 +17,8 @@ describe("explicit match-none query keys", () => {
     expect(canonicalWhereKey([{ type: "AND", conditions: [{ type: "FALSE" }, first[0]!] }])).toBe(
       falseKeyForTest(),
     );
-    const canonicalFalse: { readonly _tag: "false" } = { _tag: "false" };
-    const canonicalTrue: { readonly _tag: "true" } = { _tag: "true" };
+    const canonicalFalse = { _tag: "false" } as const;
+    const canonicalTrue = { _tag: "true" } as const;
     expect(compareCanonicalWhereExpressions(canonicalFalse, canonicalTrue)).not.toBe(0);
   });
 
@@ -38,7 +38,7 @@ describe("explicit match-none query keys", () => {
     ]);
     const emptyInKey = canonicalWhereKey(
       [{ field: "status", type: "in", filter: [] }],
-      new Map([["status", { supportsText: true, materialize: (value: unknown) => value }]]),
+      new Map([["status", { supportsText: true, materialize: <Value>(value: Value) => value }]]),
     );
 
     expect(falseKey).toBeDefined();
@@ -91,7 +91,7 @@ describe("explicit match-none query keys", () => {
             conditions: [{ type: "FALSE" }, { field: "status", type: "in", filter: [] }],
           },
         ],
-        new Map([["status", { supportsText: true, materialize: (value: unknown) => value }]]),
+        new Map([["status", { supportsText: true, materialize: <Value>(value: Value) => value }]]),
       ),
     ).toBe(falseKey);
   });

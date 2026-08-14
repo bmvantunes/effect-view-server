@@ -27,9 +27,9 @@ const RoutedRow = Schema.Struct({
   status: Schema.Literals(["open", "closed"]),
 });
 
-const withObjectPrototypeValue = <Value, Error, Requirements>(
+const withObjectPrototypeValue = <Value, Error, Requirements, PropertyValue>(
   field: string,
-  value: unknown,
+  value: PropertyValue,
   effect: Effect.Effect<Value, Error, Requirements>,
 ): Effect.Effect<Value, Error, Requirements> =>
   Effect.acquireUseRelease(
@@ -348,7 +348,7 @@ describe("Source route contracts", () => {
       }
       return value;
     };
-    const data = (value: unknown): PropertyDescriptor => ({ enumerable: true, value });
+    const data = <Value>(value: Value): PropertyDescriptor => ({ enumerable: true, value });
     const invalidBigDecimals: ReadonlyArray<object> = [
       Object.create(null),
       Object.create({}),

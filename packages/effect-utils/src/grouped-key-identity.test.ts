@@ -111,5 +111,11 @@ describe("grouped key identity", () => {
     expect(optionalIdentity.key(hostileRow)).toBeUndefined();
     expect(() => throwingIdentity.key(invalidRow)).toThrow();
     expect(optionalIdentity.key(invalidRow)).toBeUndefined();
+
+    const primitiveInput = null;
+    expect(() => Reflect.apply(throwingIdentity.key, undefined, [primitiveInput])).toThrow(
+      "Grouped key rows must be objects.",
+    );
+    expect(Reflect.apply(optionalIdentity.key, undefined, [primitiveInput])).toBeUndefined();
   });
 });

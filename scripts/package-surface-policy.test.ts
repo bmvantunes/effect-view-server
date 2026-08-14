@@ -26,7 +26,7 @@ describe("Package Surface Policy", () => {
       expectedPackageSurfaces
         .filter((surface) => surface.directory !== "effect-view-server")
         .flatMap((surface) => surface.packEntrypoints),
-    ).toHaveLength(33);
+    ).toHaveLength(34);
     expect(packageSurfacePolicy.runtimeSymbols.map((policy) => policy.workspaceSpecifier).sort()).toStrictEqual(
       [...workspacePackageSpecifiers].sort(),
     );

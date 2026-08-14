@@ -1,3 +1,4 @@
+import { definedFields } from "@effect-view-server/effect-utils";
 import { createColumnLiveViewEngineInternal } from "@effect-view-server/column-live-view-engine/internal";
 import type {
   TopicDefinitions,
@@ -54,12 +55,13 @@ export const makeViewServerRuntimeCoreInternalWithConstructionOptions: <
   const transportHealth = input.transportHealth ?? defaultRuntimeCoreTransportHealth;
   const healthOverlay = input.healthOverlay;
   const engineConfig = {
-    ...(input.groupedIncrementalAdmissionLimits === undefined
-      ? {}
-      : { groupedIncrementalAdmissionLimits: input.groupedIncrementalAdmissionLimits }),
-    ...(input.subscriptionQueueCapacity === undefined
-      ? {}
-      : { subscriptionQueueCapacity: input.subscriptionQueueCapacity }),
+    ...definedFields(
+      input.groupedIncrementalAdmissionLimits,
+      (groupedIncrementalAdmissionLimits) => ({ groupedIncrementalAdmissionLimits }),
+    ),
+    ...definedFields(input.subscriptionQueueCapacity, (subscriptionQueueCapacity) => ({
+      subscriptionQueueCapacity,
+    })),
     topics: config.topics,
   };
   return yield* acquireRuntimeCoreResourceHandoff(
@@ -113,7 +115,7 @@ export const makeViewServerRuntimeCoreInternalWithConstructionOptions: <
           const initialHealth: ViewServerHealth<Topics> = sourceManager.overlayHealth(
             healthFromEngine(engineHealth, {
               transportHealth,
-              ...(healthOverlay === undefined ? {} : { healthOverlay }),
+              ...definedFields(healthOverlay, (healthOverlay) => ({ healthOverlay })),
               timing: {
                 nowMillis: runtimeStartedAtMillis,
                 nowNanos: runtimeStartedAtNanos,

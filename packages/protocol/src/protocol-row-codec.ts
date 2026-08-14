@@ -71,11 +71,11 @@ type RowKind = "row" | "grouped row";
 
 type ViewServerUntrustedWireRow = Readonly<Record<string, unknown>>;
 
-type DecodedRowProof<Row extends object> = (row: object) => row is Row;
+type DecodedRowProof<Row extends object> = (row: Row | ViewServerUntrustedWireRow) => row is Row;
 
 type DecodedFieldProof = {
   readonly field: string;
-  readonly isValue: (value: unknown) => boolean;
+  readonly isValue: <Value>(value: Value) => boolean;
   readonly required: boolean;
 };
 
@@ -232,7 +232,7 @@ const decodedTopicFieldProof = (
 const decodedAggregateValueProof = (
   fields: Readonly<Record<string, Schema.Codec<unknown, unknown, never, never>>>,
   aggregate: ViewServerWireAggregate | undefined,
-): ((value: unknown) => boolean) | undefined => {
+): (<Value>(value: Value) => boolean) | undefined => {
   if (aggregate === undefined) {
     return undefined;
   }
@@ -387,7 +387,7 @@ const decodeMaterializedProjectedRow = Effect.fn(
   topic: string,
   contract: ViewServerProjectedRowContract,
   row: ViewServerWireRow,
-): Effect.fn.Return<object, ViewServerRuntimeError> {
+): Effect.fn.Return<ViewServerUntrustedWireRow, ViewServerRuntimeError> {
   const { fieldSchemas, selectedFields } = contract;
   const output: Record<string, unknown> = {};
   for (const field of selectedFields) {
@@ -521,7 +521,7 @@ const decodeMaterializedGroupedRow = Effect.fn("ViewServerProtocol.row.grouped.d
     topic: Topic,
     contract: ViewServerCompiledGroupedRowContract,
     row: ViewServerWireRow,
-  ): Effect.fn.Return<object, ViewServerRuntimeError> {
+  ): Effect.fn.Return<ViewServerUntrustedWireRow, ViewServerRuntimeError> {
     const { aggregateAliases, aggregates, groupFields, groupFieldSchemas } = contract;
     const output: Record<string, unknown> = {};
     for (const field of groupFields) {
@@ -604,7 +604,9 @@ const compileProjectedEventRowPlan = <ResultRow extends object>(
   const proofFailure = Function.constant(proofError);
   const decodeMaterialized: ViewServerEventRowPlan<ResultRow>["decodeMaterialized"] = (row) =>
     decodeMaterializedProjectedRow(topic, contract, row).pipe(
-      Effect.filterOrFail(proof, proofFailure),
+      Effect.flatMap((candidate) =>
+        proof(candidate) ? Effect.succeed<ResultRow>(candidate) : Effect.fail(proofFailure()),
+      ),
     );
   const encode: ViewServerEventRowPlan<ResultRow>["encode"] = (row) =>
     encodeProjectedRowWithContract(topic, contract, row);
@@ -628,7 +630,9 @@ const compileGroupedEventRowPlan = <ResultRow extends object>(
   const proofFailure = Function.constant(proofError);
   const decodeMaterialized: ViewServerEventRowPlan<ResultRow>["decodeMaterialized"] = (row) =>
     decodeMaterializedGroupedRow(config, topic, contract, row).pipe(
-      Effect.filterOrFail(proof, proofFailure),
+      Effect.flatMap((candidate) =>
+        proof(candidate) ? Effect.succeed<ResultRow>(candidate) : Effect.fail(proofFailure()),
+      ),
     );
   const encode: ViewServerEventRowPlan<ResultRow>["encode"] = (row) =>
     encodeGroupedRowWithContract(config, topic, contract, row);

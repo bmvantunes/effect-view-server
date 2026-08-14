@@ -68,7 +68,7 @@ const canonicalFalse: CanonicalFalse = Object.freeze({ _tag: "false" });
 const canonicalTrue: CanonicalTrue = Object.freeze({ _tag: "true" });
 
 export type CanonicalWhereFieldContract = {
-  readonly materialize: (value: unknown) => unknown;
+  readonly materialize: <Value>(value: Value) => unknown;
   readonly supportsText: boolean;
 };
 
@@ -109,7 +109,7 @@ const failInvalidWhere = (): never => {
 const plainRecordSnapshot = <Value>(value: Value) =>
   structuralPlainRecordSnapshot(value, failInvalidWhere, failInvalidWhere);
 
-const denseArrayValues = (value: unknown): ReadonlyArray<unknown> =>
+const denseArrayValues = <Value>(value: Value): ReadonlyArray<unknown> =>
   structuralDenseArrayValues(value, failInvalidWhere, failInvalidWhere, failInvalidWhere);
 
 type RecordValues = {
@@ -117,7 +117,7 @@ type RecordValues = {
   readonly values: ReadonlyMap<string, unknown>;
 };
 
-const recordValues = (value: unknown): RecordValues => {
+const recordValues = <Value>(value: Value): RecordValues => {
   const snapshot = plainRecordSnapshot(value);
   return { source: snapshot.source, values: new Map(snapshot.entries) };
 };
@@ -164,12 +164,9 @@ const normalizeText = (value: string, caseSensitive: boolean, accentSensitive: b
   return caseSensitive ? normalized : normalized.toLowerCase();
 };
 
-const textOptions = (
-  values: ReadonlyMap<string, unknown>,
-): {
-  readonly accentSensitive: boolean;
-  readonly caseSensitive: boolean;
-} => {
+type TextOptions = { readonly accentSensitive: boolean; readonly caseSensitive: boolean };
+
+const textOptions = (values: ReadonlyMap<string, unknown>): TextOptions => {
   const hasCaseSensitive = values.has("caseSensitive");
   const hasAccentSensitive = values.has("accentSensitive");
   const caseSensitive = hasCaseSensitive ? values.get("caseSensitive") : false;
@@ -268,8 +265,8 @@ const exactScalarKey = (value: unknown): string => {
   return failInvalidWhere();
 };
 
-const materializeEqualityOperand = (
-  value: unknown,
+const materializeEqualityOperand = <Value>(
+  value: Value,
   field: string,
   type: CanonicalConditionType,
   validationSensitiveSyntax: Set<string>,
@@ -300,7 +297,7 @@ const numericScalarKey = (value: unknown): string => {
   return semanticScalarKey(value, false, false);
 };
 
-const numericKind = (value: unknown): "number" | "bigint" | "bigDecimal" => {
+const numericKind = <Value>(value: Value): "number" | "bigint" | "bigDecimal" => {
   if (typeof value === "number" && Number.isFinite(value)) {
     return "number";
   }
@@ -327,23 +324,36 @@ const makeCondition = (input: Omit<CanonicalCondition, "_tag" | "key">): Canonic
   ]),
 });
 
-const conditionType = (value: unknown): CanonicalConditionType => {
+const conditionType = <Value>(value: Value): CanonicalConditionType => {
   switch (value) {
     case "equals":
+      return "equals";
     case "notEqual":
+      return "notEqual";
     case "in":
+      return "in";
     case "greaterThan":
+      return "greaterThan";
     case "greaterThanOrEqual":
+      return "greaterThanOrEqual";
     case "lessThan":
+      return "lessThan";
     case "lessThanOrEqual":
+      return "lessThanOrEqual";
     case "inRange":
+      return "inRange";
     case "contains":
+      return "contains";
     case "notContains":
+      return "notContains";
     case "startsWith":
+      return "startsWith";
     case "endsWith":
+      return "endsWith";
     case "blank":
+      return "blank";
     case "notBlank":
-      return value;
+      return "notBlank";
     default:
       return failInvalidWhere();
   }
@@ -759,8 +769,8 @@ type NormalizeFrame =
       readonly childCount: number;
     };
 
-const normalizeExpression = (
-  input: unknown,
+const normalizeExpression = <Value>(
+  input: Value,
   memo: WeakMap<object, NormalizedExpression>,
   complete: WeakSet<object>,
   active: WeakSet<object>,
@@ -885,8 +895,8 @@ const serializeExpression = (expression: CanonicalExpression): string => {
   return JSON.stringify(["expressionGraph", identities.get(expression)!, definitions]);
 };
 
-export const canonicalWhereKey = (
-  where: unknown,
+export const canonicalWhereKey = <Value>(
+  where: Value,
   fieldContracts?: CanonicalWhereFieldContracts,
 ): string | undefined => {
   const roots = denseArrayValues(where);

@@ -37,16 +37,17 @@ export function isSourceAdapterHandle<
   Materialized extends SourceLifecycleDeclarationAny | undefined,
   Leased extends SourceLifecycleDeclarationAny | undefined,
 >(value: SourceAdapterDescriptor<Name, Version, AdapterFailure, Materialized, Leased>): boolean;
-export function isSourceAdapterHandle(
-  value: unknown,
-): value is SourceAdapterDescriptor<
-  string,
-  string | undefined,
-  unknown,
-  SourceLifecycleDeclarationAny | undefined,
-  SourceLifecycleDeclarationAny | undefined
->;
-export function isSourceAdapterHandle(value: unknown): boolean {
+export function isSourceAdapterHandle<Value>(
+  value: Value,
+): value is Value &
+  SourceAdapterDescriptor<
+    string,
+    string | undefined,
+    unknown,
+    SourceLifecycleDeclarationAny | undefined,
+    SourceLifecycleDeclarationAny | undefined
+  >;
+export function isSourceAdapterHandle<Value>(value: Value): boolean {
   return (
     typeof value === "object" &&
     value !== null &&

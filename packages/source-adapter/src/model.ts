@@ -67,6 +67,8 @@ export const SourceAdapterIdentitySchema = Schema.Struct({
   version: Schema.optionalKey(Schema.NonEmptyString),
 });
 
+type SourceToolkitInput = Schema.Schema.Type<typeof Schema.Unknown>;
+
 export interface SourceDefinitionOptionsFamily {
   readonly Row: object;
   readonly type: unknown;
@@ -457,7 +459,7 @@ export type SourceToolkit<
     row: Candidate & Record<Exclude<keyof Candidate, keyof Row>, never>,
   ) => Effect.Effect<SourceUpsert<Row>, SourceExecutionFailure<AdapterFailure>>;
   readonly decodeUpsert: (
-    row: unknown,
+    row: SourceToolkitInput,
   ) => Effect.Effect<SourceUpsert<Row>, SourceExecutionFailure<AdapterFailure>>;
   readonly delete: (
     id: string,
@@ -505,7 +507,7 @@ type SourceToolkitInternal<
   Topic extends string,
 > = SourceToolkit<Row, AdapterFailure, RejectionLocation, SettlementServices, Topic> & {
   readonly [SourceToolkitDecodeTypeId]: (
-    row: unknown,
+    row: SourceToolkitInput,
   ) => Effect.Effect<SourceUpsert<Row>, SourceExecutionFailure<AdapterFailure>>;
 };
 
@@ -1088,8 +1090,8 @@ const sourceExecutable = <Value extends object>(value: Value): Value => {
   return Object.freeze(value);
 };
 
-const hasExactEnumerableDataKeys = (
-  value: object,
+const hasExactEnumerableDataKeys = <Value extends object>(
+  value: Value,
   expectedKeys: ReadonlyArray<string>,
 ): boolean => {
   const keys = Result.try(() => Reflect.ownKeys(value));
@@ -1150,8 +1152,8 @@ const validateLifecycleDeclaration = <Declaration extends SourceLifecycleDeclara
 };
 
 function snapshotValue<Value>(value: Value): Value;
-function snapshotValue(value: unknown, active?: WeakSet<object>): unknown;
-function snapshotValue(value: unknown, active = new WeakSet<object>()): unknown {
+function snapshotValue<Value>(value: Value, active?: WeakSet<object>): unknown;
+function snapshotValue<Value>(value: Value, active = new WeakSet<object>()): unknown {
   if (Array.isArray(value)) {
     if (active.has(value)) {
       throw new TypeError("Source Definition options must not contain cycles.");
@@ -1831,10 +1833,10 @@ export function isSourceDelivery<
 >(
   value: SourceDelivery<Row, AdapterFailure, SettlementServices, Topic>,
 ): value is SourceDelivery<Row, AdapterFailure, SettlementServices, Topic>;
-export function isSourceDelivery(value: unknown): value is SourceDelivery<object, unknown, unknown>;
-export function isSourceDelivery(
-  value: unknown,
-): value is SourceDelivery<object, unknown, unknown> {
+export function isSourceDelivery<Value>(
+  value: Value,
+): value is Value & SourceDelivery<object, unknown, unknown>;
+export function isSourceDelivery<Value>(value: Value): boolean {
   if (!hasSelfBrand(value, SourceDeliveryTypeId) || typeof value !== "object" || value === null) {
     return false;
   }
@@ -1932,13 +1934,13 @@ export const decodeSourceToolkitUpsert = <
   Topic extends string,
 >(
   toolkit: SourceToolkit<Row, AdapterFailure, RejectionLocation, Services, Topic>,
-  row: unknown,
+  row: SourceToolkitInput,
 ): Effect.Effect<SourceUpsert<Row>, SourceExecutionFailure<AdapterFailure>> => {
   const decoder = Reflect.get(toolkit, SourceToolkitDecodeTypeId);
   return Reflect.apply(decoder, toolkit, [row]);
 };
 
-export const isSourceToolkit = (value: unknown): boolean =>
+export const isSourceToolkit = <Value>(value: Value): boolean =>
   hasSelfBrand(value, SourceToolkitTypeId);
 
 export const makeSourceAttempt = <Row extends object, AdapterFailure, RejectionLocation, Services>(
@@ -1964,7 +1966,7 @@ export const makeSourceAttempt = <Row extends object, AdapterFailure, RejectionL
   return attempt;
 };
 
-export const isSourceAttempt = (value: unknown): boolean =>
+export const isSourceAttempt = <Value>(value: Value): boolean =>
   hasSelfBrand(value, SourceAttemptTypeId);
 
 export const makeRuntimeSourceFailure = (

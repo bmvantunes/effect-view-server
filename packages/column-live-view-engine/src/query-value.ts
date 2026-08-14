@@ -114,7 +114,7 @@ const stableQueryValueToken = (value: unknown, active: WeakSet<object>): StableQ
   return ["undefined"];
 };
 
-export const stableQueryValueString = (value: unknown): string =>
+export const stableQueryValueString = <Value>(value: Value): string =>
   JSON.stringify(stableQueryValueToken(value, new WeakSet()));
 
 const valueRank = (value: unknown): number => {
@@ -155,20 +155,20 @@ export const compareFilterValue = (left: unknown, right: unknown): number | unde
   return undefined;
 };
 
-const compareByStableString = (left: unknown, right: unknown): number => {
+const compareByStableString = <Left, Right>(left: Left, right: Right): number => {
   const leftString = stableQueryValueString(left);
   const rightString = stableQueryValueString(right);
   return Number(leftString > rightString) - Number(leftString < rightString);
 };
 
-export const compareQueryValue = (left: unknown, right: unknown): number => {
+export const compareQueryValue = <Left, Right>(left: Left, right: Right): number => {
   const leftRank = valueRank(left);
   const rightRank = valueRank(right);
   if (leftRank !== rightRank) {
     return Number(leftRank > rightRank) - Number(leftRank < rightRank);
   }
   if (typeof left === "boolean" && typeof right === "boolean") {
-    return left === right ? 0 : left ? 1 : -1;
+    return Object.is(left, right) ? 0 : left ? 1 : -1;
   }
   const filterComparison = compareFilterValue(left, right);
   if (filterComparison !== undefined) {

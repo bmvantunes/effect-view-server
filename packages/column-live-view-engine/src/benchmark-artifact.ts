@@ -1,3 +1,4 @@
+import { definedFields } from "@effect-view-server/effect-utils";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
@@ -291,10 +292,10 @@ const isFiniteNumber = (value: unknown): value is number =>
 const isNonNegativeInteger = (value: unknown): value is number =>
   typeof value === "number" && Number.isInteger(value) && value >= 0;
 
-const isOptionalFiniteNumber = (value: unknown): value is number | undefined =>
+const isOptionalFiniteNumber = <Value>(value: Value): value is Value & (number | undefined) =>
   value === undefined || isFiniteNumber(value);
 
-const isBenchmarkTopicHealth = (value: unknown): value is BenchmarkTopicHealth => {
+const isBenchmarkTopicHealth = <Value>(value: Value): value is Value & BenchmarkTopicHealth => {
   if (
     typeof value !== "object" ||
     value === null ||
@@ -439,7 +440,7 @@ export const writeBenchmarkArtifact = (input: BenchmarkArtifactInput): void => {
           before: input.memoryBefore,
           benchmarkDelta: memoryDelta(input.memoryAfterSetup, input.memoryAfterBenchmark),
           postGcEventLoopSamples: input.postGcEventLoopSamples,
-          ...(processPeakRss === undefined ? {} : { processPeakRss }),
+          ...definedFields(processPeakRss, (processPeakRss) => ({ processPeakRss })),
           setupDelta: memoryDelta(input.memoryBefore, input.memoryAfterSetup),
           totalDelta: memoryDelta(input.memoryBefore, input.memoryAfterBenchmark),
         },

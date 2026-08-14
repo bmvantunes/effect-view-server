@@ -1,3 +1,4 @@
+import { definedFields } from "./optional-fields";
 import type { ViewServerConfig, ViewServerRuntimeError } from "@effect-view-server/config";
 import {
   createViewServerRuntimeCore,
@@ -35,15 +36,18 @@ type SynchronousInMemoryConfig<Topics extends ViewServerInMemoryTopicDefinitions
 const toRuntimeCoreOptions = <const Topics extends ViewServerInMemoryTopicDefinitions>(
   input: ViewServerInMemoryOptions<Topics>,
 ): ViewServerRuntimeCoreOptionsFor<Topics> => ({
-  ...(input.groupedIncrementalAdmissionLimits === undefined
-    ? {}
-    : { groupedIncrementalAdmissionLimits: input.groupedIncrementalAdmissionLimits }),
-  ...(input.subscriptionQueueCapacity === undefined
-    ? {}
-    : { subscriptionQueueCapacity: input.subscriptionQueueCapacity }),
-  ...(input.healthRefreshCadence === undefined
-    ? {}
-    : { healthRefreshCadence: input.healthRefreshCadence }),
+  ...definedFields(
+    input.groupedIncrementalAdmissionLimits,
+    (groupedIncrementalAdmissionLimits) => ({
+      groupedIncrementalAdmissionLimits,
+    }),
+  ),
+  ...definedFields(input.subscriptionQueueCapacity, (subscriptionQueueCapacity) => ({
+    subscriptionQueueCapacity,
+  })),
+  ...definedFields(input.healthRefreshCadence, (healthRefreshCadence) => ({
+    healthRefreshCadence,
+  })),
 });
 
 const toInMemoryInstance = <const Topics extends ViewServerInMemoryTopicDefinitions>(

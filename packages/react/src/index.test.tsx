@@ -327,12 +327,14 @@ const healthSummaryRow = (
   updatedAtNanos: 1n,
 });
 
-const fakeHealthClient = (
-  status: "ready" | "degraded" | "starting" | "stopping",
-): {
+type FakeHealthClient = {
   readonly close: Effect.Effect<void>;
   readonly client: ViewServerLiveClient<typeof viewServer.topics>;
-} => {
+};
+
+const fakeHealthClient = (
+  status: "ready" | "degraded" | "starting" | "stopping",
+): FakeHealthClient => {
   const inMemory = createCoreInMemoryViewServer(viewServer);
   return {
     close: inMemory.close,
@@ -368,15 +370,18 @@ const fakeHealthClient = (
   };
 };
 
+type ProviderErrorState = { readonly message: string | null };
+type ProviderErrorStateWithMessage = { readonly message: string };
+
 class ProviderErrorBoundary extends Component<
   { readonly children: ReactNode },
-  { readonly message: string | null }
+  ProviderErrorState
 > {
-  override readonly state: { readonly message: string | null } = {
+  override readonly state: ProviderErrorState = {
     message: null,
   };
 
-  static getDerivedStateFromError(error: unknown): { readonly message: string } {
+  static getDerivedStateFromError<ErrorValue>(error: ErrorValue): ProviderErrorStateWithMessage {
     return {
       message: error instanceof Error ? error.message : String(error),
     };
@@ -1739,11 +1744,12 @@ describe("createViewServerReact", () => {
         ),
     } satisfies ViewServerLiveClient<typeof viewServer.topics>;
 
-    const queryInput: {
+    type StableQueryInput = {
       readonly select: readonly ["id"];
       readonly orderBy: readonly [{ readonly field: "price"; readonly direction: "asc" }];
       limit: number;
-    } = {
+    };
+    const queryInput: StableQueryInput = {
       select: ["id"],
       orderBy: [{ field: "price", direction: "asc" }],
       limit: 1,

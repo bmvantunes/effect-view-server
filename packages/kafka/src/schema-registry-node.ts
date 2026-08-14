@@ -1,3 +1,4 @@
+import { definedFields } from "./optional-fields";
 import { createUndiciAgent } from "@platformatic/kafka";
 import { fromBinary } from "@bufbuild/protobuf";
 import { FileDescriptorProtoSchema } from "@bufbuild/protobuf/wkt";
@@ -41,6 +42,9 @@ interface KafkaSchemaRegistryDispatcher {
 
 const retriableSchemaRegistryStatuses = new Set([408, 425, 429, 500, 502, 503, 504]);
 
+const isObjectLike = (value: unknown): value is object =>
+  (typeof value === "object" && value !== null) || typeof value === "function";
+
 const requestFailure = (message: string, retryable: boolean): HttpFailure => ({
   message,
   retryable,
@@ -73,7 +77,7 @@ const makeDispatcher = (
         Effect.try({
           try: () => {
             const dispatcher: unknown = createUndiciAgent({ connect: tls });
-            if (typeof dispatcher !== "object" || dispatcher === null) {
+            if (!isObjectLike(dispatcher)) {
               throw new TypeError("Platformatic returned an invalid Undici dispatcher.");
             }
             return dispatcher;
@@ -111,7 +115,7 @@ const requestAttempt = (
   const headers = {
     accept: "application/vnd.schemaregistry.v1+json",
     ...options.headers,
-    ...(auth === undefined ? {} : { authorization: auth }),
+    ...definedFields(auth, (authorization) => ({ authorization })),
   };
   return Effect.tryPromise({
     try: async (signal): Promise<SchemaRegistryHttpResponse> => {
@@ -119,7 +123,7 @@ const requestAttempt = (
         method: "GET",
         headers,
         signal,
-        ...(dispatcher === undefined ? {} : { dispatcher }),
+        ...definedFields(dispatcher, (dispatcher) => ({ dispatcher })),
       });
       try {
         return {

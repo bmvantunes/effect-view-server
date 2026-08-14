@@ -1,3 +1,5 @@
+import { conditionalFields } from "@effect-view-server/effect-utils";
+import { definedFields } from "@effect-view-server/effect-utils";
 import { Effect, Result } from "effect";
 import type { GroupedQuery } from "@effect-view-server/config";
 import type { RuntimeGroupedAggregate } from "./grouped-aggregate-state";
@@ -337,10 +339,16 @@ export const decodeGroupedQuery = Effect.fn("ColumnLiveViewEngine.groupedQuery.d
     Object.freeze({
       groupBy: Object.freeze(decodedGroupBy),
       aggregates: Object.freeze(decodedAggregates),
-      ...(where === undefined ? {} : { where }),
-      ...(decodedOrderBy.length === 0 ? {} : { orderBy: Object.freeze(decodedOrderBy) }),
-      ...(isValidWindowNumber(offset) ? { offset } : {}),
-      ...(isValidWindowNumber(limit) ? { limit } : {}),
+      ...definedFields(where, (where) => ({ where })),
+      ...conditionalFields(!(decodedOrderBy.length === 0), () => ({
+        orderBy: Object.freeze(decodedOrderBy),
+      })),
+      ...definedFields(isValidWindowNumber(offset) ? offset : undefined, (offset) => ({
+        offset,
+      })),
+      ...definedFields(isValidWindowNumber(limit) ? limit : undefined, (limit) => ({
+        limit,
+      })),
     }),
   );
 });

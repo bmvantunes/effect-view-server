@@ -87,12 +87,6 @@ function annotationTarget(
 		if (type.type === "TSTypeOperator" && type.operator !== "readonly") break;
 		type = type.typeAnnotation;
 	}
-	if (
-		type.type === "TSTypeReference" &&
-		type.typeName.type === "Identifier" &&
-		(environment.aliases.has(type.typeName.name) || environment.interfaces.has(type.typeName.name))
-	)
-		return null;
 	return classifyWideningTarget(type, environment);
 }
 

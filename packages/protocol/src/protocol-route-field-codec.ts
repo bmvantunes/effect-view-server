@@ -10,6 +10,7 @@ import {
 } from "./protocol-structural-value";
 
 type RouteScalar = null | string | number | bigint | boolean | BigDecimal;
+type ProtocolRouteInput = Schema.Schema.Type<typeof Schema.Unknown>;
 
 const routeScalarTag = "$effect-view-server/route-scalar";
 
@@ -54,7 +55,7 @@ const encodeRouteScalar = (
   topic: string,
   field: string,
   schema: Schema.Codec<unknown, unknown, never, never>,
-  value: unknown,
+  value: ProtocolRouteInput,
 ): Effect.Effect<Schema.Json, ViewServerRuntimeError> => {
   const candidate = routeScalarSnapshot(value);
   if (candidate === undefined || !scalarSatisfiesSchema(schema, candidate)) {
@@ -118,7 +119,7 @@ const decodeRouteScalar = (
   topic: string,
   field: string,
   schema: Schema.Codec<unknown, unknown, never, never>,
-  value: unknown,
+  value: ProtocolRouteInput,
 ): Effect.Effect<RouteScalar, ViewServerRuntimeError> => {
   const scalar = routeScalarSnapshot(value);
   const snapshot = scalar === undefined ? protocolRecordSnapshot(value) : undefined;
@@ -152,13 +153,13 @@ type RouteScalarTransform<Value> = (
   topic: string,
   field: string,
   schema: Schema.Codec<unknown, unknown, never, never>,
-  value: unknown,
+  value: ProtocolRouteInput,
 ) => Effect.Effect<Value, ViewServerRuntimeError>;
 
 const normalizeRouteBy = Effect.fn("ViewServerProtocol.routeBy.transform")(function* <Value>(
   topic: string,
   rowSchema: RowSchema,
-  routeBy: unknown,
+  routeBy: ProtocolRouteInput,
   transform: RouteScalarTransform<Value>,
 ) {
   if (routeBy === undefined) {
@@ -182,7 +183,7 @@ const normalizeRouteBy = Effect.fn("ViewServerProtocol.routeBy.transform")(funct
 export const encodeRouteBy = Effect.fn("ViewServerProtocol.routeBy.encode")(function* (
   topic: string,
   rowSchema: RowSchema,
-  routeBy: unknown,
+  routeBy: ProtocolRouteInput,
 ) {
   return yield* normalizeRouteBy(topic, rowSchema, routeBy, encodeRouteScalar);
 });
@@ -190,7 +191,7 @@ export const encodeRouteBy = Effect.fn("ViewServerProtocol.routeBy.encode")(func
 export const decodeRouteBy = Effect.fn("ViewServerProtocol.routeBy.decode")(function* (
   topic: string,
   rowSchema: RowSchema,
-  routeBy: unknown,
+  routeBy: ProtocolRouteInput,
 ) {
   return yield* normalizeRouteBy(topic, rowSchema, routeBy, decodeRouteScalar);
 });

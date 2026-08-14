@@ -18,7 +18,7 @@ const filterConfig = {
   topics: { values: { schema: FilterRow } },
 } as const;
 
-const decodeHostileWhere = (where: unknown) =>
+const decodeHostileWhere = <Where>(where: Where) =>
   // @ts-expect-error hostile wire callers can provide values outside the declared boundary.
   decodeWhere("values", FilterRow, where);
 
@@ -28,7 +28,7 @@ const invalidMessage = (field: string, suffix: string): string =>
 const isUnknownRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-const unaryGroupDepth = (value: unknown): number => {
+const unaryGroupDepth = <Value>(value: Value): number => {
   let current = value;
   let depth = 0;
   while (isUnknownRecord(current)) {

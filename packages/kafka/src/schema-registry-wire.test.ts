@@ -1,3 +1,4 @@
+import { definedFields } from "./optional-fields";
 import { create, createFileRegistry } from "@bufbuild/protobuf";
 import type { DescFile } from "@bufbuild/protobuf";
 import {
@@ -87,9 +88,9 @@ const descriptorFile = (input: {
         number: field.number,
         type: field.type,
         label: field.label ?? FieldDescriptorProto_Label.OPTIONAL,
-        ...(field.typeName === undefined ? {} : { typeName: field.typeName }),
-        ...(field.defaultValue === undefined ? {} : { defaultValue: field.defaultValue }),
-        ...(field.oneofIndex === undefined ? {} : { oneofIndex: field.oneofIndex }),
+        ...definedFields(field.typeName, (typeName) => ({ typeName })),
+        ...definedFields(field.defaultValue, (defaultValue) => ({ defaultValue })),
+        ...definedFields(field.oneofIndex, (oneofIndex) => ({ oneofIndex })),
       })),
       nestedType: (message.nested ?? []).map(messageProto),
       enumType: (message.enums ?? []).map((enumeration) => ({
@@ -107,8 +108,8 @@ const descriptorFile = (input: {
         type: extension.type,
         label: extension.label ?? FieldDescriptorProto_Label.OPTIONAL,
         extendee: extension.extendee,
-        ...(extension.typeName === undefined ? {} : { typeName: extension.typeName }),
-        ...(extension.defaultValue === undefined ? {} : { defaultValue: extension.defaultValue }),
+        ...definedFields(extension.typeName, (typeName) => ({ typeName })),
+        ...definedFields(extension.defaultValue, (defaultValue) => ({ defaultValue })),
       })),
       options: { mapEntry: message.mapEntry ?? false },
     });
@@ -130,8 +131,8 @@ const descriptorFile = (input: {
         type: extension.type,
         label: extension.label ?? FieldDescriptorProto_Label.OPTIONAL,
         extendee: extension.extendee,
-        ...(extension.typeName === undefined ? {} : { typeName: extension.typeName }),
-        ...(extension.defaultValue === undefined ? {} : { defaultValue: extension.defaultValue }),
+        ...definedFields(extension.typeName, (typeName) => ({ typeName })),
+        ...definedFields(extension.defaultValue, (defaultValue) => ({ defaultValue })),
       }),
     ),
     service:

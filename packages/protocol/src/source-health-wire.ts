@@ -14,6 +14,7 @@ import { BigDecimal, Effect, Option, Result, Schema } from "effect";
 import { decodeJsonFieldValue, encodeJsonFieldValue } from "./protocol-json-field-codec";
 
 const ViewServerSourceHealthRoutePayloadSchema = Schema.Record(Schema.String, Schema.Json);
+type SourceHealthWireInput = Schema.Schema.Type<typeof Schema.Unknown>;
 
 export const ViewServerSourceHealthPayloadSchema = Schema.Struct({
   topic: Schema.String,
@@ -153,10 +154,12 @@ const exactRouteKeys = (
   );
 };
 
-const validateExactRoute = Effect.fn("ViewServerProtocol.sourceHealth.route.exact")(function* (
+const validateExactRoute = Effect.fn("ViewServerProtocol.sourceHealth.route.exact")(function* <
+  Value = unknown,
+>(
   topic: string,
   routeFields: Readonly<Record<string, Schema.Codec<unknown, unknown, never, never>>>,
-  candidate: unknown,
+  candidate: Value,
 ) {
   if (!exactRouteKeys(candidate, routeFields)) {
     return yield* Effect.fail(
@@ -217,7 +220,7 @@ export const validateExactSourceHealth = Effect.fn("ViewServerProtocol.sourceHea
   },
 );
 
-const equalRouteValue = (left: unknown, right: unknown): boolean => {
+const equalRouteValue = <Left, Right>(left: Left, right: Right): boolean => {
   if (BigDecimal.isBigDecimal(left)) {
     return (
       BigDecimal.isBigDecimal(right) &&
@@ -334,8 +337,8 @@ export const viewServerEncodeSourceHealth = Effect.fn("ViewServerProtocol.source
   function* <Topics extends ViewServerConfigTopicShape>(
     config: ViewServerTopicConfig<Topics>,
     topic: string,
-    value: unknown,
-  ) {
+    value: SourceHealthWireInput,
+  ): Effect.fn.Return<Schema.Json, ViewServerRuntimeError> {
     const contract = yield* compileSourceHealthContract(config, topic);
     if (contract.lifecycle === "leased") {
       yield* validateExactLeasedHealthRoutes(topic, contract, value);
@@ -352,12 +355,12 @@ export const viewServerDecodeSourceHealth: <
 >(
   config: ViewServerTopicConfig<Topics>,
   topic: Topic,
-  value: unknown,
+  value: SourceHealthWireInput,
 ) => Effect.Effect<ViewServerDecodedSourceHealth<Topics, Topic>, ViewServerRuntimeError> =
   Effect.fn("ViewServerProtocol.sourceHealth.decode")(function* <
     Topics extends ViewServerConfigTopicShape,
     Topic extends Extract<keyof Topics, string>,
-  >(config: ViewServerTopicConfig<Topics>, topic: Topic, value: unknown) {
+  >(config: ViewServerTopicConfig<Topics>, topic: Topic, value: SourceHealthWireInput) {
     const contract = yield* compileSourceHealthContract(config, topic);
     if (contract.lifecycle === "leased") {
       yield* validateExactLeasedHealthRoutes(topic, contract, value);

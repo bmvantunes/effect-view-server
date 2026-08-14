@@ -373,19 +373,19 @@ const validateDefinition = (
   }
 };
 
-export const sourceAdapterConformanceDefinitionIsLinked = (
-  definition: unknown,
-  adapter: unknown,
+export const sourceAdapterConformanceDefinitionIsLinked = <Definition, Adapter>(
+  definition: Definition,
+  adapter: Adapter,
   lifecycle: "materialized" | "leased",
 ): boolean =>
   isSourceDefinition(definition) &&
   definition.lifecycle === lifecycle &&
   definition.adapter === adapter;
 
-const validateLifecycleExpectations = (
+const validateLifecycleExpectations = <Definitions, Expectations>(
   lifecycle: "materialized" | "leased",
-  definitions: unknown,
-  expectations: unknown,
+  definitions: Definitions,
+  expectations: Expectations,
 ): void => {
   if ((definitions === undefined) !== (expectations === undefined)) {
     throw new TypeError(

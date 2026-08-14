@@ -1,3 +1,4 @@
+import { definedFields } from "./optional-fields";
 import {
   Cause,
   Chunk,
@@ -160,11 +161,9 @@ const closeToolkitEnvironment = <
         failure: input.failure,
         location: input.location,
         rejectedAtNanos: input.rejectedAtNanos,
-        ...(settlement === undefined
-          ? {}
-          : {
-              settlement: (exit) => settlement(exit).pipe(Effect.provide(context)),
-            }),
+        ...definedFields(settlement, (settlement) => ({
+          settlement: (exit) => settlement(exit).pipe(Effect.provide(context)),
+        })),
       });
     },
   });
@@ -401,14 +400,12 @@ const closeLifecycleEnvironment = <
     },
   );
   return {
-    ...(implementation.applicationState === undefined
-      ? {}
-      : { applicationState: implementation.applicationState }),
+    ...definedFields(implementation.applicationState, (applicationState) => ({
+      applicationState,
+    })),
     acquire,
     metrics,
-    ...(implementation.initialLaneIds === undefined
-      ? {}
-      : { initialLaneIds: implementation.initialLaneIds }),
+    ...definedFields(implementation.initialLaneIds, (initialLaneIds) => ({ initialLaneIds })),
     retryDefault: (effect, onRetry) =>
       Effect.retry(effect, implementation.retry.pipe(Schedule.tap(onRetry))).pipe(
         Effect.provide(context),
@@ -416,12 +413,12 @@ const closeLifecycleEnvironment = <
   };
 };
 
-const validateImplementations = (
+const validateImplementations = <Implementations extends object>(
   adapter: {
     readonly materialized: unknown;
     readonly leased: unknown;
   },
-  implementations: object,
+  implementations: Implementations,
 ): void => {
   const hasMaterialized = Object.hasOwn(implementations, "materialized");
   const hasLeased = Object.hasOwn(implementations, "leased");
@@ -872,8 +869,8 @@ const bindSourceApplicationStateModule = <
   });
 };
 
-const hasExactRegistrationKeys = (
-  value: object,
+const hasExactRegistrationKeys = <Value extends object>(
+  value: Value,
   requiredKeys: ReadonlyArray<string>,
   optionalKeys: ReadonlyArray<string>,
 ): boolean => {
@@ -1152,10 +1149,10 @@ export const makeSourceApplicationStateRegistration = <
   });
 };
 
-const sourceDefinitionUsesAdapter = <const Adapter extends SourceDefinitionAny["adapter"]>(
-  value: unknown,
+const sourceDefinitionUsesAdapter = <const Adapter extends SourceDefinitionAny["adapter"], Value>(
+  value: Value,
   adapter: Adapter,
-): value is SourceAdapterServerDefinition<Adapter> =>
+): value is Value & SourceAdapterServerDefinition<Adapter> =>
   isSourceDefinition(value) && value.adapter === adapter;
 
 export const collectSourceAdapterDefinitions = <

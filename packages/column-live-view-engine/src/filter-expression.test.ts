@@ -1,3 +1,4 @@
+import { conditionalFields } from "@effect-view-server/effect-utils";
 import { ViewServerId } from "@effect-view-server/config";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Schema } from "effect";
@@ -375,7 +376,7 @@ describe("recursive filter expressions", () => {
             name: "member",
             age: index,
             profile: { country: offset === 0 ? "resume" : `missing-${index}` },
-            ...(offset === 1 ? { scalar: 1n } : {}),
+            ...conditionalFields(offset === 1, () => ({ scalar: 1n })),
           };
         }),
       );

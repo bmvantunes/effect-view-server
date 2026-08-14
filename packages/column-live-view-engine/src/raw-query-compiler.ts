@@ -1,5 +1,6 @@
+import { definedFields } from "@effect-view-server/effect-utils";
 import type { PickRawFields, RawQuery } from "@effect-view-server/config";
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 import { compareQueryValue, stableQueryValueString } from "./query-value";
 import type { CompiledRawPredicate } from "./raw-predicate-compiler";
 import { isRangePlanValue } from "./raw-predicate-plan";
@@ -27,6 +28,7 @@ import {
 import type { ColumnLiveViewEngineQueryPartition } from "./query-partition";
 
 type RowObject = object;
+type RuntimeRawQueryInput = Schema.Schema.Type<typeof Schema.Unknown>;
 const compiledRawQueryBrand: unique symbol = Symbol("CompiledRawQuery");
 
 export { rawQueryCompilerMetadata };
@@ -87,19 +89,19 @@ export function prepareRawQuery<Row extends RowObject, const Query extends RawQu
   metadata: RawQueryCompilerMetadata<Row>,
   query: Query,
 ): Effect.Effect<CompiledRawQuery<RowObject, PickRawFields<Row, Query>>, InvalidQueryError>;
-export function prepareRawQuery<Row extends RowObject>(
+export function prepareRawQuery<Row extends RowObject, Query>(
   topic: string,
   metadata: RawQueryCompilerMetadata<Row>,
-  query: unknown,
+  query: Query,
 ) {
   return prepareRuntimeRawQuery(topic, metadata, query);
 }
 
 export const prepareRuntimeRawQuery = Effect.fn("ColumnLiveViewEngine.rawQuery.prepareRuntime")(
-  function* <Row extends RowObject>(
+  function* <Row extends RowObject, Query>(
     topic: string,
     metadata: RawQueryCompilerMetadata<Row>,
-    query: unknown,
+    query: Query,
     partition?: ColumnLiveViewEngineQueryPartition,
   ) {
     const prepared = yield* prepareRuntimeRawQueryAdmission(topic, metadata, query, partition);
@@ -112,7 +114,7 @@ export const prepareRuntimeRawQueryAdmission = Effect.fn(
 )(function* <Row extends RowObject>(
   topic: string,
   metadata: RawQueryCompilerMetadata<Row>,
-  query: unknown,
+  query: RuntimeRawQueryInput,
   partition?: ColumnLiveViewEngineQueryPartition,
 ) {
   yield* ensureRawQueryCompilerMetadata(topic, metadata);
@@ -121,7 +123,7 @@ export const prepareRuntimeRawQueryAdmission = Effect.fn(
   const prepared = {
     identity: rawQueryPlanIdentity(decoded, partition),
     metadata,
-    ...(partition === undefined ? {} : { partition }),
+    ...definedFields(partition, (partition) => ({ partition })),
     query: decoded,
     resultSemantics: runtimeRawQueryResultSemantics(metadata.valueSemantics, decoded.select),
   } satisfies PreparedRuntimeRawQuery;

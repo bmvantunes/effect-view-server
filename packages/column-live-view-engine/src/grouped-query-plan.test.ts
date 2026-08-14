@@ -1,3 +1,4 @@
+import { definedFields } from "@effect-view-server/effect-utils";
 import { describe, expect, it } from "@effect/vitest";
 import { Option, Schema } from "effect";
 import { fromStringUnsafe } from "effect/BigDecimal";
@@ -50,7 +51,7 @@ describe("Grouped query planning", () => {
     const query: GroupedQueryPlanInput = {
       groupBy,
       aggregates,
-      ...(where === undefined ? {} : { where }),
+      ...definedFields(where, (where) => ({ where })),
       orderBy,
       offset: 1,
       limit: 2,

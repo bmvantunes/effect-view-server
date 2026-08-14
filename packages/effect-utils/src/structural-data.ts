@@ -48,8 +48,10 @@ export type ArrayDataInspection =
   | { readonly _tag: "Success"; readonly snapshot: ArrayDataSnapshot }
   | ArrayDataFailure;
 
-const enumerableDataDescriptor = <Value extends object>(
-  value: Value,
+type StructuralInput = Schema.Schema.Type<typeof Schema.Unknown>;
+
+const enumerableDataDescriptor = (
+  value: Readonly<Record<string, unknown>> | ReadonlyArray<unknown>,
   key: PropertyKey,
 ): PropertyDescriptor | undefined => {
   const descriptor = Object.getOwnPropertyDescriptor(value, key);
@@ -76,7 +78,7 @@ export const hasPlainRecordPrototype = (
   }
 };
 
-export const inspectPlainRecordShape = (value: unknown): PlainRecordShapeInspection => {
+export const inspectPlainRecordShape = (value: StructuralInput): PlainRecordShapeInspection => {
   try {
     if (!isRecordCandidate(value) || Object.getPrototypeOf(value) !== Object.prototype) {
       return { _tag: "Failure", reason: "invalidRecord" };
@@ -125,7 +127,7 @@ export const inspectPlainRecordShape = (value: unknown): PlainRecordShapeInspect
   }
 };
 
-export const inspectPlainRecordData = (value: unknown): PlainRecordInspection => {
+export const inspectPlainRecordData = (value: StructuralInput): PlainRecordInspection => {
   const inspection = inspectPlainRecordShape(value);
   if (inspection._tag === "Failure" || inspection.snapshot.symbolKeys.length > 0) {
     return { _tag: "Failure", reason: "invalidRecord" };
@@ -213,3 +215,4 @@ export const inspectDenseArrayData = (value: unknown): DenseArrayInspection => {
         key: inspection.snapshot.extraEntries[0]![0],
       };
 };
+import { Schema } from "effect";

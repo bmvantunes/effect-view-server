@@ -1,3 +1,4 @@
+import { definedFields } from "@effect-view-server/effect-utils";
 import type {
   ColumnLiveViewEngineQueryPartition,
   ColumnLiveViewTerminalObserver,
@@ -25,6 +26,9 @@ import {
   makeSchemaJsonIdentity,
   runAllFinalizers,
 } from "@effect-view-server/effect-utils";
+
+const isObjectLike = (value: unknown): value is object =>
+  typeof value === "object" && value !== null;
 import type {
   SourceDefinition,
   SourceDefinitionAdapter,
@@ -403,7 +407,7 @@ const sourceApplicationFailure = (message: string): SourceRuntimeError => ({
   message,
 });
 
-const equalRouteValue = (left: unknown, right: unknown): boolean => {
+const equalRouteValue = <Left, Right>(left: Left, right: Right): boolean => {
   if (BigDecimal.isBigDecimal(left)) {
     return (
       BigDecimal.isBigDecimal(right) &&
@@ -855,8 +859,8 @@ const makeSourceAttemptArbitration = Effect.fn(
 });
 
 function snapshotDecodedMetrics<Value>(value: Value): Value;
-function snapshotDecodedMetrics(value: unknown, active?: WeakSet<object>): unknown;
-function snapshotDecodedMetrics(value: unknown, active = new WeakSet<object>()): unknown {
+function snapshotDecodedMetrics<Value>(value: Value, active?: WeakSet<object>): unknown;
+function snapshotDecodedMetrics<Value>(value: Value, active = new WeakSet<object>()): unknown {
   if (Array.isArray(value)) {
     if (active.has(value)) {
       throw new TypeError("Source Adapter metrics must not contain cycles.");
@@ -899,8 +903,8 @@ function snapshotDecodedMetrics(value: unknown, active = new WeakSet<object>()):
 }
 
 function normalizeDecodedMetrics<Value>(value: Value): Value;
-function normalizeDecodedMetrics(value: unknown, active?: WeakSet<object>): unknown;
-function normalizeDecodedMetrics(value: unknown, active = new WeakSet<object>()): unknown {
+function normalizeDecodedMetrics<Value>(value: Value, active?: WeakSet<object>): unknown;
+function normalizeDecodedMetrics<Value>(value: Value, active = new WeakSet<object>()): unknown {
   if (typeof value !== "object" || value === null || Object.isFrozen(value)) {
     return value;
   }
@@ -1027,7 +1031,7 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
 
   const validateLaneBufferMetrics = Effect.fn(
     "ViewServerRuntimeCore.source.metrics.buffer.validate",
-  )(function* (lane: string, metrics: unknown) {
+  )(function* (lane: string, metrics: Schema.Schema.Type<typeof Schema.Unknown>) {
     const decoded = yield* Schema.decodeUnknownEffect(SourceBufferMetricsSchema)(metrics).pipe(
       Effect.mapError(() =>
         sourceRuntimeFailure({
@@ -1254,7 +1258,7 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
   });
 
   const validateAdapterMetrics = Effect.fn("ViewServerRuntimeCore.source.metrics.adapter.validate")(
-    function* (metrics: unknown) {
+    function* (metrics: Schema.Schema.Type<typeof Schema.Unknown>) {
       const codec = input.entry.declaration.metrics;
       const decoded = yield* Schema.decodeUnknownEffect(codec)(metrics).pipe(
         Effect.mapError(() =>
@@ -1504,7 +1508,7 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
             failure,
             location,
             rejectedAtNanos: rejection.rejectedAtNanos,
-            ...(rejection.settlement === undefined ? {} : { settlement: rejection.settlement }),
+            ...definedFields(rejection.settlement, (settlement) => ({ settlement })),
           });
         }),
     });
@@ -2440,7 +2444,7 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
     ).pipe(
       Effect.annotateLogs({
         attempt,
-        ...(input.feedRouteReference === undefined ? {} : { feedRoute: input.feedRouteReference }),
+        ...definedFields(input.feedRouteReference, (feedRoute) => ({ feedRoute })),
       }),
     );
   });
@@ -2849,7 +2853,7 @@ const overlaySourceHealth = <Topics extends TopicDefinitions>(
   let aggregateSourceStatus: AggregateSourceStatus = "ready";
   for (const [topic, sourceStatus] of statusByTopic) {
     const current: unknown = Reflect.get(topics, topic);
-    if (typeof current === "object" && current !== null) {
+    if (isObjectLike(current)) {
       const engineStatus = Reflect.get(current, "status");
       const status = combineAggregateSourceStatus(
         engineStatus === "starting"
@@ -3458,18 +3462,21 @@ export const makeRuntimeCoreSourceManager = Effect.fn("ViewServerRuntimeCore.sou
               lifecycle: entry.definition.lifecycle,
             }).result;
           };
-          const isExactSourceHealthResult = <Topic extends ViewServerSourceOwnedTopic<Topics>>(
+          const isExactSourceHealthResult = <
+            Topic extends ViewServerSourceOwnedTopic<Topics>,
+            Value,
+          >(
             topic: Topic,
-            value: unknown,
-          ): value is ViewServerSourceHealthResultForTopic<Topics, Topic> => {
+            value: Value,
+          ): value is Value & ViewServerSourceHealthResultForTopic<Topics, Topic> => {
             const codec = sourceHealthResultCodec(topic);
             return Schema.is(codec)(value);
           };
           const validateExactSourceHealth = Effect.fn(
             "ViewServerRuntimeCore.source.health.validateExact",
-          )(function* <Topic extends ViewServerSourceOwnedTopic<Topics>>(
+          )(function* <Topic extends ViewServerSourceOwnedTopic<Topics>, Value>(
             topic: Topic,
-            value: unknown,
+            value: Value,
           ) {
             if (!isExactSourceHealthResult(topic, value)) {
               return yield* Effect.fail(
@@ -3484,7 +3491,7 @@ export const makeRuntimeCoreSourceManager = Effect.fn("ViewServerRuntimeCore.sou
           const subscribeSourceHealth: RuntimeCoreSourceManager<Topics>["subscribeSourceHealth"] = (
             input,
           ) => {
-            const captured = captureSourceHealthInput<ViewServerSourceOwnedTopic<Topics>>(input);
+            const captured = captureSourceHealthInput(input);
             if (Result.isFailure(captured)) {
               return Effect.fail(
                 runtimeError(

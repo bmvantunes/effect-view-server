@@ -1,3 +1,4 @@
+import { definedFields } from "@effect-view-server/effect-utils";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 import { format, fromStringUnsafe, make as makeBigDecimal } from "effect/BigDecimal";
@@ -28,8 +29,8 @@ const runtimeCondition = (
     type,
     caseSensitive,
     accentSensitive,
-    ...(filter === undefined ? {} : { filter }),
-    ...(filterTo === undefined ? {} : { filterTo }),
+    ...definedFields(filter, (filter) => ({ filter })),
+    ...definedFields(filterTo, (filterTo) => ({ filterTo })),
   });
 
 describe("Raw query evaluation", () => {

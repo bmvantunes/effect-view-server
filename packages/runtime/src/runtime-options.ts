@@ -1,3 +1,4 @@
+import { definedFields } from "@effect-view-server/effect-utils";
 import type { ViewServerRuntimeError } from "@effect-view-server/config";
 import type {
   GroupedIncrementalAdmissionLimits,
@@ -188,7 +189,7 @@ export const validateViewServerRuntimeOptions = Effect.fn("ViewServerRuntime.opt
                 return {
                   heartbeatInterval,
                   dependenciesInterval,
-                  ...(changeInterval === undefined ? {} : { changeInterval }),
+                  ...definedFields(changeInterval, (changeInterval) => ({ changeInterval })),
                   onHeartbeat,
                   onDependenciesUpdate,
                 };
@@ -197,46 +198,35 @@ export const validateViewServerRuntimeOptions = Effect.fn("ViewServerRuntime.opt
           groupedLimits === undefined
             ? undefined
             : {
-                ...(groupedLimits.maxGroups === undefined
-                  ? {}
-                  : { maxGroups: groupedLimits.maxGroups }),
-                ...(groupedLimits.maxMembers === undefined
-                  ? {}
-                  : { maxMembers: groupedLimits.maxMembers }),
-                ...(groupedLimits.maxMembersPerGroup === undefined
-                  ? {}
-                  : { maxMembersPerGroup: groupedLimits.maxMembersPerGroup }),
-                ...(groupedLimits.maxRetainedValueEntries === undefined
-                  ? {}
-                  : { maxRetainedValueEntries: groupedLimits.maxRetainedValueEntries }),
+                ...definedFields(groupedLimits.maxGroups, (maxGroups) => ({ maxGroups })),
+                ...definedFields(groupedLimits.maxMembers, (maxMembers) => ({ maxMembers })),
+                ...definedFields(groupedLimits.maxMembersPerGroup, (maxMembersPerGroup) => ({
+                  maxMembersPerGroup,
+                })),
+                ...definedFields(
+                  groupedLimits.maxRetainedValueEntries,
+                  (maxRetainedValueEntries) => ({ maxRetainedValueEntries }),
+                ),
               };
         return {
-          ...(options.auth === undefined ? {} : { auth: options.auth }),
-          ...(capturedGroupedLimits === undefined
-            ? {}
-            : { groupedIncrementalAdmissionLimits: capturedGroupedLimits }),
-          ...(options.healthPath === undefined ? {} : { healthPath: options.healthPath }),
-          ...(options.host === undefined ? {} : { host: options.host }),
-          ...(options.metricsPath === undefined ? {} : { metricsPath: options.metricsPath }),
-          ...(options.rpcPath === undefined ? {} : { rpcPath: options.rpcPath }),
-          ...(capturedReporting === undefined
-            ? {}
-            : {
-                reporting: capturedReporting,
-              }),
-          ...(options.subscriptionQueueCapacity === undefined
-            ? {}
-            : { subscriptionQueueCapacity: options.subscriptionQueueCapacity }),
-          ...(options.tcpPublishHost === undefined
-            ? {}
-            : { tcpPublishHost: options.tcpPublishHost }),
-          ...(options.tcpPublishMaxConnections === undefined
-            ? {}
-            : { tcpPublishMaxConnections: options.tcpPublishMaxConnections }),
-          ...(options.tcpPublishPort === undefined
-            ? {}
-            : { tcpPublishPort: options.tcpPublishPort }),
-          ...(options.websocketPort === undefined ? {} : { websocketPort: options.websocketPort }),
+          ...definedFields(options.auth, (auth) => ({ auth })),
+          ...definedFields(capturedGroupedLimits, (groupedIncrementalAdmissionLimits) => ({
+            groupedIncrementalAdmissionLimits,
+          })),
+          ...definedFields(options.healthPath, (healthPath) => ({ healthPath })),
+          ...definedFields(options.host, (host) => ({ host })),
+          ...definedFields(options.metricsPath, (metricsPath) => ({ metricsPath })),
+          ...definedFields(options.rpcPath, (rpcPath) => ({ rpcPath })),
+          ...definedFields(capturedReporting, (reporting) => ({ reporting })),
+          ...definedFields(options.subscriptionQueueCapacity, (subscriptionQueueCapacity) => ({
+            subscriptionQueueCapacity,
+          })),
+          ...definedFields(options.tcpPublishHost, (tcpPublishHost) => ({ tcpPublishHost })),
+          ...definedFields(options.tcpPublishMaxConnections, (tcpPublishMaxConnections) => ({
+            tcpPublishMaxConnections,
+          })),
+          ...definedFields(options.tcpPublishPort, (tcpPublishPort) => ({ tcpPublishPort })),
+          ...definedFields(options.websocketPort, (websocketPort) => ({ websocketPort })),
         } satisfies ViewServerRuntimeOptions<Topics>;
       },
       catch: (error) =>
@@ -254,49 +244,42 @@ export const resolveViewServerRuntimeBaseOptions = <
 >(
   options: ViewServerRuntimeOptions<Topics>,
 ): ResolvedViewServerRuntimeBaseOptions<Topics> => ({
-  ...(options.auth === undefined ? {} : { auth: options.auth }),
+  ...definedFields(options.auth, (auth) => ({ auth })),
   runtimeCoreOptions: {
-    ...(options.groupedIncrementalAdmissionLimits === undefined
-      ? {}
-      : { groupedIncrementalAdmissionLimits: options.groupedIncrementalAdmissionLimits }),
-    ...(options.subscriptionQueueCapacity === undefined
-      ? {}
-      : { subscriptionQueueCapacity: options.subscriptionQueueCapacity }),
+    ...definedFields(
+      options.groupedIncrementalAdmissionLimits,
+      (groupedIncrementalAdmissionLimits) => ({ groupedIncrementalAdmissionLimits }),
+    ),
+    ...definedFields(options.subscriptionQueueCapacity, (subscriptionQueueCapacity) => ({
+      subscriptionQueueCapacity,
+    })),
   },
   serverOptions: {
-    ...(options.host === undefined ? {} : { host: options.host }),
-    ...(options.websocketPort === undefined ? {} : { port: options.websocketPort }),
-    ...(options.rpcPath === undefined ? {} : { path: options.rpcPath }),
-    ...(options.healthPath === undefined ? {} : { healthPath: options.healthPath }),
-    ...(options.metricsPath === undefined ? {} : { metricsPath: options.metricsPath }),
+    ...definedFields(options.host, (host) => ({ host })),
+    ...definedFields(options.websocketPort, (port) => ({ port })),
+    ...definedFields(options.rpcPath, (path) => ({ path })),
+    ...definedFields(options.healthPath, (healthPath) => ({ healthPath })),
+    ...definedFields(options.metricsPath, (metricsPath) => ({ metricsPath })),
   },
-  ...(options.reporting === undefined
-    ? {}
-    : {
-        reporting: {
-          heartbeatInterval: Option.getOrThrow(
-            Duration.fromInput(options.reporting.heartbeatInterval),
-          ),
-          dependenciesInterval: Option.getOrThrow(
-            Duration.fromInput(options.reporting.dependenciesInterval),
-          ),
-          changeInterval:
-            options.reporting.changeInterval === undefined
-              ? Duration.millis(300)
-              : Option.getOrThrow(Duration.fromInput(options.reporting.changeInterval)),
-          onHeartbeat: options.reporting.onHeartbeat,
-          onDependenciesUpdate: options.reporting.onDependenciesUpdate,
-        },
-      }),
-  ...(options.tcpPublishPort === undefined
-    ? {}
-    : {
-        tcpPublishOptions: {
-          ...(options.tcpPublishHost === undefined ? {} : { host: options.tcpPublishHost }),
-          ...(options.tcpPublishMaxConnections === undefined
-            ? {}
-            : { maxConnections: options.tcpPublishMaxConnections }),
-          port: options.tcpPublishPort,
-        },
-      }),
+  ...definedFields(options.reporting, (reporting) => ({
+    reporting: {
+      heartbeatInterval: Option.getOrThrow(Duration.fromInput(reporting.heartbeatInterval)),
+      dependenciesInterval: Option.getOrThrow(Duration.fromInput(reporting.dependenciesInterval)),
+      changeInterval:
+        reporting.changeInterval === undefined
+          ? Duration.millis(300)
+          : Option.getOrThrow(Duration.fromInput(reporting.changeInterval)),
+      onHeartbeat: reporting.onHeartbeat,
+      onDependenciesUpdate: reporting.onDependenciesUpdate,
+    },
+  })),
+  ...definedFields(options.tcpPublishPort, (port) => ({
+    tcpPublishOptions: {
+      ...definedFields(options.tcpPublishHost, (host) => ({ host })),
+      ...definedFields(options.tcpPublishMaxConnections, (maxConnections) => ({
+        maxConnections,
+      })),
+      port,
+    },
+  })),
 });

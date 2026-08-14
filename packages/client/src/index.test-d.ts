@@ -21,7 +21,7 @@ import type {
 import type { Effect } from "effect";
 import type { Stream } from "effect";
 import { Schema } from "effect";
-import { stableQueryKeyForRowSchema } from "./index";
+import { stableQueryKey, stableQueryKeyForRowSchema } from "./index";
 import type {
   ViewServerLiveClient,
   ViewServerLiveSubscription,
@@ -419,6 +419,13 @@ describe("client type contracts", () => {
   });
 
   it("types schema-aware stable query identity", () => {
+    expectTypeOf(stableQueryKey({ select: ["id"] })).toEqualTypeOf<string>();
+
+    // @ts-expect-error stable query identity requires an object-shaped query input.
+    stableQueryKey(42);
+    // @ts-expect-error stable query identity requires an object-shaped query input.
+    stableQueryKey(null);
+
     expectTypeOf(stableQueryKeyForRowSchema({ select: ["id"] }, Order)).toEqualTypeOf<string>();
 
     // @ts-expect-error schema-aware identity requires an admitted row schema.

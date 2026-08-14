@@ -1,3 +1,4 @@
+import { definedFields } from "./optional-fields";
 import { Context, Effect, Option, Stream } from "effect";
 
 export type HostHealthSnapshot = {
@@ -55,7 +56,7 @@ const optionalBigInt = (
   return typeof candidate === "bigint" ? candidate : undefined;
 };
 
-export const snapshotHealth = (value: unknown): HostHealthSnapshot => {
+export const snapshotHealth = <Value>(value: Value): HostHealthSnapshot => {
   if (!isRecord(value)) {
     throw new TypeError("Conformance host expected Source Health to be an object.");
   }
@@ -178,7 +179,7 @@ export const openHealth = Effect.fn("SourceAdapterConformanceHost.health.open")(
   const acquired = yield* invokeEffect(liveClient, "subscribeSourceHealth", [
     {
       topic: "rows",
-      ...(route === undefined ? {} : { routeBy: route }),
+      ...definedFields(route, (routeBy) => ({ routeBy })),
     },
   ]);
   if (!isRecord(acquired) || !Stream.isStream(acquired["events"])) {
@@ -207,7 +208,7 @@ export const rows = Effect.fn("SourceAdapterConformanceHost.runtime.rows")(funct
     {
       select: ["id"],
       orderBy: [{ field: "id", direction: "asc" }],
-      ...(route === undefined ? {} : { routeBy: route }),
+      ...definedFields(route, (routeBy) => ({ routeBy })),
     },
   ]);
   if (!isRecord(acquired) || !Stream.isStream(acquired["events"])) {

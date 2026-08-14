@@ -608,13 +608,12 @@ type EnumPair = {
   readonly current: DescEnum;
 };
 
-const referencedPairs = (
-  previous: DescField,
-  current: DescField,
-): {
+type ReferencedPairs = {
   readonly messages: ReadonlyArray<MessagePair>;
   readonly enums: ReadonlyArray<EnumPair>;
-} => {
+};
+
+const referencedPairs = (previous: DescField, current: DescField): ReferencedPairs => {
   if (
     previous.fieldKind === "map" &&
     current.fieldKind === "list" &&

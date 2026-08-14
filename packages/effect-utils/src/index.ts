@@ -69,6 +69,7 @@ export {
   type PlainRecordShapeSnapshot,
   type PlainRecordSnapshot,
 } from "./structural-data";
+export { conditionalFields, definedFields } from "./optional-fields";
 
 const isNonTypedFailureReason = <E>(
   reason: Cause.Reason<E>,

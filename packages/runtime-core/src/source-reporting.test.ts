@@ -67,7 +67,7 @@ const ready: SourceStatus<unknown, unknown> = {
   readyAtNanos: 1n,
 };
 
-const malformedClassification = (value: unknown): SourceFailureClassification =>
+const malformedClassification = <Value>(value: Value): SourceFailureClassification =>
   Reflect.apply((classification: SourceFailureClassification) => classification, undefined, [
     value,
   ]);
@@ -684,6 +684,11 @@ describe("Runtime Source reporting", () => {
     {
       label: "a primitive",
       value: malformedClassification("dependency"),
+      reason: "Source failure classification must be an object.",
+    },
+    {
+      label: "a callable",
+      value: malformedClassification(() => ({ problem: "self" })),
       reason: "Source failure classification must be an object.",
     },
     {

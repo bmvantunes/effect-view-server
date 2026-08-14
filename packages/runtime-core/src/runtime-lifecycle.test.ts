@@ -942,7 +942,7 @@ describe("Runtime Core lifecycle", () => {
           hub,
           requestHealthRefresh,
         );
-        const subscribeHostile = (input: unknown): Effect.Effect<unknown, unknown> =>
+        const subscribeHostile = <Input>(input: Input): Effect.Effect<unknown, unknown> =>
           Reflect.apply(liveClient.subscribeSourceHealth, liveClient, [input]);
         const hostile = new Proxy(
           {},

@@ -479,6 +479,7 @@ export const packageSurfacePolicy = {
         { exportKey: ".", sourceEntrypoint: "src/index.ts" },
         { exportKey: "./internal", sourceEntrypoint: "src/internal.ts" },
       ],
+      packOnlyEntrypoints: ["src/source-runtime.ts"],
     },
     {
       architecture: {

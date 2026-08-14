@@ -10,7 +10,7 @@ describe("@effect-view-server/runtime-core", () => {
     () =>
       Effect.gen(function* () {
         const runtimeCore = yield* makeViewServerRuntimeCore(viewServer, {});
-        const subscribeHostile = (input: unknown): Effect.Effect<unknown, unknown> =>
+        const subscribeHostile = <Input>(input: Input): Effect.Effect<unknown, unknown> =>
           Reflect.apply(runtimeCore.liveClient.subscribeSourceHealth, runtimeCore.liveClient, [
             input,
           ]);

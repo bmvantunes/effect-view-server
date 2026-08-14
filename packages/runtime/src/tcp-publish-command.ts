@@ -33,6 +33,7 @@ export type TcpPublishCommandAuthContext = {
 
 type TcpFieldSchema = NonNullable<RowSchema["fields"][string]>;
 type TcpDecodePhase = "key" | "patch" | "row";
+type TcpFieldInput = Schema.Schema.Type<typeof Schema.Unknown>;
 type TcpFieldDefaultDecoder = Effect.Effect<Option.Option<unknown>>;
 type TcpConfiguredTopic<
   Topics extends ViewServerRuntimeTopicDefinitions,
@@ -76,6 +77,25 @@ const TcpPublishCommandSchema = Schema.Union([
 ]);
 
 type TcpPublishCommand = typeof TcpPublishCommandSchema.Type;
+
+const TcpPublishResponseErrorSchema = Schema.Struct({
+  _tag: Schema.String,
+  code: Schema.optional(Schema.String),
+  message: Schema.String,
+  phase: Schema.optional(Schema.String),
+  status: Schema.optional(Schema.Union([Schema.Literal(401), Schema.Literal(403)])),
+  topic: Schema.optional(Schema.String),
+});
+
+export const TcpPublishResponseSchema = Schema.Union([
+  Schema.Struct({ ok: Schema.Literal(true) }),
+  Schema.Struct({
+    error: TcpPublishResponseErrorSchema,
+    ok: Schema.Literal(false),
+  }),
+]);
+
+export type TcpPublishResponse = typeof TcpPublishResponseSchema.Type;
 
 const strictParseOptions = {
   onExcessProperty: "error",
@@ -219,7 +239,7 @@ const decodeTcpFieldForRuntimeInternal = Effect.fn(
   schema: Schema.Codec<A, unknown, never, never>,
   topic: string,
   phase: TcpDecodePhase,
-  value: unknown,
+  value: TcpFieldInput,
 ) {
   return yield* Result.match(
     Schema.decodeUnknownResult(Schema.toCodecJson(schema))(value, strictParseOptions),
@@ -236,11 +256,12 @@ const decodeTcpFieldForRuntimeInternal = Effect.fn(
 
 const decodeTcpFieldForRuntime = Effect.fn("ViewServerRuntime.tcpPublish.field.decode")(function* <
   A,
+  Value,
 >(
   schema: Schema.Codec<A, unknown, never, never>,
   topic: string,
   phase: TcpDecodePhase,
-  value: unknown,
+  value: Value,
 ) {
   return yield* decodeTcpFieldForRuntimeInternal(schema, topic, phase, value);
 });

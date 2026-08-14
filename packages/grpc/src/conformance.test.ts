@@ -113,7 +113,7 @@ type StreamCommand =
 
 type Pending = {
   readonly resolve: (result: IteratorResult<unknown>) => void;
-  readonly reject: (error: unknown) => void;
+  readonly reject: <ErrorValue>(error: ErrorValue) => void;
 };
 
 type Invocation = {
@@ -136,12 +136,14 @@ type TargetState = {
 
 const materializedRequestRegion = "__materialized__";
 
+const isObjectLike = (value: unknown): value is object =>
+  (typeof value === "object" && value !== null) || typeof value === "function";
+
 const targetKey = (target: SourceAdapterConformanceTarget): string =>
   target._tag === "Materialized" ? "materialized" : `leased:${String(target.route["region"])}`;
 
 const requestKey = (request: unknown): string => {
-  const region =
-    typeof request === "object" && request !== null ? Reflect.get(request, "region") : undefined;
+  const region = isObjectLike(request) ? Reflect.get(request, "region") : undefined;
   return region === materializedRequestRegion ? "materialized" : `leased:${String(region)}`;
 };
 

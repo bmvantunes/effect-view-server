@@ -492,7 +492,7 @@ export const makeViewServerClientWithConstructionOptions: <const Topics extends 
     >,
     ViewServerRemoteClientError
   > {
-    const captured = captureSourceHealthInput<Input["topic"]>(input);
+    const captured = captureSourceHealthInput(input);
     if (Result.isFailure(captured)) {
       return Effect.fail({
         _tag: "ViewServerRuntimeError",

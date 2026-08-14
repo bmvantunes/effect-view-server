@@ -1,3 +1,4 @@
+import { definedFields } from "./optional-fields";
 import { Admin, ConfigResourceTypes, Consumer } from "@platformatic/kafka";
 import type { ConsumerGroupJoinPayload, Message, Offsets } from "@platformatic/kafka";
 import { Buffer } from "node:buffer";
@@ -55,6 +56,8 @@ import {
   type KafkaSchemaRegistryHttpAuth,
   type KafkaSchemaRegistryHttpOptions,
 } from "./schema-registry-node";
+
+type KafkaNodeInput = Schema.Schema.Type<typeof Schema.Unknown>;
 import {
   makeKafkaSchemaRegistryRuntime,
   makeKafkaServerSchemaRegistry,
@@ -484,7 +487,10 @@ const allowedRegionOptionKeys = [
 
 const allowedRegionOptions = new Set<string>(allowedRegionOptionKeys);
 
-const captureDataFields = (value: object, message: string): ReadonlyMap<string, unknown> => {
+const captureDataFields = <Value extends object>(
+  value: Value,
+  message: string,
+): ReadonlyMap<string, unknown> => {
   const captured = Result.try(() => {
     const fields = new Map<string, unknown>();
     for (const key of Reflect.ownKeys(value)) {
@@ -539,7 +545,7 @@ const captureKafkaSources = (
   return Object.freeze(sources);
 };
 
-const captureDenseDataArray = (value: unknown, message: string): ReadonlyArray<unknown> => {
+const captureDenseDataArray = <Value>(value: Value, message: string): ReadonlyArray<unknown> => {
   const captured = Result.try(() => {
     if (!Array.isArray(value)) {
       throw new Error("not an array");
@@ -578,12 +584,11 @@ const captureDenseDataArray = (value: unknown, message: string): ReadonlyArray<u
   return captured.success;
 };
 
-const bootstrapServers = (value: unknown): readonly [string, ...ReadonlyArray<string>] => {
+const isString = (value: unknown): value is string => typeof value === "string";
+
+const bootstrapServers = (value: KafkaNodeInput): readonly [string, ...ReadonlyArray<string>] => {
   const message = "Kafka Region bootstrapServers must contain only non-empty brokers.";
-  const entries = captureDenseDataArray(
-    typeof value === "string" ? value.split(",") : value,
-    message,
-  );
+  const entries = captureDenseDataArray(isString(value) ? value.split(",") : value, message);
   const [first, ...rest] = entries;
   if (typeof first !== "string" || first.trim().length === 0) {
     throw new KafkaSourceConfigurationError(message);
@@ -600,8 +605,8 @@ const bootstrapServers = (value: unknown): readonly [string, ...ReadonlyArray<st
 
 const copyBytes = (value: Uint8Array): Uint8Array => Uint8Array.from(value);
 
-const snapshotTlsValue = (
-  value: unknown,
+const snapshotTlsValue = <Value>(
+  value: Value,
 ): string | Uint8Array | ReadonlyArray<string | Uint8Array> => {
   const message = "Kafka Region tls options are invalid.";
   const captured = Result.try(() => {
@@ -691,11 +696,11 @@ const snapshotTls = (tls: unknown): KafkaNodeTlsOptions => {
   const certSnapshot = cert === undefined ? undefined : snapshotTlsValue(cert);
   const keySnapshot = key === undefined ? undefined : snapshotTlsValue(key);
   return Object.freeze({
-    ...(caSnapshot === undefined ? {} : { ca: caSnapshot }),
-    ...(certSnapshot === undefined ? {} : { cert: certSnapshot }),
-    ...(keySnapshot === undefined ? {} : { key: keySnapshot }),
-    ...(rejectUnauthorized === undefined ? {} : { rejectUnauthorized }),
-    ...(serverName === undefined ? {} : { serverName }),
+    ...definedFields(caSnapshot, (ca) => ({ ca })),
+    ...definedFields(certSnapshot, (cert) => ({ cert })),
+    ...definedFields(keySnapshot, (key) => ({ key })),
+    ...definedFields(rejectUnauthorized, (rejectUnauthorized) => ({ rejectUnauthorized })),
+    ...definedFields(serverName, (serverName) => ({ serverName })),
   });
 };
 
@@ -712,11 +717,11 @@ const nodeTlsValue = (
 };
 
 const nodeTlsOptions = (tls: KafkaNodeTlsOptions): NodeTlsConnectionOptions => ({
-  ...(tls.ca === undefined ? {} : { ca: nodeTlsValue(tls.ca) }),
-  ...(tls.cert === undefined ? {} : { cert: nodeTlsValue(tls.cert) }),
-  ...(tls.key === undefined ? {} : { key: nodeTlsValue(tls.key) }),
-  ...(tls.rejectUnauthorized === undefined ? {} : { rejectUnauthorized: tls.rejectUnauthorized }),
-  ...(tls.serverName === undefined ? {} : { servername: tls.serverName }),
+  ...definedFields(tls.ca, (ca) => ({ ca: nodeTlsValue(ca) })),
+  ...definedFields(tls.cert, (cert) => ({ cert: nodeTlsValue(cert) })),
+  ...definedFields(tls.key, (key) => ({ key: nodeTlsValue(key) })),
+  ...definedFields(tls.rejectUnauthorized, (rejectUnauthorized) => ({ rejectUnauthorized })),
+  ...definedFields(tls.serverName, (servername) => ({ servername })),
 });
 
 const schemaRegistryHttpAuth = (
@@ -737,12 +742,12 @@ const schemaRegistryHttpOptions = (
   options: KafkaNodeSchemaRegistrySnapshot,
 ): KafkaSchemaRegistryHttpOptions => ({
   url: options.url,
-  ...(options.auth === undefined ? {} : { auth: schemaRegistryHttpAuth(options.auth) }),
+  ...definedFields(options.auth, (auth) => ({ auth: schemaRegistryHttpAuth(auth) })),
   headers: options.headers,
   timeout: options.timeout,
   retries: options.retries,
   retryDelay: options.retryDelay,
-  ...(options.tls === undefined ? {} : { tls: nodeTlsOptions(options.tls) }),
+  ...definedFields(options.tls, (tls) => ({ tls: nodeTlsOptions(tls) })),
 });
 
 const finiteNonNegative = (value: number | undefined): boolean =>
@@ -869,7 +874,7 @@ const snapshotSchemaRegistry = (value: unknown): KafkaNodeSchemaRegistrySnapshot
   const authSnapshot = auth === undefined ? undefined : snapshotSchemaRegistryAuth(auth);
   return Object.freeze({
     url: normalizedUrl.success,
-    ...(authSnapshot === undefined ? {} : { auth: authSnapshot }),
+    ...definedFields(authSnapshot, (auth) => ({ auth })),
     headers: snapshotSchemaRegistryHeaders(fields.get("headers"), authSnapshot !== undefined),
     timeout,
     retries,
@@ -878,7 +883,7 @@ const snapshotSchemaRegistry = (value: unknown): KafkaNodeSchemaRegistrySnapshot
       monitorInterval,
       "Kafka Schema Registry monitorInterval must be a positive finite Effect Duration.",
     ),
-    ...(tls === undefined ? {} : { tls: snapshotTls(tls) }),
+    ...definedFields(tls, (tls) => ({ tls: snapshotTls(tls) })),
   });
 };
 
@@ -920,17 +925,17 @@ const snapshotRegionOptions = (options: unknown): KafkaNodeRegionSnapshot => {
   }
   return Object.freeze({
     bootstrapServers: bootstrapServers(bootstrapServerList),
-    ...(clientId === undefined ? {} : { clientId }),
-    ...(connectTimeout === undefined ? {} : { connectTimeout }),
-    ...(requestTimeout === undefined ? {} : { requestTimeout }),
-    ...(timeout === undefined ? {} : { timeout }),
-    ...(retries === undefined ? {} : { retries }),
-    ...(metadataMaxAge === undefined ? {} : { metadataMaxAge }),
-    ...(sasl === undefined ? {} : { sasl: snapshotSasl(sasl) }),
-    ...(tls === undefined ? {} : { tls: snapshotTls(tls) }),
-    ...(schemaRegistry === undefined
-      ? {}
-      : { schemaRegistry: snapshotSchemaRegistry(schemaRegistry) }),
+    ...definedFields(clientId, (clientId) => ({ clientId })),
+    ...definedFields(connectTimeout, (connectTimeout) => ({ connectTimeout })),
+    ...definedFields(requestTimeout, (requestTimeout) => ({ requestTimeout })),
+    ...definedFields(timeout, (timeout) => ({ timeout })),
+    ...definedFields(retries, (retries) => ({ retries })),
+    ...definedFields(metadataMaxAge, (metadataMaxAge) => ({ metadataMaxAge })),
+    ...definedFields(sasl, (sasl) => ({ sasl: snapshotSasl(sasl) })),
+    ...definedFields(tls, (tls) => ({ tls: snapshotTls(tls) })),
+    ...definedFields(schemaRegistry, (schemaRegistry) => ({
+      schemaRegistry: snapshotSchemaRegistry(schemaRegistry),
+    })),
   });
 };
 
@@ -1517,18 +1522,14 @@ const makeResolverConsumer = Effect.fn("KafkaNode.consumer.make")(function* (
         clientId: regionOptions.clientId ?? `effect-view-server-${input.region}`,
         groupId,
         retries: regionOptions.retries ?? true,
-        ...(regionOptions.connectTimeout === undefined
-          ? {}
-          : { connectTimeout: regionOptions.connectTimeout }),
-        ...(regionOptions.requestTimeout === undefined
-          ? {}
-          : { requestTimeout: regionOptions.requestTimeout }),
-        ...(regionOptions.timeout === undefined ? {} : { timeout: regionOptions.timeout }),
-        ...(regionOptions.metadataMaxAge === undefined
-          ? {}
-          : { metadataMaxAge: regionOptions.metadataMaxAge }),
-        ...(regionOptions.sasl === undefined ? {} : { sasl: regionOptions.sasl }),
-        ...(regionOptions.tls === undefined ? {} : { tls: nodeTlsOptions(regionOptions.tls) }),
+        ...definedFields(regionOptions.connectTimeout, (connectTimeout) => ({ connectTimeout })),
+        ...definedFields(regionOptions.requestTimeout, (requestTimeout) => ({ requestTimeout })),
+        ...definedFields(regionOptions.timeout, (timeout) => ({ timeout })),
+        ...definedFields(regionOptions.metadataMaxAge, (metadataMaxAge) => ({
+          metadataMaxAge,
+        })),
+        ...definedFields(regionOptions.sasl, (sasl) => ({ sasl })),
+        ...definedFields(regionOptions.tls, (tls) => ({ tls: nodeTlsOptions(tls) })),
       }),
     catch: () => acquisitionFailure(input),
   });
@@ -1958,12 +1959,12 @@ const adminOptions = (
   bootstrapBrokers: [...options.bootstrapServers],
   clientId: options.clientId ?? `effect-view-server-${region}-broker-validation`,
   retries: options.retries ?? true,
-  ...(options.connectTimeout === undefined ? {} : { connectTimeout: options.connectTimeout }),
-  ...(options.requestTimeout === undefined ? {} : { requestTimeout: options.requestTimeout }),
-  ...(options.timeout === undefined ? {} : { timeout: options.timeout }),
-  ...(options.metadataMaxAge === undefined ? {} : { metadataMaxAge: options.metadataMaxAge }),
-  ...(options.sasl === undefined ? {} : { sasl: options.sasl }),
-  ...(options.tls === undefined ? {} : { tls: nodeTlsOptions(options.tls) }),
+  ...definedFields(options.connectTimeout, (connectTimeout) => ({ connectTimeout })),
+  ...definedFields(options.requestTimeout, (requestTimeout) => ({ requestTimeout })),
+  ...definedFields(options.timeout, (timeout) => ({ timeout })),
+  ...definedFields(options.metadataMaxAge, (metadataMaxAge) => ({ metadataMaxAge })),
+  ...definedFields(options.sasl, (sasl) => ({ sasl })),
+  ...definedFields(options.tls, (tls) => ({ tls: nodeTlsOptions(tls) })),
 });
 
 const unsafeConfigValue = (
@@ -2028,13 +2029,13 @@ const unsafeBrokerConfigResource = (value: unknown): KafkaBrokerConfigResource |
   };
 };
 
-const brokerConfigResource = (value: unknown): KafkaBrokerConfigResource | undefined => {
+const brokerConfigResource = <Value>(value: Value): KafkaBrokerConfigResource | undefined => {
   const parsed = Result.try(() => unsafeBrokerConfigResource(value));
   return Result.isFailure(parsed) ? undefined : parsed.success;
 };
 
-const snapshotAdminResponse = (
-  response: unknown,
+const snapshotAdminResponse = <Value>(
+  response: Value,
 ): ReadonlyArray<KafkaBrokerConfigResource> | undefined => {
   const parsed = Result.try(() => {
     if (!Array.isArray(response)) {

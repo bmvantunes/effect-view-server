@@ -61,6 +61,9 @@ export const currentEpochNanos = Effect.fn("KafkaSourceAdapter.clock.epochNanos"
   });
 });
 
+const isNonNullObject = (value: unknown): value is object =>
+  typeof value === "object" && value !== null;
+
 const nanosToKafkaMillis = (nanos: bigint): bigint =>
   nanos === 0n ? 0n : (nanos + 999_999n) / 1_000_000n;
 
@@ -568,7 +571,7 @@ export type KafkaSweepOutcome = {
 
 export const isKafkaRuntimeDefinition = (value: unknown): value is KafkaRuntimeDefinition =>
   Result.try(() => {
-    if (typeof value !== "object" || value === null) {
+    if (!isNonNullObject(value)) {
       return false;
     }
     const cleanupPolicy = Reflect.get(value, "cleanupPolicy");

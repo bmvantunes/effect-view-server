@@ -1,3 +1,4 @@
+import { definedFields } from "@effect-view-server/effect-utils";
 import type {
   Aggregates,
   FieldKey,
@@ -65,6 +66,8 @@ const hasOwnGroupedOrderAggregate = (
 
 export type ViewServerValidatedGroupedQuery<Row extends object> = TrustedGroupedQuery<Row> &
   ValidatedRuntimeQuery;
+
+type ProtocolQueryInput = Schema.Schema.Type<typeof Schema.Unknown>;
 
 const dangerousRecordKeys = new Set(["__proto__", "prototype", "constructor"]);
 
@@ -144,7 +147,7 @@ export const viewServerEncodeGroupedQuery = Effect.fn("ViewServerProtocol.groupe
   function* <const Topics extends TopicDefinitions, Topic extends Extract<keyof Topics, string>>(
     config: { readonly topics: Topics },
     topic: Topic,
-    query: unknown,
+    query: ProtocolQueryInput,
   ) {
     if (!hasTopic(config, topic)) {
       return yield* Effect.fail(invalidTopic(topic));
@@ -173,11 +176,11 @@ export const viewServerEncodeGroupedQuery = Effect.fn("ViewServerProtocol.groupe
     const wireQuery: ViewServerWireGroupedQuery = {
       groupBy: decoded.groupBy,
       aggregates: decoded.aggregates,
-      ...(where === undefined ? {} : { where }),
-      ...(routeBy === undefined ? {} : { routeBy }),
-      ...(decoded.orderBy === undefined ? {} : { orderBy: decoded.orderBy }),
-      ...(decoded.offset === undefined ? {} : { offset: decoded.offset }),
-      ...(decoded.limit === undefined ? {} : { limit: decoded.limit }),
+      ...definedFields(where, (where) => ({ where })),
+      ...definedFields(routeBy, (routeBy) => ({ routeBy })),
+      ...definedFields(decoded.orderBy, (orderBy) => ({ orderBy })),
+      ...definedFields(decoded.offset, (offset) => ({ offset })),
+      ...definedFields(decoded.limit, (limit) => ({ limit })),
     };
     return wireQuery;
   },
@@ -193,7 +196,7 @@ function validatedGroupedQuery(query: LooseWireGroupedQuery) {
 const decodeGroupedQuery = Effect.fn("ViewServerProtocol.groupedQuery.decode")(function* (
   config: { readonly topics: TopicDefinitions },
   topic: string,
-  query: unknown,
+  query: ProtocolQueryInput,
 ) {
   const decodedTopic = yield* viewServerDecodeTopic(config, topic);
   const topicSchema = config.topics[decodedTopic]!.schema;
@@ -216,11 +219,11 @@ const decodeGroupedQuery = Effect.fn("ViewServerProtocol.groupedQuery.decode")(f
   const trusted = validatedGroupedQuery<object>({
     groupBy: decoded.groupBy,
     aggregates: decoded.aggregates,
-    ...(where === undefined ? {} : { where }),
-    ...(routeBy === undefined ? {} : { routeBy }),
-    ...(decoded.orderBy === undefined ? {} : { orderBy: decoded.orderBy }),
-    ...(decoded.offset === undefined ? {} : { offset: decoded.offset }),
-    ...(decoded.limit === undefined ? {} : { limit: decoded.limit }),
+    ...definedFields(where, (where) => ({ where })),
+    ...definedFields(routeBy, (routeBy) => ({ routeBy })),
+    ...definedFields(decoded.orderBy, (orderBy) => ({ orderBy })),
+    ...definedFields(decoded.offset, (offset) => ({ offset })),
+    ...definedFields(decoded.limit, (limit) => ({ limit })),
   });
   yield* validateSourceRoute(config, topic, trusted);
   return trusted;
@@ -232,12 +235,12 @@ export function viewServerDecodeGroupedQuery<
 >(
   config: { readonly topics: Topics },
   topic: Topic,
-  query: unknown,
+  query: ProtocolQueryInput,
 ): Effect.Effect<ViewServerValidatedGroupedQuery<TopicRow<Topics, Topic>>, ViewServerRuntimeError>;
 export function viewServerDecodeGroupedQuery(
   config: { readonly topics: TopicDefinitions },
   topic: string,
-  query: unknown,
+  query: ProtocolQueryInput,
 ): Effect.Effect<unknown, ViewServerRuntimeError> {
   return decodeGroupedQuery(config, topic, query);
 }

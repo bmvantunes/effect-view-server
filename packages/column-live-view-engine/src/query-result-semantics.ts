@@ -34,19 +34,24 @@ export type QueryResultFieldSemantics = {
   readonly semantics: SchemaValueSemantics;
 };
 
-type QueryResultProjectValue = (semantics: SchemaValueSemantics, value: unknown) => unknown;
+type QueryResultProjectValue = <Value>(semantics: SchemaValueSemantics, value: Value) => unknown;
 
-type QueryResultProof<ResultRow extends RowObject> = (row: RowObject) => row is ResultRow;
+type QueryResultProof<ResultRow extends RowObject> = <Candidate extends RowObject>(
+  row: Candidate,
+) => row is Candidate & ResultRow;
 
 type ConstructedProjectionValueProof = "all" | "none";
 
 export type QueryResultSemantics<ResultRow extends RowObject = RowObject> = {
-  readonly equivalentRows: (left: RowObject, right: RowObject) => boolean;
-  readonly materializeOwnedRow: (row: RowObject) => ResultRow;
-  readonly materializeRow: (row: RowObject) => ResultRow;
-  readonly narrowProjectedRow: (row: RowObject) => ResultRow;
-  readonly projectOwnedRow: (row: RowObject) => ResultRow;
-  readonly projectRow: (row: RowObject) => ResultRow;
+  readonly equivalentRows: <Left extends object, Right extends object>(
+    left: Left,
+    right: Right,
+  ) => boolean;
+  readonly materializeOwnedRow: <Input extends object>(row: Input) => ResultRow;
+  readonly materializeRow: <Input extends object>(row: Input) => ResultRow;
+  readonly narrowProjectedRow: <Input extends object>(row: Input) => ResultRow;
+  readonly projectOwnedRow: <Input extends object>(row: Input) => ResultRow;
+  readonly projectRow: <Input extends object>(row: Input) => ResultRow;
 };
 
 export type TopicStorageProjectableQueryResultSemantics<ResultRow extends RowObject = RowObject> =
@@ -80,14 +85,14 @@ const isBorrowableImmutablePrimitive = (value: unknown): boolean =>
   typeof value === "bigint" ||
   typeof value === "boolean";
 
-const materializeValue = (semantics: SchemaValueSemantics, value: unknown): unknown =>
+const materializeValue = <Value>(semantics: SchemaValueSemantics, value: Value): unknown =>
   isBorrowableImmutablePrimitive(value) ? value : semantics.materialize(value);
 
 const projectFields = <Row extends RowObject>(
   fields: ReadonlyArray<QueryResultFieldSemantics>,
   row: Row,
   projectValue: QueryResultProjectValue,
-): RowObject => {
+): Record<string, unknown> => {
   const projected: Record<string, unknown> = {};
   for (const { field, semantics } of fields) {
     if (hasEnumerableField(row, field)) {
@@ -100,9 +105,9 @@ const projectFields = <Row extends RowObject>(
 const projectedFieldsCheck = (
   fields: ReadonlyArray<QueryResultFieldSemantics>,
   validateValues: boolean,
-): ((row: RowObject) => boolean) => {
+): (<Row extends object>(row: Row) => boolean) => {
   const expectedFields = new Set(fields.map(({ field }) => field));
-  return (row) => {
+  return <Row extends object>(row: Row) => {
     for (const field of Object.keys(row)) {
       if (!expectedFields.has(field)) {
         return false;
@@ -129,8 +134,8 @@ const projectedFieldsCheck = (
 
 type ConstructedProjectionFieldProof = {
   readonly field: string;
-  readonly isValue: ((value: unknown) => boolean) | undefined;
-  readonly materialize: (value: unknown) => unknown;
+  readonly isValue: (<Value>(value: Value) => boolean) | undefined;
+  readonly materialize: <Value>(value: Value) => unknown;
   readonly required: boolean | undefined;
 };
 
@@ -148,7 +153,7 @@ const constructedProjectionFieldProofs = (
 const constructedProjectionProof = <ResultRow extends RowObject>(
   proofFields: ReadonlyArray<ConstructedProjectionFieldProof>,
 ): QueryResultProof<ResultRow> => {
-  return (row): row is ResultRow => {
+  return <Candidate extends RowObject>(row: Candidate): row is Candidate & ResultRow => {
     for (const { field, isValue, required } of proofFields) {
       if (!hasEnumerableField(row, field)) {
         if (required === true) {
@@ -168,10 +173,10 @@ const invalidProjectedResultRow = (): never => {
   throw new TypeError("Projected Query Result Row does not satisfy its compiled proof.");
 };
 
-const materializeConstructedValue = (
-  materialize: (value: unknown) => unknown,
-  value: unknown,
-): unknown => {
+const materializeConstructedValue = <Input, Output>(
+  materialize: (value: Input) => Output,
+  value: Input,
+): Output => {
   try {
     return materialize(value);
   } catch (error) {
@@ -186,11 +191,11 @@ const ownConstructedProjectionProof =
   <ResultRow extends RowObject>(
     proofFields: ReadonlyArray<ConstructedProjectionFieldProof>,
   ): QueryResultProof<ResultRow> =>
-  (row): row is ResultRow => {
+  <Candidate extends RowObject>(row: Candidate): row is Candidate & ResultRow => {
     let pendingMaterializations:
       | Array<{
           readonly field: string;
-          readonly materialize: (value: unknown) => unknown;
+          readonly materialize: <Value>(value: Value) => unknown;
           readonly value: unknown;
         }>
       | undefined;
@@ -226,28 +231,32 @@ const untypedResultProof = (
   fields: ReadonlyArray<QueryResultFieldSemantics>,
 ): QueryResultProof<RowObject> => {
   const check = projectedFieldsCheck(fields, false);
-  return (row): row is RowObject => check(row);
+  return <Candidate extends RowObject>(row: Candidate): row is Candidate & RowObject => check(row);
 };
 
 const rawResultProof = <Row extends RowObject, const Query extends RawQuery<Row>>(
   fields: ReadonlyArray<QueryResultFieldSemantics>,
 ): QueryResultProof<PickRawFields<Row, Query>> => {
   const check = projectedFieldsCheck(fields, true);
-  return (row): row is PickRawFields<Row, Query> => check(row);
+  return <Candidate extends RowObject>(
+    row: Candidate,
+  ): row is Candidate & PickRawFields<Row, Query> => check(row);
 };
 
 const groupedResultProof = <Row extends RowObject, const Query extends GroupedQuery<Row>>(
   fields: ReadonlyArray<QueryResultFieldSemantics>,
 ): QueryResultProof<GroupedResult<Row, Query>> => {
   const check = projectedFieldsCheck(fields, true);
-  return (row): row is GroupedResult<Row, Query> => check(row);
+  return <Candidate extends RowObject>(
+    row: Candidate,
+  ): row is Candidate & GroupedResult<Row, Query> => check(row);
 };
 
 const runtimeResultProof = (
   fields: ReadonlyArray<QueryResultFieldSemantics>,
 ): QueryResultProof<RowObject> => {
   const check = projectedFieldsCheck(fields, true);
-  return (row): row is RowObject => check(row);
+  return <Candidate extends RowObject>(row: Candidate): row is Candidate & RowObject => check(row);
 };
 
 const narrowResultRow =
@@ -260,8 +269,8 @@ const narrowResultRow =
   };
 
 type ProjectedQueryResultSemanticsConstruction<ResultRow extends RowObject> = {
-  readonly narrowConstructedProjection: (row: RowObject) => ResultRow;
-  readonly ownConstructedProjection: (row: RowObject) => ResultRow;
+  readonly narrowConstructedProjection: <Input extends object>(row: Input) => ResultRow;
+  readonly ownConstructedProjection: <Input extends object>(row: Input) => ResultRow;
   readonly semantics: QueryResultSemantics<ResultRow>;
 };
 
@@ -278,7 +287,7 @@ const constructProjectedQueryResultSemantics = <ResultRow extends RowObject>(
   const ownProjectedRow = narrowResultRow(
     ownConstructedProjectionProof<ResultRow>(constructedFieldProofs),
   );
-  const materializeOwnedFields = (row: RowObject): void => {
+  const materializeOwnedFields = <Row extends RowObject>(row: Row): void => {
     for (const { field, semantics } of fields) {
       if (!hasEnumerableField(row, field)) {
         continue;

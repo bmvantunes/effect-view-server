@@ -28,6 +28,7 @@ export const strictParseOptions = {
 export const isRecord = isProtocolPlainRecord;
 
 type OwnedProtocolQueryInput = Readonly<Record<string, unknown>>;
+type ProtocolQueryInput = Schema.Schema.Type<typeof Schema.Unknown>;
 
 export const isGroupedQueryInput = (
   query: OwnedProtocolQueryInput,
@@ -50,7 +51,7 @@ export const invalidQuery = (topic: string, message: string): ViewServerRuntimeE
 
 export const snapshotProtocolQueryInput = Effect.fn("ViewServerProtocol.query.ownInput")(function* (
   topic: string,
-  query: unknown,
+  query: ProtocolQueryInput,
 ) {
   return yield* Effect.try({
     try: (): OwnedProtocolQueryInput => snapshotViewServerQuery(query),
@@ -152,7 +153,7 @@ export const validateWindow = Effect.fn("ViewServerProtocol.query.window.validat
 
 export const validateSourceRoute = Effect.fn("ViewServerProtocol.query.route.validate")(function* <
   Topics extends TopicDefinitions,
->(config: { readonly topics: Topics }, topic: string, query: unknown) {
+>(config: { readonly topics: Topics }, topic: string, query: ProtocolQueryInput) {
   const message = validateLiveQuerySourceRoute(config.topics, topic, query);
   if (message !== undefined) {
     return yield* Effect.fail(invalidQuery(topic, message));
@@ -175,7 +176,7 @@ export const viewServerDecodeTopic: <const Topics extends TopicDefinitions>(
 });
 
 export const viewServerDecodeHealthQuery = Effect.fn("ViewServerProtocol.healthQuery.decode")(
-  function* (topic: string, query: unknown) {
+  function* (topic: string, query: ProtocolQueryInput) {
     const decoded = yield* Schema.decodeUnknownEffect(ViewServerHealthQuerySchema)(
       query,
       strictParseOptions,
@@ -205,14 +206,14 @@ export const decodeWhere = Effect.fn("ViewServerProtocol.query.where.decode")(fu
 export const encodeRouteBy = Effect.fn("ViewServerProtocol.query.routeBy.encode")(function* <
   const Topics extends TopicDefinitions,
   Topic extends Extract<keyof Topics, string>,
->(config: { readonly topics: Topics }, topic: Topic, routeBy: unknown) {
+>(config: { readonly topics: Topics }, topic: Topic, routeBy: ProtocolQueryInput) {
   return yield* encodeRouteByFields(topic, config.topics[topic]!.schema, routeBy);
 });
 
 export const decodeRouteBy = Effect.fn("ViewServerProtocol.query.routeBy.decode")(function* (
   topic: string,
   schema: RowSchema,
-  routeBy: unknown,
+  routeBy: ProtocolQueryInput,
 ) {
   return yield* decodeRouteByFields(topic, schema, routeBy);
 });

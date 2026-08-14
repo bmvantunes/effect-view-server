@@ -1,3 +1,4 @@
+import { definedFields } from "./optional-fields";
 import { Schema, SchemaAST } from "effect";
 import { schemaHasUnrecognizedCanonicalCodec } from "./schema-canonical-codec";
 import { schemaAstIsClass } from "./schema-ast-children";
@@ -386,7 +387,9 @@ export const viewServerSchemaFieldMetadata = (schema: unknown): ViewServerSchema
     isString: isStringAst(ast),
     isStructured: isStructuredAst(ast),
     isStructuredObject: isStructuredObjectAst(ast),
-    ...(isNumeric ? { sumResultKind: numericKind } : {}),
+    ...definedFields(isNumeric ? numericKind : undefined, (sumResultKind) => ({
+      sumResultKind,
+    })),
   };
 };
 

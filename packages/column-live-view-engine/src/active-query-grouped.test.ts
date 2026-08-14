@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Option } from "effect";
+import { Effect, Option, Schema } from "effect";
 import { fromStringUnsafe } from "effect/BigDecimal";
 import { defaultGroupedIncrementalAdmissionLimits, InvalidRowError } from "./index";
 import {
@@ -23,6 +23,8 @@ import {
 } from "../test-harness/events";
 import { makeEngine, order, Order, position, Position } from "../test-harness/public-engine";
 import { normalizeDecimalAndBigIntFields, normalizeDecimalFields } from "../test-harness/rows";
+
+type TestRow = Readonly<Record<string, Schema.Schema.Type<typeof Schema.Unknown>>>;
 
 describe("Grouped incremental query execution", () => {
   it.effect("updates grouped bigint sums incrementally through live subscriptions", () =>
@@ -164,14 +166,14 @@ describe("Grouped incremental query execution", () => {
     Effect.gen(function* () {
       let version = 0;
       let scanCount = 0;
-      let batches: ReadonlyArray<TopicRowChangeBatch<object>> = [];
-      const rows = new Map<string, object>([
+      let batches: ReadonlyArray<TopicRowChangeBatch<TestRow>> = [];
+      const rows = new Map<string, TestRow>([
         ["1", order("1", "open", 10, 1, "emea")],
         ["2", order("2", "open", 20, 2, "amer")],
       ]);
       const store = {
         changesSince: () => batches,
-        scanRows: (visitor: (key: string, row: object) => void) => {
+        scanRows: (visitor: (key: string, row: TestRow) => void) => {
           scanCount += 1;
           for (const [key, row] of rows) {
             visitor(key, row);
@@ -255,8 +257,8 @@ describe("Grouped incremental query execution", () => {
     Effect.gen(function* () {
       let version = 0;
       let scanCount = 0;
-      let batches: ReadonlyArray<TopicRowChangeBatch<object>> = [];
-      const rows = new Map<string, object>([
+      let batches: ReadonlyArray<TopicRowChangeBatch<TestRow>> = [];
+      const rows = new Map<string, TestRow>([
         ["cancelled", order("cancelled", "cancelled", 5, 1, "emea")],
         ["open-a", order("open-a", "open", 10, 2, "emea")],
         ["open-b", order("open-b", "open", 20, 3, "emea")],
@@ -264,7 +266,7 @@ describe("Grouped incremental query execution", () => {
       ]);
       const store = {
         changesSince: () => batches,
-        scanRows: (visitor: (key: string, row: object) => void) => {
+        scanRows: (visitor: (key: string, row: TestRow) => void) => {
           scanCount += 1;
           for (const [key, row] of rows) {
             visitor(key, row);
@@ -448,14 +450,14 @@ describe("Grouped incremental query execution", () => {
   it.effect("ignores unbranded changed-field metadata from manual grouped scans", () =>
     Effect.gen(function* () {
       let version = 0;
-      let batches: ReadonlyArray<TopicRowChangeBatch<object>> = [];
-      const rows = new Map<string, object>([
+      let batches: ReadonlyArray<TopicRowChangeBatch<TestRow>> = [];
+      const rows = new Map<string, TestRow>([
         ["open-a", order("open-a", "open", 10, 2, "emea")],
         ["open-b", order("open-b", "open", 20, 3, "emea")],
       ]);
       const store = {
         changesSince: () => batches,
-        scanRows: (visitor: (key: string, row: object) => void) => {
+        scanRows: (visitor: (key: string, row: TestRow) => void) => {
           for (const [key, row] of rows) {
             visitor(key, row);
           }
@@ -520,8 +522,8 @@ describe("Grouped incremental query execution", () => {
     Effect.gen(function* () {
       let version = 0;
       let scanCount = 0;
-      let batches: ReadonlyArray<TopicRowChangeBatch<object>> = [];
-      const rows = new Map<string, object>([
+      let batches: ReadonlyArray<TopicRowChangeBatch<TestRow>> = [];
+      const rows = new Map<string, TestRow>([
         ["cancelled", order("cancelled", "cancelled", 5, 1, "emea")],
         ["open-a", order("open-a", "open", 10, 2, "emea")],
         ["open-b", order("open-b", "open", 20, 3, "emea")],
@@ -530,7 +532,7 @@ describe("Grouped incremental query execution", () => {
       let patchedEvaluationCount = 0;
       const store = {
         changesSince: () => batches,
-        scanRows: (visitor: (key: string, row: object) => void) => {
+        scanRows: (visitor: (key: string, row: TestRow) => void) => {
           scanCount += 1;
           for (const [key, row] of rows) {
             visitor(key, row);
@@ -606,14 +608,14 @@ describe("Grouped incremental query execution", () => {
     Effect.gen(function* () {
       let version = 0;
       let scanCount = 0;
-      let batches: ReadonlyArray<TopicRowChangeBatch<object>> = [];
-      const rows = new Map<string, object>([
+      let batches: ReadonlyArray<TopicRowChangeBatch<TestRow>> = [];
+      const rows = new Map<string, TestRow>([
         ["open", order("open", "open", 10, 1, "emea")],
         ["closed", order("closed", "closed", 20, 2, "emea")],
       ]);
       const store = {
         changesSince: () => batches,
-        scanRows: (visitor: (key: string, row: object) => void) => {
+        scanRows: (visitor: (key: string, row: TestRow) => void) => {
           scanCount += 1;
           for (const [key, row] of rows) {
             visitor(key, row);
@@ -697,19 +699,19 @@ describe("Grouped incremental query execution", () => {
     Effect.gen(function* () {
       let version = 0;
       let scanCount = 0;
-      let batches: ReadonlyArray<TopicRowChangeBatch<object>> = [];
+      let batches: ReadonlyArray<TopicRowChangeBatch<TestRow>> = [];
       const retainedCustomer = {
         ...order("1-extra", "open", 15, 4, "emea"),
         customerId: "customer-1",
       };
-      const rows = new Map<string, object>([
+      const rows = new Map<string, TestRow>([
         ["1", order("1", "open", 10, 1, "emea")],
         ["1-extra", retainedCustomer],
         ["2", order("2", "open", 20, 2, "amer")],
       ]);
       const store = {
         changesSince: () => batches,
-        scanRows: (visitor: (key: string, row: object) => void) => {
+        scanRows: (visitor: (key: string, row: TestRow) => void) => {
           scanCount += 1;
           for (const [key, row] of rows) {
             visitor(key, row);
@@ -902,7 +904,7 @@ describe("Grouped incremental query execution", () => {
     Effect.gen(function* () {
       let version = 0;
       let scanCount = 0;
-      let batches: ReadonlyArray<TopicRowChangeBatch<object>> = [];
+      let batches: ReadonlyArray<TopicRowChangeBatch<TestRow>> = [];
       const malformedPosition = {
         id: "bad",
         accountId: "account-bad",
@@ -912,13 +914,13 @@ describe("Grouped incremental query execution", () => {
         price: "bad",
       };
       const validPosition = position("good", "AAPL", 10n, "2.00");
-      const rows = new Map<string, object>([
+      const rows = new Map<string, TestRow>([
         ["bad", malformedPosition],
         ["good", validPosition],
       ]);
       const store = {
         changesSince: () => batches,
-        scanRows: (visitor: (key: string, row: object) => void) => {
+        scanRows: (visitor: (key: string, row: TestRow) => void) => {
           scanCount += 1;
           for (const [key, row] of rows) {
             visitor(key, row);
@@ -981,7 +983,7 @@ describe("Grouped incremental query execution", () => {
   it.effect("falls back when grouped retained aggregate state exceeds admission", () =>
     Effect.gen(function* () {
       let scanCount = 0;
-      const rows = new Map<string, object>(
+      const rows = new Map<string, TestRow>(
         Array.from({ length: 4_096 }, (_value, index) => [
           `row-${index}`,
           order(`row-${index}`, "open", index, index),
@@ -989,7 +991,7 @@ describe("Grouped incremental query execution", () => {
       );
       const store = {
         changesSince: () => [],
-        scanRows: (visitor: (key: string, row: object) => false | void) => {
+        scanRows: (visitor: (key: string, row: TestRow) => false | void) => {
           scanCount += 1;
           for (const [key, row] of rows) {
             visitor(key, row);
@@ -1021,7 +1023,7 @@ describe("Grouped incremental query execution", () => {
 
   it.effect("falls back when materialized grouped admission is ignored by the row scanner", () =>
     Effect.gen(function* () {
-      const rows = new Map<string, object>(
+      const rows = new Map<string, TestRow>(
         Array.from({ length: 4_098 }, (_value, index) => [
           `row-${index}`,
           order(`row-${index}`, "open", index, index),
@@ -1029,7 +1031,7 @@ describe("Grouped incremental query execution", () => {
       );
       const store = {
         changesSince: () => [],
-        scanRows: (visitor: (key: string, row: object) => false | void) => {
+        scanRows: (visitor: (key: string, row: TestRow) => false | void) => {
           for (const [key, row] of rows) {
             visitor(key, row);
           }
@@ -1055,16 +1057,16 @@ describe("Grouped incremental query execution", () => {
 
   it.effect("falls back when count-only grouped admission is ignored by the row scanner", () =>
     Effect.gen(function* () {
-      const rows = new Map<string, object>([
+      const rows = new Map<string, TestRow>([
         ["ignored", order("ignored", "open", 1, 1, "amer")],
-        ...Array.from({ length: 8_194 }, (_value, index): [string, object] => {
+        ...Array.from({ length: 8_194 }, (_value, index): [string, TestRow] => {
           const key = `row-${index}`;
           return [key, order(key, "open", index, index, "emea")];
         }),
       ]);
       const store = {
         changesSince: () => [],
-        scanRows: (visitor: (key: string, row: object) => false | void) => {
+        scanRows: (visitor: (key: string, row: TestRow) => false | void) => {
           for (const [key, row] of rows) {
             visitor(key, row);
           }
@@ -1095,7 +1097,7 @@ describe("Grouped incremental query execution", () => {
     Effect.gen(function* () {
       let version = 0;
       const scanCounts: Array<number> = [];
-      const rows = new Map<string, object>(
+      const rows = new Map<string, TestRow>(
         Array.from({ length: 65_537 }, (_value, index) => [
           `row-${index}`,
           order(`row-${index}`, "open", index, index),
@@ -1103,7 +1105,7 @@ describe("Grouped incremental query execution", () => {
       );
       const store = {
         changesSince: () => [],
-        scanRows: (visitor: (key: string, row: object) => false | void) => {
+        scanRows: (visitor: (key: string, row: TestRow) => false | void) => {
           let scanCount = 0;
           for (const [key, row] of rows) {
             scanCount += 1;
@@ -1144,11 +1146,11 @@ describe("Grouped incremental query execution", () => {
     () =>
       Effect.gen(function* () {
         let version = 0;
-        let batches: ReadonlyArray<TopicRowChangeBatch<object>> = [];
-        const rows = new Map<string, object>();
+        let batches: ReadonlyArray<TopicRowChangeBatch<TestRow>> = [];
+        const rows = new Map<string, TestRow>();
         const store = {
           changesSince: () => batches,
-          scanRows: (visitor: (key: string, row: object) => void) => {
+          scanRows: (visitor: (key: string, row: TestRow) => void) => {
             for (const [key, row] of rows) {
               visitor(key, row);
             }
@@ -1197,11 +1199,11 @@ describe("Grouped incremental query execution", () => {
     () =>
       Effect.gen(function* () {
         let version = 0;
-        let batches: ReadonlyArray<TopicRowChangeBatch<object>> = [];
-        const rows = new Map<string, object>();
+        let batches: ReadonlyArray<TopicRowChangeBatch<TestRow>> = [];
+        const rows = new Map<string, TestRow>();
         const store = {
           changesSince: () => batches,
-          scanRows: (visitor: (key: string, row: object) => false | void) => {
+          scanRows: (visitor: (key: string, row: TestRow) => false | void) => {
             for (const [key, row] of rows) {
               if (visitor(key, row) === false) {
                 break;
@@ -1245,11 +1247,11 @@ describe("Grouped incremental query execution", () => {
     () =>
       Effect.gen(function* () {
         let version = 0;
-        let batches: ReadonlyArray<TopicRowChangeBatch<object>> = [];
-        const rows = new Map<string, object>();
+        let batches: ReadonlyArray<TopicRowChangeBatch<TestRow>> = [];
+        const rows = new Map<string, TestRow>();
         const store = {
           changesSince: () => batches,
-          scanRows: (visitor: (key: string, row: object) => false | void) => {
+          scanRows: (visitor: (key: string, row: TestRow) => false | void) => {
             for (const [key, row] of rows) {
               if (visitor(key, row) === false) {
                 break;
@@ -1292,10 +1294,10 @@ describe("Grouped incremental query execution", () => {
     Effect.gen(function* () {
       let version = 0;
       let scanCount = 0;
-      const rows = new Map<string, object>([["1", order("1", "open", 10, 1)]]);
+      const rows = new Map<string, TestRow>([["1", order("1", "open", 10, 1)]]);
       const store = {
         changesSince: () => undefined,
-        scanRows: (visitor: (key: string, row: object) => void) => {
+        scanRows: (visitor: (key: string, row: TestRow) => void) => {
           scanCount += 1;
           for (const [key, row] of rows) {
             visitor(key, row);
@@ -1392,10 +1394,10 @@ describe("Grouped incremental query execution", () => {
   it.effect("uses fallback when a grouped rebuild after a missed journal exceeds admission", () =>
     Effect.gen(function* () {
       let version = 0;
-      const rows = new Map<string, object>([["initial", order("initial", "open", 1, 1)]]);
+      const rows = new Map<string, TestRow>([["initial", order("initial", "open", 1, 1)]]);
       const store = {
         changesSince: () => undefined,
-        scanRows: (visitor: (key: string, row: object) => void) => {
+        scanRows: (visitor: (key: string, row: TestRow) => void) => {
           for (const [key, row] of rows) {
             visitor(key, row);
           }

@@ -20,6 +20,7 @@ import {
 
 type StableObjectEntry = readonly [string, StableQueryToken];
 type StableMapEntry = readonly [StableQueryToken, StableQueryToken];
+type StableQueryInput = Readonly<Record<string, unknown>>;
 
 type StableBigDecimalToken =
   | readonly ["bigDecimal", string]
@@ -72,8 +73,6 @@ const stableNumberValue = (value: number): string => {
   }
   return String(value);
 };
-
-const stableObjectName = <Value extends object>(_value: Value): string => "object";
 
 const stableTokenSortKey = (value: StableQueryToken): string => JSON.stringify(value);
 
@@ -178,7 +177,7 @@ const stableQueryValue = (
     });
   }
   if (!hasPlainRecordPrototype(value)) {
-    return ["unsupported", stableObjectName(value)];
+    return ["unsupported", "object"];
   }
   return withCycleTracking(value, active, () => [
     "object",
@@ -243,8 +242,8 @@ type StableGraphWorkStack = {
   readonly next: StableGraphWorkStack | undefined;
 };
 
-const stableGraphQueryValue = <Query extends object>(
-  query: Query,
+const stableGraphQueryValue = (
+  query: StableQueryInput,
 ): readonly ["graph", StableGraphSlot, ReadonlyArray<StableGraphNode>] => {
   const root: StableGraphSlot = { value: undefined };
   const nodes: Array<StableGraphNode> = [];
@@ -334,7 +333,7 @@ const stableGraphQueryValue = <Query extends object>(
       continue;
     }
     if (!Array.isArray(value) && !hasPlainRecordPrototype(value)) {
-      current.slot.value = ["unsupported", stableObjectName(value)];
+      current.slot.value = ["unsupported", "object"];
       continue;
     }
 
@@ -412,8 +411,8 @@ const stableGraphQueryValue = <Query extends object>(
   return ["graph", root, nodes];
 };
 
-const canonicalQueryInput = <Query extends object>(
-  query: Query,
+const canonicalQueryInput = (
+  query: StableQueryInput,
   fieldContracts?: CanonicalWhereFieldContracts,
 ): Record<string, unknown> => {
   const canonical: Record<string, unknown> = {};
@@ -464,8 +463,8 @@ const canonicalWhereFieldContracts = (rowSchema: RowSchema): CanonicalWhereField
   return contracts;
 };
 
-const stableQueryKeyWithFields = <Query extends object>(
-  query: Query,
+const stableQueryKeyWithFields = (
+  query: StableQueryInput,
   fieldContracts?: CanonicalWhereFieldContracts,
 ): string => {
   const key = Result.try(() =>
@@ -474,10 +473,7 @@ const stableQueryKeyWithFields = <Query extends object>(
   return Result.isFailure(key) ? invalidQueryKey : key.success;
 };
 
-export const stableQueryKey = <Query extends object>(query: Query): string =>
-  stableQueryKeyWithFields(query);
+export const stableQueryKey = (query: StableQueryInput): string => stableQueryKeyWithFields(query);
 
-export const stableQueryKeyForRowSchema = <Query extends object>(
-  query: Query,
-  rowSchema: RowSchema,
-): string => stableQueryKeyWithFields(query, canonicalWhereFieldContracts(rowSchema));
+export const stableQueryKeyForRowSchema = (query: StableQueryInput, rowSchema: RowSchema): string =>
+  stableQueryKeyWithFields(query, canonicalWhereFieldContracts(rowSchema));

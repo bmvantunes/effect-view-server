@@ -10,28 +10,35 @@ import { compareQueryValue } from "./query-value";
 type RowObject = object;
 type ValueSchema = Schema.Codec<unknown, unknown, never, never>;
 type TopicRowSchema = Schema.Codec<object, unknown, never, never>;
+type SchemaValueInput = Schema.Schema.Type<typeof Schema.Unknown>;
+const isObjectLike = (value: unknown): value is object =>
+  (typeof value === "object" && value !== null) || typeof value === "function";
 const topicRowValueSemanticsSchema: unique symbol = Symbol("TopicRowValueSemantics.schema");
 const topicRowValueSemanticsSchemas = new WeakMap<object, TopicRowSchema>();
 
 export type SchemaValueSemantics = {
-  readonly canonicalKey: (value: unknown) => string;
-  readonly compare: (left: unknown, right: unknown) => number;
-  readonly decodeEncoded: (value: unknown) => unknown;
-  readonly equivalent: (left: unknown, right: unknown) => boolean;
-  readonly is: (value: unknown) => boolean;
-  readonly materialize: (value: unknown) => unknown;
+  readonly canonicalKey: (value: SchemaValueInput) => string;
+  readonly compare: (left: SchemaValueInput, right: SchemaValueInput) => number;
+  readonly decodeEncoded: (value: SchemaValueInput) => unknown;
+  readonly equivalent: (left: SchemaValueInput, right: SchemaValueInput) => boolean;
+  readonly is: (value: SchemaValueInput) => boolean;
+  readonly materialize: (value: SchemaValueInput) => unknown;
   readonly schema: Schema.Codec<unknown, unknown, never, never>;
 };
 
 export type TopicRowValueSemantics<Row extends RowObject = RowObject> = {
   readonly [topicRowValueSemanticsSchema]: Schema.Codec<Row, unknown, never, never>;
-  readonly equivalentField: (field: string, left: unknown, right: unknown) => boolean;
-  readonly equivalentRows: (left: RowObject, right: RowObject) => boolean;
+  readonly equivalentField: (
+    field: string,
+    left: SchemaValueInput,
+    right: SchemaValueInput,
+  ) => boolean;
+  readonly equivalentRows: <Input extends RowObject>(left: Input, right: Input) => boolean;
   readonly field: (field: string) => SchemaValueSemantics;
   readonly fieldRequired: (field: string) => boolean;
   readonly fieldNames: ReadonlyArray<string>;
-  readonly materializeRow: (row: RowObject) => RowObject;
-  readonly materializeValidatedRowFields: (row: RowObject) => RowObject;
+  readonly materializeRow: <Input extends RowObject>(row: Input) => RowObject;
+  readonly materializeValidatedRowFields: <Input extends RowObject>(row: Input) => RowObject;
 };
 
 type SchemaWithFields = TopicRowSchema & {
@@ -105,7 +112,7 @@ export const makeSchemaValueSemantics = (schema: ValueSchema): SchemaValueSemant
   const canonicalObjectKeys = new WeakMap<object, string>();
 
   const canonicalKey = (value: unknown): string => {
-    if ((typeof value === "object" && value !== null) || typeof value === "function") {
+    if (isObjectLike(value)) {
       const cached = canonicalObjectKeys.get(value);
       if (cached !== undefined) {
         return cached;
@@ -162,7 +169,7 @@ export const makeSchemaValueSemantics = (schema: ValueSchema): SchemaValueSemant
 };
 
 type TopicRowSchemaSemantics = {
-  readonly materialize: (row: RowObject) => RowObject;
+  readonly materialize: <Input extends object>(row: Input) => RowObject;
 };
 
 const makeTopicRowSchemaSemantics = (schema: TopicRowSchema): TopicRowSchemaSemantics => {
@@ -190,7 +197,10 @@ const schemaFieldSemantics = (
   return fields;
 };
 
-const validateRowFieldDescriptors = (row: RowObject, fieldNames: ReadonlyArray<string>): void => {
+const validateRowFieldDescriptors = <Row extends RowObject>(
+  row: Row,
+  fieldNames: ReadonlyArray<string>,
+): void => {
   for (const field of fieldNames) {
     const descriptor = Object.getOwnPropertyDescriptor(row, field);
     if (descriptor === undefined) {
@@ -223,7 +233,7 @@ export const makeTopicRowValueSemantics = <SchemaValue extends TopicRowSchema>(
   const semantics: TopicRowValueSemantics<SchemaValue["Type"]> = Object.freeze({
     [topicRowValueSemanticsSchema]: schema,
     equivalentField: (name, left, right) => field(name).equivalent(left, right),
-    equivalentRows: (left, right) => {
+    equivalentRows: <Input extends RowObject>(left: Input, right: Input) => {
       for (const name of fieldNames) {
         const leftHasField = Object.prototype.propertyIsEnumerable.call(left, name);
         if (leftHasField !== Object.prototype.propertyIsEnumerable.call(right, name)) {
@@ -241,11 +251,11 @@ export const makeTopicRowValueSemantics = <SchemaValue extends TopicRowSchema>(
     field,
     fieldRequired: (name) => !SchemaAST.isOptional(field(name).schema.ast),
     fieldNames,
-    materializeRow: (row) => {
+    materializeRow: <Input extends RowObject>(row: Input) => {
       validateRowFieldDescriptors(row, fieldNames);
       return rowSemantics().materialize(row);
     },
-    materializeValidatedRowFields: (row) => {
+    materializeValidatedRowFields: <Input extends RowObject>(row: Input) => {
       validateRowFieldDescriptors(row, fieldNames);
       for (const name of fieldNames) {
         if (!Object.prototype.propertyIsEnumerable.call(row, name)) {

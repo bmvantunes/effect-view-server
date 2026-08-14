@@ -43,7 +43,7 @@ export type GroupedAggregateInputSemantics = {
   readonly canonicalKey: (input: GroupedAggregateInput) => string;
   readonly compare: (left: GroupedAggregateInput, right: GroupedAggregateInput) => number;
   readonly equivalent: (left: GroupedAggregateInput, right: GroupedAggregateInput) => boolean;
-  readonly read: (row: RowObject) => GroupedAggregateInput;
+  readonly read: <Row extends object>(row: Row) => GroupedAggregateInput;
 };
 
 type RuntimeFieldGroupedAggregate = Exclude<RuntimeGroupedAggregate, { readonly aggFunc: "count" }>;

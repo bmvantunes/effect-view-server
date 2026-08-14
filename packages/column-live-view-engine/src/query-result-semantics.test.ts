@@ -87,7 +87,7 @@ describe("query result semantics", () => {
         field: "value",
         semantics: Object.freeze({
           ...structuredSemantics,
-          materialize: (_value: unknown): never => {
+          materialize: <Value>(_value: Value): never => {
             throw defect;
           },
         }),

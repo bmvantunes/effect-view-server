@@ -1,3 +1,4 @@
+import { definedFields } from "@effect-view-server/effect-utils";
 // Import Vitest directly so @effect/vitest's eager test-runtime module graph does not
 // distort the heap, JIT, and GC behavior this benchmark is measuring.
 import { afterAll, beforeAll, bench, describe, expect } from "vitest";
@@ -498,7 +499,9 @@ afterAll(async () => {
   profile.memoryAfterSetup = undefined;
   const memoryAfterBenchmark = memorySnapshot();
   writeBenchmarkArtifact({
-    ...(activeViewCountBeforeCleanup === undefined ? {} : { activeViewCountBeforeCleanup }),
+    ...definedFields(activeViewCountBeforeCleanup, (activeViewCountBeforeCleanup) => ({
+      activeViewCountBeforeCleanup,
+    })),
     artifactKind: "engine-benchmark-summary",
     backpressureCount: backpressureCountFromEngineHealth(health),
     benchmarkCases: [`${profile.fanoutCaseName} subscribers publish + delta fanout`],

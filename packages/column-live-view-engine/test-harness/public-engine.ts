@@ -135,9 +135,9 @@ export const instrument = (
 export const makeEngine = (): Effect.Effect<Engine, InvalidRowError> =>
   createColumnLiveViewEngine({ topics: viewServer.topics });
 
-export const withObjectPrototypeValue = <Value, Error, Requirements>(
+export const withObjectPrototypeValue = <Value, Error, Requirements, PropertyValue>(
   field: string,
-  value: unknown,
+  value: PropertyValue,
   effect: Effect.Effect<Value, Error, Requirements>,
 ): Effect.Effect<Value, Error, Requirements> =>
   Effect.acquireUseRelease(

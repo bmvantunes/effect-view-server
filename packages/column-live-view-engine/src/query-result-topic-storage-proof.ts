@@ -5,7 +5,9 @@ import {
 
 type RowObject = object;
 
-type QueryResultRowNarrower<ResultRow extends RowObject> = (row: RowObject) => ResultRow;
+type QueryResultRowNarrower<ResultRow extends RowObject> = <Input extends object>(
+  row: Input,
+) => ResultRow;
 
 export type BoundQueryResultTopicStorageProjectionProof<ResultRow extends RowObject> = {
   readonly narrowProjectedRow: QueryResultRowNarrower<ResultRow>;

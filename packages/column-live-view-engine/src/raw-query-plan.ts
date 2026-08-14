@@ -1,3 +1,4 @@
+import { definedFields } from "@effect-view-server/effect-utils";
 import { compareTrustedWireSafeBigDecimal } from "@effect-view-server/effect-utils";
 import { isBigDecimal } from "effect/BigDecimal";
 import { compareQueryValue, stableQueryValueString } from "./query-value";
@@ -239,28 +240,36 @@ export const makeRawQueryPlan = <
   const predicate: CompiledRawPredicate<Row> =
     partition === undefined
       ? localPredicate
-      : Object.freeze({
-          plan: Object.freeze({
-            filters: localPredicate.plan.filters,
-            callbackRequired: localPredicate.plan.alwaysFalse !== true,
-            callbackSkippable: localPredicate.plan.alwaysFalse === true,
-            ...(localPredicate.plan.alwaysFalse === true ? { alwaysFalse: true } : {}),
-          }),
-          matches:
-            localPredicate.plan.alwaysFalse === true
-              ? () => false
-              : (row: Row, storageKey?: string) =>
-                  partition.matches(row, storageKey) && localPredicate.matches(row, storageKey),
-        });
+      : localPredicate.plan.alwaysFalse === true
+        ? Object.freeze({
+            plan: Object.freeze({
+              filters: localPredicate.plan.filters,
+              callbackRequired: false,
+              callbackSkippable: true,
+              alwaysFalse: true as const,
+            }),
+            matches: () => false,
+          })
+        : Object.freeze({
+            plan: Object.freeze({
+              filters: localPredicate.plan.filters,
+              callbackRequired: true,
+              callbackSkippable: false,
+            }),
+            matches: (row: Row, storageKey?: string) =>
+              partition.matches(row, storageKey) && localPredicate.matches(row, storageKey),
+          });
   const storageOrder = storageOrderBy(metadata, orderBy);
   return Object.freeze({
-    ...(partition === undefined ? {} : { candidateStorageKeys: partition.ownedStorageKeys }),
-    ...(partition === undefined ? {} : { partitionKey: partition.key }),
+    ...definedFields(partition, (partition) => ({
+      candidateStorageKeys: partition.ownedStorageKeys,
+    })),
+    ...definedFields(partition, (partition) => ({ partitionKey: partition.key })),
     queryCacheKey: identity.queryCacheKey,
     selectedFields,
     predicate,
     orderBy,
-    ...(storageOrder === undefined ? {} : { storageOrderBy: storageOrder }),
+    ...definedFields(storageOrder, (storageOrderBy) => ({ storageOrderBy })),
     compare: (left, right) => compareRows(left, right, rowOrderBy),
     project: resultSemantics.projectRow,
     resultSemantics,
@@ -272,12 +281,10 @@ export const rawQueryWindowScanPlan = <Row extends RowObject, ResultRow extends 
   plan: RawQueryPlan<Row, ResultRow>,
   window: RawQueryPlanWindow,
 ): TopicRawWindowScanPlan<Row> => ({
-  ...(plan.candidateStorageKeys === undefined
-    ? {}
-    : { candidateStorageKeys: plan.candidateStorageKeys }),
+  ...definedFields(plan.candidateStorageKeys, (candidateStorageKeys) => ({ candidateStorageKeys })),
   predicate: plan.predicate.plan,
   orderBy: plan.orderBy,
-  ...(plan.storageOrderBy === undefined ? {} : { storageOrderBy: plan.storageOrderBy }),
+  ...definedFields(plan.storageOrderBy, (storageOrderBy) => ({ storageOrderBy })),
   matches: plan.predicate.matches,
   compare: plan.compare,
   offset: window.offset,

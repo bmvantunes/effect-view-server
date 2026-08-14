@@ -1227,7 +1227,8 @@ describe("@effect-view-server/client", () => {
 
     const firstFilter = new FilterValue();
     const secondFilter = new FilterValue();
-    const recursiveObject: { self?: unknown } = {};
+    type RecursiveObject = { self?: RecursiveObject };
+    const recursiveObject: RecursiveObject = {};
     recursiveObject.self = recursiveObject;
     const recursiveArray: Array<unknown> = [];
     recursiveArray.push(recursiveArray);

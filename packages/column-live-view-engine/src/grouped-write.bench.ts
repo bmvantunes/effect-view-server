@@ -1,3 +1,4 @@
+import { conditionalFields } from "@effect-view-server/effect-utils";
 // Import Vitest directly so @effect/vitest's eager test-runtime module graph does not
 // distort the heap, JIT, and GC behavior this benchmark is measuring.
 import { afterAll, beforeAll, bench, describe, expect } from "vitest";
@@ -42,8 +43,11 @@ import { memorySnapshot, type BenchmarkMemorySnapshot } from "./benchmark-memory
 declare const process: {
   readonly env: Record<string, string | undefined>;
 };
-declare const gc: (() => void) | undefined;
 declare const setImmediate: (callback: () => void) => void;
+
+declare global {
+  var gc: (() => void) | undefined;
+}
 
 const Order = Schema.Struct({
   id: ViewServerId,
@@ -74,6 +78,13 @@ type GroupedReaderName = "primary" | "secondary";
 type GroupedEvent = ColumnLiveViewEngineEvent<object>;
 type GroupedSubscription = ColumnLiveViewSubscription<object>;
 type GroupedEventReader = (count: number) => Effect.Effect<ReadonlyArray<GroupedEvent>, Cause.Done>;
+type ActiveGroupedViewCounts = {
+  readonly activeFallbackGroupedViews: number;
+  readonly activeIncrementalGroupedViews: number;
+  readonly activeViews: number;
+  readonly groupedFullEvaluationCount: number;
+  readonly groupedPatchedEvaluationCount: number;
+};
 type DeltaDrainRecord = {
   readonly caseName: string;
   readonly fromVersion: number;
@@ -330,7 +341,7 @@ const postGcEventLoopTurns = groupedWriteBenchmarkPostGcEventLoopTurnsFromEnv(
 );
 
 const collectBenchmarkGarbage = groupedWriteBenchmarkGarbageCollector({
-  collectGarbage: typeof gc === "function" ? gc : undefined,
+  collectGarbage: globalThis.gc,
   explicitGc: explicitGarbageCollection === 1,
 });
 
@@ -715,16 +726,7 @@ const drainDeltas = async (benchmarkProfile: BenchmarkProfile, caseName: string)
   }
 };
 
-const activeGroupedViewCounts = (
-  health: unknown,
-  label: string,
-): {
-  readonly activeFallbackGroupedViews: number;
-  readonly activeIncrementalGroupedViews: number;
-  readonly activeViews: number;
-  readonly groupedFullEvaluationCount: number;
-  readonly groupedPatchedEvaluationCount: number;
-} => {
+const activeGroupedViewCounts = (health: unknown, label: string): ActiveGroupedViewCounts => {
   expect(isBenchmarkEngineHealth(health)).toBe(true);
   if (!isBenchmarkEngineHealth(health)) {
     throw new Error(`Grouped write benchmark ${label} health is malformed.`);
@@ -1064,7 +1066,9 @@ afterAll(async () => {
       incrementalAdmissionLimits: groupedIncrementalAdmissionLimits,
       priceThreshold:
         groupedWriteMode === "incremental" ? incrementalPriceThreshold(benchmarkRowCount) : null,
-      ...(groupedReaderProfile === "dual" ? {} : { readerProfile: groupedReaderProfile }),
+      ...conditionalFields(!(groupedReaderProfile === "dual"), () => ({
+        readerProfile: groupedReaderProfile,
+      })),
       seedMutationCount: profile.rowCount,
       timedMutationCount: profile.rowMutationCount - profile.rowCount,
       writeBatchSize: mutationBatchSize,

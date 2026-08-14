@@ -52,7 +52,7 @@ function typedHealth(health: NormalizedViewServerHealth): unknown {
   return health;
 }
 
-const readProperty = (candidate: object, key: string): unknown => {
+const readProperty = <Value extends object>(candidate: Value, key: string): unknown => {
   const property = Result.try(() => Reflect.get(candidate, key));
   return Result.isSuccess(property) ? property.success : undefined;
 };
@@ -181,10 +181,10 @@ const projectSources = Effect.fn("ViewServerProtocol.health.sources.project")(fu
 >(
   config: ViewServerTopicConfig<Topics>,
   candidate: { readonly sources?: unknown },
-  project: (
+  project: <Value>(
     topic: string,
     contract: CompiledSourceHealthContract,
-    value: unknown,
+    value: Value,
   ) => Effect.Effect<Output, ViewServerRuntimeError>,
 ): Effect.fn.Return<Readonly<Record<string, Output>>, ViewServerRuntimeError> {
   const { keys, sources } = yield* sourceRecordKeys(candidate);
@@ -201,12 +201,13 @@ const projectSources = Effect.fn("ViewServerProtocol.health.sources.project")(fu
 
 const projectSourceValues = Effect.fn("ViewServerProtocol.health.sourceValues.project")(function* <
   Output,
+  Value,
 >(
   topic: string,
   contract: CompiledSourceHealthContract,
-  value: unknown,
-  project: (
-    value: unknown,
+  value: Value,
+  project: <Input>(
+    value: Input,
     errors: ReturnType<typeof sourceHealthCodecErrors>,
   ) => Effect.Effect<Output, ViewServerRuntimeError>,
 ): Effect.fn.Return<Output | ReadonlyArray<Output>, ViewServerRuntimeError> {

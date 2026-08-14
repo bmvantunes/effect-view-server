@@ -26,6 +26,9 @@ export class StrictJsonMaterializationError extends Schema.TaggedError<StrictJso
 ) {}
 
 type StrictJsonResult = Result.Result<Schema.Json, StrictJsonMaterializationError>;
+type StrictJsonInput = Schema.Schema.Type<typeof Schema.Unknown>;
+
+const isNumber = (value: unknown): value is number => typeof value === "number";
 
 const simplePathKey = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 
@@ -155,8 +158,8 @@ const materializeDataProperty = (
   return materialize(value, path, active);
 };
 
-const materializeArray = (
-  value: object,
+const materializeArray = <Value extends object>(
+  value: Value,
   path: string,
   keys: ReadonlyArray<string | symbol>,
   active: WeakSet<object>,
@@ -168,7 +171,7 @@ const materializeArray = (
   }
 
   const lengthValue: unknown = lengthResult.success;
-  if (typeof lengthValue !== "number") {
+  if (!isNumber(lengthValue)) {
     return reflectionFailure(lengthPath);
   }
 
@@ -218,8 +221,8 @@ const materializeArray = (
   return Result.succeed(output);
 };
 
-const materializeRecord = (
-  value: object,
+const materializeRecord = <Value extends object>(
+  value: Value,
   path: string,
   keys: ReadonlyArray<string | symbol>,
   active: WeakSet<object>,
@@ -255,8 +258,8 @@ const materializeRecord = (
   return Result.succeed(output);
 };
 
-const materializeObject = (
-  value: object,
+const materializeObject = <Value extends object>(
+  value: Value,
   path: string,
   active: WeakSet<object>,
 ): StrictJsonResult => {
@@ -321,6 +324,6 @@ const materialize = (value: unknown, path: string, active: WeakSet<object>): Str
 };
 
 export const materializeStrictJson = (
-  value: unknown,
+  value: StrictJsonInput,
 ): Result.Result<Schema.Json, StrictJsonMaterializationError> =>
   materialize(value, "$", new WeakSet());

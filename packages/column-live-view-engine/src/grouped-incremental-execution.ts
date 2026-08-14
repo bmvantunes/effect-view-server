@@ -54,15 +54,17 @@ export type GroupedIncrementalExecutionDiagnostics = {
   readonly onPatchedEvaluation: () => void;
 };
 
+type GroupedIncrementalExecutionBundle = {
+  readonly counts: () => GroupedIncrementalExecutionDiagnosticCounts;
+  readonly diagnostics: GroupedIncrementalExecutionDiagnostics;
+};
+
 const noopGroupedIncrementalExecutionDiagnostics: GroupedIncrementalExecutionDiagnostics = {
   onFullEvaluation: () => undefined,
   onPatchedEvaluation: () => undefined,
 };
 
-const newGroupedIncrementalExecutionDiagnostics = (): {
-  readonly counts: () => GroupedIncrementalExecutionDiagnosticCounts;
-  readonly diagnostics: GroupedIncrementalExecutionDiagnostics;
-} => {
+const newGroupedIncrementalExecutionDiagnostics = (): GroupedIncrementalExecutionBundle => {
   let fullEvaluationCount = 0;
   let patchedEvaluationCount = 0;
   return {

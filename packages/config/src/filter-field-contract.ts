@@ -1,3 +1,4 @@
+import { conditionalFields } from "./optional-fields";
 import { Schema, SchemaAST } from "effect";
 import { schemaAstIsClass } from "./schema-ast-children";
 
@@ -66,9 +67,10 @@ const scalarMetadata = (
   if (SchemaAST.isEnum(ast)) {
     return {
       supportsText: ast.enums.some(([, value]) => typeof value === "string"),
-      ...(ast.enums.some(([, value]) => typeof value === "number")
-        ? { numericKind: "number" as const }
-        : {}),
+      ...conditionalFields(
+        ast.enums.some(([, value]) => typeof value === "number"),
+        () => ({ numericKind: "number" as const }),
+      ),
     };
   }
   return undefined;
@@ -165,8 +167,8 @@ type FilterRowSchema = object & {
 
 const cache = new WeakMap<object, ReadonlyMap<string, ViewServerFilterFieldContract>>();
 
-export const viewServerFilterFieldContracts = (
-  rowSchema: FilterRowSchema,
+export const viewServerFilterFieldContracts = <Value extends FilterRowSchema>(
+  rowSchema: Value,
 ): ReadonlyMap<string, ViewServerFilterFieldContract> => {
   const cached = cache.get(rowSchema);
   if (cached !== undefined) {
@@ -199,7 +201,7 @@ export const viewServerFilterFieldContracts = (
   return fields;
 };
 
-export const viewServerFilterFieldContract = (
-  rowSchema: FilterRowSchema,
+export const viewServerFilterFieldContract = <Value extends FilterRowSchema>(
+  rowSchema: Value,
   path: string,
 ): ViewServerFilterFieldContract | undefined => viewServerFilterFieldContracts(rowSchema).get(path);

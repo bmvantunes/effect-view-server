@@ -362,7 +362,7 @@ class InMemoryColumnLiveViewEngine<
   readonly patchDecodedFields: ColumnLiveViewEngineInternal<Topics>["patchDecodedFields"] =
     Effect.fn("ColumnLiveViewEngine.patchDecodedFields")({ self: this }, function* <
       Topic extends Extract<keyof Topics, string>,
-      Patch extends object,
+      Patch extends Partial<Topics[Topic]["schema"]["Type"]>,
     >(this: InMemoryColumnLiveViewEngine<Topics>, topic: Topic, key: string, patch: Patch) {
       yield* this.ensureOpen();
       const store = yield* this.getStore(topic);

@@ -436,9 +436,8 @@ describe("ColumnLiveViewEngine validation", () => {
           throw new Error("grouped orderBy property access must not run");
         },
       });
-      const groupedAggregates: {
-        rowCount: { aggFunc: "count" };
-      } = { rowCount: { aggFunc: "count" } };
+      type CountGroupedAggregates = { rowCount: { aggFunc: "count" } };
+      const groupedAggregates: CountGroupedAggregates = { rowCount: { aggFunc: "count" } };
       const groupedQuery = {
         groupBy,
         aggregates: groupedAggregates,
@@ -650,7 +649,8 @@ describe("ColumnLiveViewEngine validation", () => {
       );
       expect(invalidFieldEntry._tag).toBe("InvalidQueryError");
 
-      const emptySelectQuery: { readonly select: ReadonlyArray<unknown> } = {
+      type EmptySelectQuery = { readonly select: ReadonlyArray<unknown> };
+      const emptySelectQuery: EmptySelectQuery = {
         select: [],
       };
       const invalidEmptySelect = yield* Effect.flip(

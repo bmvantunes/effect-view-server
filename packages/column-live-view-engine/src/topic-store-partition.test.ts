@@ -1,3 +1,4 @@
+import { definedFields } from "@effect-view-server/effect-utils";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 import { InvalidRowError } from "./index";
@@ -23,7 +24,7 @@ const makeSubscriber = (
 ): LiveTopicSubscriber => ({
   topic: "orders",
   queryId,
-  ...(partitionKey === undefined ? {} : { partitionKey }),
+  ...definedFields(partitionKey, (partitionKey) => ({ partitionKey })),
   notify: () =>
     Effect.sync(() => {
       notifications.push(queryId);

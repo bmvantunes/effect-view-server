@@ -88,12 +88,12 @@ const normalizeFilterBigDecimal = Effect.fn("ViewServerProtocol.filter.bigDecima
 });
 
 const normalizeFilterFieldValue = Effect.fn("ViewServerProtocol.filter.fieldValue.transform")(
-  function* (
+  function* <Input>(
     direction: Direction,
     topic: string,
     field: string,
     schema: JsonFieldSchema,
-    value: unknown,
+    value: Input,
   ) {
     const ownedValue = yield* normalizeFilterBigDecimal(topic, field, value);
     const transformed =
@@ -258,11 +258,11 @@ const transformCondition = Effect.fn("ViewServerProtocol.filter.condition.transf
 });
 
 const normalizeFilterExpression = Effect.fn("ViewServerProtocol.filter.expression.transform")(
-  function* (
+  function* <Input>(
     direction: Direction,
     topic: string,
     rowSchema: RowSchema,
-    input: unknown,
+    input: Input,
     state: TransformState,
   ) {
     const frames: Array<TransformFrame> = [{ _tag: "enter", value: input }];

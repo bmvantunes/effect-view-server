@@ -829,7 +829,8 @@ describe("stableQueryKey", () => {
 
     const recursiveArray: Array<unknown> = [];
     recursiveArray.push(recursiveArray);
-    const recursiveObject: { self?: unknown; z: number; a: number } = { z: 2, a: 1 };
+    type RecursiveObject = { self?: RecursiveObject; z: number; a: number };
+    const recursiveObject: RecursiveObject = { z: 2, a: 1 };
     recursiveObject.self = recursiveObject;
     const values = [
       null,

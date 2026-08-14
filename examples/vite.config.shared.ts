@@ -1,3 +1,8 @@
+const conditionalFields = <Value extends object>(
+  condition: boolean,
+  fields: () => Value,
+): { [Key in keyof Value]?: Exclude<Value[Key], undefined> } => (condition ? fields() : {});
+
 import { defineConfig, lazyPlugins, type PluginOption, type TestUserConfig } from "vite-plus";
 import type { BrowserProviderOption } from "vite-plus/test/node";
 
@@ -103,28 +108,28 @@ export const defineTanStackReactExampleConfig = ({
           },
         ],
       },
-      ...(includeNodeTests === true
-        ? {
-            projects: [
-              {
-                extends: true,
-                test: {
-                  name: "node",
-                  browser: { enabled: false },
-                  include: ["src/**/*.test.ts"],
-                },
-              },
-              {
-                extends: true,
-                test: {
-                  name: "browser",
-                  typecheck: { enabled: false },
-                },
-              },
-            ],
-          }
-        : {}),
-      ...(enforceAllSourceCoverage === true ? { coverage: exactAllSourceCoverage } : {}),
+      ...conditionalFields(includeNodeTests === true, () => ({
+        projects: [
+          {
+            extends: true,
+            test: {
+              name: "node",
+              browser: { enabled: false },
+              include: ["src/**/*.test.ts"],
+            },
+          },
+          {
+            extends: true,
+            test: {
+              name: "browser",
+              typecheck: { enabled: false },
+            },
+          },
+        ],
+      })),
+      ...conditionalFields(enforceAllSourceCoverage === true, () => ({
+        coverage: exactAllSourceCoverage,
+      })),
     },
     lint: {
       options: {

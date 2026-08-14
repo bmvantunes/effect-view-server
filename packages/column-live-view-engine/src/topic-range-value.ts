@@ -29,7 +29,10 @@ export const compareExactRangeColumnValue = (left: unknown, right: unknown): num
   return undefined;
 };
 
-export const columnValueDoesNotEqual = (value: unknown, notEqual: unknown): boolean => {
+export const columnValueDoesNotEqual = <Value, NotEqual>(
+  value: Value,
+  notEqual: NotEqual,
+): boolean => {
   return equalityComparableValues(value, notEqual) && !valuesEqual(value, notEqual);
 };
 

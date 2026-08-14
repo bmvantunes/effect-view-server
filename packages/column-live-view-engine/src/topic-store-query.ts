@@ -30,7 +30,11 @@ type RowObject = object;
 
 export const prepareTopicStoreRuntimeRawQuery = Effect.fn(
   "ColumnLiveViewEngine.topicStore.query.raw.prepareRuntime",
-)(function* (store: TopicStore, query: unknown, partition?: ColumnLiveViewEngineQueryPartition) {
+)(function* <Query>(
+  store: TopicStore,
+  query: Query,
+  partition?: ColumnLiveViewEngineQueryPartition,
+) {
   return yield* prepareRuntimeRawQuery(
     store.topic,
     topicStoreQueryResources(store).metadata,
@@ -41,7 +45,11 @@ export const prepareTopicStoreRuntimeRawQuery = Effect.fn(
 
 export const prepareTopicStoreRuntimeGroupedQuery = Effect.fn(
   "ColumnLiveViewEngine.topicStore.query.grouped.prepareRuntime",
-)(function* (store: TopicStore, query: unknown, partition?: ColumnLiveViewEngineQueryPartition) {
+)(function* <Query>(
+  store: TopicStore,
+  query: Query,
+  partition?: ColumnLiveViewEngineQueryPartition,
+) {
   return yield* prepareRuntimeGroupedQuery(
     store.topic,
     topicStoreQueryResources(store).metadata,
@@ -64,7 +72,11 @@ export const evaluateTopicStoreGroupedQuery = <ResultRow extends RowObject>(
 
 export const acquireTopicStoreRuntimeRawQueryExecution = Effect.fn(
   "ColumnLiveViewEngine.topicStore.query.raw.acquireRuntime",
-)(function* (store: TopicStore, query: unknown, partition?: ColumnLiveViewEngineQueryPartition) {
+)(function* <Query>(
+  store: TopicStore,
+  query: Query,
+  partition?: ColumnLiveViewEngineQueryPartition,
+) {
   const { activeQueries, metadata, queryInterface } = topicStoreQueryResources(store);
   const prepared = yield* prepareRuntimeRawQueryAdmission(store.topic, metadata, query, partition);
   return yield* acquirePreparedRawQueryExecution(queryInterface, activeQueries, prepared);
@@ -78,9 +90,9 @@ export const releaseTopicStoreRawQueryExecution = (
 
 export const acquireTopicStoreRuntimeGroupedQueryExecution = Effect.fn(
   "ColumnLiveViewEngine.topicStore.query.grouped.acquireRuntime",
-)(function* (
+)(function* <Query>(
   store: TopicStore,
-  query: unknown,
+  query: Query,
   groupedIncrementalAdmissionLimits: GroupedIncrementalAdmissionLimits,
   partition?: ColumnLiveViewEngineQueryPartition,
 ) {

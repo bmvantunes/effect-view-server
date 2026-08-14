@@ -1,3 +1,4 @@
+import { conditionalFields, definedFields } from "@effect-view-server/effect-utils";
 import {
   groupAggregateStateCompareValue,
   type GroupedAggregateInput,
@@ -35,7 +36,7 @@ export type GroupedQueryPlanInput = RuntimeGroupedQuery;
 export type { RuntimeGroupedOrderBy };
 
 export type CompiledGroupedOrderBy = {
-  readonly compare: (left: unknown, right: unknown) => number;
+  readonly compare: <Left, Right>(left: Left, right: Right) => number;
   readonly direction: "asc" | "desc";
   readonly groupValue: (group: GroupState) => unknown;
   readonly rowValue: (entry: StoredRowOf<RowObject>) => unknown;
@@ -122,9 +123,9 @@ const immutableGroupedQuery = (query: GroupedQueryPlanInput): GroupedQueryPlanIn
   return Object.freeze({
     groupBy,
     aggregates,
-    ...(orderBy.length === 0 ? {} : { orderBy }),
-    ...(offset === undefined ? {} : { offset }),
-    ...(limit === undefined ? {} : { limit }),
+    ...conditionalFields(!(orderBy.length === 0), () => ({ orderBy })),
+    ...definedFields(offset, (offset) => ({ offset })),
+    ...definedFields(limit, (limit) => ({ limit })),
   });
 };
 
@@ -268,7 +269,7 @@ export const makeGroupedQueryPlan = <Row extends RowObject, ResultRow extends Ro
   const aggregatePlans = compileGroupedAggregates(valueSemantics, immutableQuery.aggregates);
   const resultSemantics = Object.freeze(makeResultSemantics(groupBy, aggregatePlans));
   const orderBy = immutableQuery.orderBy ?? Object.freeze([]);
-  return Object.freeze({
+  const plan = {
     cacheKey: groupedQueryPlanCacheKey(immutableQuery, rawPredicateCacheKey),
     groupBy,
     aggregates: immutableQuery.aggregates,
@@ -279,9 +280,11 @@ export const makeGroupedQueryPlan = <Row extends RowObject, ResultRow extends Ro
     limit: immutableQuery.limit,
     resultSemantics,
     zeroLimit: immutableQuery.limit === 0,
-    ...(alwaysFalse === true ? { alwaysFalse: true } : {}),
     groupKey: groupedKeyIdentity.key,
-  });
+  };
+  return alwaysFalse === true
+    ? Object.freeze({ ...plan, alwaysFalse: true as const })
+    : Object.freeze(plan);
 };
 
 export const makeRuntimeGroupedQueryPlan = <Row extends RowObject = RowObject>(

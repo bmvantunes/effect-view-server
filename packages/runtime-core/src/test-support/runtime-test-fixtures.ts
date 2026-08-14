@@ -76,10 +76,12 @@ const stableAttributes = (
 
 const spanName = (span: Tracer.AnySpan): string => (span._tag === "Span" ? span.name : span.spanId);
 
-export const makeRecordingTracer = (): {
+type RecordingTracer = {
   readonly spans: Array<RecordedSpan>;
   readonly tracer: Tracer.Tracer;
-} => {
+};
+
+export const makeRecordingTracer = (): RecordingTracer => {
   const spans: Array<RecordedSpan> = [];
   let nextSpanId = 0;
   const nextId = (): string => {

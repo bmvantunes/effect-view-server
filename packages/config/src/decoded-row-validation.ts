@@ -59,7 +59,7 @@ const snapshotDecodedRow = (
   return Result.succeed(snapshot);
 };
 
-export const validateDecodedRow = <S extends RowSchema>(schema: S, row: unknown) => {
+export const validateDecodedRow = <S extends RowSchema, Row>(schema: S, row: Row) => {
   return Effect.fromResult(snapshotDecodedRow(schema, row)).pipe(
     Effect.flatMap((snapshot) =>
       schema

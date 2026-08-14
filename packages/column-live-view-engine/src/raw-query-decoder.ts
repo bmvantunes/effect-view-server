@@ -28,6 +28,14 @@ export type RuntimeRawQuery = {
   readonly limit?: number;
 };
 
+type DecodedRawQuery = {
+  select: ReadonlyArray<string>;
+  where?: RuntimeFilterExpression;
+  orderBy?: ReadonlyArray<{ readonly field: string; readonly direction: "asc" | "desc" }>;
+  offset?: number;
+  limit?: number;
+};
+
 const typedRuntimeRawQueryBrand: unique symbol = Symbol("TypedRuntimeRawQuery");
 const typedRuntimeRawQueryMetadata = new WeakMap<object, RawQueryCompilerMetadata>();
 
@@ -154,13 +162,7 @@ export const decodeRawQuery = Effect.fn("ColumnLiveViewEngine.rawQuery.decode")(
     });
   }
 
-  const decoded: {
-    select: ReadonlyArray<string>;
-    where?: RuntimeFilterExpression;
-    orderBy?: ReadonlyArray<{ readonly field: string; readonly direction: "asc" | "desc" }>;
-    offset?: number;
-    limit?: number;
-  } = {
+  const decoded: DecodedRawQuery = {
     select: Object.freeze(selectedFields),
   };
 

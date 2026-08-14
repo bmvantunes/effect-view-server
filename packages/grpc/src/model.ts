@@ -89,7 +89,7 @@ export type GrpcMaterializedDefinitionOptions<
   Row extends object = object,
 > = {
   readonly client: Client;
-  readonly mapValue: (value: unknown) => Row;
+  readonly mapValue: <Value>(value: Value) => Row;
   readonly method: string;
   readonly request: () => unknown;
   readonly service: () => DescService;
@@ -100,7 +100,7 @@ export type GrpcLeasedDefinitionOptions<
   Row extends object = object,
 > = {
   readonly client: Client;
-  readonly mapValue: (value: unknown, route: Readonly<Record<string, unknown>>) => Row;
+  readonly mapValue: <Value>(value: Value, route: Readonly<Record<string, unknown>>) => Row;
   readonly method: string;
   readonly request: (route: Readonly<Record<string, unknown>>) => unknown;
   readonly service: () => DescService;
@@ -645,7 +645,10 @@ const captureExactNonEmptyUniqueStringArray = (
 const isGrpcMessageDescriptor = (value: unknown): boolean =>
   typeof value === "object" && value !== null && Reflect.get(value, "kind") === "message";
 
-const isGrpcMethodDescriptor = (value: unknown, service: object): boolean =>
+const isGrpcMethodDescriptor = <Service extends object>(
+  value: unknown,
+  service: Service,
+): boolean =>
   typeof value === "object" &&
   value !== null &&
   Reflect.get(value, "kind") === "rpc" &&
@@ -762,19 +765,19 @@ type CheckedLeasedInput = Omit<CheckedMaterializedInput, "routeBy"> & {
   readonly routeBy: readonly [string, ...ReadonlyArray<string>];
 };
 
-function requireCommonInput(
+function requireCommonInput<Input>(
   descriptors: GrpcDescriptorRecord,
-  input: unknown,
+  input: Input,
   lifecycle: "materialized",
 ): CheckedMaterializedInput;
-function requireCommonInput(
+function requireCommonInput<Input>(
   descriptors: GrpcDescriptorRecord,
-  input: unknown,
+  input: Input,
   lifecycle: "leased",
 ): CheckedLeasedInput;
-function requireCommonInput(
+function requireCommonInput<Input>(
   descriptors: GrpcDescriptorRecord,
-  input: unknown,
+  input: Input,
   lifecycle: "materialized" | "leased",
 ): CheckedMaterializedInput | CheckedLeasedInput {
   const keys =
@@ -875,7 +878,7 @@ const makeMaterializedDefinition = <
       client: checked.client,
       method: checked.method,
       request: (): unknown => Reflect.apply(checked.request, undefined, []),
-      mapValue: (value: unknown): MappingRow<Mapping> =>
+      mapValue: <Value>(value: Value): MappingRow<Mapping> =>
         Reflect.apply(checked.map, undefined, [{ value }]),
       service: () => checked.service,
     },
@@ -927,8 +930,10 @@ const makeLeasedDefinition = <
       method: checked.method,
       request: (route: Readonly<Record<string, unknown>>): unknown =>
         Reflect.apply(checked.request, undefined, [route]),
-      mapValue: (value: unknown, route: Readonly<Record<string, unknown>>): MappingRow<Mapping> =>
-        Reflect.apply(checked.map, undefined, [{ value, route }]),
+      mapValue: <Value>(
+        value: Value,
+        route: Readonly<Record<string, unknown>>,
+      ): MappingRow<Mapping> => Reflect.apply(checked.map, undefined, [{ value, route }]),
       service: () => checked.service,
     },
     retry,
@@ -976,9 +981,9 @@ export const grpc: GrpcHelper = {
 
 Object.freeze(grpc);
 
-export const isGrpcSourceDefinitionOptions = (
-  value: unknown,
-): value is GrpcMaterializedDefinitionOptions | GrpcLeasedDefinitionOptions =>
+export const isGrpcSourceDefinitionOptions = <Value>(
+  value: Value,
+): value is Value & (GrpcMaterializedDefinitionOptions | GrpcLeasedDefinitionOptions) =>
   captureGrpcSourceDefinitionOptions(value) !== undefined;
 
 export const captureGrpcSourceDefinitionOptions = (

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect } from "effect";
+import { defineViewServerConfig, ViewServerId } from "@effect-view-server/config";
+import { Effect, Schema } from "effect";
 import {
   compileViewServerGroupedRowContract,
   compileViewServerRuntimeEventRowPlan,
@@ -351,6 +352,66 @@ describe("Protocol row reflection boundaries", () => {
       expect(nonObjectError).toStrictEqual(
         invalidRow("Invalid row for topic orders: Expected a JSON object."),
       );
+    }),
+  );
+
+  it.effect("rejects decoded rows that fail the compiled result proof", () =>
+    Effect.gen(function* () {
+      let projectedValidationCount = 0;
+      const HostileValue = Schema.String.check(
+        Schema.makeFilter(() => {
+          projectedValidationCount += 1;
+          return projectedValidationCount === 1;
+        }),
+      );
+      const projectedConfig = defineViewServerConfig({
+        topics: {
+          hostile: {
+            schema: Schema.Struct({ id: ViewServerId, value: HostileValue }),
+          },
+        },
+      });
+      const projectedPlan = compileViewServerRuntimeEventRowPlan(projectedConfig, "hostile", {
+        select: ["value"],
+      });
+      const projectedError = yield* Effect.flip(projectedPlan.decodeMaterialized({ value: "a" }));
+      expect(projectedError).toStrictEqual({
+        _tag: "ViewServerRuntimeError",
+        code: "InvalidRow",
+        message: "Decoded row does not satisfy its compiled contract for topic hostile",
+        topic: "hostile",
+      });
+
+      let groupedValidationCount = 0;
+      const HostileGroupValue = Schema.String.check(
+        Schema.makeFilter(() => {
+          groupedValidationCount += 1;
+          return groupedValidationCount === 1;
+        }),
+      );
+      const groupedConfig = defineViewServerConfig({
+        topics: {
+          hostile: {
+            schema: Schema.Struct({ id: ViewServerId, value: HostileGroupValue }),
+          },
+        },
+      });
+      const groupedPlan = compileViewServerRuntimeEventRowPlan(groupedConfig, "hostile", {
+        groupBy: ["value"],
+        aggregates: { rowCount: { aggFunc: "count" } },
+      });
+      const groupedError = yield* Effect.flip(
+        groupedPlan.decodeMaterialized({
+          value: "a",
+          rowCount: { _viewServerAggregate: "bigint", value: "1" },
+        }),
+      );
+      expect(groupedError).toStrictEqual({
+        _tag: "ViewServerRuntimeError",
+        code: "InvalidRow",
+        message: "Decoded grouped row does not satisfy its compiled contract for topic hostile",
+        topic: "hostile",
+      });
     }),
   );
 });

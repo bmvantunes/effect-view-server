@@ -94,8 +94,8 @@ export const valuesEqual = (left: unknown, right: unknown): boolean => {
 };
 
 export function scalarEqualityKey(value: ScalarEqualityKeyValue): string;
-export function scalarEqualityKey(value: unknown): string | undefined;
-export function scalarEqualityKey(value: unknown): string | undefined {
+export function scalarEqualityKey<Value>(value: Value): string | undefined;
+export function scalarEqualityKey<Value>(value: Value): string | undefined {
   if (value === null) {
     return "null";
   }

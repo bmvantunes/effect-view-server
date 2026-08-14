@@ -1432,6 +1432,9 @@ importers:
         specifier: 'catalog:'
         version: 4.0.0-beta.107(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d)
     devDependencies:
+      '@effect-view-server/effect-utils':
+        specifier: workspace:*
+        version: link:../effect-utils
       '@effect/vitest':
         specifier: 'catalog:'
         version: 4.0.0-beta.107(effect@4.0.0-beta.107(patch_hash=f1989b0be07a3281e0fd50ba5ad9e6857fd4e8a9da322ab33b063cee09a7f07d))(vitest@4.1.10)

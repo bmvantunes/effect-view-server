@@ -1,3 +1,4 @@
+import { definedFields } from "@effect-view-server/effect-utils";
 import type { ViewServerRuntimeError, ViewServerTopicConfig } from "@effect-view-server/config";
 import type {
   ViewServerRuntimeDecodedMutationClient,
@@ -8,7 +9,9 @@ import { Cause, Effect, Exit, FiberSet, Option, Queue, Schema, Scope } from "eff
 import * as Net from "node:net";
 import {
   handleTcpPublishCommandLine,
+  TcpPublishResponseSchema,
   type TcpPublishCommandError,
+  type TcpPublishResponse,
   ViewServerTcpPublishIngressError,
 } from "./tcp-publish-command";
 import type { ViewServerTcpPublishIngressOptions } from "./tcp-publish-ingress";
@@ -47,20 +50,6 @@ type TcpPendingSocketReservation = {
   readonly releaseAdmission: () => void;
 };
 
-type TcpWireResponse =
-  | { readonly ok: true }
-  | {
-      readonly ok: false;
-      readonly error: {
-        readonly _tag: string;
-        readonly code?: string | undefined;
-        readonly message: string;
-        readonly phase?: string | undefined;
-        readonly status?: number | undefined;
-        readonly topic?: string | undefined;
-      };
-    };
-
 export type TcpPublishServerFactory = (
   connectionListener: (socket: Net.Socket) => void,
 ) => Net.Server;
@@ -86,7 +75,7 @@ const rejectedSocketDestroyTimeoutMs = 1_000;
 const isViewServerRuntimeError = (value: TcpPublishCommandError): value is ViewServerRuntimeError =>
   value._tag === "ViewServerRuntimeError" || value._tag === "ViewServerBackpressureError";
 
-const wireError = (cause: Cause.Cause<TcpPublishCommandError>): TcpWireResponse => {
+const wireError = (cause: Cause.Cause<TcpPublishCommandError>): TcpPublishResponse => {
   const failure = Cause.findErrorOption(cause);
   if (failure._tag === "Some") {
     if (isViewServerRuntimeError(failure.value)) {
@@ -96,7 +85,9 @@ const wireError = (cause: Cause.Cause<TcpPublishCommandError>): TcpWireResponse 
           _tag: failure.value._tag,
           code: failure.value.code,
           message: failure.value.message,
-          ...(failure.value.topic === undefined ? {} : { topic: failure.value.topic }),
+          ...definedFields("topic" in failure.value ? failure.value.topic : undefined, (topic) => ({
+            topic,
+          })),
         },
       };
     }
@@ -116,7 +107,9 @@ const wireError = (cause: Cause.Cause<TcpPublishCommandError>): TcpWireResponse 
         _tag: failure.value._tag,
         message: failure.value.message,
         phase: failure.value.phase,
-        ...(failure.value.topic === undefined ? {} : { topic: failure.value.topic }),
+        ...definedFields("topic" in failure.value ? failure.value.topic : undefined, (topic) => ({
+          topic,
+        })),
       },
     };
   }
@@ -141,19 +134,10 @@ const logUntypedTcpCommandCause = (
   );
 };
 
-const wireSuccess = (): TcpWireResponse => ({ ok: true });
+const wireSuccess = (): TcpPublishResponse => ({ ok: true });
 
-const jsonLine = (value: TcpWireResponse): string => `${JSON.stringify(value)}\n`;
-
-const tcpErrorPayload = (error: ViewServerTcpPublishIngressError): TcpWireResponse => ({
-  ok: false,
-  error: {
-    _tag: error._tag,
-    message: error.message,
-    phase: error.phase,
-    topic: error.topic,
-  },
-});
+const jsonLine = (value: TcpPublishResponse): string =>
+  `${JSON.stringify(Schema.encodeUnknownSync(TcpPublishResponseSchema)(value))}\n`;
 
 const tcpQueueExceededError = (maxQueuedCommands: number): ViewServerTcpPublishIngressError =>
   new ViewServerTcpPublishIngressError({
@@ -221,7 +205,7 @@ const waitForTcpSocketOperation = (
 export const writeTcpJsonLine = (
   socket: TcpResponseSocket,
   state: TcpResponseState,
-  value: TcpWireResponse,
+  value: TcpPublishResponse,
 ): Effect.Effect<void> => {
   if (state.closed || socket.destroyed) {
     return Effect.void;
@@ -231,7 +215,7 @@ export const writeTcpJsonLine = (
   });
 };
 
-const endTcpJsonLine = (socket: Net.Socket, value: TcpWireResponse): Effect.Effect<void> =>
+const endTcpJsonLine = (socket: Net.Socket, value: TcpPublishResponse): Effect.Effect<void> =>
   waitForTcpSocketOperation(socket, (complete) => {
     socket.end(jsonLine(value), complete);
   }).pipe(
@@ -244,7 +228,7 @@ const rejectTcpSocket = Effect.fn("ViewServerRuntime.tcpPublish.socket.reject")(
   socket: Net.Socket,
   error: ViewServerTcpPublishIngressError,
 ) {
-  return yield* endTcpJsonLine(socket, tcpErrorPayload(error));
+  return yield* endTcpJsonLine(socket, wireError(Cause.fail(error)));
 });
 
 const executeLine = Effect.fn("ViewServerRuntime.tcpPublish.socket.executeLine")(function* <
@@ -418,7 +402,7 @@ export const makeTcpPublishSocketServer = Effect.fn(
             // Admission counts logical sessions; terminal sockets are Closed while cleanup drains.
             state.sockets.delete(socket);
             runServerFiber(
-              endTcpJsonLine(socket, tcpErrorPayload(error)).pipe(
+              endTcpJsonLine(socket, wireError(Cause.fail(error))).pipe(
                 Effect.andThen(closeWork),
                 Effect.andThen(closeSocket),
               ),

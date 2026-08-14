@@ -52,6 +52,15 @@ export const noForbiddenTermInSymbolNamesRule = defineRule({
 				return true;
 			if (parent.type === "TSTypeParameter") return parent.name === node;
 			if (parent.type === "VariableDeclarator" && parent.id === node) return true;
+			if (
+				(parent.type === "MethodDefinition" ||
+					parent.type === "PropertyDefinition" ||
+					parent.type === "TSMethodSignature") &&
+				parent.key === node
+			)
+				return true;
+			if (parent.type === "Property" && parent.key === node && !parent.computed)
+				return parent.method;
 			return context.sourceCode.getDeclaredVariables(node).length > 0;
 		};
 

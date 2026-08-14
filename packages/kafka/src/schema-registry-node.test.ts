@@ -80,7 +80,7 @@ const options = (
   ...overrides,
 });
 
-const jsonResponse = (value: unknown, status = 200): Response =>
+const jsonResponse = <Value>(value: Value, status = 200): Response =>
   new Response(JSON.stringify(value), {
     status,
     headers: { "content-type": "application/json" },
@@ -372,8 +372,12 @@ describe("Kafka Schema Registry HTTP reader", () => {
     "rejects malformed compatibility, version, schema, reference, and descriptor JSON",
     () =>
       Effect.gen(function* () {
-        const readFailure = (body: unknown, operation: "compatibility" | "versions" | "schema") => {
-          vi.stubGlobal("fetch", () => Promise.resolve(jsonResponse(body)));
+        const readFailure = <Body>(
+          body: Body,
+          operation: "compatibility" | "versions" | "schema",
+        ) => {
+          const response = jsonResponse(body);
+          vi.stubGlobal("fetch", () => Promise.resolve(response));
           return Effect.scoped(
             makeKafkaSchemaRegistryReader(options()).pipe(
               Effect.flatMap((reader) =>

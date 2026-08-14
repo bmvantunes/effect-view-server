@@ -89,6 +89,11 @@ type SequenceNode<Row> = {
   size: number;
 };
 
+type MaterializedSequence<Row> = {
+  readonly rows: ReadonlyArray<Row>;
+  readonly keys: ReadonlyArray<string>;
+};
+
 const sequenceSize = <Row>(node: SequenceNode<Row> | undefined): number => node?.size ?? 0;
 
 const updateSequenceNode = <Row>(node: SequenceNode<Row>): void => {
@@ -211,7 +216,7 @@ const makeSequenceNode = <Row>(id: number, key: string, row: Row): SequenceNode<
 
 const materializeSequence = <Row>(
   root: SequenceNode<Row> | undefined,
-): { readonly rows: ReadonlyArray<Row>; readonly keys: ReadonlyArray<string> } => {
+): MaterializedSequence<Row> => {
   const rows: Array<Row> = [];
   const keys: Array<string> = [];
   const stack: Array<SequenceNode<Row>> = [];

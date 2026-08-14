@@ -33,7 +33,7 @@ export default defineConfig({
       },
     },
   },
-  pack: libraryPack(["src/index.ts", "src/internal.ts"]),
+  pack: libraryPack(["src/index.ts", "src/internal.ts", "src/source-runtime.ts"]),
   lint: {
     options: {
       typeAware: true,

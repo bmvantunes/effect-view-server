@@ -1,3 +1,4 @@
+import { definedFields } from "@effect-view-server/effect-utils";
 import { describe, expect, it } from "@effect/vitest";
 import {
   ViewServerId,
@@ -267,11 +268,11 @@ const invokeForeignTransitionDelivery = <
     never
   >(() => Reflect.apply(toolkit.delivery, toolkit, [mutation, settlement, transition]));
 
-const invokeMaintenance = <Topic extends string>(
+const invokeMaintenance = <Topic extends string, Operation>(
   execute: (
     operation: import("@effect-view-server/source-adapter").SourceMaintenanceOperation<Topic>,
   ) => Effect.Effect<SourceMaintenanceResult>,
-  operation: unknown,
+  operation: Operation,
 ): Effect.Effect<SourceMaintenanceResult> => Reflect.apply(execute, undefined, [operation]);
 
 const fatalDefect = (exit: Exit.Exit<never, ViewServerRuntimeError>): unknown => {
@@ -700,9 +701,9 @@ const makeHarness = Effect.fn("RuntimeCoreTest.makeMaintenanceHarness")(function
     publishManyWithStorageKeys: () => Effect.void,
   };
   const manager = yield* makeRuntimeCoreSourceManager(config, mutations, Effect.void, {
-    ...(options?.afterMutationApplication === undefined
-      ? {}
-      : { afterMutationApplication: options.afterMutationApplication }),
+    ...definedFields(options?.afterMutationApplication, (afterMutationApplication) => ({
+      afterMutationApplication,
+    })),
     afterAttemptCancellationRequested: Effect.suspend(() =>
       blockAfterAttemptCancellationRequested
         ? Deferred.succeed(shutdownCancellationRequested, undefined).pipe(
@@ -710,9 +711,9 @@ const makeHarness = Effect.fn("RuntimeCoreTest.makeMaintenanceHarness")(function
           )
         : Effect.void,
     ),
-    ...(options?.settlementHandoff === undefined
-      ? {}
-      : { settlementHandoff: options.settlementHandoff }),
+    ...definedFields(options?.settlementHandoff, (settlementHandoff) => ({
+      settlementHandoff,
+    })),
   }).pipe(Effect.provide(layer));
   const activeControl = yield* Deferred.await(control);
   const diagnostics = yield* manager.subscribeSourceHealth({ topic: "rows" });

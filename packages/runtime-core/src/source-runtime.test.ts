@@ -43,7 +43,7 @@ describe("Runtime Core Source Adapter vertical slice", () => {
       const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(
         Effect.provide(fixture.layer),
       );
-      const subscribeHostile = (input: unknown): Effect.Effect<unknown, unknown> =>
+      const subscribeHostile = <Input>(input: Input): Effect.Effect<unknown, unknown> =>
         Reflect.apply(runtime.liveClient.subscribeSourceHealth, runtime.liveClient, [input]);
       const hostile = new Proxy(
         {},

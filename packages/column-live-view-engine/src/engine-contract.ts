@@ -18,7 +18,6 @@ import type { ColumnLiveViewEngineHealth } from "./engine-health";
 import type { ColumnLiveViewEngineError, EngineClosedError } from "./engine-errors";
 import type { GroupedIncrementalAdmissionLimits } from "./grouped-incremental-admission";
 import type { ColumnLiveViewEngineQueryPartition } from "./query-partition";
-
 export type DecodableTopicDefinitions = Record<
   string,
   {
@@ -228,9 +227,9 @@ export type ColumnLiveViewEngine<Topics extends DecodableTopicDefinitions> = {
   ) => Effect.Effect<void, ColumnLiveViewEngineError>;
   readonly snapshot: EngineSnapshot<Topics>;
   readonly subscribe: EngineSubscribe<Topics>;
-  readonly subscribeRuntime: <Topic extends Extract<keyof Topics, string>>(
+  readonly subscribeRuntime: <Topic extends Extract<keyof Topics, string>, Query>(
     topic: Topic,
-    query: unknown,
+    query: Query,
   ) => Effect.Effect<ColumnLiveViewSubscription<object>, ColumnLiveViewEngineError>;
   readonly health: () => Effect.Effect<ColumnLiveViewEngineHealth<Topics>, never>;
   readonly reset: () => Effect.Effect<void, EngineClosedError>;
@@ -244,31 +243,34 @@ export type ColumnLiveViewEngineInternal<Topics extends DecodableTopicDefinition
       key: string,
       partitionKey: string,
     ) => Effect.Effect<void, ColumnLiveViewEngineError>;
-    readonly snapshotRuntime: <Topic extends Extract<keyof Topics, string>>(
+    readonly snapshotRuntime: <Topic extends Extract<keyof Topics, string>, Query>(
       topic: Topic,
-      query: unknown,
+      query: Query,
     ) => Effect.Effect<LiveQueryResult<object>, ColumnLiveViewEngineError>;
     readonly subscribeObserved: EngineSubscribeObserved<Topics>;
-    readonly subscribeRuntimeObserved: <Topic extends Extract<keyof Topics, string>>(
+    readonly subscribeRuntimeObserved: <Topic extends Extract<keyof Topics, string>, Query>(
       topic: Topic,
-      query: unknown,
+      query: Query,
       observer: ColumnLiveViewTerminalObserver,
     ) => Effect.Effect<ColumnLiveViewSubscription<object>, ColumnLiveViewEngineError>;
-    readonly subscribeRuntimePartitioned: <Topic extends Extract<keyof Topics, string>>(
+    readonly subscribeRuntimePartitioned: <Topic extends Extract<keyof Topics, string>, Query>(
       topic: Topic,
-      query: unknown,
+      query: Query,
       partition: ColumnLiveViewEngineQueryPartition,
     ) => Effect.Effect<ColumnLiveViewSubscription<object>, ColumnLiveViewEngineError>;
-    readonly subscribeRuntimeObservedPartitioned: <Topic extends Extract<keyof Topics, string>>(
+    readonly subscribeRuntimeObservedPartitioned: <
+      Topic extends Extract<keyof Topics, string>,
+      Query,
+    >(
       topic: Topic,
-      query: unknown,
+      query: Query,
       partition: ColumnLiveViewEngineQueryPartition,
       observer: ColumnLiveViewTerminalObserver,
     ) => Effect.Effect<ColumnLiveViewSubscription<object>, ColumnLiveViewEngineError>;
-    readonly patchDecodedFields: (
-      topic: Extract<keyof Topics, string>,
+    readonly patchDecodedFields: <Topic extends Extract<keyof Topics, string>>(
+      topic: Topic,
       key: string,
-      patch: object,
+      patch: Partial<Topics[Topic]["schema"]["Type"]>,
     ) => Effect.Effect<void, ColumnLiveViewEngineError>;
     readonly publishManyDecodedRows: (
       topic: Extract<keyof Topics, string>,

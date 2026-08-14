@@ -14,7 +14,7 @@
   },
   "scripts": {
     "build": "vp pack",
-    "test": "vp run -t @effect-view-server/effect-utils#build && vp run -t @effect-view-server/runtime-core#build && vp run -t @effect-view-server/source-adapter-testing#build && vp test run --coverage --typecheck"
+    "test": "vp run -t @effect-view-server/config#build && vp run -t @effect-view-server/protocol#build && vp run -t @effect-view-server/effect-utils#build && vp run -t @effect-view-server/runtime-core#build && vp run -t @effect-view-server/source-adapter-testing#build && vp test run --coverage --typecheck"
   },
   "dependencies": {
     "@effect-view-server/client": "workspace:*",

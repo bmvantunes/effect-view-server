@@ -1,3 +1,4 @@
+import { definedFields } from "@effect-view-server/effect-utils";
 import type { DeltaEvent, SnapshotEvent, StatusEvent } from "@effect-view-server/config";
 import { Cause, Effect, Option, Queue, Stream } from "effect";
 import type { LiveQueryExecution } from "./active-query";
@@ -129,7 +130,7 @@ export const makeLiveSubscription = Effect.fn("ColumnLiveViewEngine.liveSubscrip
     const subscriber: LiveTopicSubscriber = {
       topic: store.topic,
       queryId,
-      ...(options.partitionKey === undefined ? {} : { partitionKey: options.partitionKey }),
+      ...definedFields(options.partitionKey, (partitionKey) => ({ partitionKey })),
       notify: () =>
         notifyLiveSubscription(
           queryId,

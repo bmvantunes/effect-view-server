@@ -3,7 +3,7 @@ import type {
   TopicRow,
   ViewServerRuntimeError,
 } from "@effect-view-server/config";
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 import {
   viewServerDecodeGroupedQuery,
   viewServerEncodeGroupedQuery,
@@ -32,11 +32,13 @@ export type ViewServerValidatedLiveQuery<Row extends object> =
   | ViewServerValidatedRawQuery<Row>
   | ViewServerValidatedGroupedQuery<Row>;
 
+type ProtocolQueryInput = Schema.Schema.Type<typeof Schema.Unknown>;
+
 export const viewServerEncodeLiveQuery = Effect.fn("ViewServerProtocol.liveQuery.encode")(
   function* <const Topics extends TopicDefinitions, Topic extends Extract<keyof Topics, string>>(
     config: { readonly topics: Topics },
     topic: Topic,
-    query: unknown,
+    query: ProtocolQueryInput,
   ) {
     const ownedQuery = yield* snapshotProtocolQueryInput(topic, query);
     if (isGroupedQueryInput(ownedQuery)) {
@@ -49,7 +51,7 @@ export const viewServerEncodeLiveQuery = Effect.fn("ViewServerProtocol.liveQuery
 const decodeLiveQuery = Effect.fn("ViewServerProtocol.liveQuery.decode")(function* (
   config: { readonly topics: TopicDefinitions },
   topic: string,
-  query: unknown,
+  query: ProtocolQueryInput,
 ) {
   const ownedQuery = yield* snapshotProtocolQueryInput(topic, query);
   if (isGroupedQueryInput(ownedQuery)) {
@@ -64,12 +66,12 @@ export function viewServerDecodeLiveQuery<
 >(
   config: { readonly topics: Topics },
   topic: Topic,
-  query: unknown,
+  query: ProtocolQueryInput,
 ): Effect.Effect<ViewServerValidatedLiveQuery<TopicRow<Topics, Topic>>, ViewServerRuntimeError>;
 export function viewServerDecodeLiveQuery(
   config: { readonly topics: TopicDefinitions },
   topic: string,
-  query: unknown,
+  query: ProtocolQueryInput,
 ): Effect.Effect<unknown, ViewServerRuntimeError> {
   return decodeLiveQuery(config, topic, query);
 }

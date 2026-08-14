@@ -453,13 +453,14 @@ describe("React type contracts", () => {
     react.useSourceHealth({ topic: "orders" });
     // @ts-expect-error Leased Source diagnostics require routeBy.
     leasedReact.useSourceHealth({ topic: "orders" });
-    const materializedWithRoute: {
+    type MaterializedWithRoute = {
       readonly topic: "allOrders";
       readonly routeBy: {
         readonly region: string;
         readonly status: "open";
       };
-    } = {
+    };
+    const materializedWithRoute: MaterializedWithRoute = {
       topic: "allOrders",
       routeBy: { region: "usa", status: "open" },
     };

@@ -1,3 +1,4 @@
+import { definedFields } from "./optional-fields";
 import {
   SourceAdapter,
   type SourceApplicationExit,
@@ -300,7 +301,7 @@ const fixtureCommandEvent = Effect.fn("SourceAdapterTesting.fixture.command")(fu
       },
       location: command.location,
       rejectedAtNanos,
-      ...(command.settle === undefined ? {} : { settlement: command.settle }),
+      ...definedFields(command.settle, (settlement) => ({ settlement })),
     });
   }
   if (command._tag === "CorruptAfterDecode") {
@@ -415,9 +416,9 @@ export type ControllableSourceFixture<Row extends object = object> = {
         exit: import("@effect-view-server/source-adapter").SourceApplicationExit,
       ) => Effect.Effect<void, SourceFixtureFailure>,
     ) => Effect.Effect<void, SourceFixtureFailure>;
-    readonly upsert: (
+    readonly upsert: <Input extends object>(
       target: SourceFixtureTarget,
-      row: object,
+      row: Input,
       settle?: (
         exit: import("@effect-view-server/source-adapter").SourceApplicationExit,
       ) => Effect.Effect<void, SourceFixtureFailure>,
@@ -429,28 +430,28 @@ export type ControllableSourceFixture<Row extends object = object> = {
         exit: import("@effect-view-server/source-adapter").SourceApplicationExit,
       ) => Effect.Effect<void, SourceFixtureFailure>,
     ) => Effect.Effect<void, SourceFixtureFailure>;
-    readonly corruptAfterDecode: (
+    readonly corruptAfterDecode: <Input extends object, Value>(
       target: SourceFixtureTarget,
-      row: object,
+      row: Input,
       field: string,
-      value: unknown,
+      value: Value,
       settle: (
         exit: import("@effect-view-server/source-adapter").SourceApplicationExit,
       ) => Effect.Effect<void, SourceFixtureFailure>,
     ) => Effect.Effect<void, SourceFixtureFailure>;
-    readonly corruptLaterMutationAfterDecode: (
+    readonly corruptLaterMutationAfterDecode: <Input extends object, Value>(
       target: SourceFixtureTarget,
-      firstRow: object,
-      laterRow: object,
+      firstRow: Input,
+      laterRow: Input,
       field: string,
-      value: unknown,
+      value: Value,
       settle: (
         exit: import("@effect-view-server/source-adapter").SourceApplicationExit,
       ) => Effect.Effect<void, SourceFixtureFailure>,
     ) => Effect.Effect<void, SourceFixtureFailure>;
-    readonly transitionDefect: (
+    readonly transitionDefect: <Input extends object>(
       target: SourceFixtureTarget,
-      row: object,
+      row: Input,
       settle: (
         exit: import("@effect-view-server/source-adapter").SourceApplicationExit,
       ) => Effect.Effect<void, SourceFixtureFailure>,
@@ -491,7 +492,7 @@ export type ControllableSourceFixture<Row extends object = object> = {
     readonly blockNextFinalizer: (target: SourceFixtureTarget) => Effect.Effect<void>;
     readonly releaseFinalizer: (target: SourceFixtureTarget) => Effect.Effect<void>;
     readonly setMetrics: (metrics: SourceFixtureMetrics) => Effect.Effect<void>;
-    readonly setRawMetricObserved: (value: unknown) => Effect.Effect<void>;
+    readonly setRawMetricObserved: <Value>(value: Value) => Effect.Effect<void>;
     readonly metricReads: () => bigint;
     readonly counts: (target: SourceFixtureTarget) => {
       readonly acquisitions: bigint;
@@ -983,19 +984,19 @@ const makeControllableSourceFixtureEffect = Effect.fn("SourceAdapterTesting.fixt
           offer(target, {
             _tag: "Delivery",
             mutations,
-            ...(settle === undefined ? {} : { settle }),
+            ...definedFields(settle, (settle) => ({ settle })),
           }),
         upsert: (target, row, settle) =>
           offer(target, {
             _tag: "Upsert",
             row,
-            ...(settle === undefined ? {} : { settle }),
+            ...definedFields(settle, (settle) => ({ settle })),
           }),
         delete: (target, id, settle) =>
           offer(target, {
             _tag: "Delete",
             id,
-            ...(settle === undefined ? {} : { settle }),
+            ...definedFields(settle, (settle) => ({ settle })),
           }),
         corruptAfterDecode: (target, row, field, value, settle) =>
           offer(target, {
@@ -1025,7 +1026,7 @@ const makeControllableSourceFixtureEffect = Effect.fn("SourceAdapterTesting.fixt
             _tag: "Reject",
             failure,
             location,
-            ...(settle === undefined ? {} : { settle }),
+            ...definedFields(settle, (settle) => ({ settle })),
           }),
         fail: (target, failure) => offer(target, { _tag: "Fail", failure }),
         complete,

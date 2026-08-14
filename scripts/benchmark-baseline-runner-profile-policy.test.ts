@@ -96,7 +96,9 @@ describe("benchmark baseline runner", () => {
       "compression=$(printf '%s' \"${VIEW_SERVER_RUNTIME_BENCH_WEBSOCKET_COMPRESSION:-true}\" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')",
     );
     expect(command).toContain('if [ -z "$compression" ]; then compression=true; fi');
-    expect(command).toContain('if [ "$compression" = "true" ]; then suffix=-compressed');
+    expect(command).toContain(
+      'case "$compression" in true) suffix=-compressed ;; false) suffix= ;; *)',
+    );
     expect(command).not.toContain(
       'if [ "${VIEW_SERVER_RUNTIME_BENCH_WEBSOCKET_COMPRESSION:-true}" = "true" ]',
     );
@@ -128,6 +130,7 @@ describe("benchmark baseline runner", () => {
       evaluateNormalization(" false "),
       evaluateNormalization(" true "),
     ]).toStrictEqual(["true|-compressed", "true|-compressed", "false|", "true|-compressed"]);
+    expect(() => evaluateNormalization("yes")).toThrow("Command failed");
   });
 
   it("keeps the pre-gRPC gate bounded and covering strict compare-mode benchmark gates", () => {

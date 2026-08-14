@@ -285,6 +285,11 @@ describe("anti-slop Oxlint integration", () => {
 				"function inverted(value: unknown): value is string { return typeof value !== 'string'; }",
 				"function invertedBranch(value: unknown): value is string { if (typeof value === 'string') return false; return true; }",
 				"function wrongTypeofTag(value: unknown): value is string { return typeof value === 'number'; }",
+				"function dishonestUnion(value: unknown): value is string | number { return typeof value === 'boolean'; }",
+				"function honestUnion(value: unknown): value is string | number { return typeof value === 'string' || typeof value === 'number'; }",
+				"type RecordValue = { readonly value: string };",
+				"function dishonestCustom(value: unknown): value is RecordValue { return typeof value === 'boolean'; }",
+				"function honestCustom(value: unknown): value is RecordValue { return typeof value === 'object' && value !== null; }",
 				"function dishonestSwitch(value: unknown): value is string { switch (value) { case 1: return false; default: return true; } }",
 				"const honest = (value: unknown): value is string => typeof value === 'string';",
 			].join("\n"),
@@ -294,7 +299,7 @@ describe("anti-slop Oxlint integration", () => {
 
 		expect(result.error).toBeUndefined();
 		expect(result.status).toBe(1);
-		expect(diagnosticsFor(result, "no-unknown-parameters")).toHaveLength(8);
+		expect(diagnosticsFor(result, "no-unknown-parameters")).toHaveLength(10);
 	}, 120_000);
 
 	it("does not trust nested validators, shadowed validation names, or overload implementations", () => {
@@ -454,6 +459,7 @@ describe("anti-slop Oxlint integration", () => {
         "declare const external: unknown;",
         "const compared = typeof external;",
         "const optionalGlobal = typeof globalThis.gc === 'function';",
+        "const globalThis: unknown = {}; const shadowedGlobal = typeof globalThis.gc;",
         "const unresolvedGlobal = typeof optionalGlobalFeature;",
         "function isString(value: unknown): value is string { return typeof value === 'string'; }",
         "function ordinary(value: unknown) { return typeof value === 'string'; }",
@@ -471,7 +477,7 @@ describe("anti-slop Oxlint integration", () => {
 
     expect(result.error).toBeUndefined();
     expect(result.status).toBe(1);
-    expect(diagnosticsFor(result, "no-runtime-typeof")).toHaveLength(9);
+    expect(diagnosticsFor(result, "no-runtime-typeof")).toHaveLength(10);
   }, 120_000);
 
 	it("reports typeof checks on local and aliased broad values", () => {

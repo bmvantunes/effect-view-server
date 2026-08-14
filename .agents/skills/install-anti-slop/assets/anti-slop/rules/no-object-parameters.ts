@@ -55,7 +55,7 @@ export const noObjectParametersRule = defineRule({
 				const annotation = parameterAnnotation(parameter);
 				if (annotation === null || annotation === undefined) continue;
 				if (!typeResolvesToBroadType(annotation.typeAnnotation, environment, "object", shadowedAliases)) continue;
-				if (isValidationParameter(node, parameter, context.sourceCode)) continue;
+				if (isValidationParameter(node, parameter, context.sourceCode, environment)) continue;
 				context.report({
 					node: annotation.typeAnnotation,
 					messageId: "objectParameter",

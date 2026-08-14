@@ -419,6 +419,12 @@ describe("client type contracts", () => {
   });
 
   it("types schema-aware stable query identity", () => {
+    interface InterfaceQuery {
+      readonly select: readonly ["id"];
+    }
+
+    const interfaceQuery: InterfaceQuery = { select: ["id"] };
+    expectTypeOf(stableQueryKey(interfaceQuery)).toEqualTypeOf<string>();
     expectTypeOf(stableQueryKey({ select: ["id"] })).toEqualTypeOf<string>();
 
     // @ts-expect-error stable query identity requires an object-shaped query input.

@@ -40,7 +40,7 @@ function shouldReportParameterTypeof(
 	broadVariables: ReadonlyMap<Variable, BroadType>,
 ): boolean {
 	if (owner === null) {
-		if (isGlobalThisMemberExpression(node.argument)) return false;
+		if (isGlobalThisMemberExpression(node.argument, sourceCode)) return false;
 		const identifier = baseIdentifierForTypeofOperand(node.argument);
 		if (identifier !== null) {
 			const variable = resolvedVariable(sourceCode, identifier);
@@ -59,7 +59,7 @@ function shouldReportParameterTypeof(
 	) {
 		return false;
 	}
-	return !isRuntimeValidationParameter(owner, parameter, sourceCode);
+	return !isRuntimeValidationParameter(owner, parameter, sourceCode, environment);
 }
 
 function isTypePredicateOwner(owner: FunctionOwner): boolean {
@@ -103,10 +103,14 @@ function isRuntimeValidationParameter(
 	owner: FunctionOwner,
 	parameter: ESTree.ParamPattern,
 	sourceCode: SourceCode,
+	environment: TypeEnvironment,
 ): boolean {
-	if (!isValidationParameter(owner, parameter, sourceCode)) return false;
+	if (!isValidationParameter(owner, parameter, sourceCode, environment)) return false;
 	if (isTypePredicateOwner(owner) || hasBooleanReturnContract(owner)) return true;
-	return isValidationCallParameter(owner, parameter, sourceCode) || hasMeaningfulReturnContract(owner);
+	return (
+		isValidationCallParameter(owner, parameter, sourceCode, environment) ||
+		hasMeaningfulReturnContract(owner)
+	);
 }
 
 function parameterForIdentifier(
@@ -182,11 +186,11 @@ function parameterForTypeofOperand(
 	return undefined;
 }
 
-function isGlobalThisMemberExpression(expression: ESTree.Expression): boolean {
+function isGlobalThisMemberExpression(expression: ESTree.Expression, sourceCode: SourceCode): boolean {
 	const unwrapped = unwrapExpression(expression);
 	const identifier =
 		unwrapped.type === "MemberExpression" ? baseIdentifierForTypeofOperand(unwrapped) : null;
-	return identifier?.name === "globalThis";
+	return identifier?.name === "globalThis" && resolvedVariable(sourceCode, identifier) === undefined;
 }
 
 /** Disallow runtime typeof checks that narrow unparsed values instead of decoding them. */

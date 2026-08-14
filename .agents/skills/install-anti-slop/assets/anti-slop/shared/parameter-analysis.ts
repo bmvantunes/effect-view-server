@@ -1,4 +1,8 @@
 import type { ESTree, Scope, SourceCode, Variable } from "@oxlint/plugins";
+import {
+	typeResolvesToRuntimeTypeofTags,
+	type TypeEnvironment,
+} from "./dictionary-types.ts";
 
 export type Parameter = ESTree.ParamPattern;
 type IdentifierNode = Extract<ESTree.Node, { type: "Identifier"; name: string }>;
@@ -310,6 +314,7 @@ function isValidationOperation(
 	node: ESTree.Node,
 	sourceCode?: SourceCode,
 	resolving?: ValidationResolution,
+	environment?: TypeEnvironment,
 ): boolean {
 	if (node.type === "UnaryExpression") return node.operator === "typeof" && isTypeofComparison(node);
 	if (node.type === "BinaryExpression") {
@@ -326,16 +331,16 @@ function isValidationOperation(
 		return (
 			factoryName !== null &&
 			validationFactoryCalls.has(factoryName) &&
-			!isShadowedValidationCall(node.callee, sourceCode, resolving)
+			!isShadowedValidationCall(node.callee, sourceCode, resolving, environment)
 		);
 	}
 	if (isBuiltinValidationName(name)) {
-		return !isShadowedValidationCall(node, sourceCode, resolving);
+		return !isShadowedValidationCall(node, sourceCode, resolving, environment);
 	}
-	const localValidation = isLocallyTrustedValidationCall(node, sourceCode, resolving);
-	const trustedImportedValidation = isTrustedValidationCall(node, sourceCode, resolving);
+	const localValidation = isLocallyTrustedValidationCall(node, sourceCode, resolving, environment);
+	const trustedImportedValidation = isTrustedValidationCall(node, sourceCode, resolving, environment);
 	if (!knownValidationCalls.has(name) && !localValidation && !trustedImportedValidation) return false;
-	if (isShadowedValidationCall(node, sourceCode, resolving)) return false;
+	if (isShadowedValidationCall(node, sourceCode, resolving, environment)) return false;
 	return knownValidationCalls.has(name) || localValidation || trustedImportedValidation;
 }
 
@@ -397,7 +402,11 @@ function functionShadowsParameterNames(
 	);
 }
 
-function isValidationCallback(node: ESTree.Node, sourceCode?: SourceCode): boolean {
+function isValidationCallback(
+	node: ESTree.Node,
+	sourceCode?: SourceCode,
+	environment?: TypeEnvironment,
+): boolean {
 	let current = node.parent;
 	while (current !== null && !isFunctionNode(current)) {
 		if (current.type === "CallExpression") {
@@ -405,7 +414,7 @@ function isValidationCallback(node: ESTree.Node, sourceCode?: SourceCode): boole
 			return (
 				name !== null &&
 				validationCallbackWrappers.has(name) &&
-				!isShadowedValidationCall(current, sourceCode)
+				!isShadowedValidationCall(current, sourceCode, undefined, environment)
 			);
 		}
 		current = current.parent;
@@ -552,6 +561,7 @@ function isTrustedValidationCall(
 	node: ESTree.CallExpression,
 	sourceCode?: SourceCode,
 	resolving?: ValidationResolution,
+	environment?: TypeEnvironment,
 ): boolean {
 	const name = validationCallName(node);
 	if (name === null) return false;
@@ -581,17 +591,18 @@ function isTrustedValidationCall(
 	if (isBuiltinValidationName(name)) {
 		return variable.defs.every((definition) => definition.type === "ImplicitGlobalVariable");
 	}
-	return isTrustedLocalValidation(variable, sourceCode, resolving);
+	return isTrustedLocalValidation(variable, sourceCode, resolving, environment);
 }
 
 function isShadowedValidationCall(
 	node: ESTree.CallExpression,
 	sourceCode: SourceCode | undefined,
 	resolving?: ValidationResolution,
+	environment?: TypeEnvironment,
 ): boolean {
 	return (
-		!isTrustedValidationCall(node, sourceCode, resolving) &&
-		!isLocallyTrustedValidationCall(node, sourceCode, resolving)
+		!isTrustedValidationCall(node, sourceCode, resolving, environment) &&
+		!isLocallyTrustedValidationCall(node, sourceCode, resolving, environment)
 	);
 }
 
@@ -610,6 +621,7 @@ function isTrustedLocalValidation(
 	variable: Variable,
 	sourceCode: SourceCode,
 	resolving?: ValidationResolution,
+	environment?: TypeEnvironment,
 ): boolean {
 	const current = resolving ?? new Set<Variable>();
 	if (current.has(variable)) return false;
@@ -625,6 +637,8 @@ function isTrustedLocalValidation(
 					parameterBindings(parameter, sourceCode),
 					sourceCode,
 					next,
+					true,
+					environment,
 				),
 			)
 		)
@@ -637,12 +651,13 @@ function isLocallyTrustedValidationCall(
 	node: ESTree.CallExpression,
 	sourceCode: SourceCode | undefined,
 	resolving?: ValidationResolution,
+	environment?: TypeEnvironment,
 ): boolean {
 	if (sourceCode === undefined || node.callee.type !== "Identifier") return false;
 	const variable = resolvedVariable(sourceCode, node.callee);
 	if (variable === undefined || variable.defs.some((definition) => definition.type === "ImportBinding"))
 		return false;
-	return isTrustedLocalValidation(variable, sourceCode, resolving);
+	return isTrustedLocalValidation(variable, sourceCode, resolving, environment);
 }
 
 function validationReferencesParameter(
@@ -650,6 +665,7 @@ function validationReferencesParameter(
 	bindings: ParameterBindings,
 	sourceCode?: SourceCode,
 	resolving?: ValidationResolution,
+	environment?: TypeEnvironment,
 ): boolean {
 	if (
 		(node.type === "UnaryExpression" || node.type === "BinaryExpression" || node.type === "CallExpression") &&
@@ -669,10 +685,10 @@ function validationReferencesParameter(
 			containsParameterReference(argument, bindings, sourceCode),
 		);
 		if (references.length > 0) {
-			if (isValidationOperation(node, sourceCode, resolving)) return true;
+			if (isValidationOperation(node, sourceCode, resolving, environment)) return true;
 			return false;
 		}
-		if (!isValidationOperation(node, sourceCode, resolving)) return false;
+		if (!isValidationOperation(node, sourceCode, resolving, environment)) return false;
 		return node.arguments.some((argument) =>
 			containsParameterReferenceInCallback(argument, bindings, sourceCode),
 		);
@@ -779,6 +795,21 @@ function nextStatement(node: ESTree.IfStatement): ESTree.Statement | undefined {
 	return index === -1 ? undefined : node.parent.body[index + 1];
 }
 
+function isParameterGuardRejection(
+	node: ESTree.Node,
+	bindings: ParameterBindings,
+	sourceCode?: SourceCode,
+): boolean {
+	if (node.type === "UnaryExpression" && node.operator === "!")
+		return containsParameterReference(node.argument, bindings, sourceCode);
+	if (node.type !== "BinaryExpression" || !["==", "==="].includes(node.operator)) return false;
+	const other = node.left.type === "Literal" ? node.left : node.right;
+	return (
+		(other.type === "Literal" && other.value === null) ||
+		(other.type === "Identifier" && other.name === "undefined")
+	) && containsParameterReference(node, bindings, sourceCode);
+}
+
 /**
  * Returns whether a validation operation is known to constrain the value
  * returned by a type predicate. `typeof value !== ...` is validation, but it
@@ -787,13 +818,13 @@ function nextStatement(node: ESTree.IfStatement): ESTree.Statement | undefined {
  */
 function typePredicateEvidencePolarity(
 	node: ESTree.Node,
-	expectedTypeofTag: string | undefined,
+	expectedTypeofTags: ReadonlySet<string> | undefined,
+	bindings: ParameterBindings,
+	sourceCode?: SourceCode,
 ): boolean | undefined {
 	const comparison = typeofComparisonForNode(node);
 	const typeofTagMatches = (tag: string): boolean =>
-		expectedTypeofTag === undefined ||
-		tag === expectedTypeofTag ||
-		(expectedTypeofTag === "object" && tag === "function");
+		expectedTypeofTags !== undefined && expectedTypeofTags.has(tag);
 	if (comparison !== undefined && !typeofTagMatches(comparison.tag))
 		return undefined;
 	let current: ESTree.Node = comparison?.node ?? node;
@@ -830,6 +861,15 @@ function typePredicateEvidencePolarity(
 					current = parent;
 					continue;
 				}
+				if (
+					comparison !== undefined &&
+					comparison.operator !== "==" &&
+					comparison.operator !== "===" &&
+					isParameterGuardRejection(other, bindings, sourceCode)
+				) {
+					current = parent;
+					continue;
+				}
 				return undefined;
 			}
 			if (parent.operator !== "&&") return undefined;
@@ -861,6 +901,8 @@ function typePredicateEvidencePolarity(
 					: booleanReturnValue(parent.alternate);
 			if (consequent === true && alternate === false) return polarity;
 			if (consequent === false && alternate === true) return !polarity;
+			if (parent.alternate === null && consequent === false && nextStatement(parent) !== undefined)
+				return !polarity;
 			return undefined;
 		}
 		if (parent.type === "ReturnStatement" && parent.argument === current) return polarity;
@@ -876,6 +918,7 @@ function hasValidationEvidence(
 	sourceCode?: SourceCode,
 	resolving?: ValidationResolution,
 	allowTypeof = true,
+	environment?: TypeEnvironment,
 ): boolean {
 	if (!("body" in owner) || !isNode(owner.body)) return false;
 	const isTypePredicateOwner =
@@ -886,24 +929,10 @@ function hasValidationEvidence(
 	const predicateType = isTypePredicateOwner
 		? owner.returnType.typeAnnotation.typeAnnotation?.typeAnnotation
 		: undefined;
-	const expectedTypeofTag =
-		predicateType === undefined
+	const expectedTypeofTags =
+		predicateType === undefined || environment === undefined
 			? undefined
-			: predicateType.type === "TSStringKeyword"
-				? "string"
-				: predicateType.type === "TSNumberKeyword"
-					? "number"
-					: predicateType.type === "TSBooleanKeyword"
-						? "boolean"
-						: predicateType.type === "TSBigIntKeyword"
-							? "bigint"
-							: predicateType.type === "TSSymbolKeyword"
-								? "symbol"
-								: predicateType.type === "TSUndefinedKeyword"
-									? "undefined"
-									: predicateType.type === "TSObjectKeyword"
-										? "object"
-										: undefined;
+			: typeResolvesToRuntimeTypeofTags(predicateType, environment);
 	if (
 		isTypePredicateOwner
 	) {
@@ -913,10 +942,15 @@ function hasValidationEvidence(
 			const current = pendingPredicateNodes.pop();
 			if (current === undefined) continue;
 			if (
-				isValidationOperation(current, sourceCode, resolving) &&
-				validationReferencesParameter(current, bindings, sourceCode, resolving)
+				isValidationOperation(current, sourceCode, resolving, environment) &&
+				validationReferencesParameter(current, bindings, sourceCode, resolving, environment)
 			) {
-				const polarity = typePredicateEvidencePolarity(current, expectedTypeofTag);
+				const polarity = typePredicateEvidencePolarity(
+					current,
+					expectedTypeofTags,
+					bindings,
+					sourceCode,
+				);
 				if (polarity === true) return true;
 				if (polarity === false) hasOppositeTypeofEvidence = true;
 			}
@@ -936,11 +970,11 @@ function hasValidationEvidence(
 		const current = pending.pop();
 		if (current === undefined) continue;
 		const isTypeofOperation = current.type === "UnaryExpression" || current.type === "BinaryExpression";
-		const isStrictTypeofPredicate = isTypePredicateOwner && expectedTypeofTag !== undefined;
+		const isStrictTypeofPredicate = isTypePredicateOwner;
 		if (
 			(!isTypeofOperation || (allowTypeof && !isStrictTypeofPredicate)) &&
-			isValidationOperation(current, sourceCode, resolving) &&
-			validationReferencesParameter(current, bindings, sourceCode, resolving)
+			isValidationOperation(current, sourceCode, resolving, environment) &&
+			validationReferencesParameter(current, bindings, sourceCode, resolving, environment)
 		)
 			return true;
 		for (const [key, value] of Object.entries(current)) {
@@ -950,10 +984,17 @@ function hasValidationEvidence(
 					if (!isNode(entry)) continue;
 					if (isFunctionNode(entry)) {
 						if (
-							!functionShadowsParameterNames(entry, bindings.names) &&
-								isValidationCallback(entry, sourceCode) &&
+								!functionShadowsParameterNames(entry, bindings.names) &&
+								isValidationCallback(entry, sourceCode, environment) &&
 							isNode(entry.body) &&
-								hasValidationEvidence(entry, bindings, sourceCode, resolving, allowTypeof)
+								hasValidationEvidence(
+									entry,
+									bindings,
+									sourceCode,
+									resolving,
+									allowTypeof,
+									environment,
+								)
 						)
 							return true;
 						continue;
@@ -964,9 +1005,16 @@ function hasValidationEvidence(
 				if (isFunctionNode(value)) {
 					if (
 						!functionShadowsParameterNames(value, bindings.names) &&
-							isValidationCallback(value, sourceCode) &&
+						isValidationCallback(value, sourceCode, environment) &&
 						isNode(value.body) &&
-						hasValidationEvidence(value, bindings, sourceCode, resolving, allowTypeof)
+						hasValidationEvidence(
+							value,
+							bindings,
+							sourceCode,
+							resolving,
+							allowTypeof,
+							environment,
+						)
 					)
 						return true;
 					continue;
@@ -990,14 +1038,21 @@ function parameterBindings(parameter: Parameter, sourceCode?: SourceCode): Param
 	return { names, variables };
 }
 
-export function isValidationOwner(owner: ParameterOwner, sourceCode?: SourceCode): boolean {
-	return owner.params.some((parameter) => isValidationParameter(owner, parameter, sourceCode));
+export function isValidationOwner(
+	owner: ParameterOwner,
+	sourceCode?: SourceCode,
+	environment?: TypeEnvironment,
+): boolean {
+	return owner.params.some((parameter) =>
+		isValidationParameter(owner, parameter, sourceCode, environment),
+	);
 }
 
 export function isValidationParameter(
 	owner: ParameterOwner,
 	parameter: Parameter,
 	sourceCode?: SourceCode,
+	environment?: TypeEnvironment,
 ): boolean {
 	const bindings = parameterBindings(parameter, sourceCode);
 	if (bindings.names.size === 0) return false;
@@ -1010,7 +1065,7 @@ export function isValidationParameter(
 		!bindings.names.has(owner.returnType.typeAnnotation.parameterName.name)
 	)
 		return false;
-	if (hasValidationEvidence(owner, bindings, sourceCode)) return true;
+	if (hasValidationEvidence(owner, bindings, sourceCode, undefined, true, environment)) return true;
 	return false;
 }
 
@@ -1018,9 +1073,13 @@ export function isValidationCallParameter(
 	owner: ParameterOwner,
 	parameter: Parameter,
 	sourceCode?: SourceCode,
+	environment?: TypeEnvironment,
 ): boolean {
 	const bindings = parameterBindings(parameter, sourceCode);
-	return bindings.names.size > 0 && hasValidationEvidence(owner, bindings, sourceCode, undefined, false);
+	return (
+		bindings.names.size > 0 &&
+		hasValidationEvidence(owner, bindings, sourceCode, undefined, false, environment)
+	);
 }
 
 export function parameterAnnotation(

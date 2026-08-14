@@ -64,6 +64,16 @@ export type TypeEnvironment = {
 
 export type BroadType = "unknown" | "object";
 
+export type RuntimeTypeofTag =
+	| "bigint"
+	| "boolean"
+	| "function"
+	| "number"
+	| "object"
+	| "string"
+	| "symbol"
+	| "undefined";
+
 function isNode(value: unknown): value is ESTree.Node {
 	return typeof value === "object" && value !== null && "type" in value && typeof value.type === "string";
 }
@@ -433,6 +443,267 @@ function aliasSubstitution(
 	base: TypeAliasEnvironment,
 ): TypeAliasEnvironment | null {
 	return aliasSubstitutionArguments(alias, type.typeArguments?.params ?? [], base);
+}
+
+function runtimePropertyType(
+	type: ESTree.TSType,
+	propertyName: string,
+	environment: TypeEnvironment,
+	substitutions: TypeAliasEnvironment,
+	resolvingAliases: ReadonlySet<string>,
+): ESTree.TSType | undefined {
+	const unwrapped = unwrapTransparentType(type);
+	const memberType = (members: readonly ESTree.TSSignature[]): ESTree.TSType | undefined => {
+		for (const member of members) {
+			if (member.type !== "TSPropertySignature" || member.typeAnnotation === null) continue;
+			const name =
+				member.key.type === "Identifier"
+					? member.key.name
+					: member.key.type === "Literal" && typeof member.key.value === "string"
+						? member.key.value
+						: undefined;
+			if (name === propertyName) return member.typeAnnotation.typeAnnotation;
+		}
+		return undefined;
+	};
+	if (unwrapped.type === "TSTypeLiteral") return memberType(unwrapped.members);
+	if (unwrapped.type !== "TSTypeReference") return undefined;
+	const name = typeReferenceName(unwrapped);
+	if (name === null || resolvingAliases.has(name)) return undefined;
+	const substitution = substitutions.get(name);
+	if (substitution !== undefined && !isUnappliedReferenceTo(substitution, name)) {
+		return runtimePropertyType(substitution, propertyName, environment, substitutions, resolvingAliases);
+	}
+	const alias = environment.resolveAlias(unwrapped, name);
+	if (alias !== undefined) {
+		const nextSubstitutions = aliasSubstitution(alias, unwrapped, substitutions);
+		if (nextSubstitutions === null) return undefined;
+		const nextResolving = new Set(resolvingAliases);
+		nextResolving.add(name);
+		return runtimePropertyType(
+			alias.typeAnnotation,
+			propertyName,
+			environment,
+			nextSubstitutions,
+			nextResolving,
+		);
+	}
+	for (const declaration of environment.resolveInterfaces(unwrapped, name)) {
+		const property = memberType(declaration.body.body);
+		if (property !== undefined) return property;
+	}
+	return undefined;
+}
+
+function runtimeTypeofTagsForType(
+	type: ESTree.TSType,
+	environment: TypeEnvironment,
+	substitutions: TypeAliasEnvironment,
+	resolvingAliases: ReadonlySet<string>,
+): ReadonlySet<RuntimeTypeofTag> | undefined {
+	const unwrapped = unwrapTransparentType(type);
+	const tags = (...values: RuntimeTypeofTag[]): ReadonlySet<RuntimeTypeofTag> => new Set(values);
+
+	switch (unwrapped.type) {
+		case "TSBigIntKeyword":
+			return tags("bigint");
+		case "TSBooleanKeyword":
+			return tags("boolean");
+		case "TSFunctionType":
+		case "TSConstructorType":
+			return tags("function");
+		case "TSNumberKeyword":
+			return tags("number");
+		case "TSObjectKeyword":
+			return tags("object", "function");
+		case "TSStringKeyword":
+			return tags("string");
+		case "TSSymbolKeyword":
+			return tags("symbol");
+		case "TSUndefinedKeyword":
+			return tags("undefined");
+		case "TSNullKeyword":
+			return tags("object");
+		case "TSArrayType":
+		case "TSTupleType":
+		case "TSTypeLiteral":
+		case "TSMappedType":
+			return tags("object");
+		case "TSNeverKeyword":
+			return tags();
+		case "TSLiteralType": {
+			if (unwrapped.literal.type !== "Literal") return undefined;
+			if (unwrapped.literal.value === null) return tags("object");
+			switch (typeof unwrapped.literal.value) {
+				case "bigint":
+					return tags("bigint");
+				case "boolean":
+					return tags("boolean");
+				case "number":
+					return tags("number");
+				case "string":
+					return tags("string");
+				default:
+					return undefined;
+			}
+		}
+		case "TSIndexedAccessType": {
+			const indexType = unwrapTransparentType(unwrapped.indexType);
+			if (indexType.type !== "TSLiteralType" || indexType.literal.type !== "Literal") return undefined;
+			if (typeof indexType.literal.value !== "string") return undefined;
+			const propertyType = runtimePropertyType(
+				unwrapped.objectType,
+				indexType.literal.value,
+				environment,
+				substitutions,
+				resolvingAliases,
+			);
+			return propertyType === undefined
+				? undefined
+				: runtimeTypeofTagsForType(propertyType, environment, substitutions, resolvingAliases);
+		}
+		case "TSConditionalType": {
+			const trueTags = runtimeTypeofTagsForType(
+				unwrapped.trueType,
+				environment,
+				substitutions,
+				resolvingAliases,
+			);
+			const falseTags = runtimeTypeofTagsForType(
+				unwrapped.falseType,
+				environment,
+				substitutions,
+				resolvingAliases,
+			);
+			if (trueTags === undefined && falseTags === undefined) return undefined;
+			const conditional = new Set<RuntimeTypeofTag>();
+			for (const tag of trueTags ?? []) conditional.add(tag);
+			for (const tag of falseTags ?? []) conditional.add(tag);
+			return conditional;
+		}
+		case "TSUnionType": {
+			const union = new Set<RuntimeTypeofTag>();
+			let hasKnownMember = false;
+			for (const member of unwrapped.types) {
+				const memberTags = runtimeTypeofTagsForType(
+					member,
+					environment,
+					substitutions,
+					resolvingAliases,
+				);
+				if (memberTags === undefined) continue;
+				hasKnownMember = true;
+				for (const tag of memberTags) union.add(tag);
+			}
+			return hasKnownMember ? union : undefined;
+		}
+		case "TSIntersectionType": {
+			let intersection: Set<RuntimeTypeofTag> | undefined;
+			for (const member of unwrapped.types) {
+				const memberTags = runtimeTypeofTagsForType(
+					member,
+					environment,
+					substitutions,
+					resolvingAliases,
+				);
+				if (memberTags === undefined) continue;
+				if (intersection === undefined) {
+					intersection = new Set(memberTags);
+					continue;
+				}
+				for (const tag of intersection) {
+					if (!memberTags.has(tag)) intersection.delete(tag);
+				}
+			}
+			return intersection;
+		}
+		case "TSTypeReference": {
+			const name = typeReferenceName(unwrapped);
+			if (name === null) return undefined;
+			const substitution = substitutions.get(name);
+			if (substitution !== undefined && !isUnappliedReferenceTo(substitution, name)) {
+				return runtimeTypeofTagsForType(
+					substitution,
+					environment,
+					substitutions,
+					resolvingAliases,
+				);
+			}
+			if (resolvingAliases.has(name)) return undefined;
+			const alias = environment.resolveAlias(unwrapped, name);
+			if (alias !== undefined) {
+				const nextSubstitutions = aliasSubstitution(alias, unwrapped, substitutions);
+				if (nextSubstitutions === null) return undefined;
+				const nextResolving = new Set(resolvingAliases);
+				nextResolving.add(name);
+				return runtimeTypeofTagsForType(
+					alias.typeAnnotation,
+					environment,
+					nextSubstitutions,
+					nextResolving,
+				);
+			}
+			if (environment.resolveInterfaces(unwrapped, name).length > 0) return tags("object", "function");
+			if (name === "Function") return tags("function");
+			if (
+				name === "Iterator" ||
+				name === "AsyncIterator" ||
+				name === "Iterable" ||
+				name === "AsyncIterable" ||
+				name === "Generator" ||
+				name === "AsyncGenerator"
+			)
+				return tags("object", "function");
+			const typeArguments = unwrapped.typeArguments?.params ?? [];
+			if (name === "Extract") {
+				const extracted = typeArguments[1];
+				return extracted === undefined
+					? undefined
+					: runtimeTypeofTagsForType(extracted, environment, substitutions, resolvingAliases);
+			}
+			if (name === "NonNullable") {
+				const nonNullable = typeArguments[0];
+				return nonNullable === undefined
+					? undefined
+					: runtimeTypeofTagsForType(nonNullable, environment, substitutions, resolvingAliases);
+			}
+			if (
+				name === "Array" ||
+				name === "ReadonlyArray" ||
+				name === "Map" ||
+				name === "ReadonlyMap" ||
+				name === "Set" ||
+				name === "ReadonlySet" ||
+				name === "WeakMap" ||
+				name === "WeakSet" ||
+				name === "Promise" ||
+				name === "Date" ||
+				name === "RegExp" ||
+				name === "Error" ||
+				name === "Object" ||
+				name === "Record" ||
+				name === "Readonly" ||
+				name === "Partial" ||
+				name === "Required" ||
+				name === "Pick" ||
+				name === "Omit"
+			)
+				return tags("object", "function");
+			// Unresolved named types are conservatively treated as object-shaped.
+			// This keeps external nominal contracts usable while still rejecting
+			// primitive typeof evidence that cannot establish a named domain type.
+			return tags("object", "function");
+		}
+		default:
+			return undefined;
+	}
+}
+
+export function typeResolvesToRuntimeTypeofTags(
+	type: ESTree.TSType,
+	environment: TypeEnvironment,
+): ReadonlySet<RuntimeTypeofTag> | undefined {
+	return runtimeTypeofTagsForType(type, environment, new Map(), new Set());
 }
 
 function interfaceSubstitution(

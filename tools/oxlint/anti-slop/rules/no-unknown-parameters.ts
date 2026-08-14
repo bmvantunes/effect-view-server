@@ -41,7 +41,7 @@ export const noUnknownParametersRule = defineRule({
 			continue;
         const name = parameterName(parameter, context.sourceCode);
         if (name === "cause") continue;
-		if (isValidationParameter(node, parameter, context.sourceCode)) continue;
+		if (isValidationParameter(node, parameter, context.sourceCode, environment)) continue;
         context.report({
           node: annotation.typeAnnotation,
           messageId: "unknownParameter",

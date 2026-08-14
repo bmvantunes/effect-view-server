@@ -40,21 +40,15 @@ function shouldReportParameterTypeof(
 	broadVariables: ReadonlyMap<Variable, BroadType>,
 ): boolean {
 	if (owner === null) {
-		if (
-			node.argument.type === "MemberExpression" &&
-			!node.argument.computed &&
-			node.argument.object.type === "Identifier" &&
-			node.argument.object.name === "globalThis"
-		)
-			return false;
-		if (node.argument.type === "Identifier") {
-			const variable = resolvedVariable(sourceCode, node.argument);
+		if (isGlobalThisMemberExpression(node.argument)) return false;
+		const identifier = baseIdentifierForTypeofOperand(node.argument);
+		if (identifier !== null) {
+			const variable = resolvedVariable(sourceCode, identifier);
 			return variable !== undefined && broadVariables.has(variable);
 		}
 		return true;
 	}
-	if (node.argument.type !== "Identifier") return false;
-	const parameter = parameterForIdentifier(node.argument, owner, sourceCode);
+	const parameter = parameterForTypeofOperand(node.argument, owner, sourceCode);
 	if (parameter === undefined) return false;
 	const annotation = parameterAnnotation(parameter);
 	const type = annotation?.typeAnnotation;
@@ -139,6 +133,7 @@ function unwrapExpression(expression: ESTree.Expression): ESTree.Expression {
 	let current = expression;
 	while (
 		current.type === "ParenthesizedExpression" ||
+		current.type === "ChainExpression" ||
 		current.type === "TSAsExpression" ||
 		current.type === "TSTypeAssertion" ||
 		current.type === "TSNonNullExpression" ||
@@ -147,6 +142,51 @@ function unwrapExpression(expression: ESTree.Expression): ESTree.Expression {
 		current = current.expression;
 	}
 	return current;
+}
+
+function baseIdentifierForTypeofOperand(expression: ESTree.Expression): IdentifierNode | null {
+	let current: ESTree.Expression | ESTree.Super = unwrapExpression(expression);
+	while (current.type === "MemberExpression") {
+		current = current.object;
+		if (current.type === "Super") return null;
+		current = unwrapExpression(current);
+	}
+	return current.type === "Identifier" ? current : null;
+}
+
+function identifiersForTypeofOperand(expression: ESTree.Expression): ReadonlyArray<IdentifierNode> {
+	const unwrapped = unwrapExpression(expression);
+	if (unwrapped.type === "Identifier") return [unwrapped];
+	if (unwrapped.type === "MemberExpression" && unwrapped.object.type !== "Super") {
+		return identifiersForTypeofOperand(unwrapped.object);
+	}
+	return [];
+}
+
+function parameterForTypeofOperand(
+	expression: ESTree.Expression,
+	owner: FunctionOwner,
+	sourceCode: SourceCode,
+): ESTree.ParamPattern | undefined {
+	const allowNameFallback = expression.type !== "Identifier";
+	for (const identifier of identifiersForTypeofOperand(expression)) {
+		const parameter = parameterForIdentifier(identifier, owner, sourceCode);
+		if (parameter !== undefined) return parameter;
+		if (allowNameFallback) {
+			const namedParameter = owner.params.find((candidate) =>
+				parameterBindingNames(candidate).has(identifier.name),
+			);
+			if (namedParameter !== undefined) return namedParameter;
+		}
+	}
+	return undefined;
+}
+
+function isGlobalThisMemberExpression(expression: ESTree.Expression): boolean {
+	const unwrapped = unwrapExpression(expression);
+	const identifier =
+		unwrapped.type === "MemberExpression" ? baseIdentifierForTypeofOperand(unwrapped) : null;
+	return identifier?.name === "globalThis";
 }
 
 /** Disallow runtime typeof checks that narrow unparsed values instead of decoding them. */
@@ -231,8 +271,9 @@ export const noRuntimeTypeofRule = defineRule({
 				if (node.operator !== "typeof")
 					return;
 				const owner = enclosingFunction(node);
-				if (owner !== null && node.argument.type === "Identifier") {
-					const parameter = parameterForIdentifier(node.argument, owner, context.sourceCode);
+				const identifier = baseIdentifierForTypeofOperand(node.argument);
+				if (owner !== null) {
+					const parameter = parameterForTypeofOperand(node.argument, owner, context.sourceCode);
 					if (parameter !== undefined) {
 						if (
 							environment !== null &&
@@ -256,8 +297,8 @@ export const noRuntimeTypeofRule = defineRule({
 					context.report({ node, messageId: "runtimeTypeof" });
 					return;
 				}
-				if (node.argument.type !== "Identifier") return;
-				const variable = resolvedVariable(context.sourceCode, node.argument);
+				if (identifier === null) return;
+				const variable = resolvedVariable(context.sourceCode, identifier);
 				if (variable !== undefined && broadVariables.has(variable))
 					context.report({ node, messageId: "runtimeTypeof" });
 			},

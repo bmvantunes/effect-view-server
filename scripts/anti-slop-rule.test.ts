@@ -460,6 +460,9 @@ describe("anti-slop Oxlint integration", () => {
         "function tautology(value: unknown) { return typeof value === typeof value; }",
         "function unrelatedPredicate(value: unknown, other: unknown): value is string { return typeof other === 'string'; }",
         "function format(value: unknown): string { return typeof value === 'string' ? value : 'fallback'; }",
+        "function cast(value: unknown) { return typeof (value as unknown) === 'string'; }",
+        "function nonNull(value: unknown) { return typeof value! === 'string'; }",
+        "function member(value: unknown) { return typeof (value as { readonly nested?: unknown }).nested === 'string'; }",
         "const typed: string = 'text'; const typedKind = typeof typed;",
       ].join("\n"),
       {},
@@ -468,7 +471,7 @@ describe("anti-slop Oxlint integration", () => {
 
     expect(result.error).toBeUndefined();
     expect(result.status).toBe(1);
-    expect(diagnosticsFor(result, "no-runtime-typeof")).toHaveLength(6);
+    expect(diagnosticsFor(result, "no-runtime-typeof")).toHaveLength(9);
   }, 120_000);
 
 	it("reports typeof checks on local and aliased broad values", () => {

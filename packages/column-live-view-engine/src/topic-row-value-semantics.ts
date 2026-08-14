@@ -1,6 +1,7 @@
 import { schemaAstChildren } from "@effect-view-server/config/internal";
 import {
   compareTrustedWireSafeBigDecimal,
+  hasPlainRecordPrototype,
   makeSchemaJsonIdentity,
 } from "@effect-view-server/effect-utils";
 import { Schema, SchemaAST } from "effect";
@@ -45,8 +46,8 @@ type SchemaWithFields = TopicRowSchema & {
   readonly fields: Record<string, unknown>;
 };
 
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
+const isRecord = (value: SchemaValueInput): value is Record<string, unknown> =>
+  hasPlainRecordPrototype(value);
 
 const isSchemaWithFields = (schema: TopicRowSchema): schema is SchemaWithFields =>
   "fields" in schema && isRecord(schema.fields);

@@ -136,12 +136,15 @@ const mapKeyIsValid = (scalar: MapKeyScalar, value: string): boolean => {
   }
 };
 
-const jsonValueIsValid = (value: unknown, active: WeakSet<object>): value is JsonValue => {
+const jsonValueIsValid = (
+  value: Schema.Schema.Type<typeof Schema.Unknown>,
+  active: WeakSet<object>,
+): value is JsonValue => {
   if (
     value === null ||
-    typeof value === "string" ||
-    typeof value === "boolean" ||
-    typeof value === "number"
+    Schema.is(Schema.String)(value) ||
+    Schema.is(Schema.Boolean)(value) ||
+    (Schema.is(Schema.Number)(value) && Number.isFinite(value))
   ) {
     return true;
   }
@@ -155,13 +158,14 @@ const jsonValueIsValid = (value: unknown, active: WeakSet<object>): value is Jso
     active.delete(value);
     return valid;
   }
+  const object = Object(value);
   const entries = exactDataEntries(value);
-  if (entries === undefined || typeof value !== "object" || value === null || active.has(value)) {
+  if (entries === undefined || active.has(object)) {
     return false;
   }
-  active.add(value);
+  active.add(object);
   const valid = entries.every(([, entry]) => jsonValueIsValid(entry, active));
-  active.delete(value);
+  active.delete(object);
   return valid;
 };
 

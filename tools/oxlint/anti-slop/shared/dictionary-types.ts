@@ -1,7 +1,26 @@
 import type { ESTree } from "@oxlint/plugins";
+import {
+	trustedSchemaUnknownTypePaths,
+	trustedSchemaUnknownValuePaths,
+} from "./repository-validation-policy.ts";
 
 const BUILT_INS = new Set([
+	"Array",
+	"AsyncGenerator",
+	"AsyncIterable",
+	"AsyncIterator",
+	"Date",
+	"Error",
+	"Function",
+	"Generator",
+	"Iterable",
+	"Iterator",
+	"Map",
+	"Object",
 	"Record",
+	"ReadonlyArray",
+	"ReadonlyMap",
+	"ReadonlySet",
 	"Readonly",
 	"Partial",
 	"Required",
@@ -9,6 +28,11 @@ const BUILT_INS = new Set([
 	"Omit",
 	"PropertyKey",
 	"NonNullable",
+	"Promise",
+	"RegExp",
+	"Set",
+	"WeakMap",
+	"WeakSet",
 ]);
 const TRANSPARENT_WRAPPERS = new Set(["Readonly", "Partial", "Required", "NonNullable"]);
 
@@ -73,6 +97,8 @@ export type RuntimeTypeofTag =
 	| "string"
 	| "symbol"
 	| "undefined";
+
+export type RuntimeLiteralValue = string | number | boolean | bigint | null;
 
 function isNode(value: unknown): value is ESTree.Node {
 	return typeof value === "object" && value !== null && "type" in value && typeof value.type === "string";
@@ -296,6 +322,20 @@ function typeQueryPath(type: ESTree.TSTypeQuery): string | null {
 	return parts.join(".");
 }
 
+function importedPath(
+	reference: ESTree.Node,
+	path: string,
+	environment: TypeEnvironment,
+): string | undefined {
+	const [root, ...members] = path.split(".");
+	if (root === undefined) return undefined;
+	const binding = environment.resolveImportedType(reference, root);
+	if (binding === undefined || binding.source !== "effect") return undefined;
+	return binding.imported === "*"
+		? members.join(".")
+		: `${binding.imported}.${members.join(".")}`;
+}
+
 function importedTypeResolvesToUnknown(
 	type: ESTree.TSTypeReference,
 	environment: TypeEnvironment,
@@ -319,14 +359,16 @@ function schemaTypeResolvesToUnknown(
 	type: ESTree.TSTypeReference,
 	environment: TypeEnvironment,
 ): boolean {
-	if (typeReferencePath(type) !== "Schema.Schema.Type") return false;
-	const schema = environment.resolveImportedType(type, "Schema");
+	const path = typeReferencePath(type);
 	const typeArgument = type.typeArguments?.params[0];
+	const schemaPath = path === null ? undefined : importedPath(type, path, environment);
+	const unknownPath =
+		typeArgument?.type === "TSTypeQuery"
+			? importedPath(typeArgument, typeQueryPath(typeArgument) ?? "", environment)
+			: undefined;
 	return (
-		schema?.source === "effect" &&
-		schema.imported === "Schema" &&
-		typeArgument?.type === "TSTypeQuery" &&
-		typeQueryPath(typeArgument) === "Schema.Unknown"
+		(schemaPath !== undefined && trustedSchemaUnknownTypePaths.has(schemaPath)) &&
+		(unknownPath !== undefined && trustedSchemaUnknownValuePaths.has(unknownPath))
 	);
 }
 
@@ -445,6 +487,135 @@ function aliasSubstitution(
 	return aliasSubstitutionArguments(alias, type.typeArguments?.params ?? [], base);
 }
 
+function heritageTypeName(node: ESTree.Node): string | null {
+	if (node.type === "Identifier") return node.name;
+	if (
+		node.type === "MemberExpression" &&
+		!node.computed &&
+		node.object.type === "Identifier" &&
+		node.property.type === "Identifier"
+	)
+		return `${node.object.name}.${node.property.name}`;
+	if (
+		node.type === "TSQualifiedName" &&
+		node.left.type === "Identifier" &&
+		node.right.type === "Identifier"
+	)
+		return `${node.left.name}.${node.right.name}`;
+	return null;
+}
+
+function interfacePropertyType(
+	declaration: ESTree.TSInterfaceDeclaration,
+	propertyName: string,
+	environment: TypeEnvironment,
+	substitutions: TypeAliasEnvironment,
+	resolvingAliases: ReadonlySet<string>,
+	resolvingInterfaces: ReadonlySet<ESTree.TSInterfaceDeclaration>,
+): ESTree.TSType | undefined {
+	for (const member of declaration.body.body) {
+		if (member.type !== "TSPropertySignature" || member.typeAnnotation === null) continue;
+		const name =
+			member.key.type === "Identifier"
+				? member.key.name
+				: member.key.type === "Literal" && typeof member.key.value === "string"
+					? member.key.value
+					: undefined;
+		if (name === propertyName) {
+			return resolvedSubstitutionArgument(member.typeAnnotation.typeAnnotation, substitutions);
+		}
+	}
+	if (resolvingInterfaces.has(declaration)) return undefined;
+	const nextResolvingInterfaces = new Set(resolvingInterfaces);
+	nextResolvingInterfaces.add(declaration);
+	for (const heritage of declaration.extends) {
+		const name = heritageTypeName(heritage.expression);
+		if (name === null) continue;
+		for (const parent of environment.resolveInterfaces(heritage.expression, name)) {
+			const parentSubstitutions = interfaceSubstitution(
+				parent,
+				heritage.typeArguments?.params ?? [],
+				substitutions,
+			);
+			if (parentSubstitutions === null) continue;
+			const property = interfacePropertyType(
+				parent,
+				propertyName,
+				environment,
+				parentSubstitutions,
+				resolvingAliases,
+				nextResolvingInterfaces,
+			);
+			if (property !== undefined) return property;
+		}
+	}
+	return undefined;
+}
+
+function interfaceHasRuntimeObjectStructure(
+	declaration: ESTree.TSInterfaceDeclaration,
+	environment: TypeEnvironment,
+	resolving: ReadonlySet<ESTree.TSInterfaceDeclaration>,
+): boolean {
+	if (
+		declaration.body.body.some(
+			(member) =>
+				member.type === "TSPropertySignature" ||
+				member.type === "TSMethodSignature" ||
+				member.type === "TSIndexSignature",
+		)
+	)
+		return true;
+	if (resolving.has(declaration)) return false;
+	const nextResolving = new Set(resolving);
+	nextResolving.add(declaration);
+	return declaration.extends.some((heritage) => {
+		const name = heritageTypeName(heritage.expression);
+		return (
+			name !== null &&
+			environment
+				.resolveInterfaces(heritage.expression, name)
+				.some((parent) => interfaceHasRuntimeObjectStructure(parent, environment, nextResolving))
+		);
+	});
+}
+
+function interfaceRuntimeTypeofTags(
+	declaration: ESTree.TSInterfaceDeclaration,
+	environment: TypeEnvironment,
+	resolving: ReadonlySet<ESTree.TSInterfaceDeclaration>,
+): ReadonlySet<RuntimeTypeofTag> {
+	if (resolving.has(declaration)) return new Set();
+	const nextResolving = new Set(resolving);
+	nextResolving.add(declaration);
+	const tags = new Set<RuntimeTypeofTag>();
+	if (
+		declaration.body.body.some(
+			(member) =>
+				member.type === "TSPropertySignature" ||
+				member.type === "TSMethodSignature" ||
+				member.type === "TSIndexSignature",
+		)
+	)
+		tags.add("object");
+	if (
+		declaration.body.body.some(
+			(member) =>
+				member.type === "TSCallSignatureDeclaration" ||
+				member.type === "TSConstructSignatureDeclaration",
+		)
+	)
+		tags.add("function");
+	for (const heritage of declaration.extends) {
+		const name = heritageTypeName(heritage.expression);
+		if (name === null) continue;
+		for (const parent of environment.resolveInterfaces(heritage.expression, name)) {
+			for (const tag of interfaceRuntimeTypeofTags(parent, environment, nextResolving)) tags.add(tag);
+		}
+	}
+	return tags;
+}
+
 function runtimePropertyType(
 	type: ESTree.TSType,
 	propertyName: string,
@@ -489,7 +660,14 @@ function runtimePropertyType(
 		);
 	}
 	for (const declaration of environment.resolveInterfaces(unwrapped, name)) {
-		const property = memberType(declaration.body.body);
+		const property = interfacePropertyType(
+			declaration,
+			propertyName,
+			environment,
+			substitutions,
+			resolvingAliases,
+			new Set(),
+		);
 		if (property !== undefined) return property;
 	}
 	return undefined;
@@ -518,6 +696,24 @@ function typeHasRuntimeObjectStructure(
 		case "TSTypeReference": {
 			const name = typeReferenceName(unwrapped);
 			if (name === null) return false;
+			if (
+				isBuiltInReference(unwrapped, name, environment) &&
+				(name === "Array" ||
+					name === "ReadonlyArray" ||
+					name === "Map" ||
+					name === "ReadonlyMap" ||
+					name === "Set" ||
+					name === "ReadonlySet" ||
+					name === "WeakMap" ||
+					name === "WeakSet" ||
+					name === "Promise" ||
+					name === "Date" ||
+					name === "RegExp" ||
+					name === "Error" ||
+					name === "Object" ||
+					name === "Record")
+			)
+				return true;
 			const substitution = substitutions.get(name);
 			if (substitution !== undefined && !isUnappliedReferenceTo(substitution, name)) {
 				return typeHasRuntimeObjectStructure(
@@ -541,9 +737,9 @@ function typeHasRuntimeObjectStructure(
 					nextResolving,
 				);
 			}
-			return environment.resolveInterfaces(unwrapped, name).some((declaration) =>
-				declaration.body.body.length > 0,
-			);
+			return environment
+				.resolveInterfaces(unwrapped, name)
+				.some((declaration) => interfaceHasRuntimeObjectStructure(declaration, environment, new Set()));
 		}
 		default:
 			return false;
@@ -555,6 +751,62 @@ export function typeRequiresStructuralRuntimeEvidence(
 	environment: TypeEnvironment,
 ): boolean {
 	return typeHasRuntimeObjectStructure(type, environment, new Map(), new Set());
+}
+
+function typeRequiresExactRuntimeValueEvidence(
+	type: ESTree.TSType,
+	environment: TypeEnvironment,
+	substitutions: TypeAliasEnvironment,
+	resolvingAliases: ReadonlySet<string>,
+): boolean {
+	const unwrapped = unwrapTransparentType(type);
+	if (unwrapped.type === "TSNullKeyword" || unwrapped.type === "TSLiteralType") return true;
+	if (unwrapped.type === "TSUnionType" || unwrapped.type === "TSIntersectionType") {
+		return (
+			unwrapped.types.length > 0 &&
+			unwrapped.types.every((member) =>
+				typeRequiresExactRuntimeValueEvidence(
+					member,
+					environment,
+					substitutions,
+					resolvingAliases,
+				),
+			)
+		);
+	}
+	if (unwrapped.type !== "TSTypeReference") return false;
+	const name = typeReferenceName(unwrapped);
+	if (name === null || resolvingAliases.has(name)) return false;
+	const substitution = substitutions.get(name);
+	if (substitution !== undefined && !isUnappliedReferenceTo(substitution, name)) {
+		return typeRequiresExactRuntimeValueEvidence(substitution, environment, substitutions, resolvingAliases);
+	}
+	const alias = environment.resolveAlias(unwrapped, name);
+	if (alias === undefined) return false;
+	const nextSubstitutions = aliasSubstitution(alias, unwrapped, substitutions);
+	if (nextSubstitutions === null) return false;
+	const nextResolving = new Set(resolvingAliases);
+	nextResolving.add(name);
+	return typeRequiresExactRuntimeValueEvidence(
+		alias.typeAnnotation,
+		environment,
+		nextSubstitutions,
+		nextResolving,
+	);
+}
+
+export function typeRequiresExactRuntimeValueEvidenceForPropertyPath(
+	type: ESTree.TSType,
+	propertyPath: readonly string[],
+	environment: TypeEnvironment,
+): boolean {
+	let current = type;
+	for (const propertyName of propertyPath) {
+		const propertyType = runtimePropertyType(current, propertyName, environment, new Map(), new Set());
+		if (propertyType === undefined) return false;
+		current = propertyType;
+	}
+	return typeRequiresExactRuntimeValueEvidence(current, environment, new Map(), new Set());
 }
 
 export function typeResolvesToRuntimeTypeofTagsForPropertyPath(
@@ -569,6 +821,143 @@ export function typeResolvesToRuntimeTypeofTagsForPropertyPath(
 		current = propertyType;
 	}
 	return runtimeTypeofTagsForType(current, environment, new Map(), new Set());
+}
+
+export function typeAtRuntimePropertyPath(
+	type: ESTree.TSType,
+	propertyPath: readonly string[],
+	environment: TypeEnvironment,
+): ESTree.TSType | undefined {
+	let current = type;
+	for (const propertyName of propertyPath) {
+		const propertyType = runtimePropertyType(current, propertyName, environment, new Map(), new Set());
+		if (propertyType === undefined) return undefined;
+		current = propertyType;
+	}
+	return current;
+}
+
+function runtimeLiteralValueMatchesType(
+	type: ESTree.TSType,
+	value: RuntimeLiteralValue,
+	environment: TypeEnvironment,
+	substitutions: TypeAliasEnvironment,
+	resolvingAliases: ReadonlySet<string>,
+): boolean {
+	const unwrapped = unwrapTransparentType(type);
+	switch (unwrapped.type) {
+		case "TSNullKeyword":
+			return value === null;
+		case "TSStringKeyword":
+			return typeof value === "string";
+		case "TSNumberKeyword":
+			return typeof value === "number";
+		case "TSBooleanKeyword":
+			return typeof value === "boolean";
+		case "TSBigIntKeyword":
+			return typeof value === "bigint";
+		case "TSLiteralType":
+			return unwrapped.literal.type === "Literal" && Object.is(unwrapped.literal.value, value);
+		case "TSUnionType":
+			return unwrapped.types.some((member) =>
+				runtimeLiteralValueMatchesType(member, value, environment, substitutions, resolvingAliases),
+			);
+		case "TSIntersectionType":
+			return unwrapped.types.every((member) =>
+				runtimeLiteralValueMatchesType(member, value, environment, substitutions, resolvingAliases),
+			);
+		case "TSIndexedAccessType": {
+			const indexType = unwrapTransparentType(unwrapped.indexType);
+			if (indexType.type !== "TSLiteralType" || indexType.literal.type !== "Literal") return false;
+			if (typeof indexType.literal.value !== "string") return false;
+			const propertyType = runtimePropertyType(
+				unwrapped.objectType,
+				indexType.literal.value,
+				environment,
+				substitutions,
+				resolvingAliases,
+			);
+			return (
+				propertyType !== undefined &&
+				runtimeLiteralValueMatchesType(
+					propertyType,
+					value,
+					environment,
+					substitutions,
+					resolvingAliases,
+				)
+			);
+		}
+		case "TSTypeReference": {
+			const name = typeReferenceName(unwrapped);
+			if (name === null || resolvingAliases.has(name)) return false;
+			const substitution = substitutions.get(name);
+			if (substitution !== undefined && !isUnappliedReferenceTo(substitution, name)) {
+				return runtimeLiteralValueMatchesType(
+					substitution,
+					value,
+					environment,
+					substitutions,
+					resolvingAliases,
+				);
+			}
+			if (name === "NonNullable") {
+				const argument = unwrapped.typeArguments?.params[0];
+				return (
+					argument !== undefined &&
+					value !== null &&
+					runtimeLiteralValueMatchesType(
+						argument,
+						value,
+						environment,
+						substitutions,
+						resolvingAliases,
+					)
+				);
+			}
+			if (TRANSPARENT_WRAPPERS.has(name) || name === "Pick" || name === "Omit") {
+				const argument = unwrapped.typeArguments?.params[0];
+				return (
+					argument !== undefined &&
+					runtimeLiteralValueMatchesType(
+						argument,
+						value,
+						environment,
+						substitutions,
+						resolvingAliases,
+					)
+				);
+			}
+			const alias = environment.resolveAlias(unwrapped, name);
+			if (alias === undefined) return false;
+			const nextSubstitutions = aliasSubstitution(alias, unwrapped, substitutions);
+			if (nextSubstitutions === null) return false;
+			const nextResolving = new Set(resolvingAliases);
+			nextResolving.add(name);
+			return runtimeLiteralValueMatchesType(
+				alias.typeAnnotation,
+				value,
+				environment,
+				nextSubstitutions,
+				nextResolving,
+			);
+		}
+		default:
+			return false;
+	}
+}
+
+export function typeAcceptsRuntimeLiteralValueForPropertyPath(
+	type: ESTree.TSType,
+	propertyPath: readonly string[],
+	value: RuntimeLiteralValue,
+	environment: TypeEnvironment,
+): boolean {
+	const propertyType = typeAtRuntimePropertyPath(type, propertyPath, environment);
+	return (
+		propertyType !== undefined &&
+		runtimeLiteralValueMatchesType(propertyType, value, environment, new Map(), new Set())
+	);
 }
 
 function runtimeTypeofTagsForType(
@@ -599,7 +988,7 @@ function runtimeTypeofTagsForType(
 		case "TSUndefinedKeyword":
 			return tags("undefined");
 		case "TSNullKeyword":
-			return tags("object");
+			return undefined;
 		case "TSArrayType":
 		case "TSTupleType":
 		case "TSTypeLiteral":
@@ -609,7 +998,7 @@ function runtimeTypeofTagsForType(
 			return tags();
 		case "TSLiteralType": {
 			if (unwrapped.literal.type !== "Literal") return undefined;
-			if (unwrapped.literal.value === null) return tags("object");
+			if (unwrapped.literal.value === null) return undefined;
 			switch (typeof unwrapped.literal.value) {
 				case "bigint":
 					return tags("bigint");
@@ -719,15 +1108,25 @@ function runtimeTypeofTagsForType(
 					nextResolving,
 				);
 			}
-			if (environment.resolveInterfaces(unwrapped, name).length > 0) return tags("object", "function");
-			if (name === "Function") return tags("function");
+			const interfaces = environment.resolveInterfaces(unwrapped, name);
+			if (interfaces.length > 0) {
+				const interfaceTags = new Set<RuntimeTypeofTag>();
+				for (const declaration of interfaces) {
+					for (const tag of interfaceRuntimeTypeofTags(declaration, environment, new Set()))
+						interfaceTags.add(tag);
+				}
+				return interfaceTags;
+			}
+			if (name === "Function" && isBuiltInReference(unwrapped, name, environment))
+				return tags("function");
 			if (
-				name === "Iterator" ||
-				name === "AsyncIterator" ||
-				name === "Iterable" ||
-				name === "AsyncIterable" ||
-				name === "Generator" ||
-				name === "AsyncGenerator"
+				isBuiltInReference(unwrapped, name, environment) &&
+				(name === "Iterator" ||
+					name === "AsyncIterator" ||
+					name === "Iterable" ||
+					name === "AsyncIterable" ||
+					name === "Generator" ||
+					name === "AsyncGenerator")
 			)
 				return tags("object", "function");
 			const typeArguments = unwrapped.typeArguments?.params ?? [];
@@ -743,8 +1142,22 @@ function runtimeTypeofTagsForType(
 					? undefined
 					: runtimeTypeofTagsForType(nonNullable, environment, substitutions, resolvingAliases);
 			}
-			if (
-				name === "Array" ||
+		if (
+			isBuiltInReference(unwrapped, name, environment) &&
+			(name === "Readonly" ||
+				name === "Partial" ||
+				name === "Required" ||
+				name === "Pick" ||
+				name === "Omit")
+		) {
+			const wrapped = unwrapped.typeArguments?.params[0];
+			return wrapped === undefined
+				? undefined
+				: runtimeTypeofTagsForType(wrapped, environment, substitutions, resolvingAliases);
+		}
+		if (
+			isBuiltInReference(unwrapped, name, environment) &&
+			(name === "Array" ||
 				name === "ReadonlyArray" ||
 				name === "Map" ||
 				name === "ReadonlyMap" ||
@@ -757,18 +1170,10 @@ function runtimeTypeofTagsForType(
 				name === "RegExp" ||
 				name === "Error" ||
 				name === "Object" ||
-				name === "Record" ||
-				name === "Readonly" ||
-				name === "Partial" ||
-				name === "Required" ||
-				name === "Pick" ||
-				name === "Omit"
-			)
-				return tags("object", "function");
-			// Unresolved named types are conservatively treated as object-shaped.
-			// This keeps external nominal contracts usable while still rejecting
-			// primitive typeof evidence that cannot establish a named domain type.
-			return tags("object", "function");
+				name === "Record")
+		)
+			return tags("object");
+			return undefined;
 		}
 		default:
 			return undefined;

@@ -101,13 +101,48 @@ const strictParseOptions = {
   onExcessProperty: "error",
 } as const;
 
+const isObjectValue = (value: Schema.Schema.Type<typeof Schema.Unknown>): value is object =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+const isPlainRecordValue = (
+  value: Schema.Schema.Type<typeof Schema.Unknown>,
+): value is Record<string, unknown> => {
+  if (!isObjectValue(value)) return false;
+  try {
+    const prototype = Object.getPrototypeOf(value);
+    return prototype === Object.prototype || prototype === null;
+  } catch {
+    return false;
+  }
+};
+
+const isSchemaFieldRecord = (value: Schema.Schema.Type<typeof Schema.Unknown>): boolean => {
+  const inspected = Result.try(() => {
+    if (!isPlainRecordValue(value)) return false;
+    return Object.keys(value).every((field) => Schema.isSchema(Reflect.get(value, field)));
+  });
+  return Result.isSuccess(inspected) && inspected.success;
+};
+
 const hasConfiguredTopic = <const Topics extends ViewServerRuntimeTopicDefinitions>(
   topics: Topics,
   topic: string,
 ): topic is Extract<keyof Topics, string> => Object.hasOwn(topics, topic);
 
-const isTopicDefinitionWithSchema = (value: unknown): value is { readonly schema: RowSchema } =>
-  typeof value === "object" && value !== null && "schema" in value && Schema.isSchema(value.schema);
+const isTopicDefinitionWithSchema = (
+  value: Schema.Schema.Type<typeof Schema.Unknown>,
+): value is { readonly schema: RowSchema } => {
+  const inspected = Result.try(
+    () =>
+      isObjectValue(value) &&
+      Schema.is(Schema.Struct({ schema: Schema.Unknown }))(value) &&
+      "schema" in value &&
+      Schema.isSchema(value.schema) &&
+      "fields" in value.schema &&
+      isSchemaFieldRecord(value.schema.fields),
+  );
+  return Result.isSuccess(inspected) && inspected.success;
+};
 
 const tcpDecodeError = (line: string, cause: unknown): ViewServerTcpPublishIngressError =>
   new ViewServerTcpPublishIngressError({
@@ -384,11 +419,70 @@ const mapRuntimeError =
   (cause: unknown): TcpPublishCommandError =>
     isViewServerRuntimeError(cause) ? cause : tcpRuntimeError(topic, operation, cause);
 
-const isViewServerRuntimeError = (value: unknown): value is ViewServerRuntimeError =>
-  typeof value === "object" &&
-  value !== null &&
-  "_tag" in value &&
-  (value._tag === "ViewServerRuntimeError" || value._tag === "ViewServerBackpressureError");
+export const isViewServerRuntimeError = (
+  value: Schema.Schema.Type<typeof Schema.Unknown>,
+): value is ViewServerRuntimeError => {
+  const inspected = Result.try(() => {
+    if (!isPlainRecordValue(value)) return false;
+    const tag = Reflect.get(value, "_tag");
+    const code = Reflect.get(value, "code");
+    const message = Reflect.get(value, "message");
+    if (
+      !Schema.is(Schema.String)(tag) ||
+      !Schema.is(Schema.String)(code) ||
+      !Schema.is(Schema.String)(message)
+    ) {
+      return false;
+    }
+    const ownKeysAre = (expected: ReadonlyArray<string>): boolean => {
+      const keys = Reflect.ownKeys(value);
+      return (
+        keys.length === expected.length &&
+        keys.every((key) => typeof key === "string" && expected.includes(key))
+      );
+    };
+    const optionalString = (key: "topic" | "queryId") =>
+      !Object.hasOwn(value, key) || Schema.is(Schema.String)(Reflect.get(value, key));
+    const optionalNumber = (key: "queuedEvents" | "maxQueueDepth") => {
+      if (!Object.hasOwn(value, key)) return true;
+      const candidate = Reflect.get(value, key);
+      return typeof candidate === "number" && Number.isFinite(candidate);
+    };
+    if (tag === "ViewServerRuntimeError") {
+      const expected = ["_tag", "code", "message"];
+      if (Object.hasOwn(value, "topic")) expected.push("topic");
+      return (
+        [
+          "InvalidTopic",
+          "InvalidRow",
+          "InvalidQuery",
+          "UnsupportedQuery",
+          "SnapshotStale",
+          "RuntimeUnavailable",
+          "RuntimeResetFailed",
+        ].includes(code) &&
+        ownKeysAre(expected) &&
+        optionalString("topic")
+      );
+    }
+    if (tag === "ViewServerBackpressureError") {
+      const expected = ["_tag", "code", "message"];
+      for (const key of ["topic", "queryId", "queuedEvents", "maxQueueDepth"] as const) {
+        if (Object.hasOwn(value, key)) expected.push(key);
+      }
+      return (
+        code === "BackpressureExceeded" &&
+        ownKeysAre(expected) &&
+        optionalString("topic") &&
+        optionalString("queryId") &&
+        optionalNumber("queuedEvents") &&
+        optionalNumber("maxQueueDepth")
+      );
+    }
+    return false;
+  });
+  return Result.isSuccess(inspected) && inspected.success;
+};
 
 export const handleTcpPublishCommandLine = Effect.fn("ViewServerRuntime.tcpPublish.command.handle")(
   function* <const Topics extends ViewServerRuntimeTopicDefinitions>(

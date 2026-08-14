@@ -141,5 +141,22 @@ describe("source binding resolution", () => {
       sourceOwned: false,
       topic: "externalOrders",
     });
+
+    const malformedSchema = new Proxy(Row, {
+      get: (target, property) =>
+        property === "fields" ? [] : Reflect.get(target, property, target),
+    });
+    const malformedTopics = new Proxy(
+      { ...viewServer.topics },
+      {
+        get: (target, property, receiver) =>
+          property === "externalOrders"
+            ? { ...target.externalOrders, schema: malformedSchema }
+            : Reflect.get(target, property, receiver),
+      },
+    );
+    expect(makeTopicSourceBindings({ topics: malformedTopics }).get("externalOrders")?.schema).toBe(
+      undefined,
+    );
   });
 });

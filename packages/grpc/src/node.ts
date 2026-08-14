@@ -7,7 +7,7 @@ import {
   type GrpcTransportOptions,
   type Http2SessionOptions,
 } from "@connectrpc/connect-node";
-import { Config, Effect, Layer, Option } from "effect";
+import { Config, Effect, Layer, Option, Schema } from "effect";
 import { Buffer } from "node:buffer";
 import { exactArrayValues, exactDataEntries, type DataEntry } from "./exact-shape";
 import {
@@ -297,7 +297,7 @@ const transportOptionValueCanBeCaptured = (key: string, value: unknown): boolean
 };
 
 const isGrpcTransportOptions = (
-  value: unknown,
+  value: Schema.Schema.Type<typeof Schema.Unknown>,
 ): value is NonNullable<GrpcNodeClientOptions["transport"]> => {
   const entries = exactDataEntries(value);
   return (
@@ -307,7 +307,7 @@ const isGrpcTransportOptions = (
 };
 
 const isCapturableGrpcTransportOptions = (
-  value: unknown,
+  value: Schema.Schema.Type<typeof Schema.Unknown>,
 ): value is NonNullable<GrpcNodeClientOptions["transport"]> => {
   const entries = exactDataEntries(value);
   return (

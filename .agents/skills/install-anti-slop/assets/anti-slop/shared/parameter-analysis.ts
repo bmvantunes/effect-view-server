@@ -1,10 +1,26 @@
 import type { ESTree, Scope, SourceCode, Variable } from "@oxlint/plugins";
 import {
 	typeRequiresStructuralRuntimeEvidence,
+	typeRequiresExactRuntimeValueEvidenceForPropertyPath,
+	typeAtRuntimePropertyPath,
+	typeAcceptsRuntimeLiteralValueForPropertyPath,
 	typeResolvesToRuntimeTypeofTags,
 	typeResolvesToRuntimeTypeofTagsForPropertyPath,
+	type RuntimeLiteralValue,
 	type TypeEnvironment,
 } from "./dictionary-types.ts";
+import {
+	knownValidationCalls,
+	trustedValidationImportExports,
+	trustedValidationNamespaceImports,
+	trustedValidationNamespaceRoots,
+	validationCallbackWrappers,
+	validationFactoryCalls,
+	namedPredicateContracts,
+	reviewedImportedTypeContracts,
+	trustedSchemaUnknownValuePaths,
+	type ReviewedImportedTypeContract,
+} from "./repository-validation-policy.ts";
 
 export type Parameter = ESTree.ParamPattern;
 type IdentifierNode = Extract<ESTree.Node, { type: "Identifier"; name: string }>;
@@ -28,159 +44,68 @@ export function isRuntimeParameterOwner(
 	);
 }
 
-const knownValidationCalls = new Set([
-	"accepts",
-	"canonicalWhereKey",
-	"captureOwnDataValues",
-	"compareOrderedRangeValue",
-	"compareOrderedSlotRangeValue",
-	"decodeJsonFieldValue",
-	"decodeGroupedQuery",
-	"decodeKafkaDurationInput",
-	"decodeRawQuery",
-	"decodeTypedGroupedQuery",
-	"denseArraySnapshot",
-	"denseArrayValues",
-	"exactArrayValues",
-	"exactDataEntries",
-	"encodeJsonFieldValue",
-	"hasPlainRecordPrototype",
-	"inspectArrayData",
-	"inspectDenseArrayData",
-	"inspectPlainRecordData",
-	"inspectPlainRecordShape",
-	"inspectWireSafeBigDecimal",
-	"inspect",
-	"isBenchmarkEngineHealth",
-	"invokeLayerConstructor",
-	"isBigDecimal",
-	"isTrustedWireSafeBigDecimal",
-	"isWireSafeBigDecimal",
-	"normalizeWhere",
-	"normalizeFilterBigDecimal",
-	"ownScalar",
-	"plainRecordSnapshot",
-	"protocolDenseArray",
-	"protocolRecordSnapshot",
-	"readOwnDataProperty",
-	"readProperty",
-	"recordValues",
-	"Reflect.apply",
-	"schemaAst",
-	"stableQueryValueString",
-	"validateDecodedRow",
-	"validateExactLeasedHealthRoutes",
-	"validateExactRoute",
-	"validateExactSourceHealth",
-	"jsonObject",
-	"jsonResponse",
-	"isPlainRecord",
-	"materializeJsonFieldValue",
-	"materializeStrictJson",
-	"viewServerFilterFieldContracts",
-]);
+function reviewedImportedTypeContract(
+	type: ESTree.TSType,
+	environment: TypeEnvironment,
+	resolving: ReadonlySet<string> = new Set(),
+): ReviewedImportedTypeContract | undefined {
+	const current = unwrapRuntimeTypeofOperand(type);
+	if (current.type !== "TSTypeReference" || current.typeName.type !== "Identifier") return undefined;
+	const name = current.typeName.name;
+	const binding = environment.resolveImportedType(current, name);
+	if (binding !== undefined) {
+		return reviewedImportedTypeContracts.get(`${binding.source}:${binding.imported}`);
+	}
+	if (resolving.has(name)) return undefined;
+	const alias = environment.resolveAlias(current, name);
+	return alias === undefined
+		? undefined
+		: reviewedImportedTypeContract(alias.typeAnnotation, environment, new Set([...resolving, name]));
+}
 
-const validationCallbackWrappers = new Set(["Effect.try", "Effect.tryPromise", "Result.try", "inspect"]);
-const validationFactoryCalls = new Set([
-	"Schema.decodeUnknownEffect",
-	"Schema.decodeUnknownExit",
-	"Schema.decodeUnknownResult",
-	"Schema.decodeUnknownSync",
-	"Schema.encodeUnknownEffect",
-	"Schema.encodeUnknownExit",
-	"Schema.encodeUnknownResult",
-	"Schema.encodeUnknownSync",
-	"Schema.is",
-]);
+function reviewedImportedLiteralValues(
+	type: ESTree.TSType | undefined,
+	propertyPath: readonly string[],
+	environment: TypeEnvironment | undefined,
+): ReadonlySet<RuntimeLiteralValue> | undefined {
+	if (type === undefined || environment === undefined) return undefined;
+	return reviewedImportedTypeContract(type, environment)?.literalProperties?.get(propertyPath.join("."));
+}
 
-// Imported names are trusted only when both the module specifier and export have
-// been reviewed as validation infrastructure. A local alias with a familiar
-// name must not make an unrelated function count as validation evidence.
-const trustedValidationImportExports = new Map<string, ReadonlySet<string>>([
-	["effect", new Set(["BigDecimal", "Cause", "Effect", "Exit", "Layer", "Option", "Result", "Schema"])],
-	["effect/BigDecimal", new Set(["isBigDecimal"])],
-	[
-		"@effect-view-server/config/internal",
-		new Set(["validateDecodedRow", "viewServerFilterFieldContracts"]),
-	],
-	[
-		"@effect-view-server/effect-utils",
-		new Set([
-			"hasPlainRecordPrototype",
-			"inspectArrayData",
-			"inspectDenseArrayData",
-			"inspectPlainRecordData",
-			"inspectPlainRecordShape",
-			"inspectWireSafeBigDecimal",
-			"isTrustedWireSafeBigDecimal",
-			"isWireSafeBigDecimal",
-		]),
-	],
-	["@effect-view-server/source-adapter/internal", new Set(["isSourceAdapterHandle", "isSourceDefinition"])],
-	["./adapter-brand", new Set(["hasSourceModelSelfBrand", "isSourceAdapterHandle"])],
-	["./definition-brand", new Set(["isSourceDefinition", "validateSourceDefinition"])],
-	[
-		"effect-view-server/value-semantics",
-		new Set([
-			"inspectWireSafeBigDecimal",
-			"isTrustedWireSafeBigDecimal",
-			"isWireSafeBigDecimal",
-		]),
-	],
-	["./benchmark-artifact", new Set(["isBenchmarkEngineHealth"])],
-	["./contract", new Set(["decodeKafkaDurationInput"])],
-	["./decoded-row-validation", new Set(["validateDecodedRow"])],
-	["./exact-shape", new Set(["exactArrayValues", "exactDataEntries"])],
-	["./filter-expression", new Set(["normalizeWhere"])],
-	[
-		"./protocol-json-field-codec",
-		new Set(["decodeJsonFieldValue", "encodeJsonFieldValue", "materializeJsonFieldValue"]),
-	],
-	["./protocol-structural-value", new Set(["protocolDenseArray", "protocolRecordSnapshot"])],
-	["./query-structural-data", new Set(["denseArrayValues", "plainRecordSnapshot"])],
-	["./query-value", new Set(["stableQueryValueString"])],
-	["./query-where-key", new Set(["canonicalWhereKey"])],
-	["./grouped-query-decoder", new Set(["decodeGroupedQuery", "decodeTypedGroupedQuery"])],
-	["./grouped-query-decoder.ts", new Set(["decodeGroupedQuery", "decodeTypedGroupedQuery"])],
-	["./raw-query-decoder", new Set(["decodeRawQuery", "denseArraySnapshot", "validateRuntimeQuery"])],
-	["./raw-query-decoder.ts", new Set(["decodeRawQuery", "denseArraySnapshot", "validateRuntimeQuery"])],
-	["./row-values", new Set(["isPlainRecord"])],
-	[
-		"./source-health-wire",
-		new Set(["validateExactLeasedHealthRoutes", "validateExactRoute", "validateExactSourceHealth"]),
-	],
-	["./strict-json-materialization", new Set(["materializeStrictJson"])],
-	[
-		"./structural-data",
-		new Set([
-			"hasPlainRecordPrototype",
-			"inspectArrayData",
-			"inspectDenseArrayData",
-			"inspectPlainRecordData",
-			"inspectPlainRecordShape",
-		]),
-	],
-	[
-		"./wire-safe-big-decimal",
-		new Set(["inspectWireSafeBigDecimal", "isTrustedWireSafeBigDecimal", "isWireSafeBigDecimal"]),
-	],
-]);
+function predicateRuntimeTypeofTags(
+	type: ESTree.TSType,
+	propertyPath: readonly string[],
+	environment: TypeEnvironment,
+): ReadonlySet<string> | undefined {
+	const tags = typeResolvesToRuntimeTypeofTagsForPropertyPath(type, propertyPath, environment);
+	if (tags !== undefined) return tags;
+	const contract = reviewedImportedTypeContract(type, environment);
+	const directProperty = contract?.properties.get(propertyPath.join("."));
+	if (directProperty !== undefined) return directProperty;
+	if (propertyPath.length === 0) return contract?.tags;
+	let current = type;
+	for (const [index, propertyName] of propertyPath.entries()) {
+		const propertyType = typeAtRuntimePropertyPath(current, [propertyName], environment);
+		if (propertyType !== undefined) {
+			current = propertyType;
+			continue;
+		}
+		const nestedContract = reviewedImportedTypeContract(current, environment);
+		const nestedTags = nestedContract?.properties.get(propertyName);
+		return index === propertyPath.length - 1 ? nestedTags : undefined;
+	}
+	return typeResolvesToRuntimeTypeofTags(current, environment) ?? reviewedImportedTypeContract(current, environment)?.tags;
+}
 
-const trustedValidationNamespaceImports = new Map<string, ReadonlySet<string>>([
-	["effect", new Set(["BigDecimal", "Cause", "Effect", "Exit", "Layer", "Option", "Result", "Schema"])],
-	["effect/BigDecimal", new Set(["BigDecimal"])],
-]);
-
-const trustedValidationNamespaceRoots = new Set([
-	"BigDecimal",
-	"Cause",
-	"Effect",
-	"Exit",
-	"Layer",
-	"Option",
-	"Result",
-	"Schema",
-]);
+function predicateRequiresStructuralEvidence(
+	type: ESTree.TSType,
+	environment: TypeEnvironment,
+): boolean {
+	return (
+		typeRequiresStructuralRuntimeEvidence(type, environment) ||
+		reviewedImportedTypeContract(type, environment)?.structural === true
+	);
+}
 
 const typeofTags = new Set([
 	"bigint",
@@ -197,18 +122,65 @@ function isNode(value: unknown): value is ESTree.Node {
 	return typeof value === "object" && value !== null && "type" in value && typeof value.type === "string";
 }
 
-function validationCallName(node: ESTree.CallExpression): string | null {
-	if (node.callee.type === "Identifier") return node.callee.name;
+function memberExpressionPath(node: ESTree.Node): string | null {
+	if (node.type === "Identifier") return node.name;
 	if (
-		node.callee.type !== "MemberExpression" ||
-		node.callee.computed ||
-		node.callee.property.type !== "Identifier"
+		node.type !== "MemberExpression" ||
+		node.computed ||
+		node.property.type !== "Identifier"
 	)
 		return null;
-	const objectName =
-		node.callee.object.type === "Identifier" ? `${node.callee.object.name}.` : null;
-	if (objectName === null) return null;
-	return `${objectName}${node.callee.property.name}`;
+	const objectPath = memberExpressionPath(node.object);
+	return objectPath === null ? null : `${objectPath}.${node.property.name}`;
+}
+
+function canonicalImportedValidationName(
+	name: string,
+	source: string,
+	imported: string,
+): string | undefined {
+	if (source !== "effect") return undefined;
+	const parts = name.split(".");
+	if (imported === "*") {
+		const namespaceRoot = parts[1];
+		return namespaceRoot !== undefined &&
+			trustedValidationNamespaceImports.get(source)?.has(namespaceRoot) === true &&
+			trustedValidationNamespaceRoots.has(namespaceRoot)
+			? parts.slice(1).join(".")
+			: undefined;
+	}
+	if (!trustedValidationNamespaceRoots.has(imported)) return undefined;
+	const member = parts.slice(1).join(".");
+	return member.length === 0 ? imported : `${imported}.${member}`;
+}
+
+function canonicalValidationName(
+	node: ESTree.Node,
+	name: string,
+	environment: TypeEnvironment | undefined,
+): string {
+	if (environment === undefined) return name;
+	const root = name.split(".")[0];
+	if (root === undefined) return name;
+	const binding = environment.resolveImportedType(node, root);
+	return binding === undefined
+		? name
+		: canonicalImportedValidationName(name, binding.source, binding.imported) ?? name;
+}
+
+function validationCallName(
+	node: ESTree.CallExpression,
+	environment?: TypeEnvironment,
+): string | null {
+	const name = memberExpressionPath(node.callee);
+	return name === null ? null : canonicalValidationName(node, name, environment);
+}
+
+function validationRootIdentifier(node: ESTree.Node): IdentifierNode | undefined {
+	if (node.type === "Identifier") return node;
+	return node.type === "MemberExpression" && !node.computed
+		? validationRootIdentifier(node.object)
+		: undefined;
 }
 
 type TypeofUnaryExpression = ESTree.UnaryExpression & {
@@ -262,6 +234,8 @@ type ValidationResolution = ReadonlySet<Variable> | undefined;
 const builtinValidationCalls = new Set([
 	"Array.isArray",
 	"Object.hasOwn",
+	"Reflect.apply",
+	"Reflect.get",
 	"BigDecimal.isBigDecimal",
 	"Cause.hasDies",
 	"Cause.hasFails",
@@ -286,6 +260,7 @@ const builtinValidationCalls = new Set([
 	"Result.isFailure",
 	"Result.isResult",
 	"Result.isSuccess",
+	"Schedule.isSchedule",
 	"Schema.decodeEffect",
 	"Schema.decodeExit",
 	"Schema.decodeOption",
@@ -332,21 +307,22 @@ function isValidationOperation(
 	if (node.type === "BinaryExpression") {
 		if (isPropertyPresenceOperation(node)) return true;
 		if (!["===", "!==", "==", "!="].includes(node.operator)) return false;
-		if (
-			isIdentityLookupShape(node) ||
-			isReflectiveBrandShape(node) ||
-			reflectedPropertyComparisonForNode(node) !== undefined
-		)
+		if (propertyValueComparisonShape(node)) return true;
+		if (isIdentityLookupShape(node, sourceCode, environment)) return true;
+		const reflected = reflectedPropertyComparisonForNode(node);
+		if (reflected !== undefined) {
+			if (isShadowedValidationCall(reflected.operand, sourceCode, resolving, environment)) return false;
 			return true;
+		}
 		const left = node.left.type === "UnaryExpression" && isTypeofComparison(node.left);
 		const right = node.right.type === "UnaryExpression" && isTypeofComparison(node.right);
 		return left || right;
 	}
 	if (node.type !== "CallExpression") return false;
-	const name = validationCallName(node);
+	const name = validationCallName(node, environment);
 	if (name === null) {
 		if (node.callee.type !== "CallExpression") return false;
-		const factoryName = validationCallName(node.callee);
+		const factoryName = validationCallName(node.callee, environment);
 		return (
 			factoryName !== null &&
 			validationFactoryCalls.has(factoryName) &&
@@ -429,7 +405,7 @@ function isValidationCallback(
 	let current = node.parent;
 	while (current !== null && !isFunctionNode(current)) {
 		if (current.type === "CallExpression") {
-			const name = validationCallName(current);
+			const name = validationCallName(current, environment);
 			return (
 				name !== null &&
 				validationCallbackWrappers.has(name) &&
@@ -557,21 +533,26 @@ function importBindingDetails(
 }
 
 function isTrustedImportedValidation(variable: Variable, name: string): boolean {
-	const rootName = name.split(".")[0] ?? name;
 	return variable.defs.every((definition) => {
 		const details = importBindingDetails(definition);
 		if (details === undefined) return false;
+		const canonicalName = canonicalImportedValidationName(name, details.source, details.imported);
+		const builtinName =
+			isBuiltinValidationName(name) ||
+			(canonicalName !== undefined && isBuiltinValidationName(canonicalName));
 		if (details.imported === "*") {
+			const namespaceRoot = name.split(".")[1];
 			return (
-				trustedValidationNamespaceImports.get(details.source)?.has(rootName) === true &&
-				trustedValidationNamespaceRoots.has(rootName) &&
-				isBuiltinValidationName(name)
+				namespaceRoot !== undefined &&
+				trustedValidationNamespaceImports.get(details.source)?.has(namespaceRoot) === true &&
+				trustedValidationNamespaceRoots.has(namespaceRoot) &&
+				builtinName
 			);
 		}
 		const trusted = trustedValidationImportExports.get(details.source)?.has(details.imported) ?? false;
 		return (
 			trusted &&
-			(!trustedValidationNamespaceRoots.has(details.imported) || isBuiltinValidationName(name))
+			(!trustedValidationNamespaceRoots.has(details.imported) || builtinName)
 		);
 	});
 }
@@ -582,28 +563,22 @@ function isTrustedValidationCall(
 	resolving?: ValidationResolution,
 	environment?: TypeEnvironment,
 ): boolean {
-	const name = validationCallName(node);
+	const sourceName = validationCallName(node);
+	const name = validationCallName(node, environment);
 	if (name === null) return false;
 	const recognizedValidationName =
 		isBuiltinValidationName(name) ||
 		knownValidationCalls.has(name) ||
 		validationCallbackWrappers.has(name);
 	if (sourceCode === undefined) return true;
-	const identifier =
-		node.callee.type === "Identifier"
-			? node.callee
-			: node.callee.type === "MemberExpression" &&
-				  !node.callee.computed &&
-				  node.callee.object.type === "Identifier"
-				? node.callee.object
-				: undefined;
+	const identifier = validationRootIdentifier(node.callee);
 	if (identifier === undefined) return false;
 	const variable = resolvedVariable(sourceCode, identifier);
 	if (variable === undefined) return isBuiltinValidationName(name);
 	if (variable.defs.some((definition) => definition.type === "ImportBinding")) {
 		return (
 			variable.defs.every((definition) => definition.type === "ImportBinding") &&
-			isTrustedImportedValidation(variable, name)
+			isTrustedImportedValidation(variable, sourceName ?? name)
 		);
 	}
 	if (!recognizedValidationName) return false;
@@ -899,18 +874,6 @@ function observedPropertyPath(
 	return parameterPropertyPath(node, bindings, sourceCode) ?? reflectedPropertyPath(node, bindings, sourceCode);
 }
 
-function isImportedPredicateType(
-	type: ESTree.TSType,
-	environment: TypeEnvironment,
-): boolean {
-	const current = unwrapRuntimeTypeofOperand(type);
-	return (
-		current.type === "TSTypeReference" &&
-		current.typeName.type === "Identifier" &&
-		environment.resolveImportedType(current, current.typeName.name) !== undefined
-	);
-}
-
 function isSchemaType(
 	type: ESTree.TSType,
 	environment: TypeEnvironment,
@@ -953,6 +916,34 @@ function isPropertyPresenceOperation(node: ESTree.Node): node is ESTree.BinaryEx
 	);
 }
 
+function propertyValueComparisonShape(node: ESTree.Node): node is ESTree.BinaryExpression {
+	if (node.type !== "BinaryExpression" || !["==", "===", "!=", "!=="].includes(node.operator)) return false;
+	return (
+		(node.left.type === "Literal" && node.right.type === "MemberExpression") ||
+		(node.right.type === "Literal" && node.left.type === "MemberExpression")
+	);
+}
+
+function runtimeLiteralValue(node: ESTree.Literal): RuntimeLiteralValue | undefined {
+	if (node.value === null) return null;
+	return typeof node.value === "bigint" ||
+		typeof node.value === "boolean" ||
+		typeof node.value === "number" ||
+		typeof node.value === "string"
+		? node.value
+		: undefined;
+}
+
+function runtimeTagForLiteral(node: ESTree.Literal): string | undefined {
+	const value = runtimeLiteralValue(node);
+	if (value === null || value === undefined) return undefined;
+	if (typeof value === "bigint") return "bigint";
+	if (typeof value === "boolean") return "boolean";
+	if (typeof value === "number") return "number";
+	if (typeof value === "string") return "string";
+	return undefined;
+}
+
 function reflectedPropertyComparisonForNode(
 	node: ESTree.Node,
 ): { readonly node: ESTree.BinaryExpression; readonly operator: string; readonly operand: ESTree.Node } | undefined {
@@ -967,24 +958,32 @@ function reflectedPropertyComparisonForNode(
 		: { node, operator: node.operator, operand: reflected };
 }
 
-function isIdentityLookupShape(node: ESTree.Node): boolean {
+function isSourceAdapterHandlesBinding(
+	node: ESTree.Node,
+	sourceCode: SourceCode | undefined,
+	environment: TypeEnvironment | undefined,
+): boolean {
+	if (sourceCode === undefined || environment === undefined || node.type !== "Identifier") return false;
+	const binding = environment.resolveImportedType(node, node.name);
+	return binding?.source === "./adapter-brand" && binding.imported === "sourceAdapterHandles";
+}
+
+function isIdentityLookupShape(
+	node: ESTree.Node,
+	sourceCode?: SourceCode,
+	environment?: TypeEnvironment,
+): boolean {
 	if (node.type !== "BinaryExpression" || !["==", "==="].includes(node.operator)) return false;
 	return [node.left, node.right].some(
 		(candidate) =>
 			candidate.type === "CallExpression" &&
 			candidate.callee.type === "MemberExpression" &&
 			!candidate.callee.computed &&
+				candidate.callee.object.type === "Identifier" &&
+				isSourceAdapterHandlesBinding(candidate.callee.object, sourceCode, environment) &&
 			candidate.callee.property.type === "Identifier" &&
 			candidate.callee.property.name === "get",
 	);
-}
-
-function isReflectiveBrandShape(node: ESTree.Node): boolean {
-	if (node.type !== "BinaryExpression" || !["==", "==="].includes(node.operator)) return false;
-	const names = [node.left, node.right].map((candidate) =>
-		candidate.type === "CallExpression" ? validationCallName(candidate) : null,
-	);
-	return names.includes("Reflect.apply") && names.includes("Reflect.get");
 }
 
 function propertyPresenceMatchesPredicate(
@@ -1004,12 +1003,37 @@ function propertyPresenceMatchesPredicate(
 		path !== undefined &&
 		predicateType !== undefined &&
 		environment !== undefined &&
-		(typeResolvesToRuntimeTypeofTagsForPropertyPath(
+		predicateRuntimeTypeofTags(
 			predicateType,
 			[...path, current.left.value],
 			environment,
-		) !== undefined || isImportedPredicateType(predicateType, environment))
+		) !== undefined
 	);
+}
+
+function propertyValueMatchesPredicate(
+	node: ESTree.Node,
+	predicateType: ESTree.TSType | undefined,
+	bindings: ParameterBindings,
+	sourceCode: SourceCode | undefined,
+	environment: TypeEnvironment | undefined,
+): boolean {
+	if (predicateType === undefined || environment === undefined || !propertyValueComparisonShape(node)) return false;
+	const literal = node.left.type === "Literal" ? node.left : node.right;
+	const property = node.left.type === "MemberExpression" ? node.left : node.right;
+	const path = parameterPropertyPath(property, bindings, sourceCode);
+	const value = runtimeLiteralValue(literal);
+	const tag = runtimeTagForLiteral(literal);
+	if (path === undefined || path.length === 0 || value === undefined) return false;
+	const exactType = typeAtRuntimePropertyPath(predicateType, path, environment);
+	if (
+		exactType !== undefined &&
+		!typeAcceptsRuntimeLiteralValueForPropertyPath(predicateType, path, value, environment)
+	)
+		return false;
+	const reviewedValues = reviewedImportedLiteralValues(predicateType, path, environment);
+	if (reviewedValues !== undefined && !reviewedValues.has(value)) return false;
+	return tag === undefined || predicateRuntimeTypeofTags(predicateType, path, environment)?.has(tag) === true;
 }
 
 function reflectedPropertyMatchesPredicate(
@@ -1021,11 +1045,22 @@ function reflectedPropertyMatchesPredicate(
 ): boolean {
 	const comparison = reflectedPropertyComparisonForNode(node);
 	if (comparison === undefined || predicateType === undefined || environment === undefined) return false;
+	if (isShadowedValidationCall(comparison.operand, sourceCode, undefined, environment)) return false;
 	const path = reflectedPropertyPath(comparison.operand, bindings, sourceCode);
+	const literal =
+		comparison.node.left.type === "Literal"
+			? comparison.node.left
+			: comparison.node.right.type === "Literal"
+				? comparison.node.right
+				: undefined;
+	const value = literal === undefined ? undefined : runtimeLiteralValue(literal);
 	return (
 		path !== undefined &&
-		(typeResolvesToRuntimeTypeofTagsForPropertyPath(predicateType, path, environment) !== undefined ||
-			isImportedPredicateType(predicateType, environment))
+		value !== undefined &&
+		(typeAtRuntimePropertyPath(predicateType, path, environment) === undefined ||
+			typeAcceptsRuntimeLiteralValueForPropertyPath(predicateType, path, value, environment)) &&
+		(reviewedImportedLiteralValues(predicateType, path, environment)?.has(value) ?? true) &&
+		predicateRuntimeTypeofTags(predicateType, path, environment) !== undefined
 	);
 }
 
@@ -1049,16 +1084,20 @@ type SchemaEvidence = {
 	readonly broadObject?: boolean;
 };
 
-function schemaEvidence(node: ESTree.Node): SchemaEvidence | undefined {
+function schemaEvidence(
+	node: ESTree.Node,
+	environment?: TypeEnvironment,
+): SchemaEvidence | undefined {
 	const current = unwrapRuntimeTypeofOperand(node);
 	if (
 		current.type === "MemberExpression" &&
 		!current.computed &&
-		current.object.type === "Identifier" &&
-		current.object.name === "Schema" &&
 		current.property.type === "Identifier"
 	) {
-		switch (current.property.name) {
+		const path = memberExpressionPath(current);
+		const name = path === null ? undefined : canonicalValidationName(current, path, environment);
+		const propertyName = name?.startsWith("Schema.") ? name.slice("Schema.".length) : undefined;
+		switch (propertyName) {
 			case "BigInt":
 				return { tags: new Set(["bigint"]), structural: false, arrayLike: false };
 			case "Boolean":
@@ -1081,7 +1120,7 @@ function schemaEvidence(node: ESTree.Node): SchemaEvidence | undefined {
 		}
 	}
 	if (current.type !== "CallExpression") return undefined;
-	const name = validationCallName(current);
+	const name = validationCallName(current, environment);
 	if (name === "Schema.Array" || name === "Schema.Tuple") {
 		return { tags: new Set(["object"]), structural: false, arrayLike: true };
 	}
@@ -1089,6 +1128,413 @@ function schemaEvidence(node: ESTree.Node): SchemaEvidence | undefined {
 		return { tags: new Set(["object"]), structural: true, arrayLike: false };
 	}
 	return undefined;
+}
+
+type PredicateField = {
+	readonly optional: boolean;
+	readonly type: ESTree.TSType;
+};
+
+type PredicateIndex = {
+	readonly key: ESTree.TSType | undefined;
+	readonly value: ESTree.TSType;
+};
+
+type PredicateTypeSubstitutions = ReadonlyMap<string, ESTree.TSType>;
+
+function resolvePredicateType(
+	type: ESTree.TSType,
+	substitutions: PredicateTypeSubstitutions,
+	resolving: ReadonlySet<string> = new Set(),
+): ESTree.TSType {
+	const current = unwrapRuntimeTypeofOperand(type);
+	if (current.type !== "TSTypeReference" || current.typeName.type !== "Identifier") return type;
+	const substitution = substitutions.get(current.typeName.name);
+	if (substitution === undefined || resolving.has(current.typeName.name)) return type;
+	return resolvePredicateType(
+		substitution,
+		new Map([...substitutions].filter(([name]) => name !== current.typeName.name)),
+		new Set([...resolving, current.typeName.name]),
+	);
+}
+
+function predicateInterfaceSubstitutions(
+	declaration: ESTree.TSInterfaceDeclaration,
+	arguments_: readonly ESTree.TSType[],
+	base: PredicateTypeSubstitutions,
+): PredicateTypeSubstitutions | undefined {
+	const parameters = declaration.typeParameters?.params ?? [];
+	const next = new Map(base);
+	for (const [index, parameter] of parameters.entries()) {
+		const argument = arguments_[index] ?? parameter.default;
+		if (argument === undefined) return undefined;
+		next.set(parameter.name.name, resolvePredicateType(argument, base));
+	}
+	return next;
+}
+
+function propertyNameFromKey(key: ESTree.Node): string | undefined {
+	return key.type === "Identifier"
+		? key.name
+		: key.type === "Literal" && typeof key.value === "string"
+			? key.value
+			: undefined;
+}
+
+function heritageTypeName(node: ESTree.Node): string | null {
+	if (node.type === "Identifier") return node.name;
+	if (
+		node.type === "MemberExpression" &&
+		!node.computed &&
+		node.object.type === "Identifier" &&
+		node.property.type === "Identifier"
+	)
+		return `${node.object.name}.${node.property.name}`;
+	if (
+		node.type === "TSQualifiedName" &&
+		node.left.type === "Identifier" &&
+		node.right.type === "Identifier"
+	)
+		return `${node.left.name}.${node.right.name}`;
+	return null;
+}
+
+function mergePredicateField(
+	fields: Map<string, PredicateField>,
+	name: string,
+	field: PredicateField,
+): void {
+	const existing = fields.get(name);
+	fields.set(
+		name,
+		existing === undefined
+			? field
+			: { optional: existing.optional && field.optional, type: existing.type },
+	);
+}
+
+function predicateFieldsFromInterface(
+	declaration: ESTree.TSInterfaceDeclaration,
+	environment: TypeEnvironment,
+	resolving: ReadonlySet<ESTree.TSInterfaceDeclaration>,
+	substitutions: PredicateTypeSubstitutions = new Map(),
+): ReadonlyMap<string, PredicateField> | undefined {
+	if (resolving.has(declaration)) return undefined;
+	const nextResolving = new Set(resolving);
+	nextResolving.add(declaration);
+	const fields = new Map<string, PredicateField>();
+	for (const member of declaration.body.body) {
+		if (member.type === "TSIndexSignature") return undefined;
+		if (member.type !== "TSPropertySignature" || member.typeAnnotation === null) continue;
+		const name = propertyNameFromKey(member.key);
+		if (name === undefined) return undefined;
+		mergePredicateField(fields, name, {
+			optional: member.optional === true,
+			type: resolvePredicateType(member.typeAnnotation.typeAnnotation, substitutions),
+		});
+	}
+	for (const heritage of declaration.extends) {
+		const name = heritageTypeName(heritage.expression);
+		if (name === null) return undefined;
+		for (const parent of environment.resolveInterfaces(heritage.expression, name)) {
+			const parentSubstitutions = predicateInterfaceSubstitutions(
+				parent,
+				heritage.typeArguments?.params ?? [],
+				substitutions,
+			);
+			if (parentSubstitutions === undefined) return undefined;
+			const parentFields = predicateFieldsFromInterface(
+				parent,
+				environment,
+				nextResolving,
+				parentSubstitutions,
+			);
+			if (parentFields === undefined) return undefined;
+			for (const [fieldName, field] of parentFields) mergePredicateField(fields, fieldName, field);
+		}
+	}
+	return fields;
+}
+
+function predicateTypeFields(
+	type: ESTree.TSType,
+	environment: TypeEnvironment,
+	resolving: ReadonlySet<string> = new Set(),
+): ReadonlyMap<string, PredicateField> | undefined {
+	const current = unwrapRuntimeTypeofOperand(type);
+	if (current.type === "TSTypeLiteral") {
+		const fields = new Map<string, PredicateField>();
+		for (const member of current.members) {
+			if (member.type === "TSIndexSignature") return undefined;
+			if (member.type !== "TSPropertySignature" || member.typeAnnotation === null) continue;
+			const name = propertyNameFromKey(member.key);
+			if (name === undefined) return undefined;
+			mergePredicateField(fields, name, {
+				optional: member.optional === true,
+				type: member.typeAnnotation.typeAnnotation,
+			});
+		}
+		return fields;
+	}
+	if (current.type === "TSIntersectionType") {
+		const fields = new Map<string, PredicateField>();
+		for (const member of current.types) {
+			const memberFields = predicateTypeFields(member, environment, resolving);
+			if (memberFields === undefined) return undefined;
+			for (const [fieldName, field] of memberFields) mergePredicateField(fields, fieldName, field);
+		}
+		return fields;
+	}
+	if (current.type !== "TSTypeReference" || current.typeName.type !== "Identifier") return undefined;
+	const name = current.typeName.name;
+	if (resolving.has(name)) return undefined;
+	const alias = environment.resolveAlias(current, name);
+	if (alias !== undefined) {
+		return predicateTypeFields(alias.typeAnnotation, environment, new Set([...resolving, name]));
+	}
+	const declarations = environment.resolveInterfaces(current, name);
+	if (declarations.length === 0) return undefined;
+	const fields = new Map<string, PredicateField>();
+	for (const declaration of declarations) {
+			const declarationFields = predicateFieldsFromInterface(declaration, environment, new Set());
+		if (declarationFields === undefined) return undefined;
+		for (const [fieldName, field] of declarationFields) mergePredicateField(fields, fieldName, field);
+	}
+	return fields;
+}
+
+function predicateTypeIndex(type: ESTree.TSType, environment: TypeEnvironment): PredicateIndex | undefined {
+	const current = unwrapRuntimeTypeofOperand(type);
+	if (current.type === "TSTypeLiteral") {
+		const index = current.members.find((member) => member.type === "TSIndexSignature");
+		if (index === undefined || index.typeAnnotation === null) return undefined;
+		const key = index.parameters[0];
+		return {
+			key:
+				key?.type === "Identifier" && key.typeAnnotation !== null && key.typeAnnotation !== undefined
+					? key.typeAnnotation.typeAnnotation
+					: undefined,
+			value: index.typeAnnotation.typeAnnotation,
+		};
+	}
+	if (current.type !== "TSTypeReference" || current.typeName.type !== "Identifier") return undefined;
+	if (current.typeName.name === "Record") {
+		const params = current.typeArguments?.params ?? [];
+		return params[1] === undefined
+			? undefined
+			: { key: params[0], value: params[1] };
+	}
+	const alias = environment.resolveAlias(current, current.typeName.name);
+	return alias === undefined ? undefined : predicateTypeIndex(alias.typeAnnotation, environment);
+}
+
+function predicateArrayElementTypes(
+	type: ESTree.TSType,
+	environment: TypeEnvironment,
+): readonly ESTree.TSType[] | undefined {
+	const current = unwrapRuntimeTypeofOperand(type);
+	if (current.type === "TSArrayType") return [current.elementType];
+	if (current.type === "TSTupleType") return current.elementTypes;
+	if (
+		current.type === "TSTypeReference" &&
+		current.typeName.type === "Identifier" &&
+		(current.typeName.name === "Array" || current.typeName.name === "ReadonlyArray")
+	) {
+		const element = current.typeArguments?.params[0];
+		return element === undefined ? undefined : [element];
+	}
+	const alias =
+		current.type === "TSTypeReference" && current.typeName.type === "Identifier"
+			? environment.resolveAlias(current, current.typeName.name)
+			: undefined;
+	return alias === undefined ? undefined : predicateArrayElementTypes(alias.typeAnnotation, environment);
+}
+
+function schemaUnionMembers(
+	node: ESTree.Node,
+	environment?: TypeEnvironment,
+): readonly ESTree.Node[] | undefined {
+	const current = unwrapRuntimeTypeofOperand(node);
+	if (
+		current.type !== "CallExpression" ||
+		validationCallName(current, environment) !== "Schema.Union"
+	)
+		return undefined;
+	const arguments_ = current.arguments.filter(
+		(argument): argument is ESTree.Expression => argument.type !== "SpreadElement",
+	);
+	const members =
+		arguments_.length === 1 && arguments_[0]?.type === "ArrayExpression"
+			? arguments_[0].elements
+			: arguments_;
+	return members.every(
+		(member): member is ESTree.Node => member !== null && member.type !== "SpreadElement",
+	)
+		? members
+		: undefined;
+}
+
+function schemaInitializer(node: ESTree.Node, sourceCode?: SourceCode): ESTree.Node {
+	if (node.type !== "Identifier" || sourceCode === undefined) return node;
+	const variable = resolvedVariable(sourceCode, node);
+	const initializer = variable?.defs
+		.map((definition) =>
+			definition.type === "Variable" && definition.node.type === "VariableDeclarator"
+				? definition.node.init
+				: null,
+		)
+		.find((candidate): candidate is ESTree.Expression => candidate !== null);
+	return initializer ?? node;
+}
+
+function schemaMatchesPredicate(
+	schemaNode: ESTree.Node,
+	predicateType: ESTree.TSType,
+	environment: TypeEnvironment,
+	sourceCode?: SourceCode,
+	resolvingSchemas: ReadonlySet<ESTree.Node> = new Set(),
+): boolean {
+	const current = schemaInitializer(schemaNode, sourceCode);
+	if (resolvingSchemas.has(current)) return false;
+	const predicate = unwrapRuntimeTypeofOperand(predicateType);
+	if (predicate.type === "TSUnionType") {
+		const schemaMembers = schemaUnionMembers(current, environment);
+		if (schemaMembers !== undefined) {
+			return (
+				schemaMembers.length > 0 &&
+				schemaMembers.every((member) =>
+					predicate.types.some((memberType) =>
+						schemaMatchesPredicate(member, memberType, environment, sourceCode, resolvingSchemas),
+					),
+				)
+			);
+		}
+		return predicate.types.some((memberType) =>
+			schemaMatchesPredicate(current, memberType, environment, sourceCode, resolvingSchemas),
+		);
+	}
+	const nextResolvingSchemas = new Set(resolvingSchemas);
+	nextResolvingSchemas.add(current);
+	const directSchemaName =
+		current.type === "MemberExpression" && !current.computed
+			? (() => {
+					const path = memberExpressionPath(current);
+					return path === null ? undefined : canonicalValidationName(current, path, environment);
+				})()
+			: undefined;
+	if (directSchemaName?.startsWith("Schema.") === true) {
+		const evidence = schemaEvidence(current, environment);
+		if (evidence === undefined) {
+			return trustedSchemaUnknownValuePaths.has(directSchemaName)
+				? predicate.type === "TSUnknownKeyword"
+				: directSchemaName === "Schema.Null" &&
+						typeAcceptsRuntimeLiteralValueForPropertyPath(predicateType, [], null, environment);
+		}
+		if (evidence.broadObject) {
+			return predicateRuntimeTypeofTags(predicateType, [], environment)?.has("object") === true &&
+				!predicateRequiresStructuralEvidence(predicateType, environment);
+		}
+		if (evidence.arrayLike) return predicateArrayElementTypes(predicateType, environment) !== undefined;
+		return Array.from(evidence.tags).every((tag) => predicateRuntimeTypeofTags(predicateType, [], environment)?.has(tag) === true);
+	}
+	if (current.type !== "CallExpression") return false;
+	const name = validationCallName(current, environment);
+	const arguments_ = current.arguments.filter((argument): argument is ESTree.Expression => argument.type !== "SpreadElement");
+	if (name === "Schema.optionalKey" || name === "Schema.optional") {
+		const inner = arguments_[0];
+		return inner !== undefined && schemaMatchesPredicate(inner, predicateType, environment, sourceCode, nextResolvingSchemas);
+	}
+	if (name === "Schema.Literal") {
+		const literal = arguments_[0];
+		if (literal?.type !== "Literal") return false;
+		const value = runtimeLiteralValue(literal);
+		return value !== undefined &&
+			typeAcceptsRuntimeLiteralValueForPropertyPath(predicateType, [], value, environment);
+	}
+	if (name === "Schema.Literals") {
+		const literals = arguments_[0];
+		if (literals?.type !== "ArrayExpression") return false;
+		return literals.elements.every((element) => {
+			if (element === null || element.type === "SpreadElement" || element.type !== "Literal") return false;
+			const value = runtimeLiteralValue(element);
+			return value !== undefined &&
+				typeAcceptsRuntimeLiteralValueForPropertyPath(predicateType, [], value, environment);
+		});
+	}
+	if (name === "Schema.Array" || name === "Schema.ReadonlyArray") {
+		const schemaElement = arguments_[0];
+		const predicateElements = predicateArrayElementTypes(predicateType, environment);
+		return schemaElement !== undefined && predicateElements !== undefined && predicateElements.every((element) =>
+			schemaMatchesPredicate(schemaElement, element, environment, sourceCode, nextResolvingSchemas),
+		);
+	}
+	if (name === "Schema.Tuple") {
+		const predicate = unwrapRuntimeTypeofOperand(predicateType);
+		const schemaElements =
+			arguments_.length === 1 && arguments_[0]?.type === "ArrayExpression"
+				? arguments_[0].elements
+				: arguments_;
+		if (
+			predicate.type !== "TSTupleType" ||
+			predicate.elementTypes.length !== schemaElements.length ||
+			schemaElements.some((element) => element === null || element.type === "SpreadElement")
+		)
+			return false;
+		return schemaElements.every((schemaElement, index) =>
+			schemaElement !== null &&
+			schemaElement.type !== "SpreadElement" &&
+			schemaMatchesPredicate(schemaElement, predicate.elementTypes[index]!, environment, sourceCode, nextResolvingSchemas),
+		);
+	}
+	if (name === "Schema.Record") {
+		const index = predicateTypeIndex(predicateType, environment);
+		return (
+			index !== undefined &&
+			arguments_[0] !== undefined &&
+			arguments_[1] !== undefined &&
+			(index.key === undefined || schemaMatchesPredicate(arguments_[0], index.key, environment, sourceCode, nextResolvingSchemas)) &&
+			schemaMatchesPredicate(arguments_[1], index.value, environment, sourceCode, nextResolvingSchemas)
+		);
+	}
+	if (name === "Schema.Union") {
+		const members = arguments_[0]?.type === "ArrayExpression" ? arguments_[0].elements : arguments_;
+		return members.length > 0 && members.every((member) =>
+			member !== null && member.type !== "SpreadElement" && schemaMatchesPredicate(member, predicateType, environment, sourceCode, nextResolvingSchemas),
+		);
+	}
+	if (name !== "Schema.Struct") return false;
+	const fields = arguments_[0];
+	const predicateFields = predicateTypeFields(predicateType, environment);
+	if (fields?.type !== "ObjectExpression" || predicateFields === undefined) return false;
+	const schemaFields = new Map<string, ESTree.Node>();
+	for (const property of fields.properties) {
+		if (property.type !== "Property" || property.computed || property.key.type === "PrivateIdentifier" || property.value.type === "SpreadElement") return false;
+		const fieldName = propertyNameFromKey(property.key);
+		if (fieldName === undefined) return false;
+		schemaFields.set(fieldName, property.value);
+	}
+	for (const [fieldName, field] of predicateFields) {
+		const schemaField = schemaFields.get(fieldName);
+		if (schemaField === undefined) {
+			if (field.optional) continue;
+			return false;
+		}
+		const schemaFieldNode = schemaInitializer(schemaField, sourceCode);
+		if (
+			schemaFieldNode.type === "CallExpression" &&
+			schemaFieldNode.callee.type === "MemberExpression" &&
+			!schemaFieldNode.callee.computed &&
+			schemaFieldNode.callee.object.type === "Identifier" &&
+			schemaFieldNode.callee.object.name === "Schema" &&
+			schemaFieldNode.callee.property.type === "Identifier" &&
+			(schemaFieldNode.callee.property.name === "optionalKey" ||
+				schemaFieldNode.callee.property.name === "optional") &&
+			!field.optional
+		)
+			return false;
+		if (!schemaMatchesPredicate(schemaField, field.type, environment, sourceCode, nextResolvingSchemas)) return false;
+	}
+	return true;
 }
 
 function isArrayPredicateType(type: ESTree.TSType): boolean {
@@ -1124,6 +1570,69 @@ function localPredicateTypeMatches(
 	});
 }
 
+function typeContainsNamedReference(
+	type: ESTree.Node,
+	names: ReadonlySet<string>,
+	environment?: TypeEnvironment,
+	seen: ReadonlySet<ESTree.Node> = new Set(),
+): boolean {
+	if (seen.has(type)) return false;
+	const nextSeen = new Set(seen);
+	nextSeen.add(type);
+	if (type.type === "TSTypeReference") {
+		const name =
+			type.typeName.type === "Identifier"
+				? type.typeName.name
+				: type.typeName.type === "TSQualifiedName" && type.typeName.right.type === "Identifier"
+					? type.typeName.right.name
+					: undefined;
+		if (
+			name !== undefined &&
+			names.has(name) &&
+			environment !== undefined &&
+			environment.resolveAlias(type, name) === undefined &&
+			environment.resolveInterfaces(type, name).length === 0
+		)
+			return true;
+		if (
+			environment !== undefined &&
+			type.typeName.type === "Identifier" &&
+			name !== undefined
+		) {
+			const alias = environment.resolveAlias(type, name);
+			if (
+				alias !== undefined &&
+				typeContainsNamedReference(alias.typeAnnotation, names, environment, nextSeen)
+			)
+				return true;
+		}
+	}
+	for (const [key, value] of Object.entries(type)) {
+		if (key === "parent") continue;
+		if (Array.isArray(value)) {
+			if (
+				value.some(
+					(entry) =>
+						isNode(entry) && typeContainsNamedReference(entry, names, environment, nextSeen),
+				)
+			)
+				return true;
+		} else if (isNode(value) && typeContainsNamedReference(value, names, environment, nextSeen)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+function schemaStructMatchesPredicate(
+	schemaNode: ESTree.Node,
+	predicateType: ESTree.TSType,
+	environment: TypeEnvironment,
+	sourceCode?: SourceCode,
+): boolean {
+	return schemaMatchesPredicate(schemaNode, predicateType, environment, sourceCode);
+}
+
 function typePredicateCallEvidenceMatches(
 	node: ESTree.CallExpression,
 	predicateType: ESTree.TSType,
@@ -1132,7 +1641,7 @@ function typePredicateCallEvidenceMatches(
 	environment: TypeEnvironment | undefined,
 	resolving: ValidationResolution,
 ): boolean {
-	const name = validationCallName(node);
+	const name = validationCallName(node, environment);
 	if (
 		name === "Result.isSuccess" ||
 		name === "Result.isFailure" ||
@@ -1145,80 +1654,101 @@ function typePredicateCallEvidenceMatches(
 	)
 		return false;
 	if (name === "Array.isArray") return isArrayPredicateType(predicateType);
-	if (node.callee.type === "CallExpression" && validationCallName(node.callee) === "Schema.is") {
+	if (
+		node.callee.type === "CallExpression" &&
+		validationCallName(node.callee, environment) === "Schema.is"
+	) {
 		const schemaNode = node.callee.arguments[0];
 		if (schemaNode === undefined || schemaNode.type === "SpreadElement") return false;
 		if (
 			schemaNode.type === "MemberExpression" &&
 			!schemaNode.computed &&
-			schemaNode.object.type === "Identifier" &&
-			schemaNode.object.name === "Schema" &&
-			schemaNode.property.type === "Identifier" &&
-			schemaNode.property.name === "Unknown"
+			memberExpressionPath(schemaNode) !== null &&
+					trustedSchemaUnknownValuePaths.has(
+						canonicalValidationName(schemaNode, memberExpressionPath(schemaNode) ?? "", environment) ??
+							"",
+					)
 		)
 			return false;
-		const evidence = schemaEvidence(schemaNode);
-		if (evidence === undefined) {
-			return (
-				schemaNode.type === "Identifier" &&
-				(expectedTypeofTags === undefined ||
-					expectedTypeofTags.has("object") ||
-					expectedTypeofTags.has("function"))
-			);
-		}
-		if (evidence.arrayLike) return isArrayPredicateType(predicateType);
-		if (evidence.broadObject) {
+		const resolvedSchemaNode =
+			schemaNode.type === "Identifier" && sourceCode !== undefined
+				? (() => {
+						const variable = resolvedVariable(sourceCode, schemaNode);
+						const initializer = variable?.defs
+							.map((definition) =>
+								definition.type === "Variable" && definition.node.type === "VariableDeclarator"
+									? definition.node.init
+									: null,
+							)
+							.find((candidate): candidate is ESTree.Expression => candidate !== null);
+						return initializer;
+					})()
+				: schemaNode;
+		const resolvedEvidence =
+			resolvedSchemaNode === undefined ? undefined : schemaEvidence(resolvedSchemaNode, environment);
+		if (resolvedEvidence === undefined) return false;
+		if (resolvedEvidence.arrayLike) return isArrayPredicateType(predicateType);
+		if (resolvedEvidence.broadObject) {
 			return (
 				expectedTypeofTags?.has("object") === true &&
 				environment !== undefined &&
-				!typeRequiresStructuralRuntimeEvidence(predicateType, environment)
+				!predicateRequiresStructuralEvidence(predicateType, environment)
 			);
 		}
-		if (evidence.structural) {
+		if (resolvedEvidence.structural) {
 			return (
 				expectedTypeofTags?.has("object") === true &&
 				environment !== undefined &&
-				typeRequiresStructuralRuntimeEvidence(predicateType, environment)
+				schemaStructMatchesPredicate(resolvedSchemaNode, predicateType, environment, sourceCode)
 			);
 		}
-		return expectedTypeofTags !== undefined && Array.from(evidence.tags).every((tag) => expectedTypeofTags.has(tag));
+		return (
+			expectedTypeofTags !== undefined &&
+			Array.from(resolvedEvidence.tags).every((tag) => expectedTypeofTags.has(tag))
+		);
 	}
 	if (name === "Schema.isSchema") {
 		return environment !== undefined && isSchemaType(predicateType, environment);
 	}
 	if (name === "Object.hasOwn") {
-		return environment !== undefined && typeRequiresStructuralRuntimeEvidence(predicateType, environment);
+		return false;
 	}
 	if (isLocallyTrustedValidationCall(node, sourceCode, resolving, environment)) {
 		return localPredicateTypeMatches(node, predicateType, sourceCode);
 	}
-	if (expectedTypeofTags === undefined || environment === undefined) {
-		return (
-			(name !== null && isBuiltinValidationName(name)) ||
-			(name !== null && knownValidationCalls.has(name)) ||
-			isTrustedValidationCall(node, sourceCode, resolving, environment)
-		);
-	}
-	return (
-		(name !== null && isBuiltinValidationName(name)) ||
-		(name !== null && knownValidationCalls.has(name)) ||
-		isTrustedValidationCall(node, sourceCode, resolving, environment)
-	);
+	if (name === null || environment === undefined) return false;
+	const contract = namedPredicateContracts.get(name);
+	return contract !== undefined && typeContainsNamedReference(predicateType, contract, environment);
 }
 
 function isIdentityLookupEvidence(
 	node: ESTree.Node,
 	bindings: ParameterBindings,
 	sourceCode: SourceCode | undefined,
+	environment: TypeEnvironment | undefined,
+	predicateType: ESTree.TSType | undefined,
 ): boolean {
 	const current = unwrapRuntimeTypeofOperand(node);
-	if (current.type !== "BinaryExpression" || !["==", "==="].includes(current.operator)) return false;
+	if (
+		current.type !== "BinaryExpression" ||
+		!["==", "==="].includes(current.operator) ||
+		environment === undefined ||
+		predicateType === undefined ||
+		!typeContainsNamedReference(
+			predicateType,
+			new Set(["SourceAdapterHandle", "SourceAdapterDescriptor"]),
+			environment,
+		)
+	)
+		return false;
 	const isLookup = (candidate: ESTree.Node): boolean => {
 		const expression = unwrapRuntimeTypeofOperand(candidate);
 		return (
 			expression.type === "CallExpression" &&
 			expression.callee.type === "MemberExpression" &&
 			!expression.callee.computed &&
+				expression.callee.object.type === "Identifier" &&
+				isSourceAdapterHandlesBinding(expression.callee.object, sourceCode, environment) &&
 			expression.callee.property.type === "Identifier" &&
 			expression.callee.property.name === "get"
 		);
@@ -1230,32 +1760,6 @@ function isIdentityLookupEvidence(
 		(isLookup(current.right) &&
 			(containsParameterReference(current.right, bindings, sourceCode) ||
 				containsParameterReference(current.left, bindings, sourceCode)))
-	);
-}
-
-function isReflectiveBrandEvidence(
-	node: ESTree.Node,
-	bindings: ParameterBindings,
-	sourceCode: SourceCode | undefined,
-): boolean {
-	const current = unwrapRuntimeTypeofOperand(node);
-	if (current.type !== "BinaryExpression" || !["==", "==="].includes(current.operator)) return false;
-	const isReflectApply = (candidate: ESTree.Node): boolean => {
-		const expression = unwrapRuntimeTypeofOperand(candidate);
-		return (
-			expression.type === "CallExpression" &&
-			validationCallName(expression) === "Reflect.apply" &&
-			expression.arguments[1] !== undefined &&
-			containsParameterReference(expression.arguments[1], bindings, sourceCode)
-		);
-	};
-	const isReflectGet = (candidate: ESTree.Node): boolean => {
-		const expression = unwrapRuntimeTypeofOperand(candidate);
-		return reflectedPropertyPath(expression, bindings, sourceCode) !== undefined;
-	};
-	return (
-		(isReflectApply(current.left) && isReflectGet(current.right)) ||
-		(isReflectApply(current.right) && isReflectGet(current.left))
 	);
 }
 
@@ -1278,19 +1782,22 @@ function hasStructuralRuntimeEvidence(
 	if (reflectedPropertyComparisonForNode(current) !== undefined) {
 		return reflectedPropertyMatchesPredicate(current, predicateType, bindings, sourceCode, environment);
 	}
-	if (isPropertyPresenceOperation(current)) {
-		return propertyPresenceMatchesPredicate(current, predicateType, bindings, sourceCode, environment);
+	if (propertyValueComparisonShape(current)) {
+		return (
+			(current.operator === "==" || current.operator === "===") &&
+			propertyValueMatchesPredicate(current, predicateType, bindings, sourceCode, environment)
+		);
 	}
-	if (isIdentityLookupEvidence(current, bindings, sourceCode) || isReflectiveBrandEvidence(current, bindings, sourceCode)) {
+	if (isPropertyPresenceOperation(current)) {
+		return false;
+	}
+	if (
+		isIdentityLookupEvidence(current, bindings, sourceCode, environment, predicateType)
+	) {
 		return true;
 	}
 	if (current.type === "CallExpression") {
 		const name = validationCallName(current);
-		if (
-			name === "Reflect.apply" &&
-			!isReflectiveBrandEvidence(current.parent, bindings, sourceCode)
-		)
-			return false;
 		return (
 			validationReferencesParameter(current, bindings, sourceCode, resolving, environment) &&
 			typePredicateCallEvidenceMatches(
@@ -1348,7 +1855,7 @@ function isPositivePredicateCondition(
 			propertyPath?.length === 0 &&
 			predicateType !== undefined &&
 			environment !== undefined &&
-			 typeRequiresStructuralRuntimeEvidence(predicateType, environment)
+				 predicateRequiresStructuralEvidence(predicateType, environment)
 		);
 	}
 	const reflectedComparison = reflectedPropertyComparisonForNode(current);
@@ -1433,12 +1940,15 @@ function typePredicateEvidencePolarity(
 ): boolean | undefined {
 	const comparison = typeofComparisonForNode(node);
 	const reflectedComparison = reflectedPropertyComparisonForNode(node);
-	const identityLookupShape = isIdentityLookupShape(node) || isReflectiveBrandShape(node);
+	const propertyValueComparison = propertyValueComparisonShape(node) ? node : undefined;
+	const identityLookupShape = isIdentityLookupShape(node, sourceCode, environment);
 	const structuralIdentityEvidence =
 		identityLookupShape &&
 		predicateType !== undefined &&
 		environment !== undefined &&
-		typeRequiresStructuralRuntimeEvidence(predicateType, environment);
+		(predicateRequiresStructuralEvidence(predicateType, environment) ||
+			(isIdentityLookupShape(node, sourceCode, environment) &&
+				isIdentityLookupEvidence(node, bindings, sourceCode, environment, predicateType)));
 	const comparisonPropertyPath =
 		comparison === undefined ? undefined : observedPropertyPath(comparison.operand, bindings, sourceCode);
 	const requiresStructuralEvidence =
@@ -1447,25 +1957,39 @@ function typePredicateEvidencePolarity(
 		comparisonPropertyPath?.length === 0 &&
 		predicateType !== undefined &&
 		environment !== undefined &&
-		typeRequiresStructuralRuntimeEvidence(predicateType, environment);
+		predicateRequiresStructuralEvidence(predicateType, environment);
 	const typeofTagMatches = (candidate: TypeofComparison): boolean => {
 		const propertyPath = observedPropertyPath(candidate.operand, bindings, sourceCode);
 		if (propertyPath === undefined) return false;
+		const observedOperand = unwrapRuntimeTypeofOperand(candidate.operand);
+		if (
+			observedOperand.type === "CallExpression" &&
+			validationCallName(observedOperand) === "Reflect.get" &&
+			isShadowedValidationCall(observedOperand, sourceCode, resolving, environment)
+		)
+			return false;
 		if (propertyPath.length === 0) {
+			if (
+				predicateType !== undefined &&
+				environment !== undefined &&
+				typeRequiresExactRuntimeValueEvidenceForPropertyPath(predicateType, [], environment)
+			)
+				return false;
 			if (expectedTypeofTags?.has(candidate.tag) !== true) return false;
 			return !(candidate.tag === "object" && requiresStructuralEvidence);
 		}
+		if (
+			predicateType !== undefined &&
+			environment !== undefined &&
+			typeRequiresExactRuntimeValueEvidenceForPropertyPath(predicateType, propertyPath, environment)
+		)
+			return false;
 		const propertyTags =
 			predicateType === undefined || environment === undefined
 				? undefined
-				: typeResolvesToRuntimeTypeofTagsForPropertyPath(predicateType, propertyPath, environment);
+				: predicateRuntimeTypeofTags(predicateType, propertyPath, environment);
 		return (
-			propertyTags?.has(candidate.tag) === true ||
-			(propertyTags === undefined &&
-				predicateType !== undefined &&
-				environment !== undefined &&
-				isImportedPredicateType(predicateType, environment) &&
-				expectedTypeofTags?.has(candidate.tag) === true)
+			propertyTags?.has(candidate.tag) === true
 		);
 	};
 	const propertyPresence = isPropertyPresenceOperation(node)
@@ -1486,6 +2010,12 @@ function typePredicateEvidencePolarity(
 		!reflectedPropertyMatchesPredicate(node, predicateType, bindings, sourceCode, environment)
 	)
 		return undefined;
+	if (
+		propertyValueComparisonShape(node) &&
+		!propertyValueMatchesPredicate(node, predicateType, bindings, sourceCode, environment)
+	)
+		return undefined;
+	if (propertyPresence !== undefined) return undefined;
 	if (identityLookupShape && !structuralIdentityEvidence) return undefined;
 	if (
 		comparison === undefined &&
@@ -1512,9 +2042,11 @@ function typePredicateEvidencePolarity(
 		node.type !== "CallExpression"
 	)
 		return undefined;
-	let current: ESTree.Node = comparison?.node ?? node;
+	let current: ESTree.Node = comparison?.node ?? propertyValueComparison?.node ?? node;
 	let polarity =
-		comparison === undefined
+		propertyValueComparison !== undefined
+			? propertyValueComparison.operator === "==" || propertyValueComparison.operator === "==="
+			: comparison === undefined
 			? reflectedComparison === undefined ||
 				reflectedComparison.operator === "==" ||
 				reflectedComparison.operator === "==="
@@ -1777,7 +2309,7 @@ function hasValidationEvidence(
 	const expectedTypeofTags =
 		predicateType === undefined || environment === undefined
 			? undefined
-			: typeResolvesToRuntimeTypeofTags(predicateType, environment);
+			: predicateRuntimeTypeofTags(predicateType, [], environment);
 	if (
 		isTypePredicateOwner
 	) {
@@ -1805,9 +2337,11 @@ function hasValidationEvidence(
 			for (const [key, value] of Object.entries(current)) {
 				if (key === "parent") continue;
 				if (Array.isArray(value)) {
-					for (const entry of value) if (isNode(entry)) pendingPredicateNodes.push(entry);
+					for (const entry of value) {
+						if (isNode(entry) && !isFunctionNode(entry)) pendingPredicateNodes.push(entry);
+					}
 				} else if (isNode(value)) {
-					pendingPredicateNodes.push(value);
+					if (!isFunctionNode(value)) pendingPredicateNodes.push(value);
 				}
 			}
 		}

@@ -88,6 +88,8 @@ function hasMeaningfulReturnContract(owner: FunctionOwner): boolean {
 			case "TSNullKeyword":
 			case "TSStringKeyword":
 				return false;
+			case "TSTypeReference":
+				return false;
 			case "TSUnionType":
 				return type.types.some(isMeaningful);
 			case "TSParenthesizedType":

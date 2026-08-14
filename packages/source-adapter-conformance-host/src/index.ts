@@ -21,6 +21,10 @@ import {
   makeSourceAdapterPackageConformanceRegistrar,
 } from "./package-registration";
 import {
+  SourceAdapterConformanceRowIdError,
+  validateSourceAdapterRuntimeContext,
+} from "./runtime-context";
+import {
   type HostHealthSnapshot,
   openHealth,
   openQuery,
@@ -149,7 +153,7 @@ const openRuntime = Effect.fn("SourceAdapterConformanceHost.runtime.open")(funct
       },
     },
   });
-  const runtimeContext = yield* driver.runtimeContext;
+  const runtimeContext = yield* validateSourceAdapterRuntimeContext(driver.runtimeContext);
   const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(
     Effect.provideContext(runtimeContext),
   );
@@ -185,7 +189,7 @@ const openApplicationRuntime = Effect.fn(
       },
     },
   });
-  const runtimeContext = yield* driver.runtimeContext;
+  const runtimeContext = yield* validateSourceAdapterRuntimeContext(driver.runtimeContext);
   const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(
     Effect.provideContext(runtimeContext),
   );
@@ -243,13 +247,30 @@ const expectedRowId = (
   lifecycle: SourceAdapterConformanceLifecycle,
   lane: "primary" | "sibling",
   localId: string,
-): string =>
-  lifecycle === "materialized"
-    ? requireMaterializedExpectations(driver).rowId(materializedTarget(lane), localId)
-    : requireLeasedExpectations(driver).rowId(
-        leasedTarget(requireLeased(driver).sameRoute, lane),
-        localId,
-      );
+): Effect.Effect<string, SourceAdapterConformanceRowIdError> => {
+  const rowId = Effect.try({
+    try: () =>
+      lifecycle === "materialized"
+        ? requireMaterializedExpectations(driver).rowId(materializedTarget(lane), localId)
+        : requireLeasedExpectations(driver).rowId(
+            leasedTarget(requireLeased(driver).sameRoute, lane),
+            localId,
+          ),
+    catch: () =>
+      new SourceAdapterConformanceRowIdError({
+        message: "Source Adapter conformance rowId expectation must return a string.",
+      }),
+  });
+  return rowId.pipe(
+    Effect.filterOrFail(
+      (value): value is string => typeof value === "string",
+      () =>
+        new SourceAdapterConformanceRowIdError({
+          message: "Source Adapter conformance rowId expectation must return a string.",
+        }),
+    ),
+  );
+};
 
 const expectedRejectionLocation = (
   driver: SourceAdapterConformanceDriverValue,
@@ -356,21 +377,22 @@ const registerLifecycleConformance = (
         });
         yield* Deferred.await(siblingSettled);
         expect(yield* Deferred.isDone(secondPrimarySettled)).toBe(false);
+        const primaryRowId = yield* expectedRowId(driver, lifecycle, "primary", "primary");
+        const siblingRowId = yield* expectedRowId(driver, lifecycle, "sibling", "sibling");
         expect(yield* rows(opened.runtime, opened.route)).toStrictEqual(
-          [
-            expectedRowId(driver, lifecycle, "primary", "primary"),
-            expectedRowId(driver, lifecycle, "sibling", "sibling"),
-          ].toSorted(),
+          [primaryRowId, siblingRowId].toSorted(),
         );
         yield* Deferred.succeed(releaseFirstPrimarySettlement, undefined);
         yield* Deferred.await(firstPrimarySettled);
         yield* Deferred.await(secondPrimarySettled);
+        const secondPrimaryRowId = yield* expectedRowId(
+          driver,
+          lifecycle,
+          "primary",
+          "primary-second",
+        );
         expect(yield* rows(opened.runtime, opened.route)).toStrictEqual(
-          [
-            expectedRowId(driver, lifecycle, "primary", "primary"),
-            expectedRowId(driver, lifecycle, "primary", "primary-second"),
-            expectedRowId(driver, lifecycle, "sibling", "sibling"),
-          ].toSorted(),
+          [primaryRowId, secondPrimaryRowId, siblingRowId].toSorted(),
         );
         expect(settlements).toStrictEqual([
           ["sibling", Exit.void],
@@ -789,9 +811,8 @@ const registerLifecycleConformance = (
         });
         yield* Deferred.await(callbackApplied);
         expect(waitResult).toBe("timed-out");
-        expect(yield* rows(opened.runtime, opened.route)).toStrictEqual([
-          expectedRowId(driver, lifecycle, "primary", "blocking-callback"),
-        ]);
+        const rowId = yield* expectedRowId(driver, lifecycle, "primary", "blocking-callback");
+        expect(yield* rows(opened.runtime, opened.route)).toStrictEqual([rowId]);
         yield* opened.close;
       }),
     ),
@@ -941,9 +962,8 @@ const registerLifecycleConformance = (
           settle: () => Deferred.succeed(deliverySettled, undefined).pipe(Effect.asVoid),
         });
         yield* Deferred.await(deliverySettled);
-        expect(yield* rows(opened.runtime, opened.route)).toStrictEqual([
-          expectedRowId(driver, lifecycle, "primary", "after-rejection"),
-        ]);
+        const rowId = yield* expectedRowId(driver, lifecycle, "primary", "after-rejection");
+        expect(yield* rows(opened.runtime, opened.route)).toStrictEqual([rowId]);
 
         const degraded = yield* opened.awaitStatus("Degraded");
         expect({
@@ -994,9 +1014,8 @@ const registerLifecycleConformance = (
           lifecycleTarget(driver, lifecycle),
           (candidate) => candidate.acquisitions === baseline.acquisitions + 2n,
         );
-        expect(yield* rows(opened.runtime, opened.route)).toStrictEqual([
-          expectedRowId(driver, lifecycle, "primary", "retained"),
-        ]);
+        const rowId = yield* expectedRowId(driver, lifecycle, "primary", "retained");
+        expect(yield* rows(opened.runtime, opened.route)).toStrictEqual([rowId]);
         const health = yield* opened.awaitStatus("Ready");
         expect(health.failedSettlementCount).toBe(1n);
         yield* opened.close;
@@ -1645,11 +1664,20 @@ export const registerSourceAdapterConformance = (
               region: "eu",
               value: "callback",
             });
+            const backpressurableRowId = yield* expectedRowId(
+              driver,
+              "materialized",
+              "primary",
+              "backpressurable",
+            );
+            const nonPausableRowId = yield* expectedRowId(
+              driver,
+              "materialized",
+              "primary",
+              "non-pausable",
+            );
             expect(yield* rows(opened.runtime, opened.route)).toStrictEqual(
-              [
-                expectedRowId(driver, "materialized", "primary", "backpressurable"),
-                expectedRowId(driver, "materialized", "primary", "non-pausable"),
-              ].toSorted(),
+              [backpressurableRowId, nonPausableRowId].toSorted(),
             );
             yield* opened.close;
             const observation = yield* driver.transport.observe(materializedTarget());

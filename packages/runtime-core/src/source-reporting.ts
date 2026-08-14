@@ -49,12 +49,12 @@ export type RuntimeSourceReportingDefinition<Failure = unknown> = {
   readonly classifyFailure: (failure: Failure) => SourceFailureClassification;
 };
 
-export type RuntimeSourceReportingState = {
-  readonly definition: RuntimeSourceReportingDefinition;
+export type RuntimeSourceReportingState<Failure = unknown> = {
+  readonly definition: RuntimeSourceReportingDefinition<Failure>;
   readonly dependencyStatuses: Map<string, RuntimeHeartbeatStatus>;
   readonly dependencyIssues: Map<string, RuntimeDependencyIssue>;
   dependencyBaselineStatus: Extract<RuntimeHeartbeatStatus, "Ready" | "Starting" | "Stopping">;
-  status: SourceStatus<unknown, unknown>;
+  status: SourceStatus<Failure, unknown>;
 };
 
 type StatusEvidence = {
@@ -91,13 +91,13 @@ const emptyEvidence: StatusEvidence = {
 const dependencyTargetKey = (dependency: string, target: string): string =>
   JSON.stringify([dependency, target]);
 
-const targetDependency = (
-  definition: RuntimeSourceReportingDefinition,
+const targetDependency = <Failure>(
+  definition: RuntimeSourceReportingDefinition<Failure>,
   target: SourceDependencyTarget,
 ): string => target.dependency ?? definition.dependency;
 
-const definitionTargetKeys = (
-  definition: RuntimeSourceReportingDefinition,
+const definitionTargetKeys = <Failure>(
+  definition: RuntimeSourceReportingDefinition<Failure>,
 ): ReadonlyArray<string> =>
   definition.targets.map((target) =>
     dependencyTargetKey(targetDependency(definition, target), target.target),
@@ -170,7 +170,7 @@ const captureClassificationIssue = (
 };
 
 const classification = <Failure>(
-  classifyFailure: RuntimeSourceReportingDefinition["classifyFailure"],
+  classifyFailure: RuntimeSourceReportingDefinition<Failure>["classifyFailure"],
   failure: Failure,
 ): FailureClassificationOutcome =>
   Result.match(
@@ -221,14 +221,14 @@ const classification = <Failure>(
     },
   );
 
-const classifiedDependencyTargets = (
+const classifiedDependencyTargets = <Failure>(
   classified: {
     readonly problem: "dependency";
     readonly targets?: ReadonlyArray<
       string | { readonly dependency: string; readonly target: string }
     >;
   },
-  definition: RuntimeSourceReportingDefinition,
+  definition: RuntimeSourceReportingDefinition<Failure>,
 ): ReadonlySet<string> => {
   const allTargets = definitionTargetKeys(definition);
   if (classified.targets === undefined || classified.targets.length === 0) {
@@ -245,10 +245,10 @@ const classifiedDependencyTargets = (
     : new Set(allTargets);
 };
 
-const dependencyIssuesForTargets = (
+const dependencyIssuesForTargets = <Failure>(
   issue: SourceDependencyIssue | undefined,
   targets: ReadonlySet<string>,
-  definition: RuntimeSourceReportingDefinition,
+  definition: RuntimeSourceReportingDefinition<Failure>,
 ): ReadonlyMap<string, RuntimeDependencyIssue> => {
   if (issue === undefined) {
     return new Map();
@@ -262,9 +262,9 @@ const dependencyIssuesForTargets = (
   return new Map([...targets].map((target) => [target, dependencyIssue]));
 };
 
-const classificationEvidence = (
+const classificationEvidence = <Failure>(
   outcome: FailureClassificationOutcome,
-  definition: RuntimeSourceReportingDefinition,
+  definition: RuntimeSourceReportingDefinition<Failure>,
 ): StatusEvidence => {
   if (outcome._tag === "Invalid") {
     return {
@@ -292,9 +292,9 @@ const classificationEvidence = (
   };
 };
 
-const terminationEvidence = (
-  termination: SourceTermination<unknown>,
-  definition: RuntimeSourceReportingDefinition,
+const terminationEvidence = <Failure>(
+  termination: SourceTermination<Failure>,
+  definition: RuntimeSourceReportingDefinition<Failure>,
 ): StatusEvidence => {
   if (termination._tag === "UnexpectedCompletion") {
     return {
@@ -316,9 +316,9 @@ const terminationEvidence = (
   );
 };
 
-const statusEvidence = (
-  status: SourceStatus<unknown, unknown>,
-  definition: RuntimeSourceReportingDefinition,
+const statusEvidence = <Failure>(
+  status: SourceStatus<Failure, unknown>,
+  definition: RuntimeSourceReportingDefinition<Failure>,
 ): StatusEvidence => {
   if (status._tag === "Starting" || status._tag === "Ready" || status._tag === "Stopping") {
     return emptyEvidence;
@@ -372,9 +372,9 @@ const orderedProblems = (problems: ReadonlySet<SourceProblem>): ReadonlyArray<So
     ...(problems.has("dependency") ? (["dependency"] as const) : []),
   ]);
 
-const updateDependencyStatuses = (
-  state: RuntimeSourceReportingState,
-  status: SourceStatus<unknown, unknown>,
+const updateDependencyStatuses = <Failure>(
+  state: RuntimeSourceReportingState<Failure>,
+  status: SourceStatus<Failure, unknown>,
 ): boolean => {
   let changed = false;
   if (status._tag === "Starting" || status._tag === "Ready" || status._tag === "Stopping") {
@@ -452,11 +452,11 @@ const sameStatusEvidence = (left: StatusEvidence, right: StatusEvidence): boolea
     sameDependencyIssue(dependencyIssue, right.dependencyIssues.get(target)),
   );
 
-export const makeRuntimeSourceReportingState = (
-  definition: RuntimeSourceReportingDefinition,
-  status: SourceStatus<unknown, unknown>,
-): RuntimeSourceReportingState => {
-  const state: RuntimeSourceReportingState = {
+export const makeRuntimeSourceReportingState = <Failure>(
+  definition: RuntimeSourceReportingDefinition<Failure>,
+  status: SourceStatus<NoInfer<Failure>, unknown>,
+): RuntimeSourceReportingState<Failure> => {
+  const state: RuntimeSourceReportingState<Failure> = {
     definition,
     dependencyStatuses: new Map(
       definitionTargetKeys(definition).map((target) => [target, "Starting"] as const),
@@ -469,9 +469,9 @@ export const makeRuntimeSourceReportingState = (
   return state;
 };
 
-export const updateRuntimeSourceReportingState = (
-  state: RuntimeSourceReportingState,
-  status: SourceStatus<unknown, unknown>,
+export const updateRuntimeSourceReportingState = <Failure>(
+  state: RuntimeSourceReportingState<Failure>,
+  status: SourceStatus<NoInfer<Failure>, unknown>,
 ): boolean => {
   if (state.status === status) {
     return false;
@@ -502,7 +502,9 @@ const worseStatus = <Status extends RuntimeDependencyStatus>(
   right: Status,
 ): Status => (statusRank[left] >= statusRank[right] ? left : right);
 
-const heartbeatStatus = (states: Iterable<RuntimeSourceReportingState>): RuntimeHeartbeat => {
+const heartbeatStatus = <Failure>(
+  states: Iterable<RuntimeSourceReportingState<Failure>>,
+): RuntimeHeartbeat => {
   let status: RuntimeHeartbeatStatus = "Ready";
   const problems = new Set<SourceProblem>();
   for (const state of states) {
@@ -529,9 +531,9 @@ type MutableDependency = {
   hasMaterializedDefinition: boolean;
 };
 
-export const runtimeSourceReportingSnapshot = (
-  definitions: Iterable<RuntimeSourceReportingDefinition>,
-  states: Iterable<RuntimeSourceReportingState>,
+export const runtimeSourceReportingSnapshot = <Failure>(
+  definitions: Iterable<RuntimeSourceReportingDefinition<Failure>>,
+  states: Iterable<RuntimeSourceReportingState<Failure>>,
 ): RuntimeSourceReportingSnapshot => {
   const capturedStates = Array.from(states);
   const dependencies = new Map<string, Map<string, MutableDependency>>();

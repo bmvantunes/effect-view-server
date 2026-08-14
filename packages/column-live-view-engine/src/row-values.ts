@@ -1,17 +1,21 @@
 import {
   compareTrustedWireSafeBigDecimal,
+  hasPlainRecordPrototype,
   trustedWireSafeBigDecimalSemanticKey,
 } from "@effect-view-server/effect-utils";
+import { Schema } from "effect";
 import { isBigDecimal, type BigDecimal } from "effect/BigDecimal";
 
 type RowObject = object;
 
 export type ScalarEqualityKeyValue = null | string | boolean | bigint | number | BigDecimal;
 
-export const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
+type SchemaValueInput = Schema.Schema.Type<typeof Schema.Unknown>;
 
-export const isPlainRecord = (value: unknown): value is Record<string, unknown> => {
+export const isRecord = (value: SchemaValueInput): value is Record<string, unknown> =>
+  hasPlainRecordPrototype(value);
+
+export const isPlainRecord = (value: SchemaValueInput): value is Record<string, unknown> => {
   if (!isRecord(value) || isBigDecimal(value)) {
     return false;
   }

@@ -43,6 +43,9 @@ const plainUnknownRecord = (value: QueryGraphInput): Readonly<Record<string, unk
   return value;
 };
 
+const isQueryGraphObject = (value: QueryGraphInput): value is object =>
+  Array.isArray(value) || isProtocolPlainRecord(value);
+
 const recordDataEntries = (
   value: Readonly<Record<string, unknown>>,
 ): ReadonlyArray<readonly [string, unknown]> => {
@@ -106,20 +109,20 @@ export const encodeQueryGraph = (input: QueryGraphInput): string => {
   const nodes: Array<QueryGraphNode> = [];
   const pending: Array<PendingQueryGraphNode> = [];
   const ids = new WeakMap<object, number>();
-  const encodeValue = (value: unknown): QueryGraphValue => {
-    if (value === null) {
+  const encodeValue = (value: QueryGraphInput): QueryGraphValue => {
+    if (Schema.is(Schema.Null)(value)) {
       return ["null"];
     }
-    if (typeof value === "string") {
+    if (Schema.is(Schema.String)(value)) {
       return ["string", value];
     }
-    if (typeof value === "boolean") {
+    if (Schema.is(Schema.Boolean)(value)) {
       return ["boolean", value];
     }
-    if (typeof value === "number" && Number.isFinite(value)) {
+    if (Schema.is(Schema.Number)(value) && Number.isFinite(value)) {
       return Object.is(value, -0) ? ["negativeZero"] : ["number", value];
     }
-    if (typeof value !== "object") {
+    if (!isQueryGraphObject(value)) {
       throw new TypeError("Query values must be JSON-safe.");
     }
     const existing = ids.get(value);

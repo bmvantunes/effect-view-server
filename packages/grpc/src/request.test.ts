@@ -965,6 +965,13 @@ describe("generated gRPC request validation", () => {
         value: 1n,
       }),
     ).toThrow("request-init value does not match");
+    for (const invalidNumber of [Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(() =>
+        validateAndSnapshotGrpcRequest(NativeWktRequestSchema, {
+          value: [invalidNumber],
+        }),
+      ).toThrow("request-init value does not match");
+    }
     expect(() =>
       validateAndSnapshotGrpcRequest(NativeWktRequestSchema, {
         listValue: { invalid: true },

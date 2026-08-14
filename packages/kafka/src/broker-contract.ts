@@ -203,7 +203,7 @@ export const resolveKafkaRetention = (
 };
 
 export const isKafkaResolvedBrokerContract = (
-  contract: unknown,
+  contract: Schema.Schema.Type<typeof Schema.Unknown>,
 ): contract is KafkaResolvedBrokerContract => {
   if (!Schema.is(KafkaResolvedBrokerContractSchema)(contract)) {
     return false;

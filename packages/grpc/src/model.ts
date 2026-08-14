@@ -12,7 +12,7 @@ import {
   type SourceRetryPolicy,
 } from "effect-view-server/source-adapter";
 import type { Effect, Option } from "effect";
-import { Schema } from "effect";
+import { Result, Schema } from "effect";
 import { exactArrayValues, exactDataEntries } from "./exact-shape";
 
 export const GrpcAdapterFailure = Schema.Union([
@@ -646,23 +646,27 @@ const isGrpcMessageDescriptor = (value: unknown): boolean =>
   typeof value === "object" && value !== null && Reflect.get(value, "kind") === "message";
 
 const isGrpcMethodDescriptor = <Service extends object>(
-  value: unknown,
+  value: Schema.Schema.Type<typeof Schema.Unknown>,
   service: Service,
-): boolean =>
-  typeof value === "object" &&
-  value !== null &&
-  Reflect.get(value, "kind") === "rpc" &&
-  Reflect.get(value, "parent") === service &&
-  typeof Reflect.get(value, "name") === "string" &&
-  Reflect.get(value, "name") !== "" &&
-  typeof Reflect.get(value, "localName") === "string" &&
-  Reflect.get(value, "localName") !== "" &&
-  ["unary", "server_streaming", "client_streaming", "bidi_streaming"].includes(
-    String(Reflect.get(value, "methodKind")),
-  ) &&
-  isGrpcMessageDescriptor(Reflect.get(value, "input")) &&
-  isGrpcMessageDescriptor(Reflect.get(value, "output")) &&
-  typeof Reflect.get(value, "toString") === "function";
+): value is object => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+  return (
+    Reflect.get(value, "kind") === "rpc" &&
+    Reflect.get(value, "parent") === service &&
+    typeof Reflect.get(value, "name") === "string" &&
+    Reflect.get(value, "name") !== "" &&
+    typeof Reflect.get(value, "localName") === "string" &&
+    Reflect.get(value, "localName") !== "" &&
+    ["unary", "server_streaming", "client_streaming", "bidi_streaming"].includes(
+      String(Reflect.get(value, "methodKind")),
+    ) &&
+    isGrpcMessageDescriptor(Reflect.get(value, "input")) &&
+    isGrpcMessageDescriptor(Reflect.get(value, "output")) &&
+    typeof Reflect.get(value, "toString") === "function"
+  );
+};
 
 export const isGrpcServiceDescriptor = (value: unknown): value is DescService => {
   if (
@@ -738,18 +742,24 @@ const requireDescriptors = (value: unknown): GrpcDescriptorRecord => {
 };
 
 const isServerStreamingMethod = (
-  value: unknown,
-): value is DescMethodServerStreaming<DescMessage, DescMessage> =>
-  typeof value === "object" &&
-  value !== null &&
-  Reflect.get(value, "methodKind") === "server_streaming";
+  value: Schema.Schema.Type<typeof Schema.Unknown>,
+  service: DescService,
+): value is DescMethodServerStreaming<DescMessage, DescMessage> => {
+  const inspected = Result.try(() => {
+    return (
+      isGrpcMethodDescriptor(value, service) &&
+      Reflect.get(value, "methodKind") === "server_streaming"
+    );
+  });
+  return Result.isSuccess(inspected) && inspected.success;
+};
 
 export const selectedGrpcMethod = (
   service: DescService,
   method: string,
 ): DescMethodServerStreaming<DescMessage, DescMessage> | undefined => {
   const selected = Reflect.get(service.method, method);
-  return isServerStreamingMethod(selected) ? selected : undefined;
+  return isServerStreamingMethod(selected, service) ? selected : undefined;
 };
 
 type CheckedMaterializedInput = {

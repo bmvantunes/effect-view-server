@@ -5,7 +5,7 @@ import type {
   ViewServerTopicConfig,
 } from "@effect-view-server/config";
 import { isSourceDefinition } from "@effect-view-server/source-adapter/internal";
-import { Schema } from "effect";
+import { Result, Schema } from "effect";
 
 export type TopicDefinitionHasRequiredDefinedObjectProperty<
   Definition,
@@ -38,14 +38,28 @@ export type TopicSourceBinding = {
 
 type TopicDefinitionInput = Schema.Schema.Type<typeof Schema.Unknown>;
 
+const isSchemaFieldRecord = (value: TopicDefinitionInput): boolean => {
+  const inspected = Result.try(() => {
+    if (
+      !Schema.is(Schema.Record(Schema.String, Schema.Unknown))(value) ||
+      (Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null)
+    ) {
+      return false;
+    }
+    return Object.keys(value).every((field) => Schema.isSchema(Reflect.get(value, field)));
+  });
+  return Result.isSuccess(inspected) && inspected.success;
+};
+
 const hasDefinedOwnProperty = <Value extends object>(value: Value, key: string): boolean =>
   Object.prototype.hasOwnProperty.call(value, key) && Reflect.get(value, key) !== undefined;
 
-const isRowSchema = (value: TopicDefinitionInput): value is RowSchema =>
-  Schema.isSchema(value) &&
-  (typeof value === "object" || typeof value === "function") &&
-  value !== null &&
-  "fields" in value;
+const isRowSchema = (value: TopicDefinitionInput): value is RowSchema => {
+  const inspected = Result.try(() => {
+    return Schema.isSchema(value) && "fields" in value && isSchemaFieldRecord(value.fields);
+  });
+  return Result.isSuccess(inspected) && inspected.success;
+};
 
 const topicCanonicalSourceFromUnknown = (
   topicDefinition: TopicDefinitionInput,

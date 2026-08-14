@@ -1557,6 +1557,17 @@ describe("TCP publish Interface", () => {
           },
         },
       };
+      const malformedFieldsSchema = new Proxy(Schema.Struct({ id: Schema.String }), {
+        get: (target, property) =>
+          property === "fields" ? [] : Reflect.get(target, property, target),
+      });
+      const malformedFieldsConfig = {
+        topics: {
+          orders: {
+            schema: malformedFieldsSchema,
+          },
+        },
+      };
       const missingTopicSchemaIngress = yield* makeViewServerTcpPublishIngress(
         // @ts-expect-error intentionally malformed config for the runtime defensive guard.
         missingTopicSchemaConfig,
@@ -1569,6 +1580,12 @@ describe("TCP publish Interface", () => {
         runtimeCore.decodedMutationClient,
         { port: 0 },
       );
+      const malformedFieldsIngress = yield* makeViewServerTcpPublishIngress(
+        // @ts-expect-error intentionally malformed config for the schema field guard.
+        malformedFieldsConfig,
+        runtimeCore.decodedMutationClient,
+        { port: 0 },
+      );
 
       const missingTopicSchemaSocket = yield* Effect.acquireRelease(
         connectTcpPublishSocket(missingTopicSchemaIngress.url),
@@ -1578,6 +1595,10 @@ describe("TCP publish Interface", () => {
         connectTcpPublishSocket(missingCanonicalIdIngress.url),
         (socket) => Effect.sync(() => socket.destroy()),
       );
+      const malformedFieldsSocket = yield* Effect.acquireRelease(
+        connectTcpPublishSocket(malformedFieldsIngress.url),
+        (socket) => Effect.sync(() => socket.destroy()),
+      );
       const command = `${JSON.stringify({
         op: "publish",
         topic: "orders",
@@ -1585,14 +1606,22 @@ describe("TCP publish Interface", () => {
       })}\n`;
       missingTopicSchemaSocket.write(command);
       missingCanonicalIdSocket.write(command);
+      malformedFieldsSocket.write(command);
       const missingTopicSchemaResponse = yield* readTcpPublishResponse(
         missingTopicSchemaSocket,
       ).pipe(Effect.timeout("1 second"));
       const missingCanonicalIdResponse = yield* readTcpPublishResponse(
         missingCanonicalIdSocket,
       ).pipe(Effect.timeout("1 second"));
+      const malformedFieldsResponse = yield* readTcpPublishResponse(malformedFieldsSocket).pipe(
+        Effect.timeout("1 second"),
+      );
 
-      expect([missingTopicSchemaResponse, missingCanonicalIdResponse]).toStrictEqual([
+      expect([
+        missingTopicSchemaResponse,
+        missingCanonicalIdResponse,
+        malformedFieldsResponse,
+      ]).toStrictEqual([
         {
           ok: false,
           error: {
@@ -1611,9 +1640,19 @@ describe("TCP publish Interface", () => {
             topic: "orders",
           },
         },
+        {
+          ok: false,
+          error: {
+            _tag: "ViewServerTcpPublishIngressError",
+            message: "TCP publish cannot find View Server topic orders.",
+            phase: "decode",
+            topic: "orders",
+          },
+        },
       ]);
       yield* missingTopicSchemaIngress.close;
       yield* missingCanonicalIdIngress.close;
+      yield* malformedFieldsIngress.close;
       yield* runtimeCore.close;
     }),
   );

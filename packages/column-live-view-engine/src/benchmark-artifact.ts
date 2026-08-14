@@ -1,4 +1,5 @@
 import { definedFields } from "@effect-view-server/effect-utils";
+import { Schema } from "effect";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
@@ -216,21 +217,27 @@ export const benchmarkSummaryPath = (outputJsonPath: string): string => {
   return `${outputJsonPath}.summary.json`;
 };
 
-export const cleanupLeakCountFromEngineHealth = (health: unknown): number => {
+export const cleanupLeakCountFromEngineHealth = (
+  health: Schema.Schema.Type<typeof Schema.Unknown>,
+): number => {
   if (!isBenchmarkEngineHealth(health)) {
     return 0;
   }
   return health.activeSubscriptions + health.queuedEvents + activeViewCountFromEngineHealth(health);
 };
 
-export const backpressureCountFromEngineHealth = (health: unknown): number => {
+export const backpressureCountFromEngineHealth = (
+  health: Schema.Schema.Type<typeof Schema.Unknown>,
+): number => {
   if (!isBenchmarkEngineHealth(health)) {
     return 0;
   }
   return health.backpressureEvents;
 };
 
-export const queuedEventCountFromEngineHealth = (health: unknown): number => {
+export const queuedEventCountFromEngineHealth = (
+  health: Schema.Schema.Type<typeof Schema.Unknown>,
+): number => {
   if (!isBenchmarkEngineHealth(health)) {
     return 0;
   }
@@ -243,7 +250,9 @@ export const failOnBenchmarkCleanupLeaks = (cleanupLeakCount: number): void => {
   }
 };
 
-export const isBenchmarkEngineHealth = (value: unknown): value is BenchmarkEngineHealth => {
+export const isBenchmarkEngineHealth = (
+  value: Schema.Schema.Type<typeof Schema.Unknown>,
+): value is BenchmarkEngineHealth => {
   if (typeof value !== "object" || value === null) {
     return false;
   }
@@ -255,13 +264,18 @@ export const isBenchmarkEngineHealth = (value: unknown): value is BenchmarkEngin
   ) {
     return false;
   }
-  const hasEngineCounters =
-    isFiniteNumber(value.activeSubscriptions) &&
-    isFiniteNumber(value.backpressureEvents) &&
-    isFiniteNumber(value.maxQueueDepth) &&
-    isFiniteNumber(value.queuedEvents);
-
-  if (!hasEngineCounters) {
+  if (
+    !(
+      typeof value.activeSubscriptions === "number" &&
+      typeof value.backpressureEvents === "number" &&
+      typeof value.maxQueueDepth === "number" &&
+      typeof value.queuedEvents === "number" &&
+      isFiniteNumber(value.activeSubscriptions) &&
+      isFiniteNumber(value.backpressureEvents) &&
+      isFiniteNumber(value.maxQueueDepth) &&
+      isFiniteNumber(value.queuedEvents)
+    )
+  ) {
     return false;
   }
 

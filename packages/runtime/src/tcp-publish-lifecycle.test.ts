@@ -18,6 +18,7 @@ import {
   ViewServerTcpPublishIngressError,
   writeTcpJsonLine,
 } from "./tcp-publish-ingress";
+import { isViewServerRuntimeError } from "./tcp-publish-command";
 import {
   closeTestTcpServer,
   connectTcpPublishSocket,
@@ -60,6 +61,49 @@ const withDecodedPublish = <const Topics extends ViewServerRuntimeTopicDefinitio
 });
 
 describe("TCP publish lifecycle ownership", () => {
+  it("rejects malformed runtime error shapes", () => {
+    expect(isViewServerRuntimeError(null)).toBe(false);
+    expect(isViewServerRuntimeError([])).toBe(false);
+    expect(
+      isViewServerRuntimeError({
+        _tag: "ViewServerBackpressureError",
+        code: "BackpressureExceeded",
+        message: "backpressure",
+      }),
+    ).toBe(true);
+    expect(
+      isViewServerRuntimeError({
+        _tag: "UnknownRuntimeError",
+        code: "Unknown",
+        message: "unknown",
+      }),
+    ).toBe(false);
+
+    const inheritedTopic = Object.create({ topic: 42 });
+    Object.assign(inheritedTopic, {
+      _tag: "ViewServerRuntimeError",
+      code: "InvalidTopic",
+      message: "invalid topic",
+    });
+    expect(isViewServerRuntimeError(inheritedTopic)).toBe(false);
+    expect(
+      isViewServerRuntimeError({
+        _tag: "ViewServerBackpressureError",
+        code: "BackpressureExceeded",
+        message: "backpressure",
+        queuedEvents: Number.NaN,
+      }),
+    ).toBe(false);
+    expect(
+      isViewServerRuntimeError({
+        _tag: "ViewServerBackpressureError",
+        code: "BackpressureExceeded",
+        message: "backpressure",
+        maxQueueDepth: Number.POSITIVE_INFINITY,
+      }),
+    ).toBe(false);
+  });
+
   it.effect("owns accepted TCP socket deadlines with Effect time", () =>
     Effect.acquireUseRelease(
       makeViewServerRuntimeCoreInternal(viewServer, {}),
@@ -800,6 +844,17 @@ describe("TCP publish lifecycle ownership", () => {
           message: "runtime unavailable for tcp test",
         } satisfies ViewServerRuntimeError),
       );
+      const backpressurePublishClient = withDecodedPublish(runtimeCore.decodedMutationClient, () =>
+        Effect.fail({
+          _tag: "ViewServerBackpressureError",
+          code: "BackpressureExceeded",
+          message: "backpressure for tcp test",
+          topic: "orders",
+          queryId: "tcp-query",
+          queuedEvents: 3,
+          maxQueueDepth: 2,
+        }),
+      );
       const typedFailurePublishClient: ViewServerRuntimeDecodedMutationClient<
         typeof viewServer.topics
       > = {
@@ -826,6 +881,11 @@ describe("TCP publish lifecycle ownership", () => {
         typedFailurePublishClient,
         { port: 0 },
       );
+      const backpressurePublishIngress = yield* makeViewServerTcpPublishIngress(
+        viewServer,
+        backpressurePublishClient,
+        { port: 0 },
+      );
 
       const responses = [
         yield* sendTcpPublishCommand(defectPublishIngress.url, {
@@ -839,6 +899,11 @@ describe("TCP publish lifecycle ownership", () => {
           row: order("a", 10),
         }),
         yield* sendTcpPublishCommand(typedFailurePublishIngress.url, {
+          op: "publish",
+          topic: "orders",
+          row: order("a", 10),
+        }),
+        yield* sendTcpPublishCommand(backpressurePublishIngress.url, {
           op: "publish",
           topic: "orders",
           row: order("a", 10),
@@ -871,8 +936,18 @@ describe("TCP publish lifecycle ownership", () => {
             topic: "orders",
           },
         },
+        {
+          ok: false,
+          error: {
+            _tag: "ViewServerBackpressureError",
+            code: "BackpressureExceeded",
+            message: "backpressure for tcp test",
+            topic: "orders",
+          },
+        },
       ]);
 
+      yield* backpressurePublishIngress.close;
       yield* typedFailurePublishIngress.close;
       yield* unavailablePublishIngress.close;
       yield* defectPublishIngress.close;

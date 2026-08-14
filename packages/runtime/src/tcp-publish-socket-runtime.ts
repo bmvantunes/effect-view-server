@@ -1,5 +1,5 @@
 import { definedFields } from "@effect-view-server/effect-utils";
-import type { ViewServerRuntimeError, ViewServerTopicConfig } from "@effect-view-server/config";
+import type { ViewServerTopicConfig } from "@effect-view-server/config";
 import type {
   ViewServerRuntimeDecodedMutationClient,
   ViewServerRuntimeTopicDefinitions,
@@ -9,6 +9,7 @@ import { Cause, Effect, Exit, FiberSet, Option, Queue, Schema, Scope } from "eff
 import * as Net from "node:net";
 import {
   handleTcpPublishCommandLine,
+  isViewServerRuntimeError,
   TcpPublishResponseSchema,
   type TcpPublishCommandError,
   type TcpPublishResponse,
@@ -71,9 +72,6 @@ const defaultMaxGlobalQueuedCommands = 1024;
 const defaultMaxQueuedCommands = 1024;
 const acceptedSocketPreCommandDeadlineMs = 30_000;
 const rejectedSocketDestroyTimeoutMs = 1_000;
-
-const isViewServerRuntimeError = (value: TcpPublishCommandError): value is ViewServerRuntimeError =>
-  value._tag === "ViewServerRuntimeError" || value._tag === "ViewServerBackpressureError";
 
 const wireError = (cause: Cause.Cause<TcpPublishCommandError>): TcpPublishResponse => {
   const failure = Cause.findErrorOption(cause);

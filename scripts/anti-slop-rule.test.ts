@@ -1,5 +1,8 @@
 import { describe, expect, it } from "@effect/vitest";
+import { Schema } from "effect";
+import { RuleTester } from "oxlint/plugins-dev";
 import { spawnSync } from "node:child_process";
+import antiSlopPlugin from "../tools/oxlint/anti-slop/index";
 import {
   existsSync,
   mkdtempSync,
@@ -14,41 +17,66 @@ import { join } from "node:path";
 type RuleSeverity = "error" | "warn";
 type LintMode = "isolated" | "repository";
 
-type LintDiagnostic = {
-  readonly code: string;
-  readonly message: string;
-  readonly severity: string;
-};
+const lintReportSchema = Schema.Struct({
+  diagnostics: Schema.Array(
+    Schema.Struct({
+      code: Schema.String,
+      message: Schema.String,
+      severity: Schema.String,
+      labels: Schema.optional(
+        Schema.Array(
+          Schema.Struct({
+            span: Schema.Struct({
+              line: Schema.Number,
+              column: Schema.Number,
+            }),
+          }),
+        ),
+      ),
+    }),
+  ),
+});
 
-type LintReport = {
-  readonly diagnostics: readonly LintDiagnostic[];
-};
-
+type LintDiagnostic = Schema.Schema.Type<typeof lintReportSchema>["diagnostics"][number];
+type LintReport = Schema.Schema.Type<typeof lintReportSchema>;
 type LintFixtureResult = {
   readonly error: Error | undefined;
-  readonly report: LintReport | undefined;
+  readonly report: LintReport;
   readonly status: number | null;
 };
 
-const isLintReport = (value: unknown): value is LintReport => {
-  if (typeof value !== "object" || value === null || !("diagnostics" in value)) return false;
-  const diagnostics = value.diagnostics;
-  if (!Array.isArray(diagnostics)) return false;
-  return diagnostics.every((diagnostic) => {
-    if (typeof diagnostic !== "object" || diagnostic === null) return false;
-    return (
-      "code" in diagnostic &&
-      typeof diagnostic.code === "string" &&
-      "message" in diagnostic &&
-      typeof diagnostic.message === "string" &&
-      "severity" in diagnostic &&
-      typeof diagnostic.severity === "string"
-    );
-  });
+const isLintReport = (
+  value: Schema.Schema.Type<typeof Schema.Json>,
+): value is LintReport & Schema.Schema.Type<typeof Schema.Json> =>
+  Schema.is(lintReportSchema)(value);
+
+const parseLintReport = (stdout: string): LintReport => {
+  const trimmed = stdout.trim();
+  if (trimmed.length === 0) {
+    throw new Error("Oxlint returned no JSON report.");
+  }
+  const parsed: Schema.Schema.Type<typeof Schema.Json> = JSON.parse(trimmed);
+  if (!isLintReport(parsed)) {
+    throw new Error("Oxlint returned a malformed JSON report.");
+  }
+  return parsed;
 };
 
-const diagnosticsFor = (result: LintFixtureResult, rule: string): readonly LintDiagnostic[] =>
-  result.report?.diagnostics.filter((diagnostic) => diagnostic.code === `anti-slop(${rule})`) ?? [];
+const diagnosticsFor = (result: LintFixtureResult, rule: string): readonly LintDiagnostic[] => {
+  const diagnostics = result.report.diagnostics.filter(
+    (diagnostic) => diagnostic.code === `anti-slop(${rule})`,
+  );
+  for (const diagnostic of diagnostics) {
+    expect(diagnostic.severity).toBe("error");
+    expect(diagnostic.message.trim().length).toBeGreaterThan(0);
+    expect(
+      diagnostic.labels?.some(
+        ({ span }) => span.line >= 1 && span.column >= 1,
+      ),
+    ).toBe(true);
+  }
+  return diagnostics;
+};
 
 const lintFixture = (
   source: string,
@@ -87,11 +115,10 @@ const lintFixture = (
     timeout: 120_000,
   });
   rmSync(directory, { force: true, recursive: true });
-  const stdout = result.stdout ?? "";
-  const parsed: unknown = stdout.trim().length === 0 ? undefined : JSON.parse(stdout);
+  const report = parseLintReport(result.stdout ?? "");
   return {
     error: result.error,
-    report: isLintReport(parsed) ? parsed : undefined,
+    report,
     status: result.status,
   };
 };
@@ -104,8 +131,104 @@ const relativeFiles = (directory: string, prefix = ""): readonly string[] =>
     })
     .sort();
 
+const runInProcessRuleCoverage = (): void => {
+  const tester = new RuleTester();
+  tester.run("no-chained-type-assertions", antiSlopPlugin.rules["no-chained-type-assertions"], {
+    valid: [{ code: "const value = input as const;", filename: "fixture.ts" }],
+    invalid: [{ code: "const value = (input as object) as string;", filename: "fixture.ts", errors: 1 }],
+  });
+  tester.run(
+    "no-conditional-empty-object-spread",
+    antiSlopPlugin.rules["no-conditional-empty-object-spread"],
+    {
+      valid: [{ code: "const value = { ...(flag ? { value: 1 } : { value: 2 }) };", filename: "fixture.ts" }],
+      invalid: [{ code: "const value = { ...(flag ? {} : { value: 2 }) };", filename: "fixture.ts", errors: 1 }],
+    },
+  );
+  tester.run("no-known-value-widening", antiSlopPlugin.rules["no-known-value-widening"], {
+    valid: [{ code: "const value = { value: 1 };", filename: "fixture.ts" }],
+    invalid: [{ code: "const value: object = { value: 1 };", filename: "fixture.ts", errors: 1 }],
+  });
+  tester.run("no-object-parameters", antiSlopPlugin.rules["no-object-parameters"], {
+    valid: [{ code: "function value(input: { readonly value: number }) { return input; }", filename: "fixture.ts" }],
+    invalid: [{ code: "function value(input: object) { return input; }", filename: "fixture.ts", errors: 1 }],
+  });
+  tester.run("no-runtime-typeof", antiSlopPlugin.rules["no-runtime-typeof"], {
+    valid: [{ code: "function value(input: unknown): input is string { return typeof input === \"string\"; }", filename: "fixture.ts" }],
+    invalid: [{ code: "function value(input: unknown) { return typeof input === \"string\"; }", filename: "fixture.ts", errors: 1 }],
+  });
+  tester.run("no-shape-in-symbol-names", antiSlopPlugin.rules["no-shape-in-symbol-names"], {
+    valid: [{ code: "const value = 1;", filename: "fixture.ts" }],
+    invalid: [{ code: "const shape = 1;", filename: "fixture.ts", errors: 1 }],
+  });
+  tester.run("no-unknown-parameters", antiSlopPlugin.rules["no-unknown-parameters"], {
+    valid: [{ code: "function value(input: string) { return input; }", filename: "fixture.ts" }],
+    invalid: [{ code: "function value(input: unknown) { return input; }", filename: "fixture.ts", errors: 1 }],
+  });
+  tester.run("no-unknown-type-aliases", antiSlopPlugin.rules["no-unknown-type-aliases"], {
+    valid: [{ code: "type Value = string;", filename: "fixture.ts" }],
+    invalid: [{ code: "type Value = unknown;", filename: "fixture.ts", errors: 1 }],
+  });
+  tester.run("no-unsafe-dictionary-type", antiSlopPlugin.rules["no-unsafe-dictionary-type"], {
+    valid: [{ code: "type Value = Record<string, number>;", filename: "fixture.ts" }],
+    invalid: [{ code: "export type Value = Record<string, unknown>;", filename: "fixture.ts", errors: 1 }],
+  });
+  tester.run("no-widen-then-assert", antiSlopPlugin.rules["no-widen-then-assert"], {
+    valid: [{ code: "const value = { value: 1 };", filename: "fixture.ts" }],
+    invalid: [{ code: "const value: object = { value: 1 }; const narrowed = value as { value: number };", filename: "fixture.ts", errors: 1 }],
+  });
+  const repositoryCorpus = [
+    "declare const external: unknown;",
+    "const chained = ({ value: 1 } as { readonly value: number }) as { readonly value: number };",
+    "const conditional = { ...(true ? {} : { value: 1 }) };",
+    "const widened: object = { value: 1 };",
+    "function acceptsObject(value: object) { return value; }",
+    "const observed = typeof external;",
+    "const shape = 1;",
+    "function acceptsUnknown(value: unknown) { return value; }",
+    "type HiddenUnknown = unknown;",
+    "const narrowed = widened as { readonly value: number };",
+    "export type RepositoryUnsafe = Record<string, unknown>;",
+  ].join("\n");
+  const repositoryCorpusCounts: Readonly<Record<string, number>> = {
+    "no-chained-type-assertions": 1,
+    "no-conditional-empty-object-spread": 1,
+    "no-known-value-widening": 3,
+    "no-object-parameters": 1,
+    "no-runtime-typeof": 1,
+    "no-shape-in-symbol-names": 1,
+    "no-unknown-parameters": 1,
+    "no-unknown-type-aliases": 1,
+    "no-unsafe-dictionary-type": 1,
+    "no-widen-then-assert": 1,
+  };
+  for (const [ruleName, errors] of Object.entries(repositoryCorpusCounts)) {
+    tester.run(`repository corpus ${ruleName}`, antiSlopPlugin.rules[ruleName], {
+      valid: [],
+      invalid: [{ code: repositoryCorpus, filename: "fixture.ts", errors }],
+    });
+  }
+};
+
 describe("anti-slop Oxlint integration", () => {
-  it("rejects direct exported unsafe dictionary contracts", () => {
+  runInProcessRuleCoverage();
+
+  it("loads the complete configured plugin registry", () => {
+    expect(Object.keys(antiSlopPlugin.rules).sort()).toStrictEqual([
+      "no-chained-type-assertions",
+      "no-conditional-empty-object-spread",
+      "no-known-value-widening",
+      "no-object-parameters",
+      "no-runtime-typeof",
+      "no-shape-in-symbol-names",
+      "no-unknown-parameters",
+      "no-unknown-type-aliases",
+      "no-unsafe-dictionary-type",
+      "no-widen-then-assert",
+    ]);
+  });
+
+	it("rejects direct exported unsafe dictionary contracts", () => {
     const result = lintFixture(
       [
         "export type UnsafeRecord = Record<string, unknown>;",
@@ -278,6 +401,7 @@ describe("anti-slop Oxlint integration", () => {
 	it("requires type predicates to have runtime validation evidence", () => {
 		const result = lintFixture(
 			[
+				"import { Result, Schema } from 'effect';",
 				"function dishonest(value: unknown): value is string { return true; }",
 				"function dishonestAssertion(value: unknown): value is string { return value as string; }",
 				"function dishonestCoercion(value: unknown): value is string { return String(value) === value; }",
@@ -288,16 +412,17 @@ describe("anti-slop Oxlint integration", () => {
 				"function dishonestUnion(value: unknown): value is string | number { return typeof value === 'boolean'; }",
 				"function honestUnion(value: unknown): value is string | number { return typeof value === 'string' || typeof value === 'number'; }",
 				"type RecordValue = { readonly value: string };",
-				"const registry = new Map<unknown, unknown>();",
+				"const sourceAdapterHandles = new Map<unknown, unknown>();",
 				"function dishonestCustom(value: unknown): value is RecordValue { return typeof value === 'boolean'; }",
 				"function dishonestStructural(value: unknown): value is RecordValue { return typeof value === 'object' && value !== null; }",
 				"function dishonestStructuralProperty(value: unknown): value is RecordValue { return typeof value === 'object' && value !== null && 'other' in value; }",
 				"function dishonestStructuralReflect(value: unknown): value is RecordValue { return typeof value === 'object' && value !== null && typeof Reflect.get(value, 'other') === 'string'; }",
 				"function honestCustom(value: unknown): value is RecordValue { return typeof value === 'object' && value !== null && 'value' in value && typeof value.value === 'string'; }",
 				"function honestStructuralReflect(value: unknown): value is RecordValue { return typeof value === 'object' && value !== null && typeof Reflect.get(value, 'value') === 'string'; }",
-				"function honestRegistry(value: unknown): value is RecordValue { return typeof value === 'object' && value !== null && registry.get(value) === value; }",
+				"function honestRegistry(value: unknown): value is RecordValue { return typeof value === 'object' && value !== null && sourceAdapterHandles.get(value) === value; }",
+				"const registry = new Map<unknown, unknown>();",
 				"function dishonestRegistryPrimitive(value: unknown): value is string { return registry.get(value) === value; }",
-				"function honestOwn(value: unknown): value is RecordValue { return typeof value === 'object' && value !== null && Object.hasOwn(value, 'value'); }",
+				"function honestOwn(value: unknown): value is RecordValue { return typeof value === 'object' && value !== null && Object.hasOwn(value, 'value') && typeof value.value === 'string'; }",
 				"function dishonestOwnPrimitive(value: unknown): value is string { return Object.hasOwn(value, 'value'); }",
 				"function dishonestSchemaObject(value: unknown): value is RecordValue { return Schema.is(Schema.Object)(value); }",
 				"function dishonestAnd(value: unknown): value is string { return typeof value === 'string' && value === null; }",
@@ -314,7 +439,83 @@ describe("anti-slop Oxlint integration", () => {
 
 		expect(result.error).toBeUndefined();
 		expect(result.status).toBe(1);
-		expect(diagnosticsFor(result, "no-unknown-parameters")).toHaveLength(19);
+		expect(diagnosticsFor(result, "no-unknown-parameters")).toHaveLength(20);
+	}, 120_000);
+
+	it("resolves aliased Effect Schema namespaces in type and runtime evidence", () => {
+		const result = lintFixture(
+			[
+				"import * as S from 'effect';",
+				"import { Schema as NamedSchema } from 'effect';",
+				"function namespaceBoundary(value: S.Schema.Type<typeof S.Unknown>) { return value; }",
+				"function namedBoundary(value: NamedSchema.Schema.Type<typeof NamedSchema.Unknown>) { return value; }",
+				"function namespaceGuard(value: unknown): value is string { return S.Schema.is(S.Schema.String)(value); }",
+				"function namedGuard(value: unknown): value is string { return NamedSchema.is(NamedSchema.String)(value); }",
+			].join("\n"),
+			{},
+			{ "anti-slop/no-unknown-parameters": "error" },
+		);
+
+		expect(result.error).toBeUndefined();
+		expect(result.status).toBe(0);
+		expect(diagnosticsFor(result, "no-unknown-parameters")).toStrictEqual([]);
+	}, 120_000);
+
+	it("correlates type-predicate evidence with the declared runtime type", () => {
+		const result = lintFixture(
+			[
+				"import { Schema } from 'effect';",
+				"import { isBigDecimal } from 'effect/BigDecimal';",
+				"type User = { readonly id: string };",
+				"type NestedUser = { readonly profile: { readonly id: string }; readonly tags: ReadonlyArray<string>; readonly byId: Record<string, { readonly id: string }>; readonly status: 'ready' | 'stopped' };",
+				"interface BaseUser { readonly id: string }",
+				"interface DerivedUser extends BaseUser {}",
+				"interface GenericBase<Value> { readonly id: Value }",
+				"interface GenericDerived extends GenericBase<string> {}",
+				"interface Callable { (value: string): string }",
+        "function nestedEvidence(nestedValue: unknown): nestedValue is string { const check = () => typeof nestedValue === 'string'; return true; }",
+        "function mismatchedValidator(validatorValue: unknown): validatorValue is User { return isBigDecimal(validatorValue); }",
+        "function mismatchedSchema(schemaValue: unknown): schemaValue is User { return Schema.is(Schema.Struct({ other: Schema.String }))(schemaValue); }",
+        "function mismatchedOwn(ownValue: unknown): ownValue is User { return typeof ownValue === 'object' && ownValue !== null && Object.hasOwn(ownValue, 'other'); }",
+        "function mismatchedPresence(presenceValue: unknown): presenceValue is User { return typeof presenceValue === 'object' && presenceValue !== null && 'other' in presenceValue; }",
+        "function mismatchedReflect(reflectedValue: unknown): reflectedValue is User { const Reflect = { get: (_value: object, _key: string) => 'wrong' }; return typeof reflectedValue === 'object' && reflectedValue !== null && typeof Reflect.get(reflectedValue, 'id') === 'string'; }",
+        "function literalType(literalValue: unknown): literalValue is 'ready' { return typeof literalValue === 'string'; }",
+        "function nullType(nullValue: unknown): nullValue is null { return typeof nullValue === 'object'; }",
+				"function interfaceFunction(functionValue: unknown): functionValue is DerivedUser { return typeof functionValue === 'function'; }",
+				"function callableInterface(callableValue: unknown): callableValue is Callable { return typeof callableValue === 'function'; }",
+				"const registry = new Map<unknown, unknown>();",
+        "function arbitraryIdentity(identityValue: unknown): identityValue is User { return registry.get(identityValue) === identityValue; }",
+        "function validSchema(schemaValue: unknown): schemaValue is User { return Schema.is(Schema.Struct({ id: Schema.String }))(schemaValue); }",
+				"function validInherited(inheritedValue: unknown): inheritedValue is DerivedUser { return typeof inheritedValue === 'object' && inheritedValue !== null && 'id' in inheritedValue && typeof inheritedValue.id === 'string'; }",
+				"function validNested(nestedValue: unknown): nestedValue is NestedUser { return Schema.is(Schema.Struct({ profile: Schema.Struct({ id: Schema.String }), tags: Schema.Array(Schema.String), byId: Schema.Record(Schema.String, Schema.Struct({ id: Schema.String })), status: Schema.Literal('ready') }))(nestedValue); }",
+				"function mismatchedNested(nestedValue: unknown): nestedValue is NestedUser { return Schema.is(Schema.Struct({ profile: Schema.Struct({ id: Schema.Number }), tags: Schema.Array(Schema.Number), byId: Schema.Record(Schema.String, Schema.Struct({ id: Schema.Number })), status: Schema.Literal('wrong') }))(nestedValue); }",
+				"function validGeneric(genericValue: unknown): genericValue is GenericDerived { return Schema.is(Schema.Struct({ id: Schema.String }))(genericValue); }",
+				"function mismatchedGeneric(genericValue: unknown): genericValue is GenericDerived { return Schema.is(Schema.Struct({ id: Schema.Number }))(genericValue); }",
+			].join("\n"),
+			{},
+			{ "anti-slop/no-unknown-parameters": "error" },
+		);
+
+		expect(result.error).toBeUndefined();
+		expect(result.status).toBe(1);
+		expect(
+			diagnosticsFor(result, "no-unknown-parameters").map(
+				(diagnostic) => diagnostic.message.match(/Parameter `([^`]+)`/)?.[1] ?? "",
+			),
+		).toStrictEqual([
+			"nestedValue",
+			"validatorValue",
+			"schemaValue",
+			"ownValue",
+			"presenceValue",
+			"reflectedValue",
+			"literalValue",
+			"nullValue",
+			"functionValue",
+			"identityValue",
+			"nestedValue",
+			"genericValue",
+		]);
 	}, 120_000);
 
 	it("does not trust nested validators, shadowed validation names, or overload implementations", () => {
@@ -514,6 +715,18 @@ describe("anti-slop Oxlint integration", () => {
 		expect(result.error).toBeUndefined();
 		expect(result.status).toBe(1);
 		expect(diagnosticsFor(result, "no-runtime-typeof")).toHaveLength(5);
+	}, 120_000);
+
+	it("does not exempt typeof checks merely because an async return type is present", () => {
+		const result = lintFixture(
+			"function asyncOrdinary(value: unknown): Promise<void> { return Promise.resolve(typeof value === 'string' ? undefined : undefined); }",
+			{},
+			{ "anti-slop/no-runtime-typeof": "error" },
+		);
+
+		expect(result.error).toBeUndefined();
+		expect(result.status).toBe(1);
+		expect(diagnosticsFor(result, "no-runtime-typeof")).toHaveLength(1);
 	}, 120_000);
 
 	it("detects asserted and named empty-object conditional spreads", () => {
@@ -722,6 +935,94 @@ describe("anti-slop Oxlint integration", () => {
     }
   }, 120_000);
 
+  it("runs a cross-rule corpus through the in-process plugin runner", () => {
+    const result = lintFixture(
+      [
+        "import { Schema } from 'effect';",
+        "type Row = { readonly id: string };",
+        "type UnknownAlias = unknown;",
+        "type UnknownUnion = unknown | string;",
+        "type UnknownGeneric<T = unknown> = T;",
+        "type UnsafeRecord = Record<string, unknown>;",
+        "export type PublicUnsafeRecord = UnsafeRecord;",
+        "export interface PublicUnsafeInterface { [key: string]: unknown }",
+        "export type PublicMapped = { [key: string]: any };",
+        "const sourceEmpty = {};",
+        "const aliasEmpty = sourceEmpty;",
+        "const conditionalAlias = { ...(flag ? aliasEmpty : { id: 'id' }) };",
+        "aliasEmpty.id = 'mutated';",
+        "const afterMutation = { ...(flag ? aliasEmpty : { id: 'id' }) };",
+        "const afterCall = { ...(flag ? {} : { id: 'id' }) };",
+        "Object.assign(sourceEmpty, { id: 'id' });",
+        "const afterAssign = { ...(flag ? sourceEmpty : { id: 'id' }) };",
+        "const afterNew = { ...(flag ? {} : { id: 'id' }) };",
+        "new Map();",
+        "const afterDelete = { ...(flag ? {} : { id: 'id' }) };",
+        "delete sourceEmpty.id;",
+        "const afterUpdate = { ...(flag ? {} : { id: 'id' }) };",
+        "sourceEmpty.id++;",
+        "const widenedObject: object = { id: 'id' };",
+        "const widenedRecord: Record<string, unknown> = { id: 'id' };",
+        "const readonlyRecord: Readonly<Record<string, unknown>> = { id: 'id' };",
+        "const widenedIndex: { [key: string]: unknown } = { id: 'id' };",
+        "class Holder { field: object = { id: 'id' }; accessor: object = { id: 'id' }; method(value: object) { return value; } }",
+        "function returnsObject(): object { return { id: 'id' }; }",
+        "const returnsArrow = (): object => ({ id: 'id' });",
+        "const returnsBlock = (): object => { return { id: 'id' }; };",
+        "const assertionObject = ({ id: 'id' } as object);",
+        "const assertionRecord = (<Record<string, unknown>>({ id: 'id' }));",
+        "const knownLiteral = 'id';",
+        "const knownTemplate = `id`;",
+        "const knownArray = ['id'];",
+        "const knownFunction = () => 'id';",
+        "const knownClass = class {};",
+        "const knownNew = new Map();",
+        "function acceptsObject(value: object) { return typeof value; }",
+        "function acceptsUnknown(value: unknown) { return typeof value; }",
+        "function acceptsRow(value: Row) { return value; }",
+        "type Signature = (value: unknown) => unknown;",
+        "interface Callable { (value: object): unknown }",
+        "const callback: Signature = (value: unknown) => value;",
+        "const predicate = (value: unknown): value is string => typeof value === 'string';",
+        "function isRow(value: unknown): value is Row { return Schema.is(Schema.Struct({ id: Schema.String }))(value); }",
+        "const topTypeof = typeof external;",
+        "const globalTypeof = typeof globalThis;",
+        "function ordinaryTypeof(value: unknown) { return typeof value === 'string'; }",
+        "function guardedTypeof(value: unknown): value is string { return typeof value === 'string'; }",
+        "class ShapeHolder {}",
+        "class Holder2 { shape = 1; #shape = 2; methodShape() {} }",
+        "interface ShapeInterface { shape: string; }",
+        "type ShapeAlias = string;",
+        "type GenericShape<shape> = shape;",
+        "enum ShapeEnum { Shape }",
+        "function shapeFunction(shape: string) { return shape; }",
+        "const shapeValue = 1;",
+        "const narrowedObject = widenedObject as { readonly id: string };",
+        "const narrowedRecord = widenedRecord as Record<string, string>;",
+        "const narrowedUnknown = (knownLiteral as unknown) as string;",
+        "const narrowedAngle = <{ readonly id: string }>widenedObject;",
+        "function boundary(value: object) { return value as { readonly id: string }; }",
+      ].join("\n"),
+      {},
+      {
+        "anti-slop/no-chained-type-assertions": "error",
+        "anti-slop/no-conditional-empty-object-spread": "error",
+        "anti-slop/no-known-value-widening": "error",
+        "anti-slop/no-object-parameters": "error",
+        "anti-slop/no-runtime-typeof": "error",
+        "anti-slop/no-shape-in-symbol-names": "error",
+        "anti-slop/no-unknown-parameters": "error",
+        "anti-slop/no-unknown-type-aliases": "error",
+        "anti-slop/no-unsafe-dictionary-type": "error",
+        "anti-slop/no-widen-then-assert": "error",
+      },
+    );
+
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(1);
+    expect(result.report.diagnostics.length).toBeGreaterThan(0);
+  }, 120_000);
+
   it("reports immutable broadening but allows mutable boundary state", () => {
     const result = lintFixture(
       [
@@ -824,19 +1125,20 @@ describe("anti-slop Oxlint integration", () => {
 
     expect(result.error).toBeUndefined();
     expect(result.status).toBe(1);
-    for (const rule of [
-      "no-chained-type-assertions",
-      "no-conditional-empty-object-spread",
-      "no-known-value-widening",
-      "no-object-parameters",
-      "no-runtime-typeof",
-      "no-shape-in-symbol-names",
-      "no-unknown-parameters",
-      "no-unknown-type-aliases",
-      "no-unsafe-dictionary-type",
-      "no-widen-then-assert",
-    ]) {
-      expect(diagnosticsFor(result, rule)).not.toStrictEqual([]);
+    const expectedDiagnosticCounts: Readonly<Record<string, number>> = {
+      "no-chained-type-assertions": 1,
+      "no-conditional-empty-object-spread": 1,
+      "no-known-value-widening": 3,
+      "no-object-parameters": 1,
+      "no-runtime-typeof": 1,
+      "no-shape-in-symbol-names": 1,
+      "no-unknown-parameters": 1,
+      "no-unknown-type-aliases": 1,
+      "no-unsafe-dictionary-type": 1,
+      "no-widen-then-assert": 1,
+    };
+    for (const [rule, count] of Object.entries(expectedDiagnosticCounts)) {
+      expect(diagnosticsFor(result, rule), rule).toHaveLength(count);
     }
   }, 120_000);
 
@@ -868,7 +1170,7 @@ const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
   }, 120_000);
 
   it("installs cleanly and safely overwrites managed files when forced", () => {
-    const directory = mkdtempSync(join(tmpdir(), "effect-view-server-anti-slop-install-"));
+    const directory = mkdtempSync(join(process.cwd(), ".anti-slop-install-"));
     const target = join(directory, "plugin");
     const script = join(process.cwd(), ".agents/skills/install-anti-slop/scripts/install.mjs");
 
@@ -902,18 +1204,50 @@ const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
     expect(readFileSync(join(target, "index.ts"), "utf8")).toBe(
       readFileSync(join(".agents/skills/install-anti-slop/assets/anti-slop", "index.ts"), "utf8"),
     );
+    const fixture = join(directory, "fixture.ts");
+    const config = join(directory, "oxlint.config.json");
+    writeFileSync(fixture, "export type UnsafeRecord = Record<string, unknown>;\n");
+    writeFileSync(
+      config,
+      JSON.stringify({
+        jsPlugins: [{ name: "anti-slop", specifier: join(target, "index.ts") }],
+        rules: { "anti-slop/no-unsafe-dictionary-type": "error" },
+      }),
+    );
+    const installed = spawnSync("vp", ["exec", "oxlint", "--config", config, "--format", "json", fixture], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      timeout: 120_000,
+    });
+    const installedResult: LintFixtureResult = {
+      error: installed.error,
+      report: parseLintReport(installed.stdout ?? ""),
+      status: installed.status,
+    };
+    expect(installedResult.error).toBeUndefined();
+    expect(installedResult.status).toBe(1);
+    expect(diagnosticsFor(installedResult, "no-unsafe-dictionary-type")).toHaveLength(1);
     rmSync(directory, { force: true, recursive: true });
   }, 120_000);
 
-  it("keeps the bundled asset and live plugin copies identical", () => {
-    const liveFiles = relativeFiles("tools/oxlint/anti-slop");
-    const bundledFiles = relativeFiles(".agents/skills/install-anti-slop/assets/anti-slop");
+	it("keeps the generic bundled asset aligned without shipping repository trust policy", () => {
+		const policyFile = join("shared", "repository-validation-policy.ts");
+		const liveFiles = relativeFiles("tools/oxlint/anti-slop").filter((file) => file !== policyFile);
+		const bundledFiles = relativeFiles(".agents/skills/install-anti-slop/assets/anti-slop").filter(
+			(file) => file !== policyFile,
+		);
 
-    expect(liveFiles).toStrictEqual(bundledFiles);
-    expect(liveFiles.map((file) => readFileSync(join("tools/oxlint/anti-slop", file), "utf8"))).toStrictEqual(
+		expect(liveFiles).toStrictEqual(bundledFiles);
+		expect(liveFiles.map((file) => readFileSync(join("tools/oxlint/anti-slop", file), "utf8"))).toStrictEqual(
       bundledFiles.map((file) =>
         readFileSync(join(".agents/skills/install-anti-slop/assets/anti-slop", file), "utf8"),
-      ),
-    );
-  }, 120_000);
+			),
+		);
+		const bundledPolicy = readFileSync(
+			join(".agents/skills/install-anti-slop/assets/anti-slop", policyFile),
+			"utf8",
+		);
+		expect(bundledPolicy).not.toContain("@effect-view-server/");
+		expect(bundledPolicy).not.toContain("@bufbuild/protobuf");
+	}, 120_000);
 });

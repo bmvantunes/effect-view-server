@@ -80,7 +80,7 @@ declare const unknownQuery: unknown;
 declare const unknownSourceHealth: unknown;
 
 describe("@effect-view-server/protocol type contract", () => {
-  it("preserves topic row types through query and Source Health decoders", () => {
+  it("preserves topic row types through query decoders", () => {
     const raw = viewServerDecodeRawQuery(typeViewServer, "orders", unknownQuery);
     const grouped = viewServerDecodeGroupedQuery(typeViewServer, "orders", unknownQuery);
     const live = viewServerDecodeLiveQuery(typeViewServer, "orders", unknownQuery);
@@ -122,7 +122,7 @@ describe("@effect-view-server/protocol type contract", () => {
     const _invalidLive = viewServerDecodeLiveQuery(typeViewServer, invalidTopic, unknownQuery);
     const _invalidSourceHealth = viewServerDecodeSourceHealth(
       typeSourceViewServer,
-      // @ts-expect-error configured Source Health decoders reject topics absent from the view-server config.
+      // @ts-expect-error configured source health decoders reject topics absent from the view-server config.
       invalidTopic,
       unknownSourceHealth,
     );

@@ -32,8 +32,11 @@ type UnsupportedRuntimeDomainDescriptor = {
   readonly link: unknown;
 };
 
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
+type SchemaValueInput = Schema.Schema.Type<typeof Schema.Unknown>;
+
+const isRecord = (value: SchemaValueInput): value is Record<string, unknown> =>
+  Schema.is(Schema.Record(Schema.String, Schema.Unknown))(value) &&
+  Object.getPrototypeOf(value) === Object.prototype;
 
 const schemaAst = (schema: unknown): SchemaAST.AST | undefined => {
   if ((typeof schema !== "object" || schema === null) && typeof schema !== "function") {

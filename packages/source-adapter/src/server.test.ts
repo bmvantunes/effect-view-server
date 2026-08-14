@@ -296,6 +296,7 @@ describe("Source Adapter server SDK", () => {
       );
       const module = registration.forLifetime(lifetimeScope, "orders");
       expect(isSourceApplicationStateRegistration(registration)).toBe(true);
+      expect(isSourceApplicationStateRegistration({})).toBe(false);
       expect(() => registration.forLifetime(lifetimeScope, "payments")).toThrow(
         'Source Application State is bound to topic "orders", not "payments".',
       );

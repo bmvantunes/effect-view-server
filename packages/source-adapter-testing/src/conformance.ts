@@ -7,7 +7,7 @@ import {
   isSourceAdapterHandle,
   isSourceDefinition,
 } from "@effect-view-server/source-adapter/internal";
-import { Context, Effect, Layer, Schema, Scope, Stream } from "effect";
+import { Context, Effect, Layer, Result, Schema, Scope, Stream } from "effect";
 
 export const SourceAdapterConformanceRow = Schema.Struct({
   id: Schema.String,
@@ -15,6 +15,7 @@ export const SourceAdapterConformanceRow = Schema.Struct({
   value: Schema.String,
 });
 export type SourceAdapterConformanceRow = typeof SourceAdapterConformanceRow.Type;
+type SchemaValueInput = Schema.Schema.Type<typeof Schema.Unknown>;
 
 export type SourceAdapterConformanceTarget =
   | {
@@ -208,6 +209,16 @@ const SourceAdapterConformanceDriverValueTypeId: unique symbol = Symbol.for(
   "@effect-view-server/source-adapter-testing/ConformanceDriverValue",
 );
 
+// These registries provide runtime provenance for the factory-produced
+// callable seams without executing caller-owned functions during validation.
+// A structural shape alone cannot prove that a callback returns an Effect or
+// that a transport method returns a Stream, while probing either seam can
+// mutate state, consume a one-shot stream, or throw for a valid configuration.
+const trustedDriverBrandFunctions = new WeakSet<object>();
+const trustedDriverValues = new WeakSet<object>();
+const trustedCallbackFunctions = new WeakSet<object>();
+const trustedTransportFunctions = new WeakSet<object>();
+
 export type SourceAdapterConformanceDriverValue<
   Adapter extends ConformanceAdapter = ConformanceAdapter,
 > = {
@@ -382,6 +393,30 @@ export const sourceAdapterConformanceDefinitionIsLinked = <Definition, Adapter>(
   definition.lifecycle === lifecycle &&
   definition.adapter === adapter;
 
+const conformanceExpectationKeys = [
+  "acquisitionFailure",
+  "partialAcquisitionFinalizationCount",
+  "streamFailure",
+  "settlementFailure",
+  "rejectionFailure",
+  "rejectionLocation",
+  "rowId",
+  "updatedMetrics",
+] as const;
+
+const isObjectValue = (value: SchemaValueInput): value is object =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+const hasOwnValue = (value: object, key: string): boolean => Object.hasOwn(value, key);
+
+const isLeasedRoute = (value: SchemaValueInput): value is Readonly<Record<string, unknown>> => {
+  if (!isObjectValue(value) || Object.keys(value).length !== 1 || !hasOwnValue(value, "region")) {
+    return false;
+  }
+  const region = Reflect.get(value, "region");
+  return typeof region === "string" && region.length > 0;
+};
+
 const validateLifecycleExpectations = <Definitions, Expectations>(
   lifecycle: "materialized" | "leased",
   definitions: Definitions,
@@ -407,19 +442,161 @@ const validateLifecycleExpectations = <Definitions, Expectations>(
         `Source Adapter conformance requires a positive ${lifecycle} partial-acquisition finalization count.`,
       );
     }
+    if (
+      !isObjectValue(expectations) ||
+      !conformanceExpectationKeys.every((key) => hasOwnValue(expectations, key))
+    ) {
+      throw new TypeError(
+        `Source Adapter conformance requires complete ${lifecycle} expectations.`,
+      );
+    }
   }
 };
 
-export const isSourceAdapterConformanceDriverValue = (
-  value: unknown,
-): value is SourceAdapterConformanceDriverValue => {
-  if (typeof value !== "object" || value === null) {
+const isConformanceDefinition = (
+  value: SchemaValueInput,
+  adapter: SchemaValueInput,
+  lifecycle: "materialized" | "leased",
+): boolean => {
+  if (!isObjectValue(value) || !isSourceDefinition(value)) return false;
+  const routeBy = Reflect.get(value, "routeBy");
+  const hasExpectedRouteBy =
+    Array.isArray(routeBy) &&
+    (lifecycle === "materialized"
+      ? routeBy.length === 0
+      : routeBy.length === 1 && routeBy[0] === "region");
+  return (
+    hasOwnValue(value, "adapter") &&
+    Reflect.get(value, "adapter") === adapter &&
+    hasOwnValue(value, "lifecycle") &&
+    Reflect.get(value, "lifecycle") === lifecycle &&
+    hasExpectedRouteBy
+  );
+};
+
+const isConformanceLifecycleDefinitions = (
+  value: SchemaValueInput,
+  adapter: SchemaValueInput,
+  lifecycle: "materialized" | "leased",
+): boolean => {
+  if (value === undefined) return true;
+  if (!isObjectValue(value)) return false;
+  const definitions = ["source", "delayedRetrySource", "singleRetrySource"] as const;
+  if (!definitions.every((key) => hasOwnValue(value, key))) return false;
+  if (
+    !definitions.every((key) =>
+      isConformanceDefinition(Reflect.get(value, key), adapter, lifecycle),
+    )
+  ) {
     return false;
   }
-  const brand = Reflect.get(value, SourceAdapterConformanceDriverValueTypeId);
+  if (lifecycle === "leased") {
+    const sameRoute = Reflect.get(value, "sameRoute");
+    const distinctRoute = Reflect.get(value, "distinctRoute");
+    return (
+      isLeasedRoute(sameRoute) &&
+      isLeasedRoute(distinctRoute) &&
+      Reflect.get(sameRoute, "region") !== Reflect.get(distinctRoute, "region")
+    );
+  }
+  return true;
+};
+
+const isConformanceExpectations = (value: SchemaValueInput): boolean => {
+  if (
+    !isObjectValue(value) ||
+    !hasOwnValue(value, "materialized") ||
+    !hasOwnValue(value, "leased")
+  ) {
+    return false;
+  }
+  return ["materialized", "leased"].every((lifecycle) => {
+    const expectations = Reflect.get(value, lifecycle);
+    if (expectations === undefined) return true;
+    if (!isObjectValue(expectations)) return false;
+    const count = Reflect.get(expectations, "partialAcquisitionFinalizationCount");
+    return (
+      conformanceExpectationKeys.every((key) => hasOwnValue(expectations, key)) &&
+      typeof count === "bigint" &&
+      count > 0n &&
+      typeof Reflect.get(expectations, "rejectionFailure") === "function" &&
+      typeof Reflect.get(expectations, "rejectionLocation") === "function" &&
+      typeof Reflect.get(expectations, "rowId") === "function"
+    );
+  });
+};
+
+const isConformanceCallbackBridge = (
+  value: SchemaValueInput,
+  adapter: SchemaValueInput,
+): boolean => {
+  if (value === undefined) return true;
+  if (!isObjectValue(value)) return false;
+  const callbacks = [
+    Reflect.get(value, "offerBackpressurable"),
+    Reflect.get(value, "offerNonPausable"),
+    Reflect.get(value, "emitBackpressurable"),
+    Reflect.get(value, "emitNonPausable"),
+  ];
+  const isEffectCallback = (callback: SchemaValueInput): boolean =>
+    typeof callback === "function" && trustedCallbackFunctions.has(callback);
   return (
-    typeof brand === "function" && Reflect.apply(brand, value, []) === Reflect.get(value, "adapter")
+    isConformanceDefinition(Reflect.get(value, "source"), adapter, "materialized") &&
+    typeof Reflect.get(value, "capacity") === "number" &&
+    Reflect.get(value, "capacity") >= 0 &&
+    Effect.isEffect(Reflect.get(value, "pauseNextConsumer")) &&
+    Effect.isEffect(Reflect.get(value, "releaseConsumer")) &&
+    callbacks.every(isEffectCallback)
   );
+};
+
+const isConformanceTransport = (value: SchemaValueInput): boolean => {
+  if (!isObjectValue(value)) return false;
+  const command = Reflect.get(value, "command");
+  const observe = Reflect.get(value, "observe");
+  const changes = Reflect.get(value, "changes");
+  if (
+    typeof command !== "function" ||
+    typeof observe !== "function" ||
+    typeof changes !== "function"
+  ) {
+    return false;
+  }
+  return (
+    trustedTransportFunctions.has(command) &&
+    trustedTransportFunctions.has(observe) &&
+    trustedTransportFunctions.has(changes)
+  );
+};
+
+export const isSourceAdapterConformanceDriverValue = (
+  value: Schema.Schema.Type<typeof Schema.Unknown>,
+): value is SourceAdapterConformanceDriverValue => {
+  const inspected = Result.try(() => {
+    if (!isObjectValue(value)) return false;
+    if (!trustedDriverValues.has(value)) return false;
+    const brand = Reflect.get(value, SourceAdapterConformanceDriverValueTypeId);
+    const adapter = Reflect.get(value, "adapter");
+    return (
+      typeof brand === "function" &&
+      trustedDriverBrandFunctions.has(brand) &&
+      isSourceAdapterHandle(adapter) &&
+      hasOwnValue(value, "expectations") &&
+      isConformanceExpectations(Reflect.get(value, "expectations")) &&
+      hasOwnValue(value, "runtimeContext") &&
+      Effect.isEffect(Reflect.get(value, "runtimeContext")) &&
+      isConformanceLifecycleDefinitions(
+        Reflect.get(value, "materialized"),
+        adapter,
+        "materialized",
+      ) &&
+      isConformanceLifecycleDefinitions(Reflect.get(value, "leased"), adapter, "leased") &&
+      isConformanceCallbackBridge(Reflect.get(value, "callbackBridge"), adapter) &&
+      hasOwnValue(value, "transport") &&
+      isConformanceTransport(Reflect.get(value, "transport"))
+    );
+  });
+  return Result.isSuccess(inspected) && inspected.success;
 };
 
 export const makeSourceAdapterConformanceDriver = <
@@ -462,14 +639,19 @@ export const makeSourceAdapterConformanceDriver = <
   validateLifecycleExpectations("leased", input.leased, input.expectations.leased);
   if (
     input.leased !== undefined &&
-    (Object.keys(input.leased.sameRoute).length === 0 ||
-      Object.keys(input.leased.distinctRoute).length === 0)
+    (!isLeasedRoute(input.leased.sameRoute) ||
+      !isLeasedRoute(input.leased.distinctRoute) ||
+      Reflect.get(input.leased.sameRoute, "region") ===
+        Reflect.get(input.leased.distinctRoute, "region"))
   ) {
-    throw new TypeError("Leased Source Adapter conformance requires two non-empty routes.");
+    throw new TypeError(
+      "Leased Source Adapter conformance requires two non-empty, distinct region routes.",
+    );
   }
   const { runtimeLayer, ...driver } = input;
+  const brand = () => value.adapter;
   const value: SourceAdapterConformanceDriverValue<Adapter> = {
-    [SourceAdapterConformanceDriverValueTypeId]: () => value.adapter,
+    [SourceAdapterConformanceDriverValueTypeId]: brand,
     adapter: driver.adapter,
     expectations: driver.expectations,
     materialized: driver.materialized,
@@ -480,6 +662,17 @@ export const makeSourceAdapterConformanceDriver = <
       Effect.map((context) => Context.makeUnsafe<unknown>(context.mapUnsafe)),
     ),
   };
+  trustedDriverBrandFunctions.add(brand);
+  if (driver.callbackBridge !== undefined) {
+    trustedCallbackFunctions.add(driver.callbackBridge.offerBackpressurable);
+    trustedCallbackFunctions.add(driver.callbackBridge.offerNonPausable);
+    trustedCallbackFunctions.add(driver.callbackBridge.emitBackpressurable);
+    trustedCallbackFunctions.add(driver.callbackBridge.emitNonPausable);
+  }
+  trustedTransportFunctions.add(driver.transport.command);
+  trustedTransportFunctions.add(driver.transport.observe);
+  trustedTransportFunctions.add(driver.transport.changes);
+  trustedDriverValues.add(value);
   return Object.freeze(value);
 };
 

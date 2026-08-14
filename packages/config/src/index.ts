@@ -8,6 +8,7 @@ import type {
 import { Schema } from "effect";
 import {
   isViewServerRowSchema,
+  isViewServerRowSchemaEnvelope,
   snapshotViewServerTopics,
   viewServerRowSchemaFieldsMatchAst,
 } from "./config-ownership";
@@ -298,7 +299,7 @@ export function defineViewServerConfig(
       );
     }
     const schema = topicDefinition.schema;
-    if (!isViewServerRowSchema(schema)) {
+    if (!isViewServerRowSchemaEnvelope(schema)) {
       throw new Error(`View Server topic ${topic} row schema must be an Effect Schema Struct.`);
     }
     for (const field of Object.keys(schema.fields)) {
@@ -321,18 +322,22 @@ export function defineViewServerConfig(
         );
       }
     }
-    const unsupportedRowRuntimeDomain = viewServerUnsupportedRuntimeFieldDomain(schema);
+    if (!isViewServerRowSchema(schema)) {
+      throw new Error(`View Server topic ${topic} row schema must be an Effect Schema Struct.`);
+    }
+    const rowSchema = schema;
+    const unsupportedRowRuntimeDomain = viewServerUnsupportedRuntimeFieldDomain(rowSchema);
     if (unsupportedRowRuntimeDomain !== undefined) {
       throw new Error(
         `View Server topic ${topic} row schema uses unsupported runtime domain: ${unsupportedRowRuntimeDomain}`,
       );
     }
-    if (!viewServerRowSchemaFieldsMatchAst(schema)) {
+    if (!viewServerRowSchemaFieldsMatchAst(rowSchema)) {
       throw new Error(
         `View Server topic ${topic} exposed row fields do not match the row schema AST.`,
       );
     }
-    if (!isViewServerIdSchema(schema.fields["id"])) {
+    if (!isViewServerIdSchema(rowSchema.fields["id"])) {
       throw new Error(
         `View Server topic ${topic} row schema must define canonical id as ViewServerId.`,
       );
@@ -345,7 +350,7 @@ export function defineViewServerConfig(
         `View Server topic ${topic} source must be created by SourceAdapter.make(...).`,
       );
     }
-    validateLeasedSourceRouteFields(topic, source, schema);
+    validateLeasedSourceRouteFields(topic, source, rowSchema);
   }
   return Object.freeze({ topics });
 }

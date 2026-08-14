@@ -5,12 +5,21 @@ import {
   cloneUnknown,
   cloneRecord,
   fieldValue,
+  isRecord,
   scalarEqualityKey,
   trustedFieldValue,
   valuesEqual,
 } from "./row-values";
 
 describe("Row value semantics", () => {
+  it("recognizes only plain records as record values", () => {
+    expect(isRecord({})).toBe(true);
+    expect(isRecord(Object.create(null))).toBe(false);
+    expect(isRecord(new Map())).toBe(false);
+    expect(isRecord([])).toBe(false);
+    expect(isRecord("value")).toBe(false);
+  });
+
   it("encodes scalar equality keys deterministically", () => {
     expect(scalarEqualityKey(null)).toBe("null");
     expect(scalarEqualityKey("open")).toBe("string:4:open");

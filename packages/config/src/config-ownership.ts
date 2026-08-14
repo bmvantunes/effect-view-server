@@ -1,5 +1,5 @@
 import { definedFields } from "./optional-fields";
-import { Schema, SchemaAST } from "effect";
+import { Result, Schema, SchemaAST } from "effect";
 import type { RowSchema } from "./topic-contract";
 
 type TopicRegistry = Record<
@@ -11,6 +11,27 @@ type TopicRegistry = Record<
 >;
 
 const schemaSnapshots = new WeakMap<RowSchema, RowSchema>();
+
+type ViewServerRowSchemaEnvelope = object & {
+  readonly fields: Readonly<Record<string, unknown>>;
+};
+
+const isSchemaValue = (value: Schema.Schema.Type<typeof Schema.Unknown>): value is object =>
+  Schema.isSchema(value);
+
+const isPlainRecord = (
+  value: Schema.Schema.Type<typeof Schema.Unknown>,
+): value is Record<string, unknown> =>
+  Schema.is(Schema.Record(Schema.String, Schema.Unknown))(value) &&
+  (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
+
+const isSchemaFieldRecord = (value: Schema.Schema.Type<typeof Schema.Unknown>): boolean => {
+  const inspected = Result.try(() => {
+    if (!isPlainRecord(value)) return false;
+    return Object.keys(value).every((field) => Schema.isSchema(Reflect.get(value, field)));
+  });
+  return Result.isSuccess(inspected) && inspected.success;
+};
 
 export function snapshotViewServerRowSchema<const S extends RowSchema>(schema: S): S;
 export function snapshotViewServerRowSchema(schema: RowSchema): RowSchema {
@@ -119,5 +140,23 @@ export function snapshotViewServerTopics(topics: TopicRegistry): TopicRegistry {
   return Object.freeze(snapshot);
 }
 
-export const isViewServerRowSchema = (schema: unknown): schema is RowSchema =>
-  Schema.isSchema(schema) && "fields" in schema;
+export const isViewServerRowSchema = (
+  schema: Schema.Schema.Type<typeof Schema.Unknown>,
+): schema is RowSchema => {
+  const inspected = Result.try(() => {
+    return isSchemaValue(schema) && "fields" in schema && isSchemaFieldRecord(schema.fields);
+  });
+  return Result.isSuccess(inspected) && inspected.success;
+};
+
+export const isViewServerRowSchemaEnvelope = (
+  schema: Schema.Schema.Type<typeof Schema.Unknown>,
+): schema is ViewServerRowSchemaEnvelope => {
+  const inspected = Result.try(() => {
+    if (!isSchemaValue(schema) || !("fields" in schema)) {
+      return false;
+    }
+    return isPlainRecord(schema.fields);
+  });
+  return Result.isSuccess(inspected) && inspected.success;
+};

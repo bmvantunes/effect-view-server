@@ -1,5 +1,6 @@
 import type { TopicDefinitions, ViewServerRuntimeError } from "@effect-view-server/config";
 import { viewServerSchemaFieldMetadata } from "@effect-view-server/config";
+import { hasPlainRecordPrototype } from "@effect-view-server/effect-utils";
 import { Effect, Schema, SchemaAST } from "effect";
 import * as BigDecimal from "effect/BigDecimal";
 import {
@@ -16,8 +17,8 @@ const invalidRow = (topic: string, message: string): ViewServerRuntimeError => (
   topic,
 });
 
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
+const isRecord = (value: Schema.Json): value is Record<string, Schema.Json> =>
+  hasPlainRecordPrototype(value);
 
 const isBigIntFieldSchema = (schema: JsonFieldSchema): boolean =>
   viewServerSchemaFieldMetadata(schema).sumResultKind === "bigint";
@@ -125,7 +126,7 @@ const decodeBigIntAggregateValue = Effect.fn("ViewServerProtocol.row.aggregate.b
 
 const encodeBigDecimalAggregateValue = Effect.fn(
   "ViewServerProtocol.row.aggregate.bigDecimal.encode",
-)(function* (topic: string, field: string, value: unknown) {
+)(function* <Value>(topic: string, field: string, value: Value) {
   if (!BigDecimal.isBigDecimal(value)) {
     return yield* Effect.fail(invalidRow(topic, `Aggregate ${field} must be a BigDecimal.`));
   }

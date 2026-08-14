@@ -15,6 +15,7 @@ import { decodeJsonFieldValue, encodeJsonFieldValue } from "./protocol-json-fiel
 
 const ViewServerSourceHealthRoutePayloadSchema = Schema.Record(Schema.String, Schema.Json);
 type SourceHealthWireInput = Schema.Schema.Type<typeof Schema.Unknown>;
+type SchemaValueInput = Schema.Schema.Type<typeof Schema.Unknown>;
 
 export const ViewServerSourceHealthPayloadSchema = Schema.Struct({
   topic: Schema.String,
@@ -349,36 +350,45 @@ export const viewServerEncodeSourceHealth = Effect.fn("ViewServerProtocol.source
   },
 );
 
-export const viewServerDecodeSourceHealth: <
+const decodeSourceHealth = Effect.fn("ViewServerProtocol.sourceHealth.decode")(function* <
   Topics extends ViewServerConfigTopicShape,
   Topic extends Extract<keyof Topics, string>,
 >(
   config: ViewServerTopicConfig<Topics>,
   topic: Topic,
   value: SourceHealthWireInput,
-) => Effect.Effect<ViewServerDecodedSourceHealth<Topics, Topic>, ViewServerRuntimeError> =
-  Effect.fn("ViewServerProtocol.sourceHealth.decode")(function* <
-    Topics extends ViewServerConfigTopicShape,
-    Topic extends Extract<keyof Topics, string>,
-  >(config: ViewServerTopicConfig<Topics>, topic: Topic, value: SourceHealthWireInput) {
-    const contract = yield* compileSourceHealthContract(config, topic);
-    if (contract.lifecycle === "leased") {
-      yield* validateExactLeasedHealthRoutes(topic, contract, value);
-    } else {
-      yield* validateExactSourceHealth(topic, contract, value);
-    }
-    const decoded = yield* decodeJsonFieldValue(contract.result, value, codecErrors(topic));
-    if (!isDecodedSourceHealth(contract.result, decoded)) {
-      return yield* Effect.fail(
-        invalidSourceHealth(topic, "Configured Source Health decoder returned an invalid value."),
-      );
-    }
-    return decoded;
+): Effect.fn.Return<ViewServerDecodedSourceHealth<Topics, Topic>, ViewServerRuntimeError> {
+  const contract = yield* compileSourceHealthContract(config, topic);
+  if (contract.lifecycle === "leased") {
+    yield* validateExactLeasedHealthRoutes(topic, contract, value);
+  } else {
+    yield* validateExactSourceHealth(topic, contract, value);
+  }
+  const decoded = yield* decodeJsonFieldValue(contract.result, value, codecErrors(topic));
+  const isDecoded = (
+    candidate: SchemaValueInput,
+  ): candidate is ViewServerDecodedSourceHealth<Topics, Topic> =>
+    Schema.is(contract.result)(candidate);
+  if (!isDecoded(decoded)) {
+    return yield* Effect.fail(
+      invalidSourceHealth(topic, "Configured Source Health decoder returned an invalid value."),
+    );
+  }
+  return decoded;
+});
 
-    function isDecodedSourceHealth(
-      codec: Schema.Codec<unknown, unknown, never, never>,
-      candidate: unknown,
-    ): candidate is ViewServerDecodedSourceHealth<Topics, Topic> {
-      return Schema.is(codec)(candidate);
-    }
-  });
+export function viewServerDecodeSourceHealth<
+  Topics extends ViewServerConfigTopicShape,
+  Topic extends Extract<keyof Topics, string>,
+>(
+  config: ViewServerTopicConfig<Topics>,
+  topic: Topic,
+  value: SourceHealthWireInput,
+): Effect.Effect<ViewServerDecodedSourceHealth<Topics, Topic>, ViewServerRuntimeError>;
+export function viewServerDecodeSourceHealth(
+  config: ViewServerTopicConfig<ViewServerConfigTopicShape>,
+  topic: string,
+  value: SourceHealthWireInput,
+): Effect.Effect<unknown, ViewServerRuntimeError> {
+  return decodeSourceHealth(config, topic, value);
+}

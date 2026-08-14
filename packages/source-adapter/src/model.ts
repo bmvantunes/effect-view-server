@@ -69,6 +69,9 @@ export const SourceAdapterIdentitySchema = Schema.Struct({
 
 type SourceToolkitInput = Schema.Schema.Type<typeof Schema.Unknown>;
 
+const isObjectValue = (value: SourceToolkitInput): value is object =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
 export interface SourceDefinitionOptionsFamily {
   readonly Row: object;
   readonly type: unknown;
@@ -1378,11 +1381,11 @@ const registeredHandleMatchesDescriptor = <
   const Materialized extends SourceLifecycleDeclarationAny | undefined,
   const Leased extends SourceLifecycleDeclarationAny | undefined,
 >(
-  candidate: unknown,
+  candidate: SourceToolkitInput,
   descriptor: SourceAdapterDescriptor<Name, Version, AdapterFailure, Materialized, Leased>,
 ): candidate is SourceAdapterHandle<Name, Version, AdapterFailure, Materialized, Leased> =>
-  typeof candidate === "object" &&
-  candidate !== null &&
+  isObjectValue(candidate) &&
+  isSourceAdapterHandle(candidate) &&
   sourceAdapterHandles.get(descriptor) === candidate &&
   sourceAdapterHandles.get(candidate) === candidate;
 
@@ -1393,11 +1396,11 @@ const registeredDescriptorMatchesHandle = <
   const Materialized extends SourceLifecycleDeclarationAny | undefined,
   const Leased extends SourceLifecycleDeclarationAny | undefined,
 >(
-  candidate: unknown,
+  candidate: SourceToolkitInput,
   handle: SourceAdapterHandle<Name, Version, AdapterFailure, Materialized, Leased>,
 ): candidate is SourceAdapterDescriptor<Name, Version, AdapterFailure, Materialized, Leased> =>
-  typeof candidate === "object" &&
-  candidate !== null &&
+  isObjectValue(candidate) &&
+  isSourceAdapterHandle(candidate) &&
   sourceAdapterHandles.get(candidate) === handle;
 
 export const resolveSourceAdapterHandle = <
@@ -1725,24 +1728,38 @@ export const resolveSourceApplicationStateRegistration = (
   sourceApplicationStateRegistrations.get(registration);
 
 export const isSourceApplicationStateRegistration = (
-  value: unknown,
-): value is SourceApplicationStateRegistration =>
-  typeof value === "object" &&
-  value !== null &&
-  hasSelfBrand(value, SourceApplicationStateRegistrationTypeId) &&
-  sourceApplicationStateRegistrations.has(value);
+  value: Schema.Schema.Type<typeof Schema.Unknown>,
+): value is SourceApplicationStateRegistration => {
+  const inspected = Result.try(() => {
+    if (!isObjectValue(value) || !("_tag" in value)) return false;
+    const tag = Reflect.get(value, "_tag");
+    return (
+      tag === "SourceApplicationStateRegistration" &&
+      hasSelfBrand(value, SourceApplicationStateRegistrationTypeId) &&
+      sourceApplicationStateRegistrations.has(value)
+    );
+  });
+  return Result.isSuccess(inspected) && inspected.success;
+};
 
 export const resolveSourceApplicationTransition = (
   transition: SourceApplicationTransition,
 ): SourceApplicationTransitionInternal | undefined => sourceApplicationTransitions.get(transition);
 
 export const isSourceApplicationTransition = (
-  value: unknown,
-): value is SourceApplicationTransition =>
-  typeof value === "object" &&
-  value !== null &&
-  hasSelfBrand(value, SourceApplicationTransitionTypeId) &&
-  sourceApplicationTransitions.has(value);
+  value: Schema.Schema.Type<typeof Schema.Unknown>,
+): value is SourceApplicationTransition => {
+  const inspected = Result.try(() => {
+    if (!isObjectValue(value) || !("_tag" in value)) return false;
+    const tag = Reflect.get(value, "_tag");
+    return (
+      tag === "SourceApplicationTransition" &&
+      hasSelfBrand(value, SourceApplicationTransitionTypeId) &&
+      sourceApplicationTransitions.has(value)
+    );
+  });
+  return Result.isSuccess(inspected) && inspected.success;
+};
 
 export const makeSourceMaintenanceOperation = <const Topic extends string>(input: {
   readonly topic: Topic;
@@ -1779,11 +1796,20 @@ export const resolveSourceMaintenanceOperation = (
   operation: SourceMaintenanceOperation,
 ): SourceMaintenanceOperationInternal | undefined => sourceMaintenanceOperations.get(operation);
 
-export const isSourceMaintenanceOperation = (value: unknown): value is SourceMaintenanceOperation =>
-  typeof value === "object" &&
-  value !== null &&
-  hasSelfBrand(value, SourceMaintenanceOperationTypeId) &&
-  sourceMaintenanceOperations.has(value);
+export const isSourceMaintenanceOperation = (
+  value: Schema.Schema.Type<typeof Schema.Unknown>,
+): value is SourceMaintenanceOperation => {
+  const inspected = Result.try(() => {
+    if (!isObjectValue(value) || !("_tag" in value)) return false;
+    const tag = Reflect.get(value, "_tag");
+    return (
+      tag === "SourceMaintenanceOperation" &&
+      hasSelfBrand(value, SourceMaintenanceOperationTypeId) &&
+      sourceMaintenanceOperations.has(value)
+    );
+  });
+  return Result.isSuccess(inspected) && inspected.success;
+};
 
 export const makeSourceDelivery = <
   Row extends object,

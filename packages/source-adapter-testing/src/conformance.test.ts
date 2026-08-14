@@ -360,6 +360,107 @@ describe("Source Adapter low-level conformance driver", () => {
     expect(
       sourceAdapterConformanceDefinitionIsLinked(valid.materialized?.source, {}, "materialized"),
     ).toBe(false);
+    expect(
+      isSourceAdapterConformanceDriverValue({
+        ...valid,
+        materialized: {
+          ...valid.materialized,
+          delayedRetrySource: {},
+        },
+      }),
+    ).toBe(false);
+    expect(
+      isSourceAdapterConformanceDriverValue({
+        ...valid,
+        materialized: undefined,
+      }),
+    ).toBe(false);
+    expect(
+      isSourceAdapterConformanceDriverValue({
+        ...valid,
+        materialized: null,
+      }),
+    ).toBe(false);
+    expect(
+      isSourceAdapterConformanceDriverValue({
+        ...valid,
+        materialized: {
+          source: valid.materialized?.source,
+        },
+      }),
+    ).toBe(false);
+    expect(
+      isSourceAdapterConformanceDriverValue({
+        ...valid,
+        leased: {
+          ...valid.leased,
+          sameRoute: {},
+        },
+      }),
+    ).toBe(false);
+    expect(
+      isSourceAdapterConformanceDriverValue({
+        ...valid,
+        expectations: {
+          materialized: valid.expectations.materialized,
+        },
+      }),
+    ).toBe(false);
+    expect(
+      isSourceAdapterConformanceDriverValue({
+        ...valid,
+        expectations: {
+          materialized: valid.expectations.materialized,
+          leased: undefined,
+        },
+      }),
+    ).toBe(false);
+    expect(
+      isSourceAdapterConformanceDriverValue({
+        ...valid,
+        expectations: {
+          materialized: 1,
+          leased: valid.expectations.leased,
+        },
+      }),
+    ).toBe(false);
+    expect(
+      isSourceAdapterConformanceDriverValue({
+        ...valid,
+        expectations: {
+          materialized: [],
+          leased: valid.expectations.leased,
+        },
+      }),
+    ).toBe(false);
+    expect(
+      isSourceAdapterConformanceDriverValue({
+        ...valid,
+        callbackBridge: undefined,
+      }),
+    ).toBe(false);
+    expect(
+      isSourceAdapterConformanceDriverValue({
+        ...valid,
+        callbackBridge: null,
+      }),
+    ).toBe(false);
+    expect(
+      isSourceAdapterConformanceDriverValue({
+        ...valid,
+        transport: null,
+      }),
+    ).toBe(false);
+    expect(
+      isSourceAdapterConformanceDriverValue({
+        ...valid,
+        transport: {
+          command: null,
+          observe: valid.transport.observe,
+          changes: valid.transport.changes,
+        },
+      }),
+    ).toBe(false);
     expect(isSourceAdapterConformanceDriverValue(null)).toBe(false);
     expect(isSourceAdapterConformanceDriverValue("driver")).toBe(false);
     expect(isSourceAdapterConformanceDriverValue({})).toBe(false);
@@ -371,6 +472,11 @@ describe("Source Adapter low-level conformance driver", () => {
       value: () => ({}),
     });
     expect(isSourceAdapterConformanceDriverValue(mismatchedBrand)).toBe(false);
+    const callable = Object.assign(() => undefined, { adapter: valid.adapter });
+    Object.defineProperty(callable, driverBrand, {
+      value: () => valid.adapter,
+    });
+    expect(isSourceAdapterConformanceDriverValue(callable)).toBe(false);
     const base = {
       adapter: valid.adapter,
       expectations: valid.expectations,
@@ -421,6 +527,18 @@ describe("Source Adapter low-level conformance driver", () => {
         {
           runtimeLayer: Layer.empty,
           ...base,
+          materialized: {
+            ...valid.materialized,
+            delayedRetrySource: {},
+          },
+        },
+      ]),
+    ).toThrow("nominal materialized Definition");
+    expect(() =>
+      Reflect.apply(makeSourceAdapterConformanceDriver, undefined, [
+        {
+          runtimeLayer: Layer.empty,
+          ...base,
           expectations: {
             materialized: undefined,
             leased: valid.expectations.leased,
@@ -430,6 +548,19 @@ describe("Source Adapter low-level conformance driver", () => {
         },
       ]),
     ).toThrow("exact materialized expectations");
+    expect(() =>
+      Reflect.apply(makeSourceAdapterConformanceDriver, undefined, [
+        {
+          runtimeLayer: Layer.empty,
+          ...base,
+          expectations: {
+            materialized: valid.expectations.materialized,
+          },
+          materialized: valid.materialized,
+          leased: valid.leased,
+        },
+      ]),
+    ).toThrow("exact leased expectations");
     expect(() =>
       Reflect.apply(makeSourceAdapterConformanceDriver, undefined, [
         {
@@ -471,6 +602,22 @@ describe("Source Adapter low-level conformance driver", () => {
         ]),
       ).toThrow("positive materialized partial-acquisition finalization count");
     }
+    const missingFailure = { ...valid.expectations.materialized };
+    Reflect.deleteProperty(missingFailure, "streamFailure");
+    expect(() =>
+      Reflect.apply(makeSourceAdapterConformanceDriver, undefined, [
+        {
+          runtimeLayer: Layer.empty,
+          ...base,
+          expectations: {
+            materialized: missingFailure,
+            leased: valid.expectations.leased,
+          },
+          materialized: valid.materialized,
+          leased: valid.leased,
+        },
+      ]),
+    ).toThrow("complete materialized expectations");
     for (const materializedExpectations of [null, 1]) {
       expect(() =>
         Reflect.apply(makeSourceAdapterConformanceDriver, undefined, [
@@ -517,6 +664,32 @@ describe("Source Adapter low-level conformance driver", () => {
       Reflect.apply(makeSourceAdapterConformanceDriver, undefined, [
         {
           runtimeLayer: Layer.empty,
+          ...base,
+          materialized: valid.materialized,
+          leased: {
+            ...valid.leased,
+            sameRoute: { region: "same", extra: true },
+          },
+        },
+      ]),
+    ).toThrow("two non-empty, distinct region routes");
+    expect(() =>
+      Reflect.apply(makeSourceAdapterConformanceDriver, undefined, [
+        {
+          runtimeLayer: Layer.empty,
+          ...base,
+          materialized: valid.materialized,
+          leased: {
+            ...valid.leased,
+            distinctRoute: { region: "eu" },
+          },
+        },
+      ]),
+    ).toThrow("two non-empty, distinct region routes");
+    expect(() =>
+      Reflect.apply(makeSourceAdapterConformanceDriver, undefined, [
+        {
+          runtimeLayer: Layer.empty,
           adapter: base.adapter,
           transport: base.transport,
           expectations: {
@@ -532,7 +705,7 @@ describe("Source Adapter low-level conformance driver", () => {
           },
         },
       ]),
-    ).toThrow("two non-empty routes");
+    ).toThrow("two non-empty, distinct region routes");
   });
 
   it.effect("drives fixture attempts, faults, metrics, and finalization without Runtime Core", () =>

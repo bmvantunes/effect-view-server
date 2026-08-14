@@ -6,7 +6,7 @@ import {
   viewSchema,
   viewServerSchemaFieldMetadata,
 } from "./index";
-import { viewServerRowSchemaFieldsMatchAst } from "./config-ownership";
+import { isViewServerRowSchema, viewServerRowSchemaFieldsMatchAst } from "./config-ownership";
 import { schemaAstIsClass } from "./internal";
 
 import { viewServer } from "../test-harness/live-query";
@@ -290,6 +290,20 @@ describe("Topic schema configuration", () => {
       viewServerRowSchemaFieldsMatchAst({ ast: missingTypeParameter, fields: {} }),
       viewServerRowSchemaFieldsMatchAst(missingField),
     ]).toStrictEqual([false, false, false, false, false, false]);
+
+    const malformedFields = new Proxy(Schema.Struct({ id: ViewServerId }), {
+      get(target, property) {
+        return property === "fields" ? [] : Reflect.get(target, property, target);
+      },
+    });
+    expect(isViewServerRowSchema(malformedFields)).toBe(false);
+
+    const mapFields = new Proxy(Schema.Struct({ id: ViewServerId }), {
+      get(target, property) {
+        return property === "fields" ? new Map() : Reflect.get(target, property, target);
+      },
+    });
+    expect(isViewServerRowSchema(mapFields)).toBe(false);
   });
 
   it("fails closed for a throwing Class constructor descriptor", () => {

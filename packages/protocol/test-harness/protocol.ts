@@ -55,7 +55,7 @@ export const unknownTopicRowFieldError = {
   topic: "orders",
 } as const;
 
-export const formatDecodedDecimal = (value: unknown): string =>
+export const formatDecodedDecimal = (value: Schema.Schema.Type<typeof Schema.Unknown>): string =>
   BigDecimal.isBigDecimal(value) ? BigDecimal.format(value) : String(value);
 
 export const topicHealth = {

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { profiles } from "./benchmark-baseline-profiles.mjs";
 import { rawPredicateIndexTask } from "./benchmark-baseline-task-catalog.mjs";
@@ -81,19 +82,55 @@ describe("benchmark baseline runner", () => {
     });
   });
 
-  it("normalizes the WebSocket compression flag before naming benchmark artifacts", () => {
+  it("defaults and normalizes WebSocket compression before naming benchmark artifacts", () => {
     const scripts = JSON.parse(
       readFileSync("packages/runtime/package.json", "utf8"),
     ).scripts;
     const command = scripts["bench:websocket-firehose"];
+    const benchmarkSource = readFileSync(
+      "packages/runtime/src/websocket-firehose.bench.ts",
+      "utf8",
+    );
 
     expect(command).toContain(
-      "compression=$(printf '%s' \"${VIEW_SERVER_RUNTIME_BENCH_WEBSOCKET_COMPRESSION:-false}\" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')",
+      "compression=$(printf '%s' \"${VIEW_SERVER_RUNTIME_BENCH_WEBSOCKET_COMPRESSION:-true}\" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')",
     );
-    expect(command).toContain('if [ "$compression" = "true" ]; then suffix=-compressed');
+    expect(command).toContain('if [ -z "$compression" ]; then compression=true; fi');
+    expect(command).toContain(
+      'case "$compression" in true) suffix=-compressed ;; false) suffix= ;; *)',
+    );
     expect(command).not.toContain(
-      'if [ "${VIEW_SERVER_RUNTIME_BENCH_WEBSOCKET_COMPRESSION:-false}" = "true" ]',
+      'if [ "${VIEW_SERVER_RUNTIME_BENCH_WEBSOCKET_COMPRESSION:-true}" = "true" ]',
     );
+    expect(benchmarkSource).toContain(
+      '  "VIEW_SERVER_RUNTIME_BENCH_WEBSOCKET_COMPRESSION",\n  true,\n);',
+    );
+
+    const normalizationStart = command.indexOf("compression=");
+    const outputStart = command.indexOf(" && output=");
+    const normalizationCommand = command.slice(normalizationStart, outputStart);
+    const { VIEW_SERVER_RUNTIME_BENCH_WEBSOCKET_COMPRESSION: _compression, ...baseEnv } =
+      process.env;
+    const evaluateNormalization = (raw: string | undefined): string =>
+      execFileSync(
+        "/bin/sh",
+        ["-c", `${normalizationCommand} && printf '%s|%s' "$compression" "$suffix"`],
+        {
+          encoding: "utf8",
+          env:
+            raw === undefined
+              ? baseEnv
+              : { ...baseEnv, VIEW_SERVER_RUNTIME_BENCH_WEBSOCKET_COMPRESSION: raw },
+        },
+      );
+
+    expect([
+      evaluateNormalization(undefined),
+      evaluateNormalization("   "),
+      evaluateNormalization(" false "),
+      evaluateNormalization(" true "),
+    ]).toStrictEqual(["true|-compressed", "true|-compressed", "false|", "true|-compressed"]);
+    expect(() => evaluateNormalization("yes")).toThrow("Command failed");
   });
 
   it("keeps the pre-gRPC gate bounded and covering strict compare-mode benchmark gates", () => {

@@ -35,6 +35,14 @@ describe("Runtime server and TCP option contracts", () => {
       ViewServerRuntime<typeof viewServer.topics>
     >();
 
+    const uncompressedWebSocketOptions = makeViewServerRuntime(viewServer, {
+      websocketCompression: false,
+    });
+
+    expectTypeOf<Effect.Success<typeof uncompressedWebSocketOptions>>().toExtend<
+      ViewServerRuntime<typeof viewServer.topics>
+    >();
+
     // @ts-expect-error runtime WebSocket compression rejects string values.
     const _invalidWebSocketCompressionOptions = makeViewServerRuntime(viewServer, {
       websocketCompression: "true",

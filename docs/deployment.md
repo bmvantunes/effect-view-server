@@ -26,7 +26,6 @@ const GrpcLive = grpcNode.layerConfig(viewServer, {
 runViewServerRuntime(viewServer, {
   host: "0.0.0.0",
   websocketPort: 8080,
-  websocketCompression: true,
   tcpPublishHost: "127.0.0.1",
   tcpPublishPort: 8081,
   healthPath: "/health",
@@ -70,9 +69,9 @@ Browser headers and sessions are not forwarded to upstream gRPC. Put upstream
 authentication in the Node Layer and represent authorization-sensitive leased
 datasets through explicit Feed Route fields.
 
-WebSocket compression is disabled by default. Enable it when reduced egress is worth the measured
-CPU and latency cost, and validate that tradeoff with production-shaped payloads and subscriber
-fanout.
+WebSocket compression is enabled by default. Set `websocketCompression: false` when server CPU or
+latency matters more than reduced egress, and validate that tradeoff with production-shaped
+payloads and subscriber fanout.
 
 ## Recovery
 

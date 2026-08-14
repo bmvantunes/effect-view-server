@@ -54,7 +54,7 @@ export type ViewServerWebSocketServerInput<Topics extends TopicDefinitions> = {
 export type ViewServerWebSocketServerOptions = {
   readonly host?: string;
   readonly port?: number;
-  /** Enable RFC 7692 per-message compression. Disabled by default. */
+  /** Enable RFC 7692 per-message compression. Enabled by default. */
   readonly websocketCompression?: boolean;
   readonly path?: `/${string}`;
   readonly healthPath?: `/${string}`;

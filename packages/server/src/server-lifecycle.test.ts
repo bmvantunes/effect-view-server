@@ -95,7 +95,7 @@ describe("Real View Server lifecycle", () => {
     }).pipe(Effect.scoped),
   );
 
-  it.live("negotiates per-message compression only when enabled", () =>
+  it.live("negotiates per-message compression by default unless disabled", () =>
     Effect.gen(function* () {
       const inMemory = createServerTestRuntime(viewServer);
       const closeInMemory = yield* makeRetryableClose(inMemory.close);
@@ -110,26 +110,26 @@ describe("Real View Server lifecycle", () => {
       const defaultSocket = yield* openRawWebSocket(defaultServer.url);
       yield* Effect.addFinalizer(() => Effect.sync(() => defaultSocket.close()));
 
-      expect(defaultSocket.extensions).toBe("");
+      expect(defaultSocket.extensions).toBe("permessage-deflate");
       defaultSocket.close();
       yield* closeDefaultServer;
 
-      const compressedServer = yield* makeViewServerWebSocketServer(
+      const uncompressedServer = yield* makeViewServerWebSocketServer(
         viewServer,
         {
           liveClient: inMemory.liveClient,
           runtime: inMemory.client,
         },
-        { websocketCompression: true },
+        { websocketCompression: false },
       );
-      const closeCompressedServer = yield* makeRetryableClose(compressedServer.close);
-      yield* Effect.addFinalizer(() => closeCompressedServer);
-      const compressedSocket = yield* openRawWebSocket(compressedServer.url);
-      yield* Effect.addFinalizer(() => Effect.sync(() => compressedSocket.close()));
+      const closeUncompressedServer = yield* makeRetryableClose(uncompressedServer.close);
+      yield* Effect.addFinalizer(() => closeUncompressedServer);
+      const uncompressedSocket = yield* openRawWebSocket(uncompressedServer.url);
+      yield* Effect.addFinalizer(() => Effect.sync(() => uncompressedSocket.close()));
 
-      expect(compressedSocket.extensions).toBe("permessage-deflate");
-      compressedSocket.close();
-      yield* closeCompressedServer;
+      expect(uncompressedSocket.extensions).toBe("");
+      uncompressedSocket.close();
+      yield* closeUncompressedServer;
       yield* closeInMemory;
     }).pipe(Effect.scoped),
   );

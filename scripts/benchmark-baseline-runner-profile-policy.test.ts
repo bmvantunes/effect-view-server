@@ -81,6 +81,21 @@ describe("benchmark baseline runner", () => {
     });
   });
 
+  it("normalizes the WebSocket compression flag before naming benchmark artifacts", () => {
+    const scripts = JSON.parse(
+      readFileSync("packages/runtime/package.json", "utf8"),
+    ).scripts;
+    const command = scripts["bench:websocket-firehose"];
+
+    expect(command).toContain(
+      "compression=$(printf '%s' \"${VIEW_SERVER_RUNTIME_BENCH_WEBSOCKET_COMPRESSION:-false}\" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')",
+    );
+    expect(command).toContain('if [ "$compression" = "true" ]; then suffix=-compressed');
+    expect(command).not.toContain(
+      'if [ "${VIEW_SERVER_RUNTIME_BENCH_WEBSOCKET_COMPRESSION:-false}" = "true" ]',
+    );
+  });
+
   it("keeps the pre-gRPC gate bounded and covering strict compare-mode benchmark gates", () => {
     const scripts = JSON.parse(readFileSync("package.json", "utf8")).scripts;
     const preGrpcGateSteps = scripts["pre-grpc:gate"].split(" && ");

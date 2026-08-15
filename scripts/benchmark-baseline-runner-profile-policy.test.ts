@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { execFileSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { profiles } from "./benchmark-baseline-profiles.mjs";
 import { rawPredicateIndexTask } from "./benchmark-baseline-task-catalog.mjs";
@@ -107,8 +107,8 @@ describe("benchmark baseline runner", () => {
     const normalizationCommand = command.slice(normalizationStart, outputStart);
     const { VIEW_SERVER_RUNTIME_BENCH_WEBSOCKET_COMPRESSION: _compression, ...baseEnv } =
       process.env;
-    const evaluateNormalization = (raw: string | undefined): string =>
-      execFileSync(
+    const evaluateNormalization = (raw: string | undefined) =>
+      spawnSync(
         "/bin/sh",
         ["-c", `${normalizationCommand} && printf '%s' "$suffix"`],
         {
@@ -121,14 +121,26 @@ describe("benchmark baseline runner", () => {
         },
       );
 
-    expect([
+    const validResults = [
       evaluateNormalization(undefined),
       evaluateNormalization("   "),
       evaluateNormalization(" false "),
       evaluateNormalization(" true "),
-    ]).toStrictEqual(["-compressed", "-compressed", "", "-compressed"]);
-    expect(() => evaluateNormalization("yes")).toThrow(
-      "VIEW_SERVER_RUNTIME_BENCH_WEBSOCKET_COMPRESSION must be true or false.",
+    ];
+    expect(validResults.map(({ status }) => status)).toStrictEqual([0, 0, 0, 0]);
+    expect(validResults.map(({ stdout }) => stdout)).toStrictEqual([
+      "-compressed",
+      "-compressed",
+      "",
+      "-compressed",
+    ]);
+    expect(validResults.map(({ stderr }) => stderr)).toStrictEqual(["", "", "", ""]);
+
+    const invalidResult = evaluateNormalization("yes");
+    expect(invalidResult.status).toBe(1);
+    expect(invalidResult.stdout).toBe("");
+    expect(invalidResult.stderr).toBe(
+      "VIEW_SERVER_RUNTIME_BENCH_WEBSOCKET_COMPRESSION must be true or false.\n",
     );
   });
 

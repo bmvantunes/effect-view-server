@@ -1,3 +1,5 @@
+import { booleanFromBenchmarkEnvironment } from "./benchmark-environment.mjs";
+
 const enginePackageDirectory = "packages/column-live-view-engine";
 const grpcPackageDirectory = "packages/grpc";
 const kafkaPackageDirectory = "packages/kafka";
@@ -94,20 +96,6 @@ const task = ({
 });
 
 const minimumSampleCountFrom = (env, key) => Number.parseInt(env[key] ?? "5", 10);
-
-const booleanFromEnvironment = (raw, name, defaultValue) => {
-  if (raw === undefined || raw.trim() === "") {
-    return defaultValue;
-  }
-  const trimmed = raw.trim();
-  if (trimmed === "true") {
-    return true;
-  }
-  if (trimmed === "false") {
-    return false;
-  }
-  throw new Error(`${name} must be true or false.`);
-};
 
 const timedReadSamplingPolicyFrom = (env, iterationBoundBenchmarkName) => {
   const minimumTimedReadSampleCount = env["VIEW_SERVER_ENGINE_BENCH_TIMED_READ_MINIMUM_SAMPLES"];
@@ -575,7 +563,7 @@ export const runtimeGrpcSourceAdapterTask = (batchSize, routeCount, retainedRowC
 };
 
 export const runtimeWebSocketFirehoseTask = (firehoseCase, rowCount, subscriberCount, env) => {
-  const websocketCompression = booleanFromEnvironment(
+  const websocketCompression = booleanFromBenchmarkEnvironment(
     env.VIEW_SERVER_RUNTIME_BENCH_WEBSOCKET_COMPRESSION,
     "VIEW_SERVER_RUNTIME_BENCH_WEBSOCKET_COMPRESSION",
     true,

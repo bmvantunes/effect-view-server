@@ -230,6 +230,7 @@ export default defineConfig({
         "scripts/benchmark-artifact-io.mjs",
         "scripts/benchmark-baseline.mjs",
         "scripts/benchmark-comparison-policy.mjs",
+        "scripts/benchmark-environment.mjs",
         "scripts/benchmark-baseline-cli.mjs",
         "scripts/benchmark-baseline-profiles.mjs",
         "scripts/benchmark-baseline-workflow.mjs",

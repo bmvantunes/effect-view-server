@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import { makeViewServerClient } from "@effect-view-server/client/remote";
-import { Effect, Fiber, Schedule, Stream } from "effect";
+import { Deferred, Effect, Fiber, Schedule, Stream } from "effect";
 import { makeViewServerRuntime } from "./index";
 import {
   closeTestTcpServer,
@@ -190,11 +190,18 @@ describe("WebSocket subscription recovery", () => {
           client.subscribe("orders", { select: ["id"], limit: 10 }),
           (activeSubscription) => activeSubscription.close().pipe(Effect.ignore),
         );
-        const eventsFiber = yield* subscription.events.pipe(Stream.runCollect, Effect.forkChild);
+        const outageReported = yield* Deferred.make<void>();
+        const eventsFiber = yield* subscription.events.pipe(
+          Stream.tap((event) =>
+            event.type === "status" ? Deferred.succeed(outageReported, undefined) : Effect.void,
+          ),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
         yield* assertOneRecoveredStream(first.client.health);
 
         yield* first.close;
-        yield* Effect.sleep("100 millis");
+        yield* Deferred.await(outageReported).pipe(Effect.timeout("1 second"));
         yield* client.close;
         const second = yield* acquireRuntime(port);
         yield* Effect.sleep(reconnectSettleDelay);
@@ -214,6 +221,14 @@ describe("WebSocket subscription recovery", () => {
             keys: [],
             rows: [],
             totalRows: 0,
+          },
+          {
+            type: "status",
+            topic: "orders",
+            queryId: "remote",
+            status: "error",
+            code: "TransportError",
+            message: "SocketCloseError: 1001: View Server shutting down",
           },
         ]);
         yield* subscription.close();

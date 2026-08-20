@@ -770,10 +770,18 @@ export const validateKafkaSchemaRegistryFrame = (
 ): KafkaSchemaRegistryFrameMismatch | KafkaSchemaRegistryValidatedFrame => {
   const frame = parseKafkaSchemaRegistryProtobufFrame(bytes);
   if (frame._tag === "KafkaSchemaRegistryFrameParseFailure") {
+    if (frame.schemaId !== null && !contract.schemaIds.has(frame.schemaId)) {
+      return {
+        _tag: "Mismatch",
+        reason: "schema",
+        schemaId: frame.schemaId,
+        message: `Schema ID ${String(frame.schemaId)} is not an active validated version of subject ${JSON.stringify(contract.subject)}.`,
+      };
+    }
     return {
       _tag: "Mismatch",
       reason: "frame",
-      schemaId: null,
+      schemaId: frame.schemaId,
       message: frame.message,
     };
   }

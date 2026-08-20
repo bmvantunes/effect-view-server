@@ -124,15 +124,36 @@ export const makeRemoteSubscription = Effect.fn("ViewServerClient.remote.subscri
             );
             yield* Scope.addFinalizer(scope, closeLifecycle);
             yield* lifecycle.onOpen;
+            const retrying = yield* Ref.make(false);
             const runSource = Effect.suspend(() =>
-              Stream.runForEach(source, (event) =>
-                offerRemoteEvent(queue, event, overflowStatus, closeLifecycle, topic),
+              Stream.runForEach(
+                source,
+                Effect.fn("ViewServerClient.remote.subscription.receive")(function* (event) {
+                  yield* Ref.set(retrying, false);
+                  yield* offerRemoteEvent(queue, event, overflowStatus, closeLifecycle, topic);
+                }),
               ),
             );
             const producer =
               retryWhile === undefined
                 ? runSource
                 : runSource.pipe(
+                    Effect.tapError((error) =>
+                      retryWhile(error)
+                        ? Effect.gen(function* () {
+                            const alreadyRetrying = yield* Ref.getAndSet(retrying, true);
+                            if (!alreadyRetrying) {
+                              yield* offerRemoteEvent(
+                                queue,
+                                failureStatus(topic, error),
+                                overflowStatus,
+                                closeLifecycle,
+                                topic,
+                              );
+                            }
+                          })
+                        : Effect.void,
+                    ),
                     Effect.retry({
                       schedule: Schedule.spaced("500 millis"),
                       while: retryWhile,

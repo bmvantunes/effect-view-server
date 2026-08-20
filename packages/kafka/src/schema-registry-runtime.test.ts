@@ -241,7 +241,7 @@ describe("Kafka Schema Registry Region runtime", () => {
             viewServerTopic: "orders",
             sourceTopic: "source-orders",
             side: "value",
-            bytes: Uint8Array.from([]),
+            bytes: Uint8Array.from([0, 0, 0, 0, 41, 1]),
           }).pipe(Effect.flip),
         ).toStrictEqual({
           _tag: "KafkaSchemaRegistryRecordDecodeFailure",
@@ -251,8 +251,45 @@ describe("Kafka Schema Registry Region runtime", () => {
             region: "eu",
             topic: "source-orders",
             message:
-              "Confluent Schema Registry Protobuf frame is shorter than its six-byte minimum prefix.",
+              "Confluent Schema Registry Protobuf frame contains a negative message-index count.",
           },
+        });
+      }),
+    ),
+  );
+
+  it.effect("prioritizes an unknown trusted schema ID when the frame suffix is missing", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const orders = mutableSubject("source-orders-value", 41);
+        const runtime = yield* makeKafkaSchemaRegistryRuntime({
+          region: "eu",
+          endpoint: "https://registry.eu.example.com",
+          declarations: [declaration("orders", "source-orders")],
+          reader: mutableReader(new Map([["source-orders-value", orders]]), {
+            compatibility: 0,
+            versions: 0,
+            schemas: 0,
+          }),
+          monitorInterval: Duration.seconds(1),
+        });
+
+        expect(
+          yield* validateSide(runtime, {
+            viewServerTopic: "orders",
+            sourceTopic: "source-orders",
+            side: "value",
+            bytes: Uint8Array.from([0, 0, 0, 0, 99]),
+          }).pipe(Effect.flip),
+        ).toStrictEqual({
+          _tag: "KafkaSchemaRegistrySchemaMismatch",
+          region: "eu",
+          topic: "source-orders",
+          subject: "source-orders-value",
+          side: "value",
+          schemaId: 99,
+          message:
+            'Schema ID 99 is not an active validated version of subject "source-orders-value".',
         });
       }),
     ),

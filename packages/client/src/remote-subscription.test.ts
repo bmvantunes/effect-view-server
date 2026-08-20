@@ -129,6 +129,8 @@ describe("remote subscription", () => {
     Effect.gen(function* () {
       const clientScope = yield* Scope.make("parallel");
       const firstAttempt = yield* Deferred.make<void>();
+      const secondAttempt = yield* Deferred.make<void>();
+      const thirdAttempt = yield* Deferred.make<void>();
       let attempts = 0;
       const source = Stream.unwrap(
         Effect.gen(function* () {
@@ -136,6 +138,14 @@ describe("remote subscription", () => {
           if (attempts === 1) {
             yield* Deferred.succeed(firstAttempt, undefined);
             return Stream.fail("socket closed");
+          }
+          if (attempts === 2) {
+            yield* Deferred.succeed(secondAttempt, undefined);
+            return Stream.fail("socket closed");
+          }
+          if (attempts === 3) {
+            yield* Deferred.succeed(thirdAttempt, undefined);
+            return Stream.make(snapshot).pipe(Stream.concat(Stream.fail("socket closed")));
           }
           return Stream.make(snapshot);
         }),
@@ -150,7 +160,7 @@ describe("remote subscription", () => {
         topic: "orders",
       });
       const eventFiber = yield* subscription.events.pipe(
-        Stream.take(1),
+        Stream.take(4),
         Stream.runCollect,
         Effect.forkChild,
       );
@@ -159,11 +169,24 @@ describe("remote subscription", () => {
       yield* Effect.yieldNow;
       expect(attempts).toBe(1);
       yield* TestClock.adjust("500 millis");
+      yield* Deferred.await(secondAttempt);
+      yield* Effect.yieldNow;
+      expect(attempts).toBe(2);
+      yield* TestClock.adjust("500 millis");
+      yield* Deferred.await(thirdAttempt);
+      yield* Effect.yieldNow;
+      expect(attempts).toBe(3);
+      yield* TestClock.adjust("500 millis");
       const events = yield* Fiber.join(eventFiber);
 
       expect({ attempts, events: Array.from(events) }).toStrictEqual({
-        attempts: 2,
-        events: [snapshot],
+        attempts: 4,
+        events: [
+          failureStatus("orders", "socket closed"),
+          snapshot,
+          failureStatus("orders", "socket closed"),
+          snapshot,
+        ],
       });
       yield* subscription.close();
       yield* Scope.close(clientScope, Exit.void);

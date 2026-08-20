@@ -1431,4 +1431,48 @@ describe("Kafka Schema Registry Protobuf contracts", () => {
       });
     }),
   );
+
+  it.effect("preserves a trusted schema ID when the message-index suffix is malformed", () =>
+    Effect.gen(function* () {
+      const contracts = yield* resolveKafkaSchemaRegistryContracts(
+        [declaration()],
+        reader({
+          compatibility: { "orders-value": "FULL_TRANSITIVE" },
+          active: { "orders-value": [1] },
+          all: { "orders-value": [1] },
+          schemas: { "orders-value:1": schemaVersion(1, 41) },
+        }),
+      );
+      const contract = contracts[0];
+      if (contract === undefined) {
+        throw new Error("resolved contract missing");
+      }
+
+      expect(
+        validateKafkaSchemaRegistryFrame(contract, Uint8Array.from([0, 0, 0, 0, 41, 1])),
+      ).toStrictEqual({
+        _tag: "Mismatch",
+        reason: "frame",
+        schemaId: 41,
+        message:
+          "Confluent Schema Registry Protobuf frame contains a negative message-index count.",
+      });
+      expect(
+        validateKafkaSchemaRegistryFrame(contract, Uint8Array.from([0, 0, 0, 0, 99, 1])),
+      ).toStrictEqual({
+        _tag: "Mismatch",
+        reason: "schema",
+        schemaId: 99,
+        message: 'Schema ID 99 is not an active validated version of subject "orders-value".',
+      });
+      expect(
+        validateKafkaSchemaRegistryFrame(contract, Uint8Array.from([0, 0, 0, 0, 99])),
+      ).toStrictEqual({
+        _tag: "Mismatch",
+        reason: "schema",
+        schemaId: 99,
+        message: 'Schema ID 99 is not an active validated version of subject "orders-value".',
+      });
+    }),
+  );
 });

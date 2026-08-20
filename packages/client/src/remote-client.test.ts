@@ -662,7 +662,7 @@ const makeTestRpcServer = Effect.fn("ViewServerClient.remote.testServer.make")(f
     setHealthTopicRows: (nextRows: ReadonlyArray<typeof ViewServerWireRowSchema.Type>) => {
       healthTopicRows = nextRows;
     },
-    failHealthSummary: (error: ViewServerRpcError) => {
+    setHealthSummaryError: (error: ViewServerRpcError | undefined) => {
       healthSummaryError = error;
     },
     failHealthTopic: (error: ViewServerRpcError) => {
@@ -1280,6 +1280,64 @@ describe("remote ViewServer client", () => {
     }),
   );
 
+  it.live("reports a health-summary outage and recovers with a fresh snapshot", () =>
+    Effect.gen(function* () {
+      const server = yield* makeTestRpcServer();
+      server.setHealthSummaryError({
+        _tag: "ViewServerTransportError",
+        code: "TransportError",
+        message: "health transport unavailable",
+      });
+      const client = yield* makeViewServerClient(viewServer, { url: server.url });
+      const subscription = yield* client.subscribeHealthSummary();
+      const outageReported = yield* Deferred.make<void>();
+      const eventsFiber = yield* subscription.events.pipe(
+        Stream.tap((event) =>
+          event.type === "status" ? Deferred.succeed(outageReported, undefined) : Effect.void,
+        ),
+        Stream.take(2),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* Deferred.await(outageReported).pipe(Effect.timeout("1 second"));
+      server.setHealthSummaryError(undefined);
+      const events = yield* Fiber.join(eventsFiber).pipe(Effect.timeout("2 seconds"));
+
+      expect(Array.from(events)).toStrictEqual([
+        {
+          type: "status",
+          topic: VIEW_SERVER_HEALTH_SUMMARY_TOPIC,
+          queryId: "remote",
+          status: "error",
+          code: "TransportError",
+          message: "health transport unavailable",
+        },
+        {
+          type: "snapshot",
+          topic: VIEW_SERVER_HEALTH_SUMMARY_TOPIC,
+          queryId: "query-remote",
+          version: 1,
+          keys: ["summary"],
+          rows: [
+            {
+              id: "summary",
+              status: "ready",
+              runtimeStatus: "ready",
+              connectionStatus: "connected",
+              unhealthyTopics: [],
+              updatedAtNanos: 1n,
+            },
+          ],
+          totalRows: 1,
+        },
+      ]);
+      yield* subscription.close();
+      yield* client.close;
+      yield* server.close;
+    }),
+  );
+
   it.live("subscribes to pushed remote health summary", () =>
     Effect.gen(function* () {
       const server = yield* makeTestRpcServer();
@@ -1477,7 +1535,7 @@ describe("remote ViewServer client", () => {
   it.live("ignores non-snapshot and empty pushed health events for health refs", () =>
     Effect.gen(function* () {
       const summaryServer = yield* makeTestRpcServer();
-      summaryServer.failHealthSummary({
+      summaryServer.setHealthSummaryError({
         _tag: "ViewServerRuntimeError",
         code: "InvalidQuery",
         message: "summary stream failed",
@@ -2251,36 +2309,56 @@ describe("remote ViewServer client", () => {
         limit: 997,
       });
       const transportStatus = yield* transportSubscription.events.pipe(
-        Stream.take(1),
+        Stream.take(2),
         Stream.runCollect,
       );
-      expect(transportStatus[0]).toStrictEqual({
-        type: "snapshot",
-        topic: "orders",
-        queryId: "query-remote",
-        version: 0,
-        keys: [],
-        rows: [],
-        totalRows: 0,
-      });
+      expect(Array.from(transportStatus)).toStrictEqual([
+        {
+          type: "status",
+          topic: "orders",
+          queryId: "remote",
+          status: "error",
+          code: "TransportError",
+          message: "transport failure without query",
+        },
+        {
+          type: "snapshot",
+          topic: "orders",
+          queryId: "query-remote",
+          version: 0,
+          keys: [],
+          rows: [],
+          totalRows: 0,
+        },
+      ]);
 
       const identifiedTransportSubscription = yield* client.subscribe("orders", {
         select: ["id"],
         limit: 998,
       });
       const identifiedTransportStatus = yield* identifiedTransportSubscription.events.pipe(
-        Stream.take(1),
+        Stream.take(2),
         Stream.runCollect,
       );
-      expect(identifiedTransportStatus[0]).toStrictEqual({
-        type: "snapshot",
-        topic: "orders",
-        queryId: "query-remote",
-        version: 0,
-        keys: [],
-        rows: [],
-        totalRows: 0,
-      });
+      expect(Array.from(identifiedTransportStatus)).toStrictEqual([
+        {
+          type: "status",
+          topic: "orders",
+          queryId: "query-from-server",
+          status: "error",
+          code: "TransportError",
+          message: "transport failure",
+        },
+        {
+          type: "snapshot",
+          topic: "orders",
+          queryId: "query-remote",
+          version: 0,
+          keys: [],
+          rows: [],
+          totalRows: 0,
+        },
+      ]);
 
       const backpressureSubscription = yield* client.subscribe("orders", {
         select: ["id"],

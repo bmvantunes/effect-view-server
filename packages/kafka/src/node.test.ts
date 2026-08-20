@@ -2444,7 +2444,7 @@ describe("Kafka Node Adapter", () => {
     }),
   );
 
-  it.effect("preserves frozen offsets when group assignment discovers a partition", () =>
+  it.effect("uses a conservative floor when metadata lags group assignment", () =>
     Effect.gen(function* () {
       platformatic.state.offsetsByTimestamp.set(-1n, [100n]);
       platformatic.state.committedByGroup.set("replica:orders", []);
@@ -2468,6 +2468,7 @@ describe("Kafka Node Adapter", () => {
       active.emit("consumer:group:join", {});
       yield* awaitCondition(() => platformatic.state.offsetCalls.length === 2);
       platformatic.state.offsetsByTimestamp.set(-1n, [175n, 200n]);
+      platformatic.state.offsetsByTimestamp.set(-2n, [0n, 5n]);
       yield* TestClock.adjust("100 millis");
 
       yield* diagnostics.events.pipe(
@@ -2480,7 +2481,7 @@ describe("Kafka Node Adapter", () => {
       yield* awaitCondition(() => platformatic.state.streams.length === 2);
       expect(platformatic.state.consumeCalls[1]?.input.offsets).toStrictEqual([
         { topic: "source-orders", partition: 0, offset: 100n },
-        { topic: "source-orders", partition: 1, offset: 200n },
+        { topic: "source-orders", partition: 1, offset: 5n },
       ]);
 
       yield* diagnostics.close();
@@ -4447,6 +4448,31 @@ describe("Kafka Node Adapter", () => {
     expect(
       kafkaNodeInternals.conservativeLatestGrowthOffsets(new Map([[1, null]]), new Set([1]), [0n]),
     ).toBeUndefined();
+    expect(
+      kafkaNodeInternals.mergeInitialPartitions(
+        {
+          offsets: [
+            { topic: "source-orders", partition: 0, offset: 100n },
+            { topic: "source-orders", partition: 1, offset: 200n },
+          ],
+          latestOffsets: [100n, 200n],
+          latestResolvedPartitions: new Set([1]),
+        },
+        {
+          offsets: [{ topic: "source-orders", partition: 0, offset: 150n }],
+          latestOffsets: [150n],
+          latestResolvedPartitions: new Set([0]),
+        },
+        new Map(),
+      ),
+    ).toStrictEqual({
+      offsets: [
+        { topic: "source-orders", partition: 0, offset: 100n },
+        { topic: "source-orders", partition: 1, offset: 200n },
+      ],
+      latestOffsets: [150n, 200n],
+      latestResolvedPartitions: new Set([1]),
+    });
   });
 
   it.effect("commits only successful application exits", () =>

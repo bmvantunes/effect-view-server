@@ -1620,41 +1620,49 @@ const mergeInitialPartitions = (
 ): KafkaResolvedInitialPosition => {
   const frozenOffsets = new Map(frozen.offsets.map((offset) => [offset.partition, offset]));
   const latestResolvedPartitions = new Set(frozen.latestResolvedPartitions);
-  return {
-    offsets: Object.freeze(
-      resolved.offsets.map((offset) => {
-        const frozenOffset = frozenOffsets.get(offset.partition);
-        if (frozenOffset !== undefined) {
-          const pendingOffset = pendingPartitionGrowthOffsets.get(offset.partition);
-          if (
-            typeof pendingOffset === "bigint" &&
-            frozen.latestResolvedPartitions.has(offset.partition) &&
-            pendingOffset < frozenOffset.offset
-          ) {
-            return Object.freeze({
-              ...frozenOffset,
-              offset: pendingOffset,
-            });
-          }
-          return frozenOffset;
-        }
-        if (resolved.latestResolvedPartitions.has(offset.partition)) {
-          latestResolvedPartitions.add(offset.partition);
-        }
-        const pendingOffset = pendingPartitionGrowthOffsets.get(offset.partition);
-        if (
-          typeof pendingOffset !== "bigint" ||
-          !resolved.latestResolvedPartitions.has(offset.partition)
-        ) {
-          return offset;
-        }
+  const mergeOffset = (offset: KafkaInitialPosition["offsets"][number]) => {
+    const frozenOffset = frozenOffsets.get(offset.partition);
+    if (frozenOffset !== undefined) {
+      const pendingOffset = pendingPartitionGrowthOffsets.get(offset.partition);
+      if (
+        typeof pendingOffset === "bigint" &&
+        frozen.latestResolvedPartitions.has(offset.partition) &&
+        pendingOffset < frozenOffset.offset
+      ) {
         return Object.freeze({
-          ...offset,
+          ...frozenOffset,
           offset: pendingOffset,
         });
-      }),
-    ),
-    latestOffsets: resolved.latestOffsets,
+      }
+      return frozenOffset;
+    }
+    if (resolved.latestResolvedPartitions.has(offset.partition)) {
+      latestResolvedPartitions.add(offset.partition);
+    }
+    const pendingOffset = pendingPartitionGrowthOffsets.get(offset.partition);
+    if (
+      typeof pendingOffset !== "bigint" ||
+      !resolved.latestResolvedPartitions.has(offset.partition)
+    ) {
+      return offset;
+    }
+    return Object.freeze({
+      ...offset,
+      offset: pendingOffset,
+    });
+  };
+  const latestOffsets = frozen.latestOffsets.map(
+    (offset, partition) => resolved.latestOffsets[partition] ?? offset,
+  );
+  for (const offset of resolved.latestOffsets.slice(latestOffsets.length)) {
+    latestOffsets.push(offset);
+  }
+  return {
+    offsets: Object.freeze([
+      ...frozen.offsets.map(mergeOffset),
+      ...resolved.offsets.filter((offset) => !frozenOffsets.has(offset.partition)).map(mergeOffset),
+    ]),
+    latestOffsets: Object.freeze(latestOffsets),
     latestResolvedPartitions,
   };
 };
@@ -1972,7 +1980,7 @@ const makeNodeRegion = (regionOptions: KafkaNodeRegionSnapshot): KafkaServerRegi
       let current = frozen;
       let pending = pendingPartitionGrowthOffsets;
       for (let resolution = 0; resolution < 10; resolution += 1) {
-        const expansion = yield* expandPendingPartitionGrowth(current, pending, false);
+        const expansion = yield* expandPendingPartitionGrowth(current, pending, resolution > 0);
         current = expansion.initial;
         if (expansion.pendingPartitionGrowthOffsets === undefined) {
           return current;

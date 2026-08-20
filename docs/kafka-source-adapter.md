@@ -273,9 +273,10 @@ adapter resolves and expands the frozen map inside the current Source Attempt,
 then publishes a typed `KafkaConsumeFailure` and terminates before entering
 supervision delay. This prevents an effective `latest` boundary from advancing
 past records appended during that delay. Resolution is bounded so persistently
-stale metadata still produces the visible typed failure; when the boundary
-remains unavailable, reacquisition conservatively starts that new effective
-`latest` partition at its earliest retained offset.
+stale metadata still produces the visible typed failure. If the discovery-time
+lookup omits the partition, a later poll or reacquisition conservatively starts
+that new effective `latest` partition at its earliest retained offset. Partial
+metadata snapshots never remove partitions already present in the frozen map.
 Existing uncommitted partitions retain their original frozen offsets, existing
 committed partitions resume from the active adapter group's commits, and newly
 discovered partitions resolve the configured `startFrom` policy. A `durationAgo` source keeps its

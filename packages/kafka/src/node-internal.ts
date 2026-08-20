@@ -466,7 +466,7 @@ type KafkaMutableRegionMetrics = {
 type KafkaBindingState = {
   readonly committedPartitions: Set<number>;
   initial: KafkaInitialPosition | undefined;
-  partitionGrowthPending: boolean;
+  pendingPartitionGrowthOffsets: Map<number, bigint | null> | undefined;
   readonly metrics: KafkaMutableRegionMetrics;
   attempts: bigint;
 };
@@ -1595,11 +1595,25 @@ const resolveInitial = Effect.fn("KafkaNode.offsets.initial")(function* (
 const mergeInitialPartitions = (
   frozen: KafkaInitialPosition,
   resolved: KafkaInitialPosition,
+  pendingPartitionGrowthOffsets: ReadonlyMap<number, bigint | null>,
 ): KafkaInitialPosition => {
   const frozenOffsets = new Map(frozen.offsets.map((offset) => [offset.partition, offset]));
   return {
     offsets: Object.freeze(
-      resolved.offsets.map((offset) => frozenOffsets.get(offset.partition) ?? offset),
+      resolved.offsets.map((offset) => {
+        const frozenOffset = frozenOffsets.get(offset.partition);
+        if (frozenOffset !== undefined) {
+          return frozenOffset;
+        }
+        const pendingOffset = pendingPartitionGrowthOffsets.get(offset.partition);
+        if (typeof pendingOffset !== "bigint") {
+          return offset;
+        }
+        return Object.freeze({
+          ...offset,
+          offset: pendingOffset,
+        });
+      }),
     ),
     latestOffsets: resolved.latestOffsets,
   };
@@ -1826,7 +1840,7 @@ const makeNodeRegion = (regionOptions: KafkaNodeRegionSnapshot): KafkaServerRegi
       attempts: 0n,
       committedPartitions: new Set(),
       initial: undefined,
-      partitionGrowthPending: false,
+      pendingPartitionGrowthOffsets: undefined,
       metrics: emptyMutableMetrics(),
     };
     states.set(key, state);
@@ -1851,11 +1865,22 @@ const makeNodeRegion = (regionOptions: KafkaNodeRegionSnapshot): KafkaServerRegi
     if (initial === undefined) {
       initial = yield* resolveInitial(regionOptions, input, consumer, metrics, attempt);
       state.initial = initial;
-    } else if (state.partitionGrowthPending) {
+    } else if (state.pendingPartitionGrowthOffsets !== undefined) {
+      const pendingPartitionGrowthOffsets = state.pendingPartitionGrowthOffsets;
       const resolved = yield* resolveInitial(regionOptions, input, consumer, metrics, attempt);
-      initial = mergeInitialPartitions(initial, resolved);
+      initial = mergeInitialPartitions(initial, resolved, pendingPartitionGrowthOffsets);
       state.initial = initial;
-      state.partitionGrowthPending = false;
+      const resolvedPartitions = new Set(resolved.offsets.map((offset) => offset.partition));
+      const unresolvedPartitionGrowthOffsets = new Map(
+        [...pendingPartitionGrowthOffsets].filter(
+          ([partition]) => !resolvedPartitions.has(partition),
+        ),
+      );
+      state.pendingPartitionGrowthOffsets =
+        unresolvedPartitionGrowthOffsets.size === 0 ? undefined : unresolvedPartitionGrowthOffsets;
+      if (state.pendingPartitionGrowthOffsets !== undefined) {
+        return yield* Effect.fail(partitionGrowthFailure(input));
+      }
     }
     const offsets = isRetry
       ? yield* activeOffsets(consumer, input, initial, state.committedPartitions)
@@ -1866,9 +1891,21 @@ const makeNodeRegion = (regionOptions: KafkaNodeRegionSnapshot): KafkaServerRegi
       KafkaAdapterFailure
     >();
     const resolvedPartitions = new Set(offsets.map((offset) => offset.partition));
-    const signalPartitionGrowth = (): KafkaAdapterFailure => {
+    const signalPartitionGrowth = (
+      partitions: ReadonlyArray<number>,
+      triggeringRecord?: Readonly<{ partition: number; offset: bigint }>,
+    ): KafkaAdapterFailure => {
       const failure = partitionGrowthFailure(input);
-      state.partitionGrowthPending = true;
+      const pendingOffsets =
+        state.pendingPartitionGrowthOffsets ?? (state.pendingPartitionGrowthOffsets = new Map());
+      for (const partition of partitions) {
+        if (!pendingOffsets.has(partition)) {
+          pendingOffsets.set(partition, null);
+        }
+      }
+      if (input.start.mode === "latest" && triggeringRecord !== undefined) {
+        pendingOffsets.set(triggeringRecord.partition, triggeringRecord.offset);
+      }
       Deferred.doneUnsafe(assignedPartitionOutsideResolvedOffsets, Effect.fail(failure));
       return failure;
     };
@@ -1881,10 +1918,13 @@ const makeNodeRegion = (regionOptions: KafkaNodeRegionSnapshot): KafkaServerRegi
       const assignments = payload.assignments ?? consumer.assignments ?? [];
       const partitions = assignments.flatMap((assignment) => assignment.partitions);
       updateAssignmentOffsets(metrics, offsets, initial.latestOffsets, partitions);
-      if (partitions.some((partition) => !resolvedPartitions.has(partition))) {
+      const unresolvedPartitions = partitions.filter(
+        (partition) => !resolvedPartitions.has(partition),
+      );
+      if (unresolvedPartitions.length > 0) {
         // Platformatic listener callbacks sit outside Effect; synchronously bridge partition
         // growth into the owned Source Attempt so supervision can reacquire configured offsets.
-        signalPartitionGrowth();
+        signalPartitionGrowth(unresolvedPartitions);
       }
     };
     const rebalance = (): void => {
@@ -1935,7 +1975,12 @@ const makeNodeRegion = (regionOptions: KafkaNodeRegionSnapshot): KafkaServerRegi
       Stream.interruptWhen(Deferred.await(assignedPartitionOutsideResolvedOffsets)),
       Stream.mapEffect((message) => {
         if (!resolvedPartitions.has(message.partition)) {
-          return Effect.fail(signalPartitionGrowth());
+          return Effect.fail(
+            signalPartitionGrowth([message.partition], {
+              partition: message.partition,
+              offset: message.offset,
+            }),
+          );
         }
         return Effect.try({
           try: (): KafkaServerRecord => ({

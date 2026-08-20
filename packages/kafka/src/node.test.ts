@@ -2240,12 +2240,11 @@ describe("Kafka Node Adapter", () => {
     }),
   );
 
-  it.effect("rejects buffered records from newly discovered partitions before settlement", () =>
+  it.effect("retries buffered unknown-partition records from their observed offset", () =>
     Effect.gen(function* () {
       platformatic.state.offsetsByTimestamp.set(-1n, [100n]);
-      platformatic.state.offsetsByTimestamp.set(-2n, [0n]);
       platformatic.state.committedByGroup.set("replica:orders", []);
-      const config = makeConfig("earliest", Schedule.spaced("10 seconds"));
+      const config = makeConfig("latest", Schedule.spaced("10 seconds"));
       const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(
         Effect.provide(
           layer(config, {
@@ -2264,7 +2263,7 @@ describe("Kafka Node Adapter", () => {
           key: "new-partition",
           price: 1,
           partition: 1,
-          offset: 0n,
+          offset: 200n,
         }),
       );
 
@@ -2299,6 +2298,28 @@ describe("Kafka Node Adapter", () => {
         },
         committed: [],
       });
+      platformatic.state.offsetsByTimestamp.set(-1n, [150n]);
+      yield* TestClock.adjust("10 seconds");
+      const staleRetry = Option.getOrThrow(
+        yield* diagnostics.events.pipe(
+          Stream.filter(
+            (health) => health.status._tag === "WaitingToRetry" && health.status.nextAttempt === 3n,
+          ),
+          Stream.take(1),
+          Stream.runHead,
+        ),
+      );
+      expect({
+        status: staleRetry.status._tag,
+        consumeCalls: platformatic.state.consumeCalls.length,
+      }).toStrictEqual({ status: "WaitingToRetry", consumeCalls: 1 });
+      platformatic.state.offsetsByTimestamp.set(-1n, [175n, 250n]);
+      yield* TestClock.adjust("10 seconds");
+      yield* awaitCondition(() => platformatic.state.streams.length === 2);
+      expect(platformatic.state.consumeCalls[1]?.input.offsets).toStrictEqual([
+        { topic: "source-orders", partition: 0, offset: 100n },
+        { topic: "source-orders", partition: 1, offset: 200n },
+      ]);
 
       yield* diagnostics.close();
       yield* runtime.close;
@@ -2325,6 +2346,7 @@ describe("Kafka Node Adapter", () => {
       platformatic.state.offsetsByTimestamp.set(-1n, [150n, 200n]);
       const active = Option.getOrThrow(Option.fromUndefinedOr(platformatic.state.consumers[0]));
       active.assignments = [{ topic: "source-orders", partitions: [0, 1] }];
+      active.emit("consumer:group:join", {});
       active.emit("consumer:group:join", {});
 
       yield* diagnostics.events.pipe(

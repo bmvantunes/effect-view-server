@@ -35,6 +35,7 @@
     "@vitest/browser": "catalog:",
     "@vitest/browser-playwright": "catalog:",
     "@vitest/coverage-istanbul": "catalog:",
+    "oxc-transform-react": "catalog:",
     "playwright": "1.62.1",
     "typescript": "catalog:",
     "vite": "catalog:",

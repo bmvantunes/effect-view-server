@@ -1,4 +1,5 @@
 import { defineConfig } from "vite-plus";
+import { strictLintOptions } from "./tools/vite/lint-policy";
 
 const declarationBuildTask = "build:effect-declarations";
 
@@ -288,7 +289,7 @@ export default defineConfig({
       "packages/source-adapter-testing/test-fixtures/package-adapter/invalid-types/**",
       "tools/oxlint/anti-slop/**",
     ],
-    options: { typeAware: true, typeCheck: true },
+    options: strictLintOptions,
     rules: {
       "anti-slop/no-unsafe-dictionary-type": "error",
     },

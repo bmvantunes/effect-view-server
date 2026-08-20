@@ -1,6 +1,7 @@
 import { defineConfig } from "vite-plus";
 import { playwright } from "@vitest/browser-playwright";
 import { libraryPack } from "../../vite.pack";
+import { strictLintOptions } from "../../tools/vite/lint-policy";
 
 export default defineConfig({
   optimizeDeps: {
@@ -45,10 +46,7 @@ export default defineConfig({
   },
   pack: libraryPack(["src/index.tsx", "src/testing.tsx"]),
   lint: {
-    options: {
-      typeAware: true,
-      typeCheck: true,
-    },
+    options: strictLintOptions,
   },
   fmt: {},
 });

@@ -1,5 +1,6 @@
 import { defineConfig, lazyPlugins, type PluginOption, type TestUserConfig } from "vite-plus";
 import type { BrowserProviderOption } from "vite-plus/test/node";
+import { strictLintOptions } from "../tools/vite/lint-policy";
 
 interface ExampleViteEnvironment {
   readonly command: "build" | "serve";
@@ -136,10 +137,7 @@ export const defineTanStackReactExampleConfig = ({
       ...(enforceAllSourceCoverage === true ? { coverage: exactAllSourceCoverage } : {}),
     },
     lint: {
-      options: {
-        typeAware: true,
-        typeCheck: true,
-      },
+      options: strictLintOptions,
     },
     fmt: {},
   }));

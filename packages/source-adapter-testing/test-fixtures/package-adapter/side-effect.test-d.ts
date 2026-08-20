@@ -1,3 +1,1 @@
 import "./contract.js";
-
-export {};

@@ -1,6 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite-plus";
 import { libraryPack } from "../../vite.pack";
+import { strictLintOptions } from "../../tools/vite/lint-policy";
 
 export default defineConfig({
   resolve: {
@@ -33,10 +34,7 @@ export default defineConfig({
   },
   pack: libraryPack(["src/index.ts"]),
   lint: {
-    options: {
-      typeAware: true,
-      typeCheck: true,
-    },
+    options: strictLintOptions,
   },
   fmt: {},
 });

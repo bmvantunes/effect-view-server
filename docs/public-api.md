@@ -99,10 +99,13 @@ Ownership Policy.
 Remote live-query, health-summary, and health-detail subscriptions automatically
 restart after a WebSocket transport interruption. Source-health subscriptions use
 a separate RPC and are not automatically retried. The logical subscription remains
-open while the client retries every 500 milliseconds, and the restarted RPC stream
-begins with a fresh authoritative snapshot. Query, validation, and other
-non-transport errors remain terminal. Calling the subscription's `close` operation
-or closing the client cancels any pending retry and releases the server subscription.
+open while the client retries every 500 milliseconds without an attempt or duration
+limit. Transport interruptions therefore do not produce a terminal status while the
+subscription remains open. The restarted RPC stream begins with a fresh authoritative
+snapshot; consumers maintaining their own accumulated view must replace it with that
+snapshot before applying later deltas. Query, validation, and other non-transport errors
+remain terminal. Calling the subscription's `close` operation or closing the client
+cancels any pending retry and releases the server subscription.
 
 `subscriptionBufferSize` bounds the local queue for each remote subscription.
 It defaults to `1024`; a non-positive or non-integer value is normalized to `1`.

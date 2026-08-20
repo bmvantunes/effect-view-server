@@ -258,6 +258,52 @@ describe("Kafka Schema Registry Region runtime", () => {
     ),
   );
 
+  it.effect("prioritizes an attempt-level schema failure over a malformed sibling frame", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const key = mutableSubject("source-orders-key", 40);
+        const value = mutableSubject("source-orders-value", 41);
+        const runtime = yield* makeKafkaSchemaRegistryRuntime({
+          region: "eu",
+          endpoint: "https://registry.eu.example.com",
+          declarations: [
+            declaration("orders", "source-orders", "key"),
+            declaration("orders", "source-orders"),
+          ],
+          reader: mutableReader(
+            new Map([
+              ["source-orders-key", key],
+              ["source-orders-value", value],
+            ]),
+            { compatibility: 0, versions: 0, schemas: 0 },
+          ),
+          monitorInterval: Duration.seconds(1),
+        });
+
+        expect(
+          yield* runtime
+            .validateRecord({
+              viewServerTopic: "orders",
+              sourceTopic: "source-orders",
+              sides: ["key", "value"],
+              key: Uint8Array.from([]),
+              value: frame(99),
+            })
+            .pipe(Effect.flip),
+        ).toStrictEqual({
+          _tag: "KafkaSchemaRegistrySchemaMismatch",
+          region: "eu",
+          topic: "source-orders",
+          subject: "source-orders-value",
+          side: "value",
+          schemaId: 99,
+          message:
+            'Schema ID 99 is not an active validated version of subject "source-orders-value".',
+        });
+      }),
+    ),
+  );
+
   it.effect("groups key and value contracts for one View Server Topic", () =>
     Effect.scoped(
       Effect.gen(function* () {

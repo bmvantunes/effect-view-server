@@ -21,17 +21,20 @@ const acquireRuntime = (port: number) =>
     (runtime) => runtime.close,
   );
 
+const reconnectSettleDelay = "750 millis";
+
 const assertOneRecoveredStream = Effect.fn("WebSocketReconnect.test.assertOneRecoveredStream")(
-  function* (runtime: Effect.Success<ReturnType<typeof makeViewServerRuntime>>) {
-    yield* waitForTransportHealth(runtime.client.health, {
+  function* (health: Effect.Success<ReturnType<typeof makeViewServerRuntime>>["client"]["health"]) {
+    yield* waitForTransportHealth(health, {
       activeClients: 1,
       activeStreams: 1,
     });
-    yield* Effect.sleep("750 millis");
-    const health = yield* runtime.client.health();
+    // Wait beyond one 500 ms retry period to detect duplicate recovered streams.
+    yield* Effect.sleep(reconnectSettleDelay);
+    const current = yield* health();
     expect({
-      activeClients: health.transport.activeClients,
-      activeStreams: health.transport.activeStreams,
+      activeClients: current.transport.activeClients,
+      activeStreams: current.transport.activeStreams,
     }).toStrictEqual({ activeClients: 1, activeStreams: 1 });
   },
 );
@@ -61,7 +64,14 @@ describe("WebSocket subscription recovery", () => {
           Extract<Stream.Success<typeof subscription.events>, { readonly type: "snapshot" }>
         > = [];
         const eventsFiber = yield* subscription.events.pipe(
-          Stream.filter((event) => event.type === "snapshot"),
+          Stream.filter(
+            (
+              event,
+            ): event is Extract<
+              Stream.Success<typeof subscription.events>,
+              { readonly type: "snapshot" }
+            > => event.type === "snapshot",
+          ),
           Stream.runForEach((event) =>
             Effect.sync(() => {
               snapshots.push(event);
@@ -69,11 +79,11 @@ describe("WebSocket subscription recovery", () => {
           ),
           Effect.forkChild,
         );
-        yield* assertOneRecoveredStream(first);
+        yield* assertOneRecoveredStream(first.client.health);
 
         yield* first.close;
         const second = yield* acquireRuntime(port);
-        yield* assertOneRecoveredStream(second);
+        yield* assertOneRecoveredStream(second.client.health);
 
         const controlClient = yield* Effect.acquireRelease(
           makeViewServerClient(viewServer, { url: second.url }),
@@ -115,7 +125,7 @@ describe("WebSocket subscription recovery", () => {
 
         yield* second.close;
         const third = yield* acquireRuntime(port);
-        yield* assertOneRecoveredStream(third);
+        yield* assertOneRecoveredStream(third.client.health);
         yield* Effect.sleep("5 millis").pipe(
           Effect.repeat({
             schedule: Schedule.recurs(50),
@@ -180,19 +190,32 @@ describe("WebSocket subscription recovery", () => {
           client.subscribe("orders", { select: ["id"], limit: 10 }),
           (activeSubscription) => activeSubscription.close().pipe(Effect.ignore),
         );
-        yield* assertOneRecoveredStream(first);
+        const eventsFiber = yield* subscription.events.pipe(Stream.runCollect, Effect.forkChild);
+        yield* assertOneRecoveredStream(first.client.health);
 
         yield* first.close;
         yield* Effect.sleep("100 millis");
         yield* client.close;
         const second = yield* acquireRuntime(port);
-        yield* Effect.sleep("750 millis");
+        yield* Effect.sleep(reconnectSettleDelay);
         const health = yield* second.client.health();
+        const events = yield* Fiber.join(eventsFiber).pipe(Effect.timeout("1 second"));
 
         expect({
           activeClients: health.transport.activeClients,
           activeStreams: health.transport.activeStreams,
         }).toStrictEqual({ activeClients: 0, activeStreams: 0 });
+        expect(Array.from(events)).toStrictEqual([
+          {
+            type: "snapshot",
+            topic: "orders",
+            queryId: "query-0",
+            version: 0,
+            keys: [],
+            rows: [],
+            totalRows: 0,
+          },
+        ]);
         yield* subscription.close();
       }),
     ),

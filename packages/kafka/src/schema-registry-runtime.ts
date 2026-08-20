@@ -57,10 +57,10 @@ export type KafkaSchemaRegistryRuntime = {
   readonly endpoints: ReadonlyArray<string>;
   readonly guard: (
     input: KafkaSchemaRegistryBindingInput,
-  ) => Effect.Effect<void, KafkaAdapterFailure>;
+  ) => Effect.Effect<void, KafkaSchemaRegistryAttemptFailure>;
   readonly failures: (
     input: KafkaSchemaRegistryBindingInput,
-  ) => Stream.Stream<never, KafkaAdapterFailure>;
+  ) => Stream.Stream<never, KafkaSchemaRegistryAttemptFailure>;
   readonly validateRecord: (
     input: KafkaSchemaRegistryRecordValidationInput,
   ) => Effect.Effect<KafkaSchemaRegistryRecordPayloads, KafkaSchemaRegistryRecordValidationFailure>;
@@ -306,6 +306,7 @@ function validateRecordState(
   let key: Uint8Array | undefined;
   let value: Uint8Array | undefined;
   let requiresRefresh = false;
+  let recordDecodeFailure: KafkaSchemaRegistryRecordDecodeFailure | undefined;
   for (const side of input.sides) {
     const bytes = side === "key" ? input.key : input.value;
     if (bytes === null) {
@@ -324,19 +325,17 @@ function validateRecordState(
     const result = validateKafkaSchemaRegistryFrame(contract, bytes);
     if (result._tag === "Mismatch") {
       if (result.reason === "frame") {
-        return {
-          _tag: "Failure",
+        recordDecodeFailure ??= {
+          _tag: "KafkaSchemaRegistryRecordDecodeFailure",
+          side,
           failure: {
-            _tag: "KafkaSchemaRegistryRecordDecodeFailure",
-            side,
-            failure: {
-              _tag: "KafkaDecodeFailure",
-              region,
-              topic: input.sourceTopic,
-              message: result.message,
-            },
+            _tag: "KafkaDecodeFailure",
+            region,
+            topic: input.sourceTopic,
+            message: result.message,
           },
         };
+        continue;
       }
       if (
         refreshUnknownIds &&
@@ -365,12 +364,16 @@ function validateRecordState(
       value = result.payload;
     }
   }
-  return requiresRefresh
-    ? { _tag: "Refresh" }
-    : {
-        _tag: "Success",
-        payloads: Object.freeze({ key, value }),
-      };
+  if (requiresRefresh) {
+    return { _tag: "Refresh" };
+  }
+  if (recordDecodeFailure !== undefined) {
+    return { _tag: "Failure", failure: recordDecodeFailure };
+  }
+  return {
+    _tag: "Success",
+    payloads: Object.freeze({ key, value }),
+  };
 }
 
 export const makeKafkaSchemaRegistryRuntime = Effect.fn("KafkaSchemaRegistryRuntime.make")(
@@ -459,7 +462,7 @@ export const makeKafkaSchemaRegistryRuntime = Effect.fn("KafkaSchemaRegistryRunt
 
     const guard = (
       binding: KafkaSchemaRegistryBindingInput,
-    ): Effect.Effect<void, KafkaAdapterFailure> =>
+    ): Effect.Effect<void, KafkaSchemaRegistryAttemptFailure> =>
       SubscriptionRef.get(state).pipe(
         Effect.flatMap((current) => {
           const failure = bindingFailure(current, binding);
@@ -468,7 +471,7 @@ export const makeKafkaSchemaRegistryRuntime = Effect.fn("KafkaSchemaRegistryRunt
       );
     const failures = (
       binding: KafkaSchemaRegistryBindingInput,
-    ): Stream.Stream<never, KafkaAdapterFailure> =>
+    ): Stream.Stream<never, KafkaSchemaRegistryAttemptFailure> =>
       SubscriptionRef.changes(state).pipe(
         Stream.mapEffect((current) => {
           const failure = bindingFailure(current, binding);

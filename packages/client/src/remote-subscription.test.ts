@@ -156,6 +156,8 @@ describe("remote subscription", () => {
       );
 
       yield* Deferred.await(firstAttempt);
+      yield* Effect.yieldNow;
+      expect(attempts).toBe(1);
       yield* TestClock.adjust("500 millis");
       const events = yield* Fiber.join(eventFiber);
 

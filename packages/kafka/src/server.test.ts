@@ -49,6 +49,14 @@ import {
 } from "./server";
 import * as kafkaServerInternals from "./server-internal";
 import { OrderKeySchema, OrderValueSchema } from "./test-fixtures/orders_pb";
+import {
+  bytes,
+  foreverBrokerContract,
+  metadata,
+  schemaRegistryFrame,
+  schemaRegistryRecordPayloads,
+  valueFrame,
+} from "./test-fixtures/schema-registry";
 
 const Order = Schema.Struct({
   id: ViewServerId,
@@ -57,45 +65,6 @@ const Order = Schema.Struct({
 });
 
 const kafkaTestLifetimeIdentity = Object.freeze({});
-
-const bytes = (value: string): Uint8Array => new TextEncoder().encode(value);
-
-const schemaRegistryFrame = (schemaId: number, payload: Uint8Array): Uint8Array =>
-  Uint8Array.from([
-    0,
-    Math.floor(schemaId / 0x1_00_00_00) % 0x100,
-    Math.floor(schemaId / 0x1_00_00) % 0x100,
-    Math.floor(schemaId / 0x1_00) % 0x100,
-    schemaId % 0x100,
-    0,
-    ...payload,
-  ]);
-
-const schemaRegistryPayload = (frame: Uint8Array): Uint8Array => frame.slice(6);
-
-const schemaRegistryRecordPayloads = (input: {
-  readonly key: Uint8Array | null;
-  readonly value: Uint8Array | null;
-}) =>
-  Object.freeze({
-    key: input.key === null ? undefined : schemaRegistryPayload(input.key),
-    value: input.value === null ? undefined : schemaRegistryPayload(input.value),
-  });
-
-const metadata = (
-  region: string,
-  offset: bigint,
-  headers: KafkaMessageMetadata["headers"] = {},
-  partition = 0,
-  timestampNanos = offset * 1_000_000n,
-): KafkaMessageMetadata => ({
-  sourceTopic: "source-orders",
-  sourceRegion: region,
-  partition,
-  offset,
-  timestampNanos,
-  headers,
-});
 
 const commitFailure = (region: string): KafkaAdapterFailure => ({
   _tag: "KafkaCommitFailure",
@@ -390,22 +359,6 @@ const finiteBrokerContract = () =>
       durationNanos: 5_000_000_000n,
     },
   }) as const;
-
-const foreverBrokerContract = (
-  viewServerTopic: string,
-  sourceTopic: string,
-  region: string,
-  cleanupPolicy: "delete" | "compact" | "compact-and-delete" = "delete",
-) => ({
-  viewServerTopic,
-  sourceTopic,
-  region,
-  cleanupPolicy,
-  retentionPolicy: { _tag: "Forever" as const },
-  observedCleanupPolicy: cleanupPolicy,
-  observedRetentionMs: -1n,
-  resolvedRetention: { _tag: "Forever" as const },
-});
 
 const foreverBrokerContracts = (
   regions: ReadonlyArray<string>,
@@ -1037,7 +990,10 @@ describe("Kafka Source Adapter Server", () => {
       const acquisitionOrder: Array<string> = [];
       const eu = yield* makeFakeRegion("eu", acquisitionOrder);
       const us = yield* makeFakeRegion("us", acquisitionOrder);
-      const registryFailure = yield* Deferred.make<KafkaAdapterFailure>();
+      const registryFailure =
+        yield* Deferred.make<
+          Extract<KafkaAdapterFailure, { readonly _tag: "KafkaSchemaRegistryPolicyMismatch" }>
+        >();
       let euFailureSubscriptions = 0;
       const source = kafka.source(
         {
@@ -1093,7 +1049,10 @@ describe("Kafka Source Adapter Server", () => {
       );
       yield* eu.awaitAcquisitions(1);
       yield* us.awaitAcquisitions(1);
-      const failure: KafkaAdapterFailure = {
+      const failure: Extract<
+        KafkaAdapterFailure,
+        { readonly _tag: "KafkaSchemaRegistryPolicyMismatch" }
+      > = {
         _tag: "KafkaSchemaRegistryPolicyMismatch",
         region: "eu",
         topic: "source-orders",
@@ -1331,17 +1290,6 @@ describe("Kafka Source Adapter Server", () => {
       const releaseFirstSettlement = yield* Deferred.make<void>();
       const settlements: Array<bigint> = [];
       const validations: Array<number> = [];
-      const valueFrame = (schemaId: number, price: number) =>
-        schemaRegistryFrame(
-          schemaId,
-          toBinary(
-            OrderValueSchema,
-            create(OrderValueSchema, {
-              customerId: `customer-${String(price)}`,
-              price,
-            }),
-          ),
-        );
       const records: ReadonlyArray<KafkaServerRecord> = [
         {
           key: bytes("order-1"),

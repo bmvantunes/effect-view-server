@@ -1,12 +1,18 @@
 import { describe, expect, it } from "@effect/vitest";
-import { create, toBinary } from "@bufbuild/protobuf";
 import { ViewServerId, defineViewServerConfig } from "@effect-view-server/config";
 import { makeViewServerRuntimeCore } from "@effect-view-server/runtime-core";
 import { Deferred, Effect, Option, Schedule, Schema, Stream } from "effect";
-import { kafka, type KafkaAdapterFailure, type KafkaMessageMetadata } from "./contract";
+import { kafka, type KafkaAdapterFailure } from "./contract";
 import { parseKafkaSchemaRegistryProtobufFrame } from "./schema-registry-frame";
 import type { KafkaSchemaRegistryRecordDecodeFailure } from "./schema-registry-runtime";
 import { makeKafkaServerLayer, type KafkaServerRecord, type KafkaServerRegion } from "./server";
+import {
+  bytes,
+  foreverBrokerContract,
+  metadata,
+  schemaRegistryRecordPayloads,
+  valueFrame,
+} from "./test-fixtures/schema-registry";
 import { OrderValueSchema } from "./test-fixtures/orders_pb";
 
 const Order = Schema.Struct({
@@ -14,62 +20,6 @@ const Order = Schema.Struct({
   price: Schema.Number,
   region: Schema.String,
 });
-
-const bytes = (value: string): Uint8Array => new TextEncoder().encode(value);
-
-const schemaRegistryFrame = (schemaId: number, payload: Uint8Array): Uint8Array =>
-  Uint8Array.from([
-    0,
-    Math.floor(schemaId / 0x1_00_00_00) % 0x100,
-    Math.floor(schemaId / 0x1_00_00) % 0x100,
-    Math.floor(schemaId / 0x1_00) % 0x100,
-    schemaId % 0x100,
-    0,
-    ...payload,
-  ]);
-
-const schemaRegistryPayload = (frame: Uint8Array): Uint8Array => frame.slice(6);
-
-const schemaRegistryRecordPayloads = (input: {
-  readonly key: Uint8Array | null;
-  readonly value: Uint8Array | null;
-}) =>
-  Object.freeze({
-    key: input.key === null ? undefined : schemaRegistryPayload(input.key),
-    value: input.value === null ? undefined : schemaRegistryPayload(input.value),
-  });
-
-const metadata = (region: string, offset: bigint): KafkaMessageMetadata => ({
-  sourceTopic: "source-orders",
-  sourceRegion: region,
-  partition: 0,
-  offset,
-  timestampNanos: offset * 1_000_000n,
-  headers: {},
-});
-
-const foreverBrokerContract = (region: string) => ({
-  viewServerTopic: "orders",
-  sourceTopic: "source-orders",
-  region,
-  cleanupPolicy: "delete" as const,
-  retentionPolicy: { _tag: "Forever" as const },
-  observedCleanupPolicy: "delete" as const,
-  observedRetentionMs: -1n,
-  resolvedRetention: { _tag: "Forever" as const },
-});
-
-const valueFrame = (schemaId: number, price: number): Uint8Array =>
-  schemaRegistryFrame(
-    schemaId,
-    toBinary(
-      OrderValueSchema,
-      create(OrderValueSchema, {
-        customerId: `customer-${String(price)}`,
-        price,
-      }),
-    ),
-  );
 
 describe("schema registry frame rejection", () => {
   it.effect("rejects a malformed frame and still applies the following valid record", () =>
@@ -150,7 +100,7 @@ describe("schema registry frame rejection", () => {
           makeViewServerRuntimeCore(config, {}).pipe(
             Effect.provide(
               makeKafkaServerLayer({
-                brokerContracts: [foreverBrokerContract("eu")],
+                brokerContracts: [foreverBrokerContract("orders", "source-orders", "eu")],
                 retentionSweepIntervalNanos: 900_000_000_000n,
                 consumerGroupPrefix: "frame-rejection",
                 regions: new Map([["eu", region]]),
@@ -217,9 +167,7 @@ describe("schema registry frame rejection", () => {
         );
         const health = Option.getOrThrow(
           yield* diagnostics.events.pipe(
-            Stream.filter(
-              (value) => value.status._tag === "Degraded" || value.status._tag === "Exhausted",
-            ),
+            Stream.filter((value) => value.status._tag === "Degraded"),
             Stream.take(1),
             Stream.runHead,
             Effect.timeout("1 second"),
@@ -337,7 +285,7 @@ describe("schema registry frame rejection", () => {
           makeViewServerRuntimeCore(config, {}).pipe(
             Effect.provide(
               makeKafkaServerLayer({
-                brokerContracts: [foreverBrokerContract("eu")],
+                brokerContracts: [foreverBrokerContract("orders", "source-orders", "eu")],
                 retentionSweepIntervalNanos: 900_000_000_000n,
                 consumerGroupPrefix: "key-frame-rejection",
                 regions: new Map([["eu", region]]),
@@ -474,7 +422,7 @@ describe("schema registry frame rejection", () => {
           makeViewServerRuntimeCore(config, {}).pipe(
             Effect.provide(
               makeKafkaServerLayer({
-                brokerContracts: [foreverBrokerContract("eu")],
+                brokerContracts: [foreverBrokerContract("orders", "source-orders", "eu")],
                 retentionSweepIntervalNanos: 900_000_000_000n,
                 consumerGroupPrefix: "registry-infrastructure-failure",
                 regions: new Map([["eu", region]]),

@@ -2491,6 +2491,7 @@ describe("Kafka Node Adapter", () => {
 
   it.effect("fails visibly when partition metadata remains stale", () =>
     Effect.gen(function* () {
+      const expectedResolutionAttempts = 10;
       platformatic.state.offsetsByTimestamp.set(-1n, [100n]);
       platformatic.state.committedByGroup.set("replica:orders", []);
       const config = makeConfig("latest", Schedule.spaced("10 seconds"));
@@ -2511,12 +2512,14 @@ describe("Kafka Node Adapter", () => {
       active.assignments = [{ topic: "source-orders", partitions: [0, 1] }];
       active.emit("consumer:group:join", {});
 
-      for (let expectedCalls = 2; expectedCalls <= 10; expectedCalls += 1) {
+      for (let expectedCalls = 2; expectedCalls <= expectedResolutionAttempts; expectedCalls += 1) {
         yield* awaitCondition(() => platformatic.state.offsetCalls.length >= expectedCalls);
         yield* Effect.yieldNow;
         yield* TestClock.adjust("100 millis");
       }
-      yield* awaitCondition(() => platformatic.state.offsetCalls.length === 11);
+      yield* awaitCondition(
+        () => platformatic.state.offsetCalls.length === expectedResolutionAttempts + 1,
+      );
       const waiting = Option.getOrThrow(
         yield* diagnostics.events.pipe(
           Stream.filter((health) => health.status._tag === "WaitingToRetry"),

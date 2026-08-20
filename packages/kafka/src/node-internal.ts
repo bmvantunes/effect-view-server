@@ -1271,6 +1271,8 @@ const partitionGrowthFailure = (input: KafkaServerRegionAcquireInput): KafkaAdap
   message: "Kafka Region discovered a new partition and is reacquiring configured start offsets.",
 });
 
+const partitionGrowthResolutionAttempts = 10;
+
 const commitFailure = (input: KafkaServerRegionAcquireInput): KafkaAdapterFailure => ({
   _tag: "KafkaCommitFailure",
   region: input.region,
@@ -1979,14 +1981,14 @@ const makeNodeRegion = (regionOptions: KafkaNodeRegionSnapshot): KafkaServerRegi
     ) {
       let current = frozen;
       let pending = pendingPartitionGrowthOffsets;
-      for (let resolution = 0; resolution < 10; resolution += 1) {
+      for (let resolution = 0; resolution < partitionGrowthResolutionAttempts; resolution += 1) {
         const expansion = yield* expandPendingPartitionGrowth(current, pending, resolution > 0);
         current = expansion.initial;
         if (expansion.pendingPartitionGrowthOffsets === undefined) {
           return current;
         }
         pending = expansion.pendingPartitionGrowthOffsets;
-        if (resolution < 9) {
+        if (resolution < partitionGrowthResolutionAttempts - 1) {
           yield* Effect.sleep("100 millis");
         }
       }

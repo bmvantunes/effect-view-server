@@ -1,4 +1,4 @@
-import { Cause, Effect, Exit, Queue, Ref, Scope, Stream } from "effect";
+import { Cause, Effect, Exit, Queue, Ref, Schedule, Scope, Stream } from "effect";
 import { constant } from "effect/Function";
 import { ignoreLoggedTypedFailuresPreserveNonTypedFailures } from "@effect-view-server/effect-utils";
 import type {
@@ -48,6 +48,7 @@ export type RemoteSubscriptionOptions<
 > = {
   readonly clientScope: Scope.Scope;
   readonly overflowStatus: (topic: Topic, queuedEvents: number) => ViewServerStatusEvent<Topic>;
+  readonly retryWhile?: (error: Error) => boolean;
   readonly failureStatus: (topic: Topic, error: Error) => ViewServerStatusEvent<Topic>;
   readonly lifecycle?: RemoteSubscriptionLifecycle;
   readonly source: Stream.Stream<ViewServerLiveEvent<Row, Topic, Key>, Error>;
@@ -96,6 +97,7 @@ export const makeRemoteSubscription = Effect.fn("ViewServerClient.remote.subscri
       onClose: Effect.void,
     },
     overflowStatus,
+    retryWhile,
     source,
     subscriptionBufferSize,
     topic,
@@ -117,17 +119,56 @@ export const makeRemoteSubscription = Effect.fn("ViewServerClient.remote.subscri
                 }
               }),
             );
-            const stream = source.pipe(
-              Stream.catch((error) => Stream.make(failureStatus(topic, error))),
-            );
             const queue = yield* Queue.dropping<ViewServerLiveEvent<Row, Topic, Key>, Cause.Done>(
               normalizeSubscriptionBufferSize(subscriptionBufferSize),
             );
             yield* Scope.addFinalizer(scope, closeLifecycle);
             yield* lifecycle.onOpen;
-            yield* Stream.runForEach(stream, (event) =>
-              offerRemoteEvent(queue, event, overflowStatus, closeLifecycle, topic),
-            ).pipe(
+            const retrying = yield* Ref.make(false);
+            const runSource = Effect.suspend(() =>
+              Stream.runForEach(
+                source,
+                Effect.fn("ViewServerClient.remote.subscription.receive")(function* (event) {
+                  yield* Ref.set(retrying, false);
+                  yield* offerRemoteEvent(queue, event, overflowStatus, closeLifecycle, topic);
+                }),
+              ),
+            );
+            const producer =
+              retryWhile === undefined
+                ? runSource
+                : runSource.pipe(
+                    Effect.tapError((error) =>
+                      retryWhile(error)
+                        ? Effect.gen(function* () {
+                            const alreadyRetrying = yield* Ref.getAndSet(retrying, true);
+                            if (!alreadyRetrying) {
+                              yield* offerRemoteEvent(
+                                queue,
+                                failureStatus(topic, error),
+                                overflowStatus,
+                                closeLifecycle,
+                                topic,
+                              );
+                            }
+                          })
+                        : Effect.void,
+                    ),
+                    Effect.retry({
+                      schedule: Schedule.spaced("500 millis"),
+                      while: retryWhile,
+                    }),
+                  );
+            yield* producer.pipe(
+              Effect.catch((error) =>
+                offerRemoteEvent(
+                  queue,
+                  failureStatus(topic, error),
+                  overflowStatus,
+                  closeLifecycle,
+                  topic,
+                ),
+              ),
               Effect.onExit((exit) => completeQueueFromProducerExit(queue, exit)),
               Effect.forkIn(scope, { startImmediately: true }),
               ignoreRemoteSubscriptionStreamStartFailure,

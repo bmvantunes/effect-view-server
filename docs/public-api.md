@@ -94,6 +94,25 @@ Source-free Topics accept Runtime Client and TCP mutations. Source-owned Topics
 reject direct publish, patch, delete, and reset according to the Source
 Ownership Policy.
 
+## Remote client
+
+Remote live-query, health-summary, and health-detail subscriptions automatically
+restart after a WebSocket transport interruption. Source-health subscriptions use
+a separate RPC and are not automatically retried. The logical subscription remains
+open while the client retries every 500 milliseconds without an attempt or duration
+limit. The first failed attempt in an outage emits a non-terminal `TransportError`
+status so consumers report the connection as disconnected while retrying. The restarted
+RPC stream begins with a fresh authoritative snapshot, which restores ready status;
+consumers maintaining their own accumulated view must replace it with that snapshot
+before applying later deltas. Query, validation, and other non-transport errors remain
+terminal. Calling the subscription's `close` operation or closing the client cancels any
+pending retry and releases the server subscription.
+
+`subscriptionBufferSize` bounds the local queue for each remote subscription.
+It defaults to `1024`; a non-positive or non-integer value is normalized to `1`.
+If the consumer cannot keep up, the subscription emits its typed backpressure
+status and closes instead of growing without bound.
+
 ## Schema value admission
 
 Use ordinary Effect Schema constructors for JSON-faithful values. The

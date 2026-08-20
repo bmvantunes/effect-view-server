@@ -11,6 +11,7 @@ import {
   Scope,
   Stream,
 } from "effect";
+import { TestClock } from "effect/testing";
 import type { StatusEvent } from "@effect-view-server/config";
 import type { ViewServerLiveEvent } from "./live-client";
 import { makeRemoteSubscription } from "./remote-subscription";
@@ -120,6 +121,133 @@ describe("remote subscription", () => {
       expect(openCount).toBe(1);
       expect(closeCount).toBe(1);
 
+      yield* Scope.close(clientScope, Exit.void);
+    }),
+  );
+
+  it.effect("restarts a failed source when its error is retryable", () =>
+    Effect.gen(function* () {
+      const clientScope = yield* Scope.make("parallel");
+      const firstAttempt = yield* Deferred.make<void>();
+      const secondAttempt = yield* Deferred.make<void>();
+      const thirdAttempt = yield* Deferred.make<void>();
+      let attempts = 0;
+      const source = Stream.unwrap(
+        Effect.gen(function* () {
+          attempts += 1;
+          if (attempts === 1) {
+            yield* Deferred.succeed(firstAttempt, undefined);
+            return Stream.fail("socket closed");
+          }
+          if (attempts === 2) {
+            yield* Deferred.succeed(secondAttempt, undefined);
+            return Stream.fail("socket closed");
+          }
+          if (attempts === 3) {
+            yield* Deferred.succeed(thirdAttempt, undefined);
+            return Stream.make(snapshot).pipe(Stream.concat(Stream.fail("socket closed")));
+          }
+          return Stream.make(snapshot);
+        }),
+      );
+      const subscription = yield* makeRemoteSubscription<Row, string>({
+        clientScope,
+        failureStatus,
+        overflowStatus,
+        retryWhile: (error) => error === "socket closed",
+        source,
+        subscriptionBufferSize: 2,
+        topic: "orders",
+      });
+      const eventFiber = yield* subscription.events.pipe(
+        Stream.take(4),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* Deferred.await(firstAttempt);
+      yield* Effect.yieldNow;
+      expect(attempts).toBe(1);
+      yield* TestClock.adjust("500 millis");
+      yield* Deferred.await(secondAttempt);
+      yield* Effect.yieldNow;
+      expect(attempts).toBe(2);
+      yield* TestClock.adjust("500 millis");
+      yield* Deferred.await(thirdAttempt);
+      yield* Effect.yieldNow;
+      expect(attempts).toBe(3);
+      yield* TestClock.adjust("500 millis");
+      const events = yield* Fiber.join(eventFiber);
+
+      expect({ attempts, events: Array.from(events) }).toStrictEqual({
+        attempts: 4,
+        events: [
+          failureStatus("orders", "socket closed"),
+          snapshot,
+          failureStatus("orders", "socket closed"),
+          snapshot,
+        ],
+      });
+      yield* subscription.close();
+      yield* Scope.close(clientScope, Exit.void);
+    }),
+  );
+
+  it.effect("maps a non-retryable source failure to one terminal status", () =>
+    Effect.gen(function* () {
+      const clientScope = yield* Scope.make("parallel");
+      let attempts = 0;
+      const subscription = yield* makeRemoteSubscription<Row, string>({
+        clientScope,
+        failureStatus,
+        overflowStatus,
+        retryWhile: () => false,
+        source: Stream.unwrap(
+          Effect.sync(() => {
+            attempts += 1;
+            return Stream.fail("invalid query");
+          }),
+        ),
+        subscriptionBufferSize: 2,
+        topic: "orders",
+      });
+
+      const events = yield* subscription.events.pipe(Stream.runCollect);
+
+      expect({ attempts, events: Array.from(events) }).toStrictEqual({
+        attempts: 1,
+        events: [failureStatus("orders", "invalid query")],
+      });
+      yield* Scope.close(clientScope, Exit.void);
+    }),
+  );
+
+  it.effect("stops a pending retry when the subscription closes", () =>
+    Effect.gen(function* () {
+      const clientScope = yield* Scope.make("parallel");
+      const firstAttempt = yield* Deferred.make<void>();
+      let attempts = 0;
+      const subscription = yield* makeRemoteSubscription<Row, string>({
+        clientScope,
+        failureStatus,
+        overflowStatus,
+        retryWhile: () => true,
+        source: Stream.unwrap(
+          Effect.gen(function* () {
+            attempts += 1;
+            yield* Deferred.succeed(firstAttempt, undefined);
+            return Stream.fail("socket closed");
+          }),
+        ),
+        subscriptionBufferSize: 2,
+        topic: "orders",
+      });
+
+      yield* Deferred.await(firstAttempt);
+      yield* subscription.close();
+      yield* TestClock.adjust("1 second");
+
+      expect(attempts).toBe(1);
       yield* Scope.close(clientScope, Exit.void);
     }),
   );

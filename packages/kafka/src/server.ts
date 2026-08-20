@@ -516,9 +516,11 @@ const processedRejection = (
   event,
 });
 
-const effectFailure = <Value>(
-  effect: Effect.Effect<Value, unknown>,
-  onFailure: () => Effect.Effect<
+const effectFailure = <Value, Error>(
+  effect: Effect.Effect<Value, Error>,
+  onFailure: (
+    failure: Error,
+  ) => Effect.Effect<
     import("effect-view-server/source-adapter").SourceItemRejection<
       KafkaAdapterFailure,
       KafkaSourceRejectionLocation
@@ -527,7 +529,7 @@ const effectFailure = <Value>(
   >,
 ): Effect.Effect<Processed<Value>, SourceExecutionFailure<KafkaAdapterFailure>> =>
   Effect.matchEffect(effect, {
-    onFailure: () => onFailure().pipe(Effect.map(processedRejection)),
+    onFailure: (failure) => onFailure(failure).pipe(Effect.map(processedRejection)),
     onSuccess: (value) => Effect.succeed(processedValue(value)),
   });
 
@@ -551,7 +553,17 @@ const schemaRegistrySides = (codecs: KafkaSchemaRegistryCodecs): ReadonlyArray<"
 const validateSchemaRegistryRecord = (
   registry: KafkaSchemaRegistryRuntime,
   input: KafkaSchemaRegistryRecordValidationInput,
-) => registry.validateRecord(input).pipe(Effect.mapError(adapterExecutionFailure));
+) =>
+  registry.validateRecord(input).pipe(
+    Effect.mapError((failure) =>
+      failure._tag === "KafkaSchemaRegistryRecordDecodeFailure"
+        ? {
+            ...failure,
+            failure: adapterExecutionFailure(failure.failure),
+          }
+        : adapterExecutionFailure(failure),
+    ),
+  );
 
 const decodeSchemaRegistryProtobufPayload = (
   codec: KafkaSchemaRegistryProtobufCodec,
@@ -585,19 +597,13 @@ const recordEvent = Effect.fn("KafkaSourceAdapter.record.event")(function* <
   const rejectDecode = (
     phase: Extract<KafkaRejectionPhase, "keyDecode" | "valueDecode" | "nullValue">,
     message: string,
+    failure: SourceExecutionFailure<KafkaAdapterFailure> = adapterExecutionFailure(
+      decodeFailure(region, sourceTopic, message),
+    ),
   ) =>
     regionConsumer.recordDecodeFailure.pipe(
       Effect.andThen(regionConsumer.recordRejection),
-      Effect.andThen(
-        rejection(
-          toolkit,
-          metadata,
-          record.settlement,
-          phase,
-          adapterExecutionFailure(decodeFailure(region, sourceTopic, message)),
-          message,
-        ),
-      ),
+      Effect.andThen(rejection(toolkit, metadata, record.settlement, phase, failure, message)),
     );
   const rejectMapping = (
     phase: Exclude<KafkaRejectionPhase, "keyDecode" | "valueDecode">,
@@ -628,19 +634,30 @@ const recordEvent = Effect.fn("KafkaSourceAdapter.record.event")(function* <
   if (record.key === null) {
     return yield* rejectDecode("keyDecode", "Kafka record key is required.");
   }
-  const registryPayloads =
+  const processedRegistryPayloads =
     registryCodecs.key === undefined && registryCodecs.value === undefined
-      ? undefined
-      : yield* validateSchemaRegistryRecord(
-          Option.getOrThrow(Option.fromUndefinedOr(schemaRegistry)),
-          {
+      ? processedValue(undefined)
+      : yield* effectFailure(
+          validateSchemaRegistryRecord(Option.getOrThrow(Option.fromUndefinedOr(schemaRegistry)), {
             viewServerTopic: toolkit.topic,
             sourceTopic,
             sides: registrySides,
             key: registryCodecs.key === undefined ? null : record.key,
             value: registryCodecs.value === undefined ? null : record.value,
-          },
+          }),
+          (failure) =>
+            failure._tag === "KafkaSchemaRegistryRecordDecodeFailure"
+              ? rejectDecode(
+                  failure.side === "key" ? "keyDecode" : "valueDecode",
+                  failure.failure.failure.message,
+                  failure.failure,
+                )
+              : Effect.fail(failure),
         );
+  if (processedRegistryPayloads._tag === "Rejected") {
+    return processedRegistryPayloads.event;
+  }
+  const registryPayloads = processedRegistryPayloads.value;
   const registryKeyPayload = registryPayloads?.key;
   // Compaction identity owns an immutable snapshot that application codecs can never mutate.
   const serializedKeyBytes =

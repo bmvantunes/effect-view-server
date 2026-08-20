@@ -753,6 +753,7 @@ export const resolveKafkaSchemaRegistryContracts = Effect.fn(
 
 export type KafkaSchemaRegistryFrameMismatch = {
   readonly _tag: "Mismatch";
+  readonly reason: "frame" | "schema";
   readonly schemaId: number | null;
   readonly message: string;
 };
@@ -769,9 +770,18 @@ export const validateKafkaSchemaRegistryFrame = (
 ): KafkaSchemaRegistryFrameMismatch | KafkaSchemaRegistryValidatedFrame => {
   const frame = parseKafkaSchemaRegistryProtobufFrame(bytes);
   if (frame._tag === "KafkaSchemaRegistryFrameParseFailure") {
+    if (frame.schemaId !== null && !contract.schemaIds.has(frame.schemaId)) {
+      return {
+        _tag: "Mismatch",
+        reason: "schema",
+        schemaId: frame.schemaId,
+        message: `Schema ID ${String(frame.schemaId)} is not an active validated version of subject ${JSON.stringify(contract.subject)}.`,
+      };
+    }
     return {
       _tag: "Mismatch",
-      schemaId: null,
+      reason: "frame",
+      schemaId: frame.schemaId,
       message: frame.message,
     };
   }
@@ -779,6 +789,7 @@ export const validateKafkaSchemaRegistryFrame = (
   if (allowed === undefined) {
     return {
       _tag: "Mismatch",
+      reason: "schema",
       schemaId: frame.schemaId,
       message: `Schema ID ${String(frame.schemaId)} is not an active validated version of subject ${JSON.stringify(contract.subject)}.`,
     };
@@ -786,6 +797,7 @@ export const validateKafkaSchemaRegistryFrame = (
   if (!allowed.some((indexes) => sameIndexes(indexes, frame.messageIndexes))) {
     return {
       _tag: "Mismatch",
+      reason: "schema",
       schemaId: frame.schemaId,
       message: `Schema ID ${String(frame.schemaId)} selected a protobuf message that does not match ${JSON.stringify(contract.descriptor.typeName)}.`,
     };

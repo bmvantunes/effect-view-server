@@ -16,6 +16,7 @@ describe("Confluent Schema Registry Protobuf framing", () => {
   it("reports every malformed frame shape at the parser boundary", () => {
     const malformedFrames = [
       Uint8Array.from([]),
+      Uint8Array.from([0, 0, 0, 0, 99]),
       Uint8Array.from([1, 0, 0, 0, 42, 0]),
       Uint8Array.from([0, 0, 0, 0, 42, 0x80]),
       Uint8Array.from([0, 0, 0, 0, 42, 2]),
@@ -33,63 +34,82 @@ describe("Confluent Schema Registry Protobuf framing", () => {
     expect(malformedFrames.map(parseKafkaSchemaRegistryProtobufFrame)).toStrictEqual([
       {
         _tag: "KafkaSchemaRegistryFrameParseFailure",
+        schemaId: null,
         message:
           "Confluent Schema Registry Protobuf frame is shorter than its six-byte minimum prefix.",
       },
       {
         _tag: "KafkaSchemaRegistryFrameParseFailure",
+        schemaId: 99,
+        message:
+          "Confluent Schema Registry Protobuf frame is shorter than its six-byte minimum prefix.",
+      },
+      {
+        _tag: "KafkaSchemaRegistryFrameParseFailure",
+        schemaId: null,
         message:
           "Confluent Schema Registry Protobuf frame uses unsupported payload-prefix version 1.",
       },
       {
         _tag: "KafkaSchemaRegistryFrameParseFailure",
+        schemaId: 42,
         message:
           "Confluent Schema Registry Protobuf frame contains a truncated message-index varint.",
       },
       {
         _tag: "KafkaSchemaRegistryFrameParseFailure",
+        schemaId: 42,
         message:
           "Confluent Schema Registry Protobuf frame declares more message indexes than the payload contains.",
       },
       {
         _tag: "KafkaSchemaRegistryFrameParseFailure",
+        schemaId: 42,
         message: "Confluent Schema Registry Protobuf frame contains a negative message index.",
       },
       {
         _tag: "KafkaSchemaRegistryFrameParseFailure",
+        schemaId: null,
         message: "Confluent Schema Registry Protobuf frame contains an invalid schema ID.",
       },
       {
         _tag: "KafkaSchemaRegistryFrameParseFailure",
+        schemaId: null,
         message: "Confluent Schema Registry Protobuf frame contains an invalid schema ID.",
       },
       {
         _tag: "KafkaSchemaRegistryFrameParseFailure",
+        schemaId: 42,
         message:
           "Confluent Schema Registry Protobuf frame contains an overflowing message-index varint.",
       },
       {
         _tag: "KafkaSchemaRegistryFrameParseFailure",
+        schemaId: 42,
         message:
           "Confluent Schema Registry Protobuf frame contains a message-index varint longer than five bytes.",
       },
       {
         _tag: "KafkaSchemaRegistryFrameParseFailure",
+        schemaId: 42,
         message:
           "Confluent Schema Registry Protobuf frame contains a negative message-index count.",
       },
       {
         _tag: "KafkaSchemaRegistryFrameParseFailure",
+        schemaId: 42,
         message:
           "Confluent Schema Registry Protobuf frame declares more message indexes than the payload contains.",
       },
       {
         _tag: "KafkaSchemaRegistryFrameParseFailure",
+        schemaId: 42,
         message:
           "Confluent Schema Registry Protobuf frame contains a truncated message-index varint.",
       },
       {
         _tag: "KafkaSchemaRegistryFrameParseFailure",
+        schemaId: 42,
         message:
           "Confluent Schema Registry Protobuf frame contains an overflowing message-index varint.",
       },

@@ -466,6 +466,7 @@ type KafkaMutableRegionMetrics = {
 type KafkaBindingState = {
   readonly committedPartitions: Set<number>;
   initial: KafkaInitialPosition | undefined;
+  partitionGrowthPending: boolean;
   readonly metrics: KafkaMutableRegionMetrics;
   attempts: bigint;
 };
@@ -1591,6 +1592,19 @@ const resolveInitial = Effect.fn("KafkaNode.offsets.initial")(function* (
   };
 });
 
+const mergeInitialPartitions = (
+  frozen: KafkaInitialPosition,
+  resolved: KafkaInitialPosition,
+): KafkaInitialPosition => {
+  const frozenOffsets = new Map(frozen.offsets.map((offset) => [offset.partition, offset]));
+  return {
+    offsets: Object.freeze(
+      resolved.offsets.map((offset) => frozenOffsets.get(offset.partition) ?? offset),
+    ),
+    latestOffsets: resolved.latestOffsets,
+  };
+};
+
 const activeOffsets = Effect.fn("KafkaNode.offsets.active")(function* (
   consumer: KafkaConsumer,
   input: KafkaServerRegionAcquireInput,
@@ -1812,6 +1826,7 @@ const makeNodeRegion = (regionOptions: KafkaNodeRegionSnapshot): KafkaServerRegi
       attempts: 0n,
       committedPartitions: new Set(),
       initial: undefined,
+      partitionGrowthPending: false,
       metrics: emptyMutableMetrics(),
     };
     states.set(key, state);
@@ -1832,10 +1847,15 @@ const makeNodeRegion = (regionOptions: KafkaNodeRegionSnapshot): KafkaServerRegi
       makeResolverConsumer(regionOptions, input.activeGroupId, input),
       (current) => closeConsumer(current, input, metrics, attempt),
     );
-    const initial =
-      state.initial ?? (yield* resolveInitial(regionOptions, input, consumer, metrics, attempt));
-    if (state.initial === undefined) {
+    let initial = state.initial;
+    if (initial === undefined) {
+      initial = yield* resolveInitial(regionOptions, input, consumer, metrics, attempt);
       state.initial = initial;
+    } else if (state.partitionGrowthPending) {
+      const resolved = yield* resolveInitial(regionOptions, input, consumer, metrics, attempt);
+      initial = mergeInitialPartitions(initial, resolved);
+      state.initial = initial;
+      state.partitionGrowthPending = false;
     }
     const offsets = isRetry
       ? yield* activeOffsets(consumer, input, initial, state.committedPartitions)
@@ -1848,7 +1868,7 @@ const makeNodeRegion = (regionOptions: KafkaNodeRegionSnapshot): KafkaServerRegi
     const resolvedPartitions = new Set(offsets.map((offset) => offset.partition));
     const signalPartitionGrowth = (): KafkaAdapterFailure => {
       const failure = partitionGrowthFailure(input);
-      state.initial = undefined;
+      state.partitionGrowthPending = true;
       Deferred.doneUnsafe(assignedPartitionOutsideResolvedOffsets, Effect.fail(failure));
       return failure;
     };

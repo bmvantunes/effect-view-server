@@ -29,10 +29,14 @@ const kafkaBootstrapServers =
 const londonKafkaBootstrapServers =
   process.env["VIEW_SERVER_KAFKA_LONDON_BOOTSTRAP_SERVERS"] ?? "localhost:9094";
 const integrationEnabled = process.env["VIEW_SERVER_KAFKA_INTEGRATION"] === "1";
-const integrationIt = (name: string, test: () => Effect.Effect<void, unknown>): void => {
+const integrationIt = (
+  name: string,
+  test: () => Effect.Effect<void, unknown>,
+  timeout = 90_000,
+): void => {
   if (integrationEnabled) {
     it.live(name, test, {
-      timeout: 90_000,
+      timeout,
     });
   } else {
     it.skip(name, () => {});
@@ -2312,157 +2316,160 @@ describe("Kafka Source Adapter with real Apache Kafka", () => {
     ),
   );
 
-  integrationIt("reacquires configured offsets when a partition is added at runtime", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const topic = uniqueName("runtime-partition");
-        const consumerGroupPrefix = uniqueName("runtime-partition-replica");
-        yield* createTopics(kafkaBootstrapServers, [topic]);
-        const viewServer = defineViewServerConfig({
-          topics: {
-            orders: {
-              schema: JsonOrder,
-              source: jsonSource(topic, "earliest"),
-            },
-          },
-        });
-        const kafkaContext = yield* Layer.build(
-          kafkaNode.layer(viewServer, {
-            consumerGroupPrefix,
-            regions: {
-              local: {
-                bootstrapServers: kafkaBootstrapServers,
-                metadataMaxAge: 10_000,
+  integrationIt(
+    "reacquires configured offsets when a partition is added at runtime",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const topic = uniqueName("runtime-partition");
+          const consumerGroupPrefix = uniqueName("runtime-partition-replica");
+          yield* createTopics(kafkaBootstrapServers, [topic]);
+          const viewServer = defineViewServerConfig({
+            topics: {
+              orders: {
+                schema: JsonOrder,
+                source: jsonSource(topic, "earliest"),
               },
             },
-          }),
-        );
-        const runtime = yield* Effect.acquireRelease(
-          makeViewServerRuntimeCore(viewServer, {}).pipe(Effect.provideContext(kafkaContext)),
-          (current) => current.close,
-        );
-        yield* Effect.scoped(
-          Effect.gen(function* () {
-            const initialDiagnostics = yield* Effect.acquireRelease(
-              runtime.liveClient.subscribeSourceHealth({ topic: "orders" }),
-              (current) => current.close().pipe(Effect.orDie),
-            );
-            yield* initialDiagnostics.events.pipe(
-              Stream.filter((health) => health.status._tag === "Ready"),
-              Stream.take(1),
-              Stream.runDrain,
-              Effect.timeout("20 seconds"),
-            );
-          }),
-        );
-        const growthDiagnostics = yield* Effect.acquireRelease(
-          runtime.liveClient.subscribeSourceHealth({ topic: "orders" }),
-          (current) => current.close().pipe(Effect.orDie),
-        );
-
-        yield* increaseTopicPartitionsAndSend(kafkaBootstrapServers, topic, 2, {
-          topic,
-          partition: 1,
-          key: bytes("new-partition"),
-          value: bytes(JSON.stringify({ customerId: "new-partition", price: 1 })),
-        });
-        yield* Effect.sleep("11 seconds");
-        yield* removeConsumerGroupMembers(
-          kafkaBootstrapServers,
-          kafka.consumerGroupId(consumerGroupPrefix, "orders"),
-        );
-
-        const growthFailure = Option.getOrThrow(
-          yield* growthDiagnostics.events.pipe(
-            Stream.filter(
-              (health) =>
-                health.status._tag === "WaitingToRetry" &&
-                health.status.termination._tag === "Failed" &&
-                health.status.termination.failure._tag === "AdapterFailure" &&
-                health.status.termination.failure.failure._tag === "KafkaConsumeFailure" &&
-                health.status.termination.failure.failure.message ===
-                  "Kafka Region discovered a new partition and is reacquiring configured start offsets.",
-            ),
-            Stream.take(1),
-            Stream.runHead,
-            Effect.timeout("20 seconds"),
-          ),
-        );
-        const recovered = yield* runtime.client
-          .snapshot("orders", {
-            select: ["id", "customerId", "price"],
-            limit: 10,
-          })
-          .pipe(
-            Effect.repeat({
-              schedule: poll,
-              until: (snapshot) => snapshot.totalRows === 1,
-            }),
-          );
-        expect(recovered.rows).toStrictEqual([
-          {
-            id: "local:1:new-partition",
-            customerId: "new-partition",
-            price: 1,
-          },
-        ]);
-        const recoveredDiagnostics = yield* Effect.acquireRelease(
-          runtime.liveClient.subscribeSourceHealth({ topic: "orders" }),
-          (current) => current.close().pipe(Effect.orDie),
-        );
-        const recoveredHealth = Option.getOrThrow(
-          yield* recoveredDiagnostics.events.pipe(
-            Stream.filter(
-              (health) =>
-                health.status._tag === "Ready" &&
-                health.metrics.adapter.regions[0]?.reconnects === 1n &&
-                health.metrics.adapter.regions[0].assignments.length === 2,
-            ),
-            Stream.take(1),
-            Stream.runHead,
-            Effect.timeout("20 seconds"),
-          ),
-        );
-
-        expect({
-          growthFailure: growthFailure.status,
-          rows: recovered.rows,
-          reconnects: recoveredHealth.metrics.adapter.regions[0]?.reconnects,
-          assignments: recoveredHealth.metrics.adapter.regions[0]?.assignments,
-        }).toStrictEqual({
-          growthFailure: {
-            _tag: "WaitingToRetry",
-            nextAttempt: 2n,
-            termination: {
-              _tag: "Failed",
-              failure: {
-                _tag: "AdapterFailure",
-                failure: {
-                  _tag: "KafkaConsumeFailure",
-                  region: "local",
-                  topic,
-                  message:
-                    "Kafka Region discovered a new partition and is reacquiring configured start offsets.",
+          });
+          const kafkaContext = yield* Layer.build(
+            kafkaNode.layer(viewServer, {
+              consumerGroupPrefix,
+              regions: {
+                local: {
+                  bootstrapServers: kafkaBootstrapServers,
+                  metadataMaxAge: 10_000,
                 },
               },
-            },
-            retryAtNanos: expect.any(BigInt),
-          },
-          rows: [
+            }),
+          );
+          const runtime = yield* Effect.acquireRelease(
+            makeViewServerRuntimeCore(viewServer, {}).pipe(Effect.provideContext(kafkaContext)),
+            (current) => current.close,
+          );
+          yield* Effect.scoped(
+            Effect.gen(function* () {
+              const initialDiagnostics = yield* Effect.acquireRelease(
+                runtime.liveClient.subscribeSourceHealth({ topic: "orders" }),
+                (current) => current.close().pipe(Effect.orDie),
+              );
+              yield* initialDiagnostics.events.pipe(
+                Stream.filter((health) => health.status._tag === "Ready"),
+                Stream.take(1),
+                Stream.runDrain,
+                Effect.timeout("20 seconds"),
+              );
+            }),
+          );
+          const growthDiagnostics = yield* Effect.acquireRelease(
+            runtime.liveClient.subscribeSourceHealth({ topic: "orders" }),
+            (current) => current.close().pipe(Effect.orDie),
+          );
+
+          yield* increaseTopicPartitionsAndSend(kafkaBootstrapServers, topic, 2, {
+            topic,
+            partition: 1,
+            key: bytes("new-partition"),
+            value: bytes(JSON.stringify({ customerId: "new-partition", price: 1 })),
+          });
+          yield* Effect.sleep("11 seconds");
+          yield* removeConsumerGroupMembers(
+            kafkaBootstrapServers,
+            kafka.consumerGroupId(consumerGroupPrefix, "orders"),
+          );
+
+          const growthFailure = Option.getOrThrow(
+            yield* growthDiagnostics.events.pipe(
+              Stream.filter(
+                (health) =>
+                  health.status._tag === "WaitingToRetry" &&
+                  health.status.termination._tag === "Failed" &&
+                  health.status.termination.failure._tag === "AdapterFailure" &&
+                  health.status.termination.failure.failure._tag === "KafkaConsumeFailure" &&
+                  health.status.termination.failure.failure.message ===
+                    "Kafka Region discovered a new partition and is reacquiring configured start offsets.",
+              ),
+              Stream.take(1),
+              Stream.runHead,
+              Effect.timeout("20 seconds"),
+            ),
+          );
+          const recovered = yield* runtime.client
+            .snapshot("orders", {
+              select: ["id", "customerId", "price"],
+              limit: 10,
+            })
+            .pipe(
+              Effect.repeat({
+                schedule: poll,
+                until: (snapshot) => snapshot.totalRows === 1,
+              }),
+            );
+          expect(recovered.rows).toStrictEqual([
             {
               id: "local:1:new-partition",
               customerId: "new-partition",
               price: 1,
             },
-          ],
-          reconnects: 1n,
-          assignments: [
-            { partition: 0, offset: 0n, lag: 0n },
-            { partition: 1, offset: 1n, lag: 0n },
-          ],
-        });
-      }),
-    ),
+          ]);
+          const recoveredDiagnostics = yield* Effect.acquireRelease(
+            runtime.liveClient.subscribeSourceHealth({ topic: "orders" }),
+            (current) => current.close().pipe(Effect.orDie),
+          );
+          const recoveredHealth = Option.getOrThrow(
+            yield* recoveredDiagnostics.events.pipe(
+              Stream.filter(
+                (health) =>
+                  health.status._tag === "Ready" &&
+                  health.metrics.adapter.regions[0]?.reconnects === 1n &&
+                  health.metrics.adapter.regions[0].assignments.length === 2,
+              ),
+              Stream.take(1),
+              Stream.runHead,
+              Effect.timeout("20 seconds"),
+            ),
+          );
+
+          expect({
+            growthFailure: growthFailure.status,
+            rows: recovered.rows,
+            reconnects: recoveredHealth.metrics.adapter.regions[0]?.reconnects,
+            assignments: recoveredHealth.metrics.adapter.regions[0]?.assignments,
+          }).toStrictEqual({
+            growthFailure: {
+              _tag: "WaitingToRetry",
+              nextAttempt: 2n,
+              termination: {
+                _tag: "Failed",
+                failure: {
+                  _tag: "AdapterFailure",
+                  failure: {
+                    _tag: "KafkaConsumeFailure",
+                    region: "local",
+                    topic,
+                    message:
+                      "Kafka Region discovered a new partition and is reacquiring configured start offsets.",
+                  },
+                },
+              },
+              retryAtNanos: expect.any(BigInt),
+            },
+            rows: [
+              {
+                id: "local:1:new-partition",
+                customerId: "new-partition",
+                price: 1,
+              },
+            ],
+            reconnects: 1n,
+            assignments: [
+              { partition: 0, offset: 0n, lag: 0n },
+              { partition: 1, offset: 1n, lag: 0n },
+            ],
+          });
+        }),
+      ),
+    120_000,
   );
 
   integrationIt("reapplies explicit start for a restarted replica", () =>

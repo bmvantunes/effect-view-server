@@ -2305,6 +2305,45 @@ describe("Kafka Node Adapter", () => {
     }),
   );
 
+  it.effect("preserves frozen offsets when group assignment discovers a partition", () =>
+    Effect.gen(function* () {
+      platformatic.state.offsetsByTimestamp.set(-1n, [100n]);
+      platformatic.state.committedByGroup.set("replica:orders", []);
+      const config = makeConfig("latest", Schedule.spaced("10 seconds"));
+      const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(
+        Effect.provide(
+          layer(config, {
+            consumerGroupPrefix: "replica",
+            regions: {
+              eu: { bootstrapServers: "one:9092" },
+            },
+          }),
+        ),
+      );
+      yield* awaitCondition(() => platformatic.state.streams.length === 1);
+      const diagnostics = yield* runtime.liveClient.subscribeSourceHealth({ topic: "orders" });
+      platformatic.state.offsetsByTimestamp.set(-1n, [150n, 200n]);
+      const active = Option.getOrThrow(Option.fromUndefinedOr(platformatic.state.consumers[0]));
+      active.assignments = [{ topic: "source-orders", partitions: [0, 1] }];
+      active.emit("consumer:group:join", {});
+
+      yield* diagnostics.events.pipe(
+        Stream.filter((health) => health.status._tag === "WaitingToRetry"),
+        Stream.take(1),
+        Stream.runDrain,
+      );
+      yield* TestClock.adjust("10 seconds");
+      yield* awaitCondition(() => platformatic.state.streams.length === 2);
+      expect(platformatic.state.consumeCalls[1]?.input.offsets).toStrictEqual([
+        { topic: "source-orders", partition: 0, offset: 100n },
+        { topic: "source-orders", partition: 1, offset: 200n },
+      ]);
+
+      yield* diagnostics.close();
+      yield* runtime.close;
+    }),
+  );
+
   it.effect(
     "applies latest and fail timestamp fallbacks and rejects incomplete offset vectors",
     () =>

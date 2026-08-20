@@ -270,10 +270,11 @@ on `kafka`.
 Resolved offsets are frozen for retries within the same Topic lifetime. If a
 consumer assignment discovers a partition absent from that frozen map, the
 adapter publishes a typed `KafkaConsumeFailure`, terminates the Source Attempt,
-and reacquires the complete partition set. Existing partitions resume from the
-active adapter group's committed offsets; newly discovered partitions resolve
-the configured `startFrom` policy. A `durationAgo` source keeps its original
-lifetime-fixed timestamp during this reacquisition. The active group ID is
+and reacquires partition metadata to expand the map. Existing uncommitted
+partitions retain their original frozen offsets, existing committed partitions
+resume from the active adapter group's commits, and newly discovered partitions
+resolve the configured `startFrom` policy. A `durationAgo` source keeps its
+original lifetime-fixed timestamp during this reacquisition. The active group ID is
 derived from `consumerGroupPrefix` plus the View Server Topic name—not the Kafka
 topic—so two Topic bindings cannot accidentally share progress. The
 percent-encoded ID must fit Kafka's 32,767-byte protocol-string ceiling and is

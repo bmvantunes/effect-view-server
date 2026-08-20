@@ -1,6 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { reactCompilerForExample } from "../examples/vite.config.shared";
 
 const exampleDirectories = [
   "combined-sources-react",
@@ -17,6 +18,16 @@ const routeTreePaths = exampleDirectories.map(
 const readRouteTrees = () => routeTreePaths.map((path) => readFileSync(path, "utf8"));
 
 describe("example route cleanup policy", () => {
+  it("compiles application sources outside Vitest coverage instrumentation", () => {
+    expect(reactCompilerForExample({ command: "build", mode: "production" })).toStrictEqual({
+      sources: ["/examples/"],
+    });
+    expect(reactCompilerForExample({ command: "serve", mode: "development" })).toStrictEqual({
+      sources: ["/examples/"],
+    });
+    expect(reactCompilerForExample({ command: "serve", mode: "test" })).toBe(false);
+  });
+
   it("keeps cleanup local to each independently runnable example", () => {
     expect(
       exampleDirectories.map((directory) => {

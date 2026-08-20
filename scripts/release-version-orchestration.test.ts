@@ -73,7 +73,6 @@ const initialWorkspace = [
   "overrides:",
   '  "@effect-view-server/grpc>effect-view-server": "workspace:0.0.6"',
   '  "@effect-view-server/kafka>effect-view-server": "workspace:0.0.6"',
-  '  "@babel/core": "7.29.7"',
   "",
 ].join("\n");
 
@@ -222,7 +221,6 @@ describe("release version orchestration", () => {
         "overrides:",
         '  "@effect-view-server/grpc>effect-view-server": "workspace:0.1.0"',
         '  "@effect-view-server/kafka>effect-view-server": "workspace:0.1.0"',
-        '  "@babel/core": "7.29.7"',
         "",
       ].join("\n"),
     });

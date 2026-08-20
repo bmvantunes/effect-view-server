@@ -37,18 +37,18 @@ catalog:
   "@tanstack/react-start": 1.168.44
   "@tanstack/router-cli": 1.167.28
   "@tanstack/router-plugin": 1.168.30
-  "@vitejs/plugin-react": 6.0.5
+  "@vitejs/plugin-react": 6.1.0
   tailwindcss: 4.3.3
   tsx: 4.23.12
   "@changesets/cli": 3.0.0
   markdown-it: ^15.0.0
   tar: ^7.5.22
-  oxlint: 1.78.0
-  "@oxlint/plugins": 1.78.0
+  oxlint: 1.79.0
+  "@oxlint/plugins": 1.79.0
+  oxc-transform-react: 0.145.0
 overrides:
   "@effect-view-server/grpc>effect-view-server": "workspace:0.0.6"
   "@effect-view-server/kafka>effect-view-server": "workspace:0.0.6"
-  "@babel/core": 7.29.7
   undici: 8.5.0
   vite: npm:@voidzero-dev/vite-plus-core@0.2.8
 peerDependencyRules:
@@ -79,3 +79,4 @@ minimumReleaseAgeExclude:
   - "@tanstack/start-plugin-core@1.171.34"
   - "@tanstack/start-server-core@1.169.26"
   - "@tanstack/start-storage-context@1.167.24"
+  - "@vitejs/plugin-react@6.1.0"

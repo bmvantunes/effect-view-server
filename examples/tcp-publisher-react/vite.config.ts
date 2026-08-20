@@ -5,7 +5,8 @@ import { adaptTanStackStart, defineTanStackReactExampleConfig } from "../vite.co
 
 export default defineTanStackReactExampleConfig({
   createTanStackStartPlugins: adaptTanStackStart(tanstackStart),
-  plugins: (tanStackStartPlugins) => [tailwindcss(), tanStackStartPlugins, viteReact()],
+  createTailwindPlugin: tailwindcss,
+  createReactPlugins: viteReact,
   browserProvider: playwright(),
   enforceAllSourceCoverage: true,
   includeNodeTests: true,

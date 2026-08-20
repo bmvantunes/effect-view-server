@@ -1,13 +1,16 @@
 import { defineConfig, lazyPlugins, type PluginOption, type TestUserConfig } from "vite-plus";
 import type { BrowserProviderOption } from "vite-plus/test/node";
 
-interface ExampleRouteGenerationRuntime {
+interface ExampleViteEnvironment {
   readonly command: "build" | "serve";
   readonly mode: string;
 }
 
-const shouldGenerateExampleRoutes = ({ command, mode }: ExampleRouteGenerationRuntime): boolean =>
+const shouldGenerateExampleRoutes = ({ command, mode }: ExampleViteEnvironment): boolean =>
   !(command === "serve" && mode === "test");
+
+export const reactCompilerForExample = ({ command, mode }: ExampleViteEnvironment) =>
+  command === "serve" && mode === "test" ? false : { sources: ["/examples/"] };
 
 type TanStackStartPluginFactory = (enableRouteGeneration: boolean) => Array<PluginOption>;
 
@@ -22,12 +25,15 @@ export const adaptTanStackStart =
 
 const createExampleTanStackStartPlugins = (
   tanstackStart: TanStackStartPluginFactory,
-  environment: ExampleRouteGenerationRuntime,
+  environment: ExampleViteEnvironment,
 ): Array<PluginOption> => tanstackStart(shouldGenerateExampleRoutes(environment));
 
 interface TanStackReactExampleConfigOptions {
   readonly createTanStackStartPlugins: TanStackStartPluginFactory;
-  readonly plugins: (tanStackStartPlugins: Array<PluginOption>) => Array<PluginOption>;
+  readonly createTailwindPlugin: () => PluginOption;
+  readonly createReactPlugins: (options: {
+    readonly compiler: ReturnType<typeof reactCompilerForExample>;
+  }) => Array<PluginOption>;
   readonly browserProvider: BrowserProviderOption;
   readonly enforceAllSourceCoverage?: boolean;
   readonly includeNodeTests?: boolean;
@@ -53,7 +59,8 @@ const exactAllSourceCoverage = {
 
 export const defineTanStackReactExampleConfig = ({
   createTanStackStartPlugins,
-  plugins,
+  createTailwindPlugin,
+  createReactPlugins,
   browserProvider,
   enforceAllSourceCoverage,
   includeNodeTests,
@@ -70,9 +77,11 @@ export const defineTanStackReactExampleConfig = ({
       ],
       exclude: ["@tanstack/react-router", "@tanstack/react-start", "@tanstack/router-plugin"],
     },
-    plugins: lazyPlugins(() =>
-      plugins(createExampleTanStackStartPlugins(createTanStackStartPlugins, environment)),
-    ),
+    plugins: lazyPlugins(() => [
+      createTailwindPlugin(),
+      createExampleTanStackStartPlugins(createTanStackStartPlugins, environment),
+      createReactPlugins({ compiler: reactCompilerForExample(environment) }),
+    ]),
     test: {
       include: ["src/**/*.test.ts"],
       typecheck: {

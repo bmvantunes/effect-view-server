@@ -1659,6 +1659,25 @@ const mergeInitialPartitions = (
   };
 };
 
+const conservativeLatestGrowthOffsets = (
+  pendingPartitionGrowthOffsets: ReadonlyMap<number, bigint | null>,
+  latestResolvedPartitions: ReadonlySet<number>,
+  earliestOffsets: ReadonlyArray<bigint>,
+): Map<number, bigint | null> | undefined => {
+  const pendingOffsets = new Map(pendingPartitionGrowthOffsets);
+  for (const [partition, offset] of pendingPartitionGrowthOffsets) {
+    if (offset !== null || !latestResolvedPartitions.has(partition)) {
+      continue;
+    }
+    const earliestOffset = earliestOffsets[partition];
+    if (earliestOffset === undefined || earliestOffset < 0n) {
+      return undefined;
+    }
+    pendingOffsets.set(partition, earliestOffset);
+  }
+  return pendingOffsets;
+};
+
 const activeOffsets = Effect.fn("KafkaNode.offsets.active")(function* (
   consumer: KafkaConsumer,
   input: KafkaServerRegionAcquireInput,
@@ -1904,9 +1923,32 @@ const makeNodeRegion = (regionOptions: KafkaNodeRegionSnapshot): KafkaServerRegi
     const expandPendingPartitionGrowth = Effect.fn("KafkaNode.offsets.growth.expand")(function* (
       frozen: KafkaResolvedInitialPosition,
       pendingPartitionGrowthOffsets: Map<number, bigint | null>,
+      useConservativeLatestFloor: boolean,
     ) {
       const resolved = yield* resolveInitial(regionOptions, input, consumer, metrics, attempt);
-      const expanded = mergeInitialPartitions(frozen, resolved, pendingPartitionGrowthOffsets);
+      let pendingOffsets = pendingPartitionGrowthOffsets;
+      if (
+        useConservativeLatestFloor &&
+        [...pendingPartitionGrowthOffsets].some(
+          ([partition, offset]) =>
+            offset === null && resolved.latestResolvedPartitions.has(partition),
+        )
+      ) {
+        const earliestOffsets = offsetsForTopic(
+          yield* listOffsets(consumer, input, -2n),
+          input.sourceTopic,
+        );
+        const conservativeOffsets = conservativeLatestGrowthOffsets(
+          pendingPartitionGrowthOffsets,
+          resolved.latestResolvedPartitions,
+          earliestOffsets,
+        );
+        if (conservativeOffsets === undefined) {
+          return yield* Effect.fail(acquisitionFailure(input));
+        }
+        pendingOffsets = conservativeOffsets;
+      }
+      const expanded = mergeInitialPartitions(frozen, resolved, pendingOffsets);
       state.initial = expanded;
       const resolvedPartitions = new Set(resolved.offsets.map((offset) => offset.partition));
       const unresolvedPartitionGrowthOffsets = new Map(
@@ -1918,8 +1960,29 @@ const makeNodeRegion = (regionOptions: KafkaNodeRegionSnapshot): KafkaServerRegi
         unresolvedPartitionGrowthOffsets.size === 0 ? undefined : unresolvedPartitionGrowthOffsets;
       return {
         initial: expanded,
-        complete: state.pendingPartitionGrowthOffsets === undefined,
+        pendingPartitionGrowthOffsets: state.pendingPartitionGrowthOffsets,
       };
+    });
+    const resolvePendingPartitionGrowthBeforeFailure = Effect.fn(
+      "KafkaNode.offsets.growth.resolveBeforeFailure",
+    )(function* (
+      frozen: KafkaResolvedInitialPosition,
+      pendingPartitionGrowthOffsets: Map<number, bigint | null>,
+    ) {
+      let current = frozen;
+      let pending = pendingPartitionGrowthOffsets;
+      for (let resolution = 0; resolution < 10; resolution += 1) {
+        const expansion = yield* expandPendingPartitionGrowth(current, pending, false);
+        current = expansion.initial;
+        if (expansion.pendingPartitionGrowthOffsets === undefined) {
+          return current;
+        }
+        pending = expansion.pendingPartitionGrowthOffsets;
+        if (resolution < 9) {
+          yield* Effect.sleep("100 millis");
+        }
+      }
+      return yield* Effect.fail(partitionGrowthFailure(input));
     });
     let initial = state.initial;
     if (initial === undefined) {
@@ -1929,9 +1992,10 @@ const makeNodeRegion = (regionOptions: KafkaNodeRegionSnapshot): KafkaServerRegi
       const expansion = yield* expandPendingPartitionGrowth(
         initial,
         state.pendingPartitionGrowthOffsets,
+        true,
       );
       initial = expansion.initial;
-      if (!expansion.complete) {
+      if (expansion.pendingPartitionGrowthOffsets !== undefined) {
         return yield* Effect.fail(partitionGrowthFailure(input));
       }
     }
@@ -2027,7 +2091,9 @@ const makeNodeRegion = (regionOptions: KafkaNodeRegionSnapshot): KafkaServerRegi
     const records = recordsFromConsumer.pipe(
       Stream.interruptWhen(
         Deferred.await(partitionGrowthSignal).pipe(
-          Effect.flatMap((pendingOffsets) => expandPendingPartitionGrowth(initial, pendingOffsets)),
+          Effect.flatMap((pendingOffsets) =>
+            resolvePendingPartitionGrowthBeforeFailure(initial, pendingOffsets),
+          ),
           Effect.andThen(Effect.fail(partitionGrowthFailure(input))),
         ),
       ),
@@ -2436,6 +2502,7 @@ export const kafkaNodeInternals = Object.freeze({
   bootstrapServers,
   capturedRetentionPolicy,
   commitFailure,
+  conservativeLatestGrowthOffsets,
   configValue,
   consumeFailure,
   copyTlsValue,

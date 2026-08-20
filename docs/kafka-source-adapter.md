@@ -272,7 +272,10 @@ consumer assignment discovers a partition absent from that frozen map, the
 adapter resolves and expands the frozen map inside the current Source Attempt,
 then publishes a typed `KafkaConsumeFailure` and terminates before entering
 supervision delay. This prevents an effective `latest` boundary from advancing
-past records appended during that delay.
+past records appended during that delay. Resolution is bounded so persistently
+stale metadata still produces the visible typed failure; when the boundary
+remains unavailable, reacquisition conservatively starts that new effective
+`latest` partition at its earliest retained offset.
 Existing uncommitted partitions retain their original frozen offsets, existing
 committed partitions resume from the active adapter group's commits, and newly
 discovered partitions resolve the configured `startFrom` policy. A `durationAgo` source keeps its

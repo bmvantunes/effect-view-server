@@ -195,30 +195,30 @@ const groupMemberCount = Effect.fn("KafkaSourceAdapter.integration.groups.member
   );
 });
 
-const removeConsumerGroupMembers = Effect.fn("KafkaSourceAdapter.integration.groups.removeMembers")(
-  function* (bootstrapServers: string, groupId: string) {
-    const admin = new Admin({
-      bootstrapBrokers: [bootstrapServers],
-      clientId: uniqueName("group-removal-admin"),
-    });
-    yield* Effect.acquireUseRelease(
-      Effect.succeed(admin),
-      (current) =>
-        Effect.promise(async () => {
-          const groups = await current.describeGroups({ groups: [groupId] });
-          const group = groups.get(groupId);
-          if (group === undefined || group.members.size === 0) {
-            throw new Error(`Kafka consumer group ${groupId} has no active members.`);
-          }
-          await current.removeMembersFromConsumerGroup({
-            groupId,
-            members: [...group.members.keys()].map((memberId) => ({ memberId })),
-          });
-        }),
-      (current) => Effect.promise(() => current.close()).pipe(Effect.ignore),
-    );
-  },
-);
+const removeConsumerGroupMembersIfPresent = Effect.fn(
+  "KafkaSourceAdapter.integration.groups.removeMembers",
+)(function* (bootstrapServers: string, groupId: string) {
+  const admin = new Admin({
+    bootstrapBrokers: [bootstrapServers],
+    clientId: uniqueName("group-removal-admin"),
+  });
+  yield* Effect.acquireUseRelease(
+    Effect.succeed(admin),
+    (current) =>
+      Effect.promise(async () => {
+        const groups = await current.describeGroups({ groups: [groupId] });
+        const group = groups.get(groupId);
+        if (group === undefined || group.members.size === 0) {
+          return;
+        }
+        await current.removeMembersFromConsumerGroup({
+          groupId,
+          members: [...group.members.keys()].map((memberId) => ({ memberId })),
+        });
+      }),
+    (current) => Effect.promise(() => current.close()).pipe(Effect.ignore),
+  );
+});
 
 const composeFile = fileURLToPath(new URL("../../../compose.yaml", import.meta.url));
 class DockerComposeTestError extends Data.TaggedError("KafkaDockerComposeTestError")<{
@@ -1971,7 +1971,7 @@ describe("Kafka Source Adapter with real Apache Kafka", () => {
             },
           ]);
           yield* Deferred.await(decodeStarted);
-          yield* removeConsumerGroupMembers(
+          yield* removeConsumerGroupMembersIfPresent(
             kafkaBootstrapServers,
             kafka.consumerGroupId(consumerGroupPrefix, "orders"),
           );
@@ -2129,7 +2129,7 @@ describe("Kafka Source Adapter with real Apache Kafka", () => {
           },
         ]);
         yield* Deferred.await(decodeStarted);
-        yield* removeConsumerGroupMembers(
+        yield* removeConsumerGroupMembersIfPresent(
           kafkaBootstrapServers,
           kafka.consumerGroupId(consumerGroupPrefix, "orders"),
         );
@@ -2373,7 +2373,7 @@ describe("Kafka Source Adapter with real Apache Kafka", () => {
             value: bytes(JSON.stringify({ customerId: "new-partition", price: 1 })),
           });
           yield* Effect.sleep("11 seconds");
-          yield* removeConsumerGroupMembers(
+          yield* removeConsumerGroupMembersIfPresent(
             kafkaBootstrapServers,
             kafka.consumerGroupId(consumerGroupPrefix, "orders"),
           );

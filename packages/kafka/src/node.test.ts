@@ -785,6 +785,7 @@ const message = (input: {
   readonly key: string | null | undefined;
   readonly price: number | null | undefined;
   readonly offset: bigint;
+  readonly partition?: number;
   readonly failCommit?: boolean;
   readonly headers?: ReadonlyMap<Buffer, Buffer>;
 }) => ({
@@ -795,7 +796,7 @@ const message = (input: {
       : Buffer.from(JSON.stringify({ price: input.price })),
   headers: input.headers ?? new Map<Buffer, Buffer>(),
   topic: "source-orders",
-  partition: 0,
+  partition: input.partition ?? 0,
   timestamp: 123n,
   offset: input.offset,
   metadata: {},
@@ -803,7 +804,13 @@ const message = (input: {
     if (input.failCommit === true) {
       return Promise.reject(new Error("commit failed"));
     }
-    platformatic.state.committedByGroup.set(input.groupId, [input.offset + 1n]);
+    const partition = input.partition ?? 0;
+    const committed = [...(platformatic.state.committedByGroup.get(input.groupId) ?? [])];
+    while (committed.length <= partition) {
+      committed.push(-1n);
+    }
+    committed[partition] = input.offset + 1n;
+    platformatic.state.committedByGroup.set(input.groupId, committed);
     return Promise.resolve();
   },
   toJSON: () => ({}),
@@ -966,6 +973,8 @@ describe("Kafka Node Adapter", () => {
 
   it.effect("isolates Schema Registry resources, URLs, and schema IDs between Regions", () =>
     Effect.gen(function* () {
+      platformatic.state.offsetsByTimestamp.set(-1n, [100n]);
+      platformatic.state.offsetsByTimestamp.set(-2n, [0n]);
       const requests: Array<string> = [];
       const commits: Array<string> = [];
       const serialized = Buffer.from(
@@ -2186,7 +2195,7 @@ describe("Kafka Node Adapter", () => {
       ]);
 
       const active = Option.getOrThrow(Option.fromUndefinedOr(platformatic.state.consumers[0]));
-      active.assignments = [{ topic: "source-orders", partitions: [7] }];
+      active.assignments = [{ topic: "source-orders", partitions: [0] }];
       active.emit("consumer:group:join", {});
       active.assignments = null;
       active.emit("consumer:group:join", {});
@@ -2234,6 +2243,371 @@ describe("Kafka Node Adapter", () => {
         },
       ]);
       yield* latestRuntime.close;
+    }),
+  );
+
+  it.effect("retries buffered unknown-partition records from their observed offset", () =>
+    Effect.gen(function* () {
+      platformatic.state.offsetsByTimestamp.set(-1n, [100n]);
+      platformatic.state.committedByGroup.set("replica:orders", []);
+      const config = makeConfig("latest", Schedule.spaced("10 seconds"));
+      const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(
+        Effect.provide(
+          layer(config, {
+            consumerGroupPrefix: "replica",
+            regions: {
+              eu: { bootstrapServers: "one:9092" },
+            },
+          }),
+        ),
+      );
+      yield* awaitCondition(() => platformatic.state.streams.length === 1);
+      const diagnostics = yield* runtime.liveClient.subscribeSourceHealth({ topic: "orders" });
+      platformatic.state.streams[0]?.push(
+        message({
+          groupId: "replica:orders",
+          key: "new-partition",
+          price: 1,
+          partition: 1,
+          offset: 200n,
+        }),
+      );
+
+      const waiting = Option.getOrThrow(
+        yield* diagnostics.events.pipe(
+          Stream.filter((health) => health.status._tag === "WaitingToRetry"),
+          Stream.take(1),
+          Stream.runHead,
+        ),
+      );
+      expect({
+        status: waiting.status,
+        committed: platformatic.state.committedByGroup.get("replica:orders"),
+      }).toStrictEqual({
+        status: {
+          _tag: "WaitingToRetry",
+          nextAttempt: 2n,
+          termination: {
+            _tag: "Failed",
+            failure: {
+              _tag: "AdapterFailure",
+              failure: {
+                _tag: "KafkaConsumeFailure",
+                region: "eu",
+                topic: "source-orders",
+                message:
+                  "Kafka Region discovered a new partition and is reacquiring configured start offsets.",
+              },
+            },
+          },
+          retryAtNanos: 10_000_000_000n,
+        },
+        committed: [],
+      });
+      const offsetCallsBeforeRetry = platformatic.state.offsetCalls.length;
+      platformatic.state.offsetsByTimestamp.set(-1n, [150n]);
+      yield* TestClock.adjust("10 seconds");
+      yield* awaitCondition(() => platformatic.state.offsetCalls.length > offsetCallsBeforeRetry);
+      const staleRetry = Option.getOrThrow(
+        yield* diagnostics.events.pipe(
+          Stream.filter(
+            (health) => health.status._tag === "WaitingToRetry" && health.status.nextAttempt === 3n,
+          ),
+          Stream.take(1),
+          Stream.runHead,
+        ),
+      );
+      expect({
+        status: staleRetry.status._tag,
+        consumeCalls: platformatic.state.consumeCalls.length,
+      }).toStrictEqual({ status: "WaitingToRetry", consumeCalls: 1 });
+      platformatic.state.offsetsByTimestamp.set(-1n, [175n, 250n]);
+      yield* TestClock.adjust("10 seconds");
+      yield* awaitCondition(() => platformatic.state.streams.length === 2);
+      expect(platformatic.state.consumeCalls[1]?.input.offsets).toStrictEqual([
+        { topic: "source-orders", partition: 0, offset: 100n },
+        { topic: "source-orders", partition: 1, offset: 200n },
+      ]);
+
+      yield* diagnostics.close();
+      yield* runtime.close;
+    }),
+  );
+
+  it.effect("preserves buffered records resolved through committed latest fallback", () =>
+    Effect.gen(function* () {
+      platformatic.state.offsetsByTimestamp.set(-1n, [100n]);
+      platformatic.state.committedByGroup.set("seed-consumer", [50n]);
+      platformatic.state.committedByGroup.set("replica:orders", []);
+      const config = makeConfig(
+        {
+          mode: "committed",
+          consumerGroupId: "seed-consumer",
+          fallback: "latest",
+        },
+        Schedule.spaced("10 seconds"),
+      );
+      const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(
+        Effect.provide(
+          layer(config, {
+            consumerGroupPrefix: "replica",
+            regions: {
+              eu: { bootstrapServers: "one:9092" },
+            },
+          }),
+        ),
+      );
+      yield* awaitCondition(() => platformatic.state.streams.length === 1);
+      const diagnostics = yield* runtime.liveClient.subscribeSourceHealth({ topic: "orders" });
+      platformatic.state.streams[0]?.push(
+        message({
+          groupId: "replica:orders",
+          key: "new-partition",
+          price: 1,
+          partition: 1,
+          offset: 200n,
+        }),
+      );
+
+      yield* diagnostics.events.pipe(
+        Stream.filter((health) => health.status._tag === "WaitingToRetry"),
+        Stream.take(1),
+        Stream.runDrain,
+      );
+      expect(platformatic.state.committedByGroup.get("replica:orders")).toStrictEqual([]);
+      platformatic.state.offsetsByTimestamp.set(-1n, [150n, 250n]);
+      platformatic.state.committedByGroup.set("seed-consumer", [75n, -1n]);
+      yield* TestClock.adjust("10 seconds");
+      yield* awaitCondition(() => platformatic.state.streams.length === 2);
+      expect(platformatic.state.consumeCalls[1]?.input.offsets).toStrictEqual([
+        { topic: "source-orders", partition: 0, offset: 50n },
+        { topic: "source-orders", partition: 1, offset: 200n },
+      ]);
+
+      yield* diagnostics.close();
+      yield* runtime.close;
+    }),
+  );
+
+  it.effect("prefers committed offsets over buffered latest-fallback records", () =>
+    Effect.gen(function* () {
+      platformatic.state.offsetsByTimestamp.set(-1n, [100n]);
+      platformatic.state.committedByGroup.set("seed-consumer", [50n]);
+      platformatic.state.committedByGroup.set("replica:orders", []);
+      const config = makeConfig(
+        {
+          mode: "committed",
+          consumerGroupId: "seed-consumer",
+          fallback: "latest",
+        },
+        Schedule.spaced("10 seconds"),
+      );
+      const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(
+        Effect.provide(
+          layer(config, {
+            consumerGroupPrefix: "replica",
+            regions: {
+              eu: { bootstrapServers: "one:9092" },
+            },
+          }),
+        ),
+      );
+      yield* awaitCondition(() => platformatic.state.streams.length === 1);
+      const diagnostics = yield* runtime.liveClient.subscribeSourceHealth({ topic: "orders" });
+      platformatic.state.streams[0]?.push(
+        message({
+          groupId: "replica:orders",
+          key: "new-partition",
+          price: 1,
+          partition: 1,
+          offset: 200n,
+        }),
+      );
+
+      yield* diagnostics.events.pipe(
+        Stream.filter((health) => health.status._tag === "WaitingToRetry"),
+        Stream.take(1),
+        Stream.runDrain,
+      );
+      expect(platformatic.state.committedByGroup.get("replica:orders")).toStrictEqual([]);
+      platformatic.state.offsetsByTimestamp.set(-1n, [150n, 250n]);
+      platformatic.state.committedByGroup.set("seed-consumer", [75n, 180n]);
+      yield* TestClock.adjust("10 seconds");
+      yield* awaitCondition(() => platformatic.state.streams.length === 2);
+      expect(platformatic.state.consumeCalls[1]?.input.offsets).toStrictEqual([
+        { topic: "source-orders", partition: 0, offset: 50n },
+        { topic: "source-orders", partition: 1, offset: 180n },
+      ]);
+
+      yield* diagnostics.close();
+      yield* runtime.close;
+    }),
+  );
+
+  it.effect("uses a conservative floor when metadata lags group assignment", () =>
+    Effect.gen(function* () {
+      platformatic.state.offsetsByTimestamp.set(-1n, [100n]);
+      platformatic.state.committedByGroup.set("replica:orders", []);
+      const config = makeConfig("latest", Schedule.spaced("10 seconds"));
+      const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(
+        Effect.provide(
+          layer(config, {
+            consumerGroupPrefix: "replica",
+            regions: {
+              eu: { bootstrapServers: "one:9092" },
+            },
+          }),
+        ),
+      );
+      yield* awaitCondition(() => platformatic.state.streams.length === 1);
+      const diagnostics = yield* runtime.liveClient.subscribeSourceHealth({ topic: "orders" });
+      platformatic.state.offsetsByTimestamp.set(-1n, [150n]);
+      const active = Option.getOrThrow(Option.fromUndefinedOr(platformatic.state.consumers[0]));
+      active.assignments = [{ topic: "source-orders", partitions: [0, 1] }];
+      active.emit("consumer:group:join", {});
+      active.emit("consumer:group:join", {});
+      yield* awaitCondition(() => platformatic.state.offsetCalls.length === 2);
+      platformatic.state.offsetsByTimestamp.set(-1n, [175n, 200n]);
+      platformatic.state.offsetsByTimestamp.set(-2n, [0n, 5n]);
+      yield* TestClock.adjust("100 millis");
+
+      yield* diagnostics.events.pipe(
+        Stream.filter((health) => health.status._tag === "WaitingToRetry"),
+        Stream.take(1),
+        Stream.runDrain,
+      );
+      platformatic.state.offsetsByTimestamp.set(-1n, [190n, 250n]);
+      yield* TestClock.adjust("10 seconds");
+      yield* awaitCondition(() => platformatic.state.streams.length === 2);
+      expect(platformatic.state.consumeCalls[1]?.input.offsets).toStrictEqual([
+        { topic: "source-orders", partition: 0, offset: 100n },
+        { topic: "source-orders", partition: 1, offset: 5n },
+      ]);
+
+      yield* diagnostics.close();
+      yield* runtime.close;
+    }),
+  );
+
+  it.effect("fails visibly when partition metadata remains stale", () =>
+    Effect.gen(function* () {
+      const expectedResolutionAttempts = 10;
+      platformatic.state.offsetsByTimestamp.set(-1n, [100n]);
+      platformatic.state.committedByGroup.set("replica:orders", []);
+      const config = makeConfig("latest", Schedule.spaced("10 seconds"));
+      const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(
+        Effect.provide(
+          layer(config, {
+            consumerGroupPrefix: "replica",
+            regions: {
+              eu: { bootstrapServers: "one:9092" },
+            },
+          }),
+        ),
+      );
+      yield* awaitCondition(() => platformatic.state.streams.length === 1);
+      const diagnostics = yield* runtime.liveClient.subscribeSourceHealth({ topic: "orders" });
+      platformatic.state.offsetsByTimestamp.set(-1n, [150n]);
+      const active = Option.getOrThrow(Option.fromUndefinedOr(platformatic.state.consumers[0]));
+      active.assignments = [{ topic: "source-orders", partitions: [0, 1] }];
+      active.emit("consumer:group:join", {});
+
+      for (let expectedCalls = 2; expectedCalls <= expectedResolutionAttempts; expectedCalls += 1) {
+        yield* awaitCondition(() => platformatic.state.offsetCalls.length >= expectedCalls);
+        yield* Effect.yieldNow;
+        yield* TestClock.adjust("100 millis");
+      }
+      yield* awaitCondition(
+        () => platformatic.state.offsetCalls.length === expectedResolutionAttempts + 1,
+      );
+      const waiting = Option.getOrThrow(
+        yield* diagnostics.events.pipe(
+          Stream.filter((health) => health.status._tag === "WaitingToRetry"),
+          Stream.take(1),
+          Stream.runHead,
+        ),
+      );
+      expect({
+        status: waiting.status._tag,
+        consumeCalls: platformatic.state.consumeCalls.length,
+      }).toStrictEqual({ status: "WaitingToRetry", consumeCalls: 1 });
+
+      platformatic.state.offsetsByTimestamp.set(-1n, [175n, 250n]);
+      platformatic.state.offsetsByTimestamp.set(-2n, [0n]);
+      yield* TestClock.adjust("10 seconds");
+      yield* diagnostics.events.pipe(
+        Stream.filter(
+          (health) => health.status._tag === "WaitingToRetry" && health.status.nextAttempt === 3n,
+        ),
+        Stream.take(1),
+        Stream.runDrain,
+      );
+      expect(platformatic.state.consumeCalls.length).toBe(1);
+      platformatic.state.offsetsByTimestamp.set(-2n, [0n, 5n]);
+      yield* TestClock.adjust("10 seconds");
+      yield* awaitCondition(() => platformatic.state.streams.length === 2);
+      expect(platformatic.state.consumeCalls[1]?.input.offsets).toStrictEqual([
+        { topic: "source-orders", partition: 0, offset: 100n },
+        { topic: "source-orders", partition: 1, offset: 5n },
+      ]);
+
+      yield* diagnostics.close();
+      yield* runtime.close;
+    }),
+  );
+
+  it.effect("does not add a conservative lookup for non-latest partition growth", () =>
+    Effect.gen(function* () {
+      platformatic.state.offsetsByTimestamp.set(-1n, [100n]);
+      platformatic.state.offsetsByTimestamp.set(-2n, [0n]);
+      platformatic.state.committedByGroup.set("replica:orders", []);
+      const config = makeConfig("earliest", Schedule.spaced("10 seconds"));
+      const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(
+        Effect.provide(
+          layer(config, {
+            consumerGroupPrefix: "replica",
+            regions: {
+              eu: { bootstrapServers: "one:9092" },
+            },
+          }),
+        ),
+      );
+      yield* awaitCondition(() => platformatic.state.streams.length === 1);
+      const diagnostics = yield* runtime.liveClient.subscribeSourceHealth({ topic: "orders" });
+      const active = Option.getOrThrow(Option.fromUndefinedOr(platformatic.state.consumers[0]));
+      active.assignments = [{ topic: "source-orders", partitions: [0, 1] }];
+      active.emit("consumer:group:join", {});
+
+      for (let resolution = 1; resolution <= 9; resolution += 1) {
+        yield* awaitCondition(() => platformatic.state.offsetCalls.length >= 2 + resolution * 2);
+        yield* Effect.yieldNow;
+        yield* TestClock.adjust("100 millis");
+      }
+      yield* awaitCondition(() => platformatic.state.offsetCalls.length === 22);
+      yield* diagnostics.events.pipe(
+        Stream.filter((health) => health.status._tag === "WaitingToRetry"),
+        Stream.take(1),
+        Stream.runDrain,
+      );
+
+      platformatic.state.offsetsByTimestamp.set(-1n, [175n, 250n]);
+      platformatic.state.offsetsByTimestamp.set(-2n, [0n, 5n]);
+      const offsetCallsBeforeRetry = platformatic.state.offsetCalls.length;
+      yield* TestClock.adjust("10 seconds");
+      yield* awaitCondition(() => platformatic.state.streams.length === 2);
+      expect({
+        offsets: platformatic.state.consumeCalls[1]?.input.offsets,
+        offsetCalls: platformatic.state.offsetCalls.length - offsetCallsBeforeRetry,
+      }).toStrictEqual({
+        offsets: [
+          { topic: "source-orders", partition: 0, offset: 0n },
+          { topic: "source-orders", partition: 1, offset: 5n },
+        ],
+        offsetCalls: 2,
+      });
+
+      yield* diagnostics.close();
+      yield* runtime.close;
     }),
   );
 
@@ -4018,6 +4392,89 @@ describe("Kafka Node Adapter", () => {
           offset: 2n,
         },
       ],
+    });
+  });
+
+  it("preserves an already-pulled latest record across assignment expansion", () => {
+    expect(
+      kafkaNodeInternals.mergeInitialPartitions(
+        {
+          offsets: [
+            { topic: "source-orders", partition: 0, offset: 201n },
+            { topic: "source-orders", partition: 1, offset: 201n },
+            { topic: "source-orders", partition: 2, offset: 180n },
+          ],
+          latestOffsets: [201n, 201n, 201n],
+          latestResolvedPartitions: new Set([0, 1]),
+        },
+        {
+          offsets: [
+            { topic: "source-orders", partition: 0, offset: 250n },
+            { topic: "source-orders", partition: 1, offset: 250n },
+            { topic: "source-orders", partition: 2, offset: 250n },
+          ],
+          latestOffsets: [250n, 250n, 250n],
+          latestResolvedPartitions: new Set([0, 1, 2]),
+        },
+        new Map([
+          [0, 200n],
+          [1, 202n],
+          [2, 170n],
+        ]),
+      ),
+    ).toStrictEqual({
+      offsets: [
+        { topic: "source-orders", partition: 0, offset: 200n },
+        { topic: "source-orders", partition: 1, offset: 201n },
+        { topic: "source-orders", partition: 2, offset: 180n },
+      ],
+      latestOffsets: [250n, 250n, 250n],
+      latestResolvedPartitions: new Set([0, 1]),
+    });
+    expect(
+      kafkaNodeInternals.conservativeLatestGrowthOffsets(
+        new Map([
+          [0, null],
+          [1, 10n],
+          [2, null],
+        ]),
+        new Set([0]),
+        [5n],
+      ),
+    ).toStrictEqual(
+      new Map([
+        [0, 5n],
+        [1, 10n],
+        [2, null],
+      ]),
+    );
+    expect(
+      kafkaNodeInternals.conservativeLatestGrowthOffsets(new Map([[1, null]]), new Set([1]), [0n]),
+    ).toBeUndefined();
+    expect(
+      kafkaNodeInternals.mergeInitialPartitions(
+        {
+          offsets: [
+            { topic: "source-orders", partition: 0, offset: 100n },
+            { topic: "source-orders", partition: 1, offset: 200n },
+          ],
+          latestOffsets: [100n, 200n],
+          latestResolvedPartitions: new Set([1]),
+        },
+        {
+          offsets: [{ topic: "source-orders", partition: 0, offset: 150n }],
+          latestOffsets: [150n],
+          latestResolvedPartitions: new Set([0]),
+        },
+        new Map(),
+      ),
+    ).toStrictEqual({
+      offsets: [
+        { topic: "source-orders", partition: 0, offset: 100n },
+        { topic: "source-orders", partition: 1, offset: 200n },
+      ],
+      latestOffsets: [150n, 200n],
+      latestResolvedPartitions: new Set([1]),
     });
   });
 

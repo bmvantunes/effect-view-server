@@ -267,13 +267,28 @@ on `kafka`.
 - `{ mode: "durationAgo", duration, fallback }` captures the Effect Clock once
   for the Topic lifetime and resolves a timestamp relative to it.
 
-Resolved offsets are frozen for retries within the same Topic lifetime. The
-active adapter group still resumes from its own committed offsets after a
-consumer restart. Its ID is derived from `consumerGroupPrefix` plus the View
-Server Topic name—not the Kafka topic—so two Topic bindings cannot accidentally
-share progress. The percent-encoded active group ID must fit Kafka's 32,767-byte
-protocol-string ceiling and is rejected during pure Layer construction if it
-does not.
+Resolved offsets are frozen for retries within the same Topic lifetime. If a
+consumer assignment discovers a partition absent from that frozen map, the
+adapter resolves and expands the frozen map inside the current Source Attempt,
+then publishes a typed `KafkaConsumeFailure` and terminates before entering
+supervision delay. This prevents an effective `latest` boundary from advancing
+past records appended during that delay. Resolution is bounded so persistently
+stale metadata still produces the visible typed failure. If the discovery-time
+lookup omits the partition, a later poll or reacquisition conservatively starts
+that new effective `latest` partition at its earliest retained offset. Partial
+metadata snapshots never remove partitions already present in the frozen map.
+Existing uncommitted partitions retain their original frozen offsets, existing
+committed partitions resume from the active adapter group's commits, and newly
+discovered partitions resolve the configured `startFrom` policy. A `durationAgo` source keeps its
+original lifetime-fixed timestamp during this reacquisition. If a buffered
+record first exposes a new partition resolved through `latest` or a `latest`
+missing-offset fallback, reacquisition preserves that already-pulled record's
+offset instead of advancing past uncommitted live input. The active group ID is
+derived from `consumerGroupPrefix` plus the View Server Topic name—not the Kafka
+topic—so two Topic bindings cannot accidentally
+share progress. The
+percent-encoded ID must fit Kafka's 32,767-byte protocol-string ceiling and is
+rejected during pure Layer construction if it does not.
 
 This runtime materializes rows in memory. A committed consumer offset is an
 at-least-once delivery checkpoint, not a durable View Server snapshot. Choose an

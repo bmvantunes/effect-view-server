@@ -191,11 +191,13 @@ describe("Kafka Schema Registry Protobuf contracts", () => {
       });
       expect(validateKafkaSchemaRegistryFrame(contract, frame(999, 0))).toStrictEqual({
         _tag: "Mismatch",
+        reason: "schema",
         schemaId: 999,
         message: 'Schema ID 999 is not an active validated version of subject "orders-value".',
       });
       expect(validateKafkaSchemaRegistryFrame(contract, frame(41, 1))).toStrictEqual({
         _tag: "Mismatch",
+        reason: "schema",
         schemaId: 41,
         message:
           'Schema ID 41 selected a protobuf message that does not match "viewserver.runtime.test.OrderValue".',
@@ -947,6 +949,7 @@ describe("Kafka Schema Registry Protobuf contracts", () => {
       });
       expect(validateKafkaSchemaRegistryFrame(contract, frame(42, 0))).toStrictEqual({
         _tag: "Mismatch",
+        reason: "schema",
         schemaId: 42,
         message:
           'Schema ID 42 selected a protobuf message that does not match "viewserver.runtime.test.OrderValue".',
@@ -1421,6 +1424,7 @@ describe("Kafka Schema Registry Protobuf contracts", () => {
 
       expect(validateKafkaSchemaRegistryFrame(contract, Uint8Array.from([]))).toStrictEqual({
         _tag: "Mismatch",
+        reason: "frame",
         schemaId: null,
         message:
           "Confluent Schema Registry Protobuf frame is shorter than its six-byte minimum prefix.",

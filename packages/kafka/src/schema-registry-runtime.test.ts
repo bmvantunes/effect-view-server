@@ -220,6 +220,44 @@ describe("Kafka Schema Registry server lifetime", () => {
 });
 
 describe("Kafka Schema Registry Region runtime", () => {
+  it.effect("classifies a malformed record frame as an item-local decode failure", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const orders = mutableSubject("source-orders-value", 41);
+        const runtime = yield* makeKafkaSchemaRegistryRuntime({
+          region: "eu",
+          endpoint: "https://registry.eu.example.com",
+          declarations: [declaration("orders", "source-orders")],
+          reader: mutableReader(new Map([["source-orders-value", orders]]), {
+            compatibility: 0,
+            versions: 0,
+            schemas: 0,
+          }),
+          monitorInterval: Duration.seconds(1),
+        });
+
+        expect(
+          yield* validateSide(runtime, {
+            viewServerTopic: "orders",
+            sourceTopic: "source-orders",
+            side: "value",
+            bytes: Uint8Array.from([]),
+          }).pipe(Effect.flip),
+        ).toStrictEqual({
+          _tag: "KafkaSchemaRegistryRecordDecodeFailure",
+          side: "value",
+          failure: {
+            _tag: "KafkaDecodeFailure",
+            region: "eu",
+            topic: "source-orders",
+            message:
+              "Confluent Schema Registry Protobuf frame is shorter than its six-byte minimum prefix.",
+          },
+        });
+      }),
+    ),
+  );
+
   it.effect("groups key and value contracts for one View Server Topic", () =>
     Effect.scoped(
       Effect.gen(function* () {

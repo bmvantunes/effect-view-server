@@ -38,6 +38,21 @@ export type KafkaSchemaRegistryRecordPayloads = {
   readonly value: Uint8Array | undefined;
 };
 
+export type KafkaSchemaRegistryRecordDecodeFailure = {
+  readonly _tag: "KafkaSchemaRegistryRecordDecodeFailure";
+  readonly side: KafkaSchemaRegistrySide;
+  readonly failure: Extract<KafkaAdapterFailure, { readonly _tag: "KafkaDecodeFailure" }>;
+};
+
+type KafkaSchemaRegistryAttemptFailure = Exclude<
+  KafkaAdapterFailure,
+  { readonly _tag: "KafkaDecodeFailure" }
+>;
+
+export type KafkaSchemaRegistryRecordValidationFailure =
+  | KafkaSchemaRegistryAttemptFailure
+  | KafkaSchemaRegistryRecordDecodeFailure;
+
 export type KafkaSchemaRegistryRuntime = {
   readonly endpoints: ReadonlyArray<string>;
   readonly guard: (
@@ -48,7 +63,7 @@ export type KafkaSchemaRegistryRuntime = {
   ) => Stream.Stream<never, KafkaAdapterFailure>;
   readonly validateRecord: (
     input: KafkaSchemaRegistryRecordValidationInput,
-  ) => Effect.Effect<KafkaSchemaRegistryRecordPayloads, KafkaAdapterFailure>;
+  ) => Effect.Effect<KafkaSchemaRegistryRecordPayloads, KafkaSchemaRegistryRecordValidationFailure>;
 };
 
 export type KafkaServerSchemaRegistry = KafkaSchemaRegistryRuntime & {
@@ -140,10 +155,15 @@ type RegistryState = {
     string,
     ReadonlyMap<KafkaSchemaRegistrySide, KafkaResolvedSchemaRegistryContract>
   >;
-  readonly failures: ReadonlyMap<string, ReadonlyMap<KafkaSchemaRegistrySide, KafkaAdapterFailure>>;
+  readonly failures: ReadonlyMap<
+    string,
+    ReadonlyMap<KafkaSchemaRegistrySide, KafkaSchemaRegistryAttemptFailure>
+  >;
 };
 
-const runtimeFailure = (issue: KafkaSchemaRegistryContractIssue): KafkaAdapterFailure => ({
+const runtimeFailure = (
+  issue: KafkaSchemaRegistryContractIssue,
+): KafkaSchemaRegistryAttemptFailure => ({
   _tag:
     issue.code === "RegistryUnavailable"
       ? "KafkaSchemaRegistryUnavailable"
@@ -176,7 +196,10 @@ const contractsByTopic = (
 const failuresByTopic = (
   issues: ReadonlyArray<KafkaSchemaRegistryContractIssue>,
 ): RegistryState["failures"] => {
-  const failures = new Map<string, Map<KafkaSchemaRegistrySide, KafkaAdapterFailure>>();
+  const failures = new Map<
+    string,
+    Map<KafkaSchemaRegistrySide, KafkaSchemaRegistryAttemptFailure>
+  >();
   for (const contractIssue of issues) {
     const sides = failures.get(contractIssue.viewServerTopic) ?? new Map();
     sides.set(contractIssue.side, runtimeFailure(contractIssue));
@@ -188,7 +211,10 @@ const failuresByTopic = (
 const monitorFailures = (
   declarations: ReadonlyArray<KafkaSchemaRegistryDeclaration>,
 ): RegistryState["failures"] => {
-  const failures = new Map<string, Map<KafkaSchemaRegistrySide, KafkaAdapterFailure>>();
+  const failures = new Map<
+    string,
+    Map<KafkaSchemaRegistrySide, KafkaSchemaRegistryAttemptFailure>
+  >();
   for (const declaration of declarations) {
     const sides = failures.get(declaration.viewServerTopic) ?? new Map();
     sides.set(declaration.side, monitorFailure(declaration));
@@ -197,7 +223,9 @@ const monitorFailures = (
   return failures;
 };
 
-const monitorFailure = (declaration: KafkaSchemaRegistryDeclaration): KafkaAdapterFailure => ({
+const monitorFailure = (
+  declaration: KafkaSchemaRegistryDeclaration,
+): KafkaSchemaRegistryAttemptFailure => ({
   _tag: "KafkaSchemaRegistryUnavailable",
   region: declaration.region,
   topic: declaration.sourceTopic,
@@ -210,7 +238,7 @@ const monitorFailure = (declaration: KafkaSchemaRegistryDeclaration): KafkaAdapt
 const bindingFailure = (
   state: RegistryState,
   input: KafkaSchemaRegistryBindingInput,
-): KafkaAdapterFailure | undefined => {
+): KafkaSchemaRegistryAttemptFailure | undefined => {
   const failures = state.failures.get(input.viewServerTopic);
   for (const side of input.sides) {
     const failure = failures?.get(side);
@@ -227,7 +255,7 @@ const missingContractFailure = (
     readonly sourceTopic: string;
     readonly side: KafkaSchemaRegistrySide;
   },
-): KafkaAdapterFailure => ({
+): Extract<KafkaAdapterFailure, { readonly _tag: "KafkaSchemaRegistrySchemaMismatch" }> => ({
   _tag: "KafkaSchemaRegistrySchemaMismatch",
   region,
   topic: input.sourceTopic,
@@ -240,7 +268,7 @@ const missingContractFailure = (
 type SettledRecordStateValidation =
   | {
       readonly _tag: "Failure";
-      readonly failure: KafkaAdapterFailure;
+      readonly failure: KafkaSchemaRegistryRecordValidationFailure;
     }
   | {
       readonly _tag: "Success";
@@ -295,6 +323,21 @@ function validateRecordState(
     }
     const result = validateKafkaSchemaRegistryFrame(contract, bytes);
     if (result._tag === "Mismatch") {
+      if (result.reason === "frame") {
+        return {
+          _tag: "Failure",
+          failure: {
+            _tag: "KafkaSchemaRegistryRecordDecodeFailure",
+            side,
+            failure: {
+              _tag: "KafkaDecodeFailure",
+              region,
+              topic: input.sourceTopic,
+              message: result.message,
+            },
+          },
+        };
+      }
       if (
         refreshUnknownIds &&
         result.schemaId !== null &&
@@ -435,7 +478,10 @@ export const makeKafkaSchemaRegistryRuntime = Effect.fn("KafkaSchemaRegistryRunt
       );
     const validateRecord = (
       validation: KafkaSchemaRegistryRecordValidationInput,
-    ): Effect.Effect<KafkaSchemaRegistryRecordPayloads, KafkaAdapterFailure> =>
+    ): Effect.Effect<
+      KafkaSchemaRegistryRecordPayloads,
+      KafkaSchemaRegistryRecordValidationFailure
+    > =>
       Effect.gen(function* () {
         const current = SubscriptionRef.getUnsafe(state);
         const initialValidation = validateRecordState(input.region, current, validation, true);

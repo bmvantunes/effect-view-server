@@ -44,6 +44,7 @@ import { makeViewServerClient } from "./remote";
 import {
   makeViewServerClientWithConstructionOptions,
   mapViewServerRemoteError,
+  subscriptionFailureStatus,
 } from "./remote-client";
 import { makeRemoteHealthState } from "./remote-health";
 
@@ -377,6 +378,8 @@ const makeTestRpcServer = Effect.fn("ViewServerClient.remote.testServer.make")(f
   let healthTopicRows: ReadonlyArray<typeof ViewServerWireRowSchema.Type> = [healthTopicWireRow()];
   let healthSummaryError: ViewServerRpcError | undefined = undefined;
   let healthTopicError: ViewServerRpcError | undefined = undefined;
+  let anonymousTransportFailures = 0;
+  let identifiedTransportFailures = 0;
 
   const handlers = ViewServerRpcs.toLayer(
     Effect.succeed(
@@ -487,19 +490,25 @@ const makeTestRpcServer = Effect.fn("ViewServerClient.remote.testServer.make")(f
             });
           }
           if (limit === 997) {
-            return Stream.fail<ViewServerRpcError>({
-              _tag: "ViewServerTransportError",
-              code: "TransportError",
-              message: "transport failure without query",
-            });
+            anonymousTransportFailures += 1;
+            if (anonymousTransportFailures === 1) {
+              return Stream.fail<ViewServerRpcError>({
+                _tag: "ViewServerTransportError",
+                code: "TransportError",
+                message: "transport failure without query",
+              });
+            }
           }
           if (limit === 998) {
-            return Stream.fail<ViewServerRpcError>({
-              _tag: "ViewServerTransportError",
-              code: "TransportError",
-              message: "transport failure",
-              queryId: "query-from-server",
-            });
+            identifiedTransportFailures += 1;
+            if (identifiedTransportFailures === 1) {
+              return Stream.fail<ViewServerRpcError>({
+                _tag: "ViewServerTransportError",
+                code: "TransportError",
+                message: "transport failure",
+                queryId: "query-from-server",
+              });
+            }
           }
           if (limit === 999) {
             return Stream.fail<ViewServerRpcError>({
@@ -669,6 +678,24 @@ describe("remote ViewServer client", () => {
       _tag: "ViewServerTransportError",
       code: "TransportError",
       message: "socket closed",
+    });
+  });
+
+  it("preserves a server query ID when mapping a terminal error status", () => {
+    expect(
+      subscriptionFailureStatus("orders", {
+        _tag: "ViewServerTransportError",
+        code: "TransportError",
+        message: "terminal transport failure",
+        queryId: "query-from-server",
+      }),
+    ).toStrictEqual({
+      type: "status",
+      topic: "orders",
+      queryId: "query-from-server",
+      status: "error",
+      code: "TransportError",
+      message: "terminal transport failure",
     });
   });
 
@@ -1451,9 +1478,10 @@ describe("remote ViewServer client", () => {
     Effect.gen(function* () {
       const summaryServer = yield* makeTestRpcServer();
       summaryServer.failHealthSummary({
-        _tag: "ViewServerTransportError",
-        code: "TransportError",
+        _tag: "ViewServerRuntimeError",
+        code: "InvalidQuery",
         message: "summary stream failed",
+        topic: VIEW_SERVER_HEALTH_SUMMARY_TOPIC,
       });
       const summaryClient = yield* makeViewServerClient(viewServer, { url: summaryServer.url });
       const summarySubscription = yield* summaryClient.subscribeHealthSummary();
@@ -1466,9 +1494,10 @@ describe("remote ViewServer client", () => {
       const detailServer = yield* makeTestRpcServer();
       detailServer.setHealthSummaryRows([]);
       detailServer.failHealthTopic({
-        _tag: "ViewServerTransportError",
-        code: "TransportError",
+        _tag: "ViewServerRuntimeError",
+        code: "InvalidQuery",
         message: "detail stream failed",
+        topic: VIEW_SERVER_HEALTH_TOPIC,
       });
       const detailClient = yield* makeViewServerClient(viewServer, { url: detailServer.url });
       const emptySummarySubscription = yield* detailClient.subscribeHealthSummary();
@@ -2161,7 +2190,7 @@ describe("remote ViewServer client", () => {
     }),
   );
 
-  it.live("turns remote stream failures into terminal status events", () =>
+  it.live("terminates domain failures and restarts transport failures", () =>
     Effect.gen(function* () {
       const server = yield* makeTestRpcServer();
       const client = yield* makeViewServerClient(viewServer, { url: server.url });
@@ -2226,12 +2255,13 @@ describe("remote ViewServer client", () => {
         Stream.runCollect,
       );
       expect(transportStatus[0]).toStrictEqual({
-        type: "status",
+        type: "snapshot",
         topic: "orders",
-        queryId: "remote",
-        status: "error",
-        code: "TransportError",
-        message: "transport failure without query",
+        queryId: "query-remote",
+        version: 0,
+        keys: [],
+        rows: [],
+        totalRows: 0,
       });
 
       const identifiedTransportSubscription = yield* client.subscribe("orders", {
@@ -2243,12 +2273,13 @@ describe("remote ViewServer client", () => {
         Stream.runCollect,
       );
       expect(identifiedTransportStatus[0]).toStrictEqual({
-        type: "status",
+        type: "snapshot",
         topic: "orders",
-        queryId: "query-from-server",
-        status: "error",
-        code: "TransportError",
-        message: "transport failure",
+        queryId: "query-remote",
+        version: 0,
+        keys: [],
+        rows: [],
+        totalRows: 0,
       });
 
       const backpressureSubscription = yield* client.subscribe("orders", {

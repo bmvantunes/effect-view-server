@@ -139,7 +139,7 @@ export const mapViewServerRemoteError = (
   return error;
 };
 
-const subscriptionFailureStatus = <Topic extends string>(
+export const subscriptionFailureStatus = <Topic extends string>(
   topic: Topic,
   error: ViewServerRemoteClientError,
 ): ViewServerStatusEvent<Topic> => {
@@ -262,6 +262,7 @@ export const makeViewServerClientWithConstructionOptions: <const Topics extends 
       failureStatus: subscriptionFailureStatus,
       lifecycle,
       overflowStatus: subscriptionOverflowStatus,
+      retryWhile: (error) => error.code === "TransportError",
       source,
       subscriptionBufferSize,
       topic,

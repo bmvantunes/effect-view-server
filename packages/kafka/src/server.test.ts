@@ -1174,7 +1174,12 @@ describe("Kafka Source Adapter Server", () => {
                         const framedBytes = side === "key" ? input.key : input.value;
                         const schemaId = framedBytes?.[4] ?? -1;
                         if (schemaId === 99) {
-                          return yield* Effect.fail<KafkaAdapterFailure>({
+                          return yield* Effect.fail<
+                            Extract<
+                              KafkaAdapterFailure,
+                              { readonly _tag: "KafkaSchemaRegistrySchemaMismatch" }
+                            >
+                          >({
                             _tag: "KafkaSchemaRegistrySchemaMismatch",
                             region: "eu",
                             topic: "source-orders",

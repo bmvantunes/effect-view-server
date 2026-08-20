@@ -275,10 +275,11 @@ partitions retain their original frozen offsets, existing committed partitions
 resume from the active adapter group's commits, and newly discovered partitions
 resolve the configured `startFrom` policy. A `durationAgo` source keeps its
 original lifetime-fixed timestamp during this reacquisition. If a buffered
-record first exposes a new partition under `latest`, reacquisition preserves
-that already-pulled record's offset instead of advancing past uncommitted live
-input. The active group ID is derived from `consumerGroupPrefix` plus the View
-Server Topic name—not the Kafka topic—so two Topic bindings cannot accidentally
+record first exposes a new partition resolved through `latest` or a `latest`
+missing-offset fallback, reacquisition preserves that already-pulled record's
+offset instead of advancing past uncommitted live input. The active group ID is
+derived from `consumerGroupPrefix` plus the View Server Topic name—not the Kafka
+topic—so two Topic bindings cannot accidentally
 share progress. The
 percent-encoded ID must fit Kafka's 32,767-byte protocol-string ceiling and is
 rejected during pure Layer construction if it does not.

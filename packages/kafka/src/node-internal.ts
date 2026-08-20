@@ -440,6 +440,10 @@ type KafkaInitialPosition = {
   readonly latestOffsets: ReadonlyArray<bigint>;
 };
 
+type KafkaResolvedInitialPosition = KafkaInitialPosition & {
+  readonly latestResolvedPartitions: ReadonlySet<number>;
+};
+
 type KafkaMutableRegionMetrics = {
   readonly assignments: Map<
     number,
@@ -465,7 +469,7 @@ type KafkaMutableRegionMetrics = {
 
 type KafkaBindingState = {
   readonly committedPartitions: Set<number>;
-  initial: KafkaInitialPosition | undefined;
+  initial: KafkaResolvedInitialPosition | undefined;
   pendingPartitionGrowthOffsets: Map<number, bigint | null> | undefined;
   readonly metrics: KafkaMutableRegionMetrics;
   attempts: bigint;
@@ -1549,29 +1553,38 @@ const resolveInitial = Effect.fn("KafkaNode.offsets.initial")(function* (
   activeConsumer: KafkaConsumer,
   metrics: KafkaMutableRegionMetrics,
   attempt: bigint,
-): Effect.fn.Return<KafkaInitialPosition, KafkaAdapterFailure> {
+): Effect.fn.Return<KafkaResolvedInitialPosition, KafkaAdapterFailure> {
   const start = input.start;
   const latest = yield* listOffsets(activeConsumer, input, -1n);
   const latestOffsets = offsetsForTopic(latest, input.sourceTopic);
   const partitions = latestOffsets.map((_offset, partition) => partition);
+  const latestResolvedPartitions = new Set<number>();
   let offsets: ReadonlyArray<bigint>;
   if (start.mode === "earliest") {
     offsets = offsetsForTopic(yield* listOffsets(activeConsumer, input, -2n), input.sourceTopic);
   } else if (start.mode === "latest") {
     offsets = latestOffsets;
+    for (const partition of partitions) {
+      latestResolvedPartitions.add(partition);
+    }
   } else if (start.mode === "committed") {
     const fallback = start.fallback;
-    offsets = yield* Effect.acquireUseRelease(
+    const committed = yield* Effect.acquireUseRelease(
       makeResolverConsumer(regionOptions, start.consumerGroupId, input),
       (consumer) =>
         listCommitted(consumer, input, partitions).pipe(
           Effect.map((committed) => offsetsForTopic(committed, input.sourceTopic)),
-          Effect.flatMap((committed) =>
-            resolveFallback(activeConsumer, input, committed, fallback),
-          ),
         ),
       (consumer) => closeConsumer(consumer, input, metrics, attempt),
     );
+    if (fallback === "latest") {
+      for (const [partition, offset] of committed.entries()) {
+        if (offset < 0n) {
+          latestResolvedPartitions.add(partition);
+        }
+      }
+    }
+    offsets = yield* resolveFallback(activeConsumer, input, committed, fallback);
   } else {
     const boundary = start.atMillis;
     const fallback = start.fallback;
@@ -1579,6 +1592,13 @@ const resolveInitial = Effect.fn("KafkaNode.offsets.initial")(function* (
       yield* listOffsets(activeConsumer, input, boundary),
       input.sourceTopic,
     );
+    if (fallback === "latest") {
+      for (const [partition, offset] of atBoundary.entries()) {
+        if (offset < 0n) {
+          latestResolvedPartitions.add(partition);
+        }
+      }
+    }
     offsets = yield* resolveFallback(activeConsumer, input, atBoundary, fallback);
   }
   if (offsets.length !== latestOffsets.length || offsets.some((offset) => offset < 0n)) {
@@ -1589,15 +1609,17 @@ const resolveInitial = Effect.fn("KafkaNode.offsets.initial")(function* (
       offsetList(input.sourceTopic, offsets).map((offset) => Object.freeze(offset)),
     ),
     latestOffsets: Object.freeze([...latestOffsets]),
+    latestResolvedPartitions,
   };
 });
 
 const mergeInitialPartitions = (
-  frozen: KafkaInitialPosition,
-  resolved: KafkaInitialPosition,
+  frozen: KafkaResolvedInitialPosition,
+  resolved: KafkaResolvedInitialPosition,
   pendingPartitionGrowthOffsets: ReadonlyMap<number, bigint | null>,
-): KafkaInitialPosition => {
+): KafkaResolvedInitialPosition => {
   const frozenOffsets = new Map(frozen.offsets.map((offset) => [offset.partition, offset]));
+  const latestResolvedPartitions = new Set(frozen.latestResolvedPartitions);
   return {
     offsets: Object.freeze(
       resolved.offsets.map((offset) => {
@@ -1605,8 +1627,14 @@ const mergeInitialPartitions = (
         if (frozenOffset !== undefined) {
           return frozenOffset;
         }
+        if (resolved.latestResolvedPartitions.has(offset.partition)) {
+          latestResolvedPartitions.add(offset.partition);
+        }
         const pendingOffset = pendingPartitionGrowthOffsets.get(offset.partition);
-        if (typeof pendingOffset !== "bigint") {
+        if (
+          typeof pendingOffset !== "bigint" ||
+          !resolved.latestResolvedPartitions.has(offset.partition)
+        ) {
           return offset;
         }
         return Object.freeze({
@@ -1616,6 +1644,7 @@ const mergeInitialPartitions = (
       }),
     ),
     latestOffsets: resolved.latestOffsets,
+    latestResolvedPartitions,
   };
 };
 
@@ -1903,7 +1932,10 @@ const makeNodeRegion = (regionOptions: KafkaNodeRegionSnapshot): KafkaServerRegi
           pendingOffsets.set(partition, null);
         }
       }
-      if (input.start.mode === "latest" && triggeringRecord !== undefined) {
+      const canResolveFromLatest =
+        input.start.mode === "latest" ||
+        (input.start.mode !== "earliest" && input.start.fallback === "latest");
+      if (canResolveFromLatest && triggeringRecord !== undefined) {
         pendingOffsets.set(triggeringRecord.partition, triggeringRecord.offset);
       }
       Deferred.doneUnsafe(assignedPartitionOutsideResolvedOffsets, Effect.fail(failure));

@@ -785,6 +785,7 @@ const message = (input: {
   readonly key: string | null | undefined;
   readonly price: number | null | undefined;
   readonly offset: bigint;
+  readonly partition?: number;
   readonly failCommit?: boolean;
   readonly headers?: ReadonlyMap<Buffer, Buffer>;
 }) => ({
@@ -795,7 +796,7 @@ const message = (input: {
       : Buffer.from(JSON.stringify({ price: input.price })),
   headers: input.headers ?? new Map<Buffer, Buffer>(),
   topic: "source-orders",
-  partition: 0,
+  partition: input.partition ?? 0,
   timestamp: 123n,
   offset: input.offset,
   metadata: {},
@@ -966,6 +967,8 @@ describe("Kafka Node Adapter", () => {
 
   it.effect("isolates Schema Registry resources, URLs, and schema IDs between Regions", () =>
     Effect.gen(function* () {
+      platformatic.state.offsetsByTimestamp.set(-1n, [100n]);
+      platformatic.state.offsetsByTimestamp.set(-2n, [0n]);
       const requests: Array<string> = [];
       const commits: Array<string> = [];
       const serialized = Buffer.from(
@@ -2186,7 +2189,7 @@ describe("Kafka Node Adapter", () => {
       ]);
 
       const active = Option.getOrThrow(Option.fromUndefinedOr(platformatic.state.consumers[0]));
-      active.assignments = [{ topic: "source-orders", partitions: [7] }];
+      active.assignments = [{ topic: "source-orders", partitions: [0] }];
       active.emit("consumer:group:join", {});
       active.assignments = null;
       active.emit("consumer:group:join", {});
@@ -2234,6 +2237,71 @@ describe("Kafka Node Adapter", () => {
         },
       ]);
       yield* latestRuntime.close;
+    }),
+  );
+
+  it.effect("rejects buffered records from newly discovered partitions before settlement", () =>
+    Effect.gen(function* () {
+      platformatic.state.offsetsByTimestamp.set(-1n, [100n]);
+      platformatic.state.offsetsByTimestamp.set(-2n, [0n]);
+      platformatic.state.committedByGroup.set("replica:orders", []);
+      const config = makeConfig("earliest", Schedule.spaced("10 seconds"));
+      const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(
+        Effect.provide(
+          layer(config, {
+            consumerGroupPrefix: "replica",
+            regions: {
+              eu: { bootstrapServers: "one:9092" },
+            },
+          }),
+        ),
+      );
+      yield* awaitCondition(() => platformatic.state.streams.length === 1);
+      const diagnostics = yield* runtime.liveClient.subscribeSourceHealth({ topic: "orders" });
+      platformatic.state.streams[0]?.push(
+        message({
+          groupId: "replica:orders",
+          key: "new-partition",
+          price: 1,
+          partition: 1,
+          offset: 0n,
+        }),
+      );
+
+      const waiting = Option.getOrThrow(
+        yield* diagnostics.events.pipe(
+          Stream.filter((health) => health.status._tag === "WaitingToRetry"),
+          Stream.take(1),
+          Stream.runHead,
+        ),
+      );
+      expect({
+        status: waiting.status,
+        committed: platformatic.state.committedByGroup.get("replica:orders"),
+      }).toStrictEqual({
+        status: {
+          _tag: "WaitingToRetry",
+          nextAttempt: 2n,
+          termination: {
+            _tag: "Failed",
+            failure: {
+              _tag: "AdapterFailure",
+              failure: {
+                _tag: "KafkaConsumeFailure",
+                region: "eu",
+                topic: "source-orders",
+                message:
+                  "Kafka Region discovered a new partition and is reacquiring configured start offsets.",
+              },
+            },
+          },
+          retryAtNanos: 10_000_000_000n,
+        },
+        committed: [],
+      });
+
+      yield* diagnostics.close();
+      yield* runtime.close;
     }),
   );
 

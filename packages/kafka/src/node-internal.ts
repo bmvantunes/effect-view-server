@@ -4,6 +4,7 @@ import { Buffer } from "node:buffer";
 import type { ConnectionOptions as NodeTlsConnectionOptions } from "node:tls";
 import {
   Config,
+  Deferred,
   Duration,
   Effect,
   Exit,
@@ -1258,6 +1259,13 @@ const consumeFailure = (input: KafkaServerRegionAcquireInput): KafkaAdapterFailu
   message: "Kafka Region consumer stream failed.",
 });
 
+const partitionGrowthFailure = (input: KafkaServerRegionAcquireInput): KafkaAdapterFailure => ({
+  _tag: "KafkaConsumeFailure",
+  region: input.region,
+  topic: input.sourceTopic,
+  message: "Kafka Region discovered a new partition and is reacquiring configured start offsets.",
+});
+
 const commitFailure = (input: KafkaServerRegionAcquireInput): KafkaAdapterFailure => ({
   _tag: "KafkaCommitFailure",
   region: input.region,
@@ -1833,6 +1841,17 @@ const makeNodeRegion = (regionOptions: KafkaNodeRegionSnapshot): KafkaServerRegi
       ? yield* activeOffsets(consumer, input, initial, state.committedPartitions)
       : initial.offsets;
     resetAttemptAssignments(metrics, offsets, initial.latestOffsets);
+    const assignedPartitionOutsideResolvedOffsets = yield* Deferred.make<
+      never,
+      KafkaAdapterFailure
+    >();
+    const resolvedPartitions = new Set(offsets.map((offset) => offset.partition));
+    const signalPartitionGrowth = (): KafkaAdapterFailure => {
+      const failure = partitionGrowthFailure(input);
+      state.initial = undefined;
+      Deferred.doneUnsafe(assignedPartitionOutsideResolvedOffsets, Effect.fail(failure));
+      return failure;
+    };
     yield* Effect.addFinalizer(() =>
       Effect.sync(() => {
         metrics.activePartitions.clear();
@@ -1842,6 +1861,11 @@ const makeNodeRegion = (regionOptions: KafkaNodeRegionSnapshot): KafkaServerRegi
       const assignments = payload.assignments ?? consumer.assignments ?? [];
       const partitions = assignments.flatMap((assignment) => assignment.partitions);
       updateAssignmentOffsets(metrics, offsets, initial.latestOffsets, partitions);
+      if (partitions.some((partition) => !resolvedPartitions.has(partition))) {
+        // Platformatic listener callbacks sit outside Effect; synchronously bridge partition
+        // growth into the owned Source Attempt so supervision can reacquire configured offsets.
+        signalPartitionGrowth();
+      }
     };
     const rebalance = (): void => {
       metrics.rebalances += 1n;
@@ -1884,11 +1908,16 @@ const makeNodeRegion = (regionOptions: KafkaNodeRegionSnapshot): KafkaServerRegi
       try: () => stream[Symbol.asyncIterator](),
       catch: () => consumeFailure(input),
     });
-    const records = Stream.fromAsyncIterable(scopedKafkaIterable(iterator), () =>
+    const recordsFromConsumer = Stream.fromAsyncIterable(scopedKafkaIterable(iterator), () =>
       consumeFailure(input),
-    ).pipe(
-      Stream.mapEffect((message) =>
-        Effect.try({
+    );
+    const records = recordsFromConsumer.pipe(
+      Stream.interruptWhen(Deferred.await(assignedPartitionOutsideResolvedOffsets)),
+      Stream.mapEffect((message) => {
+        if (!resolvedPartitions.has(message.partition)) {
+          return Effect.fail(signalPartitionGrowth());
+        }
+        return Effect.try({
           try: (): KafkaServerRecord => ({
             key: message.key === null || message.key === undefined ? null : message.key,
             value: message.value === null || message.value === undefined ? null : message.value,
@@ -1921,8 +1950,8 @@ const makeNodeRegion = (regionOptions: KafkaNodeRegionSnapshot): KafkaServerRegi
             ),
           }),
           catch: () => consumeFailure(input),
-        }),
-      ),
+        });
+      }),
     );
     return {
       records,

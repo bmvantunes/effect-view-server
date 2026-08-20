@@ -267,13 +267,17 @@ on `kafka`.
 - `{ mode: "durationAgo", duration, fallback }` captures the Effect Clock once
   for the Topic lifetime and resolves a timestamp relative to it.
 
-Resolved offsets are frozen for retries within the same Topic lifetime. The
-active adapter group still resumes from its own committed offsets after a
-consumer restart. Its ID is derived from `consumerGroupPrefix` plus the View
-Server Topic name—not the Kafka topic—so two Topic bindings cannot accidentally
-share progress. The percent-encoded active group ID must fit Kafka's 32,767-byte
-protocol-string ceiling and is rejected during pure Layer construction if it
-does not.
+Resolved offsets are frozen for retries within the same Topic lifetime. If a
+consumer assignment discovers a partition absent from that frozen map, the
+adapter publishes a typed `KafkaConsumeFailure`, terminates the Source Attempt,
+and reacquires the complete partition set. Existing partitions resume from the
+active adapter group's committed offsets; newly discovered partitions resolve
+the configured `startFrom` policy. A `durationAgo` source keeps its original
+lifetime-fixed timestamp during this reacquisition. The active group ID is
+derived from `consumerGroupPrefix` plus the View Server Topic name—not the Kafka
+topic—so two Topic bindings cannot accidentally share progress. The
+percent-encoded ID must fit Kafka's 32,767-byte protocol-string ceiling and is
+rejected during pure Layer construction if it does not.
 
 This runtime materializes rows in memory. A committed consumer offset is an
 at-least-once delivery checkpoint, not a durable View Server snapshot. Choose an

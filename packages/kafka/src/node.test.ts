@@ -2464,6 +2464,7 @@ describe("Kafka Node Adapter", () => {
         Stream.take(1),
         Stream.runDrain,
       );
+      platformatic.state.offsetsByTimestamp.set(-1n, [175n, 250n]);
       yield* TestClock.adjust("10 seconds");
       yield* awaitCondition(() => platformatic.state.streams.length === 2);
       expect(platformatic.state.consumeCalls[1]?.input.offsets).toStrictEqual([
@@ -4257,6 +4258,44 @@ describe("Kafka Node Adapter", () => {
           offset: 2n,
         },
       ],
+    });
+  });
+
+  it("preserves an already-pulled latest record across assignment expansion", () => {
+    expect(
+      kafkaNodeInternals.mergeInitialPartitions(
+        {
+          offsets: [
+            { topic: "source-orders", partition: 0, offset: 201n },
+            { topic: "source-orders", partition: 1, offset: 201n },
+            { topic: "source-orders", partition: 2, offset: 180n },
+          ],
+          latestOffsets: [201n, 201n, 201n],
+          latestResolvedPartitions: new Set([0, 1]),
+        },
+        {
+          offsets: [
+            { topic: "source-orders", partition: 0, offset: 250n },
+            { topic: "source-orders", partition: 1, offset: 250n },
+            { topic: "source-orders", partition: 2, offset: 250n },
+          ],
+          latestOffsets: [250n, 250n, 250n],
+          latestResolvedPartitions: new Set([0, 1, 2]),
+        },
+        new Map([
+          [0, 200n],
+          [1, 202n],
+          [2, 170n],
+        ]),
+      ),
+    ).toStrictEqual({
+      offsets: [
+        { topic: "source-orders", partition: 0, offset: 200n },
+        { topic: "source-orders", partition: 1, offset: 201n },
+        { topic: "source-orders", partition: 2, offset: 180n },
+      ],
+      latestOffsets: [250n, 250n, 250n],
+      latestResolvedPartitions: new Set([0, 1]),
     });
   });
 

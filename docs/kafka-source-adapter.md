@@ -269,11 +269,13 @@ on `kafka`.
 
 Resolved offsets are frozen for retries within the same Topic lifetime. If a
 consumer assignment discovers a partition absent from that frozen map, the
-adapter publishes a typed `KafkaConsumeFailure`, terminates the Source Attempt,
-and reacquires partition metadata to expand the map. Existing uncommitted
-partitions retain their original frozen offsets, existing committed partitions
-resume from the active adapter group's commits, and newly discovered partitions
-resolve the configured `startFrom` policy. A `durationAgo` source keeps its
+adapter resolves and expands the frozen map inside the current Source Attempt,
+then publishes a typed `KafkaConsumeFailure` and terminates before entering
+supervision delay. This prevents an effective `latest` boundary from advancing
+past records appended during that delay.
+Existing uncommitted partitions retain their original frozen offsets, existing
+committed partitions resume from the active adapter group's commits, and newly
+discovered partitions resolve the configured `startFrom` policy. A `durationAgo` source keeps its
 original lifetime-fixed timestamp during this reacquisition. If a buffered
 record first exposes a new partition resolved through `latest` or a `latest`
 missing-offset fallback, reacquisition preserves that already-pulled record's

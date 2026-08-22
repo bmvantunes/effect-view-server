@@ -5,7 +5,6 @@ const sourceMapReferenceDirective =
   /^(?:\/\/[#@][\t ]*sourceMappingURL=[^\r\n]*|\/\*[#@][\t ]*sourceMappingURL=[^\r\n]*\*\/)$/;
 
 const sourceMapReferenceRanges = (contents) => {
-  const ranges = new Map();
   const sourceFile = ts.createSourceFile(
     "published.ts",
     contents,
@@ -13,20 +12,48 @@ const sourceMapReferenceRanges = (contents) => {
     true,
     ts.ScriptKind.TS,
   );
-  const addRanges = (candidates) => {
-    for (const candidate of candidates ?? []) {
-      if (sourceMapReferenceDirective.test(contents.slice(candidate.pos, candidate.end))) {
-        ranges.set(`${candidate.pos}:${candidate.end}`, candidate);
-      }
-    }
-  };
+  const protectedRanges = [];
   const visit = (node) => {
-    addRanges(ts.getLeadingCommentRanges(contents, node.pos));
-    addRanges(ts.getTrailingCommentRanges(contents, node.end));
+    if (
+      node.kind === ts.SyntaxKind.StringLiteral ||
+      node.kind === ts.SyntaxKind.NoSubstitutionTemplateLiteral ||
+      node.kind === ts.SyntaxKind.TemplateHead ||
+      node.kind === ts.SyntaxKind.TemplateMiddle ||
+      node.kind === ts.SyntaxKind.TemplateTail ||
+      node.kind === ts.SyntaxKind.RegularExpressionLiteral
+    ) {
+      protectedRanges.push({ pos: node.getStart(sourceFile), end: node.getEnd() });
+    }
     ts.forEachChild(node, visit);
   };
   visit(sourceFile);
-  return [...ranges.values()].sort((left, right) => left.pos - right.pos);
+  protectedRanges.sort((left, right) => left.pos - right.pos);
+
+  const scanner = ts.createScanner(
+    ts.ScriptTarget.Latest,
+    false,
+    ts.LanguageVariant.Standard,
+    contents,
+  );
+  const ranges = [];
+  let protectedIndex = 0;
+  for (let token = scanner.scan(); token !== ts.SyntaxKind.EndOfFileToken; token = scanner.scan()) {
+    const tokenStart = scanner.getTokenPos();
+    const tokenEnd = scanner.getTextPos();
+    while (protectedRanges[protectedIndex]?.end <= tokenStart) {
+      protectedIndex += 1;
+    }
+    const protectedRange = protectedRanges[protectedIndex];
+    if (
+      (token === ts.SyntaxKind.SingleLineCommentTrivia ||
+        token === ts.SyntaxKind.MultiLineCommentTrivia) &&
+      !(protectedRange?.pos <= tokenStart && tokenStart < protectedRange.end) &&
+      sourceMapReferenceDirective.test(scanner.getTokenText())
+    ) {
+      ranges.push({ pos: tokenStart, end: tokenEnd });
+    }
+  }
+  return ranges;
 };
 
 export const stripSourceMapReference = (contents) => {
@@ -41,7 +68,11 @@ export const stripSourceMapReference = (contents) => {
     } else if (ownsLine && contents[end] === "\n") {
       end += 1;
     }
-    sanitized = `${sanitized.slice(0, start)}${sanitized.slice(end)}`;
+    const replacement =
+      !ownsLine && contents.startsWith("/*", range.pos) && /\S/.test(contents[end] ?? "")
+        ? " "
+        : "";
+    sanitized = `${sanitized.slice(0, start)}${replacement}${sanitized.slice(end)}`;
   }
   return sanitized;
 };

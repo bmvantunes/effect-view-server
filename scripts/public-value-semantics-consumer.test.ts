@@ -325,9 +325,11 @@ describe("published value semantics consumer", () => {
           "",
         ].join("\n"),
       );
-      execFileSync("pnpm", ["install"], {
+      execFileSync("vp", ["install"], {
         cwd: strictConsumerDirectory,
+        killSignal: "SIGTERM",
         stdio: "inherit",
+        timeout: 55_000,
       });
 
       const strictInstalledPackageDirectory = join(
@@ -338,10 +340,14 @@ describe("published value semantics consumer", () => {
       const strictInstalledManifest = decodePackageManifest(
         readFileSync(join(strictInstalledPackageDirectory, "package.json"), "utf8"),
       );
-      expect(strictInstalledManifest.dependencies).not.toHaveProperty("typescript-compiler-api");
-      expect(strictInstalledManifest.dependencies).toMatchObject({
+      expect(strictInstalledManifest.dependencies).toStrictEqual({
+        "@bufbuild/protobuf": "2.13.0",
+        "@connectrpc/connect": "2.1.2",
+        "@connectrpc/connect-node": "2.1.2",
+        "@effect/platform-browser": "4.0.0-rc.111",
         "@effect/platform-node": "4.0.0-rc.111",
         "@effect/platform-node-shared": "4.0.0-rc.111",
+        "@platformatic/kafka": "2.9.0",
       });
       for (const path of packedPaths.filter(
         (path) => path.endsWith(".js") || path.endsWith(".d.ts"),
@@ -350,9 +356,14 @@ describe("published value semantics consumer", () => {
           "typescript-compiler-api",
         );
       }
-      expect(strictInstalledManifest.peerDependencies).toMatchObject({
+      expect(strictInstalledManifest.peerDependencies).toStrictEqual({
+        "@effect/atom-react": "4.0.0-rc.111",
+        "@effect/vitest": "4.0.0-rc.111",
         effect: "4.0.0-rc.111",
+        react: "19.2.8",
+        "react-dom": "19.2.8",
         typescript: ">=7.0.0 <8.0.0",
+        vite: "*",
       });
       const strictLockfile = readFileSync(
         join(strictConsumerDirectory, "pnpm-lock.yaml"),

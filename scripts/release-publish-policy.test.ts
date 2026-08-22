@@ -355,6 +355,11 @@ describe("release publish policy", () => {
     ).toStrictEqual(
       "const embedded = `first line\n//# sourceMappingURL=fake.js.map\n${value}\n/*@ sourceMappingURL=also-fake.js.map */\n`;",
     );
+    const executable = stripSourceMapReference(
+      "function read(value) { return/*# sourceMappingURL=inline.js.map */value; }",
+    );
+    expect(executable).toStrictEqual("function read(value) { return value; }");
+    expect(Function(`${executable}; return read(7);`)()).toStrictEqual(7);
   });
 
   it("rejects source maps and private workspace references", () => {

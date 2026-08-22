@@ -757,6 +757,19 @@ describe("internal Seam checker", () => {
     expect(
       facadeProjectionViolationsForSource({
         contents: [
+          'export * from "@effect-view-server/react";',
+          'export * from "effect-view-server/react/viewport-base-row";',
+        ].join("\n"),
+        fileName: "packages/effect-view-server/src/react.ts",
+        projection: reactProjection,
+        relativePath: "packages/effect-view-server/src/react.ts",
+      }),
+    ).toStrictEqual([
+      "packages/effect-view-server/src/react.ts must exclusively re-export all of @effect-view-server/react plus type-only all of effect-view-server/react/viewport-base-row.",
+    ]);
+    expect(
+      facadeProjectionViolationsForSource({
+        contents: [
           'export * from "@effect-view-server/client";',
           'import "@effect-view-server/runtime";',
           "export const leak = true;",

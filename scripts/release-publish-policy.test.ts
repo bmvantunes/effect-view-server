@@ -25,6 +25,7 @@ import {
   publishDecision,
   releaseTypeFromChangesets,
   sanitizePublicPackageJson,
+  validatedReleaseArtifactManifestName,
   validatedReleaseArtifactViolations,
 } from "./release-publish-policy.mjs";
 import {
@@ -448,6 +449,8 @@ describe("release publish policy", () => {
     expect(validateJob.indexOf("run: node scripts/prepare-release-artifact.mjs")).toBeLessThan(
       validateJob.indexOf("uses: actions/upload-artifact@v6"),
     );
+    expect(validateJob).toContain("path: packages/effect-view-server/dist");
+    expect(validatedReleaseArtifactManifestName).toBe("release-artifact.json");
     expect(publishJob).toContain("run-install: false");
     expect(publishJob).not.toContain("vp install");
     expect(publishJob).toContain("run: node scripts/release-publish.mjs");
@@ -475,7 +478,7 @@ describe("release publish policy", () => {
     const runtime = "export const ready = true;\n";
     writeFileSync(join(distDirectory, "index.js"), runtime);
     writeFileSync(
-      join(distDirectory, ".release-artifact.json"),
+      join(distDirectory, validatedReleaseArtifactManifestName),
       `${JSON.stringify(
         createValidatedReleaseArtifactManifest(
           [{ relativePath: "index.js", contents: runtime }],
@@ -539,7 +542,7 @@ exit 1
     expect(execution.status).toBe(0);
     expect(execution.stderr).toBe("");
     expect(execution.stdout).toContain("effect-view-server@0.0.7 published as patch.");
-    expect(readFileSync(join(distDirectory, ".release-artifact.json"), "utf8")).toContain(
+    expect(readFileSync(join(distDirectory, validatedReleaseArtifactManifestName), "utf8")).toContain(
       "head-object",
     );
     rmSync(rootDirectory, { force: true, recursive: true });

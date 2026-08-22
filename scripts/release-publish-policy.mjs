@@ -4,7 +4,7 @@ export const expectedPublishRepository = "bmvantunes/effect-view-server";
 export const internalPackageScope = "@effect-view-server/";
 export const publicPackageName = "effect-view-server";
 const privateToolingDependencies = new Set(["typescript-compiler-api"]);
-export const validatedReleaseArtifactManifestName = ".release-artifact.json";
+export const validatedReleaseArtifactManifestName = "release-artifact.json";
 const validatedReleaseArtifactSchemaVersion = 1;
 
 const cloneJson = (value) => structuredClone(value);

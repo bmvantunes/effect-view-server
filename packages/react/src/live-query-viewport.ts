@@ -53,6 +53,12 @@ type ExactSafeRow<Input, Output> =
             ? Input
             : never;
 
+type ExactSafeWitness<Witness> = Witness extends (_row: infer Input) => infer Output
+  ? IsExact<Witness, (_row: Input) => Output> extends true
+    ? ExactSafeRow<Input, Output>
+    : never
+  : never;
+
 type LiveQueryViewportWitnessRow<Topics, Topic> =
   IsAny<Topics> extends true
     ? never
@@ -73,11 +79,9 @@ type LiveQueryViewportBaseRowMember<Viewport> =
   >
     ? never
     : "__effect-view-server/LiveQueryViewportBaseRow@v1" extends keyof Viewport
-      ? Exclude<Viewport["__effect-view-server/LiveQueryViewportBaseRow@v1"], undefined> extends (
-          _row: infer Input,
-        ) => infer Output
-        ? ExactSafeRow<Input, Output>
-        : never
+      ? ExactSafeWitness<
+          Exclude<Viewport["__effect-view-server/LiveQueryViewportBaseRow@v1"], undefined>
+        >
       : never;
 
 type LiveQueryViewportBaseRowMembers<Viewport> = Viewport extends unknown

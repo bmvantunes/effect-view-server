@@ -167,6 +167,12 @@ describe("Live Query Viewport type contracts", () => {
     >().toBeNever();
     expectTypeOf<
       LiveQueryViewportBaseRow<
+        LiveQueryViewport<typeof viewServer.topics, "orders"> &
+          LiveQueryViewport<typeof positionViewServer.topics, "positions">
+      >
+    >().toBeNever();
+    expectTypeOf<
+      LiveQueryViewportBaseRow<
         | LiveQueryViewport<typeof viewServer.topics, "orders">
         | LiveQueryViewport<typeof optionalOrderViewServer.topics, "orders">
       >

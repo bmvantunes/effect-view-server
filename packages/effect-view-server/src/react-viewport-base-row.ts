@@ -82,14 +82,23 @@ type LiveQueryViewportCompleteRawSelectMembers<Viewport> = Viewport extends unkn
   ? LiveQueryViewportCompleteRawSelectMember<Viewport>
   : never;
 
-type LiveQueryViewportCompleteRawSelectMemberValidity<Viewport> = Viewport extends unknown
-  ? [LiveQueryViewportCompleteRawSelectMember<Viewport>] extends [never]
+type IsSafeCompleteRawSelect<Select> =
+  IsAny<Select> extends true
     ? false
-    : true
+    : IsUnknown<Select> extends true
+      ? false
+      : [Select] extends [readonly [string, ...ReadonlyArray<string>]]
+        ? true
+        : false;
+
+type LiveQueryViewportCompleteRawSelectMemberValidity<Viewport> = Viewport extends unknown
+  ? IsSafeCompleteRawSelect<LiveQueryViewportCompleteRawSelectMember<Viewport>>
   : never;
 
 type LiveQueryViewportCompleteRawSelectMemberUniformity<Viewport, Select> = Viewport extends unknown
-  ? IsExact<LiveQueryViewportCompleteRawSelectMember<Viewport>, Select>
+  ? IsSafeCompleteRawSelect<LiveQueryViewportCompleteRawSelectMember<Viewport>> extends true
+    ? IsExact<LiveQueryViewportCompleteRawSelectMember<Viewport>, Select>
+    : false
   : never;
 
 export type LiveQueryViewportCompleteRawSelect<Viewport> =

@@ -541,6 +541,30 @@ describe("public effect-view-server subpath type contracts", () => {
     expectTypeOf<LiveQueryViewportCompleteRawSelect<any>>().toBeNever();
     expectTypeOf<LiveQueryViewportCompleteRawSelect<unknown>>().toBeNever();
     expectTypeOf<
+      LiveQueryViewportCompleteRawSelect<{
+        readonly "__effect-view-server/LiveQueryViewportBaseRow@v1"?: (
+          row: typeof Order.Type,
+        ) => typeof Order.Type;
+        readonly "__effect-view-server/LiveQueryViewportCompleteRawSelect@v1"?: any;
+      }>
+    >().toBeNever();
+    expectTypeOf<
+      LiveQueryViewportCompleteRawSelect<{
+        readonly "__effect-view-server/LiveQueryViewportBaseRow@v1"?: (
+          row: typeof Order.Type,
+        ) => typeof Order.Type;
+        readonly "__effect-view-server/LiveQueryViewportCompleteRawSelect@v1"?: unknown;
+      }>
+    >().toBeNever();
+    expectTypeOf<
+      LiveQueryViewportCompleteRawSelect<{
+        readonly "__effect-view-server/LiveQueryViewportBaseRow@v1"?: (
+          row: typeof Order.Type,
+        ) => typeof Order.Type;
+        readonly "__effect-view-server/LiveQueryViewportCompleteRawSelect@v1"?: readonly string[];
+      }>
+    >().toBeNever();
+    expectTypeOf<
       LiveQueryViewportCompleteRawSelect<
         Readonly<Record<string, (_row: typeof Order.Type) => typeof Order.Type>>
       >

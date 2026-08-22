@@ -512,6 +512,12 @@ describe("public effect-view-server subpath type contracts", () => {
       >
     >().toBeNever();
     expectTypeOf<
+      LiveQueryViewportBaseRow<
+        | LiveQueryViewport<typeof viewServer.topics, "orders">
+        | Readonly<Record<string, (_row: typeof Order.Type) => typeof Order.Type>>
+      >
+    >().toBeNever();
+    expectTypeOf<
       LiveQueryViewportBaseRow<{
         readonly replace: (...args: ReadonlyArray<never>) => unknown;
         readonly destroy: () => void;

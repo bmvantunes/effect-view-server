@@ -61,24 +61,38 @@ type LiveQueryViewportWitnessRow<Topics, Topic> =
             ? TopicRow<Topics, Topic>
             : never;
 
+type LiveQueryViewportBaseRowMember<Viewport> =
+  "__effect-view-server/LiveQueryViewportBaseRow@v1" extends Exclude<
+    keyof Viewport,
+    "__effect-view-server/LiveQueryViewportBaseRow@v1"
+  >
+    ? never
+    : "__effect-view-server/LiveQueryViewportBaseRow@v1" extends keyof Viewport
+      ? Exclude<Viewport["__effect-view-server/LiveQueryViewportBaseRow@v1"], undefined> extends (
+          _row: infer Input,
+        ) => infer Output
+        ? ExactSafeRow<Input, Output>
+        : never
+      : never;
+
+type LiveQueryViewportBaseRowMembers<Viewport> = Viewport extends unknown
+  ? LiveQueryViewportBaseRowMember<Viewport>
+  : never;
+
+type LiveQueryViewportBaseRowMemberValidity<Viewport> = Viewport extends unknown
+  ? [LiveQueryViewportBaseRowMember<Viewport>] extends [never]
+    ? false
+    : true
+  : never;
+
 export type LiveQueryViewportBaseRow<Viewport> =
   IsAny<Viewport> extends true
     ? never
     : IsUnknown<Viewport> extends true
       ? never
-      : "__effect-view-server/LiveQueryViewportBaseRow@v1" extends Exclude<
-            keyof Viewport,
-            "__effect-view-server/LiveQueryViewportBaseRow@v1"
-          >
+      : false extends LiveQueryViewportBaseRowMemberValidity<Viewport>
         ? never
-        : "__effect-view-server/LiveQueryViewportBaseRow@v1" extends keyof Viewport
-          ? Exclude<
-              Viewport["__effect-view-server/LiveQueryViewportBaseRow@v1"],
-              undefined
-            > extends (_row: infer Input) => infer Output
-            ? ExactSafeRow<Input, Output>
-            : never
-          : never;
+        : LiveQueryViewportBaseRowMembers<Viewport>;
 
 export type LiveQueryViewportWindow = {
   readonly firstRow: number;

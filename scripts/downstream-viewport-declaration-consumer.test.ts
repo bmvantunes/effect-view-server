@@ -340,12 +340,13 @@ describe("downstream viewport declaration bundle", () => {
           "type RejectAny = RequireNever<BundledViewportBaseRow<any>>;",
           "type RejectUnknown = RequireNever<BundledViewportBaseRow<unknown>>;",
           "type RejectErasedViewport = RequireNever<BundledViewportBaseRow<LiveQueryViewport<any, string>>>;",
+          "type RejectStringIndex = RequireNever<BundledViewportBaseRow<Readonly<Record<string, (_row: Order) => Order>>>>;",
           "type RejectUnwitnessed = RequireNever<BundledViewportBaseRow<{ readonly destroy: () => void }>>;",
           "void exactForward;",
           "void exactBackward;",
           "void matching;",
           "void wrong;",
-          "type Rejected = RejectAny | RejectUnknown | RejectErasedViewport | RejectUnwitnessed;",
+          "type Rejected = RejectAny | RejectUnknown | RejectErasedViewport | RejectStringIndex | RejectUnwitnessed;",
           "",
         ].join("\n"),
       );
@@ -400,9 +401,11 @@ describe("downstream viewport declaration bundle", () => {
         [
           'import { clientReady, type BundledViewportBaseRow } from "downstream-viewport-adapter";',
           "type RequireNever<Value extends never> = Value;",
+          "type ClientRow = { readonly id: string };",
+          "type StringIndex = RequireNever<BundledViewportBaseRow<Readonly<Record<string, (_row: ClientRow) => ClientRow>>>>;",
           "type Unwitnessed = RequireNever<BundledViewportBaseRow<{ readonly ready: true }>>;",
           "if (!clientReady) throw new Error(\"downstream runtime was not ready\");",
-          "type ClientRejection = Unwitnessed;",
+          "type ClientRejection = StringIndex | Unwitnessed;",
           "",
         ].join("\n"),
       );

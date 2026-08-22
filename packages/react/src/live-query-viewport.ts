@@ -66,13 +66,16 @@ export type LiveQueryViewportBaseRow<Viewport> =
     ? never
     : IsUnknown<Viewport> extends true
       ? never
-      : "__effect-view-server/LiveQueryViewportBaseRow@v1" extends keyof Viewport
-        ? Exclude<Viewport["__effect-view-server/LiveQueryViewportBaseRow@v1"], undefined> extends (
-            _row: infer Input,
-          ) => infer Output
-          ? ExactSafeRow<Input, Output>
-          : never
-        : never;
+      : string extends keyof Viewport
+        ? never
+        : "__effect-view-server/LiveQueryViewportBaseRow@v1" extends keyof Viewport
+          ? Exclude<
+              Viewport["__effect-view-server/LiveQueryViewportBaseRow@v1"],
+              undefined
+            > extends (_row: infer Input) => infer Output
+            ? ExactSafeRow<Input, Output>
+            : never
+          : never;
 
 export type LiveQueryViewportWindow = {
   readonly firstRow: number;

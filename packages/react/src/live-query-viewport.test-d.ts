@@ -127,6 +127,13 @@ describe("Live Query Viewport type contracts", () => {
       >
     >().toBeNever();
     expectTypeOf<
+      LiveQueryViewportBaseRow<
+        Readonly<
+          Record<`__effect-view-server/${string}`, (_row: typeof Order.Type) => typeof Order.Type>
+        >
+      >
+    >().toBeNever();
+    expectTypeOf<
       LiveQueryViewportBaseRow<{
         readonly replace: (...args: ReadonlyArray<never>) => unknown;
         readonly destroy: () => void;

@@ -66,7 +66,10 @@ export type LiveQueryViewportBaseRow<Viewport> =
     ? never
     : IsUnknown<Viewport> extends true
       ? never
-      : string extends keyof Viewport
+      : "__effect-view-server/LiveQueryViewportBaseRow@v1" extends Exclude<
+            keyof Viewport,
+            "__effect-view-server/LiveQueryViewportBaseRow@v1"
+          >
         ? never
         : "__effect-view-server/LiveQueryViewportBaseRow@v1" extends keyof Viewport
           ? Exclude<

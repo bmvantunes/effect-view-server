@@ -305,6 +305,11 @@ describe("release publish policy", () => {
     ).toStrictEqual([]);
     expect(stripSourceMapReference("export const ok = 1;\n//# sourceMappingURL=ok.js.map\n"))
       .toStrictEqual("export const ok = 1;\n");
+    expect(
+      stripSourceMapReference(
+        "export const first = 1;\n  //# sourceMappingURL=first.js.map\n\t/*# sourceMappingURL=second.js.map */\nexport const second = 2;\n",
+      ),
+    ).toStrictEqual("export const first = 1;\nexport const second = 2;\n");
     expect(stripSourceMapReference('writer.writeComment(`//# sourceMappingURL=${url}`);'))
       .toStrictEqual('writer.writeComment(`//# sourceMappingURL=${url}`);');
   });
@@ -314,6 +319,14 @@ describe("release publish policy", () => {
       publishedFileViolations([
         { relativePath: "dist/client.js.map", contents: "{}" },
         { relativePath: "dist/client.js", contents: "//# sourceMappingURL=client.js.map" },
+        {
+          relativePath: "dist/indented.js",
+          contents: "  //# sourceMappingURL=indented.js.map",
+        },
+        {
+          relativePath: "dist/block.js",
+          contents: "/*# sourceMappingURL=block.js.map */",
+        },
         { relativePath: "package.json", contents: '"@effect-view-server/client":"0.0.0"' },
         {
           relativePath: "dist/client.d.ts",
@@ -323,6 +336,8 @@ describe("release publish policy", () => {
     ).toStrictEqual([
       "dist/client.js.map is a source map",
       "dist/client.js references a source map",
+      "dist/indented.js references a source map",
+      "dist/block.js references a source map",
       "package.json references @effect-view-server/",
       "dist/client.d.ts references @effect-view-server/",
     ]);

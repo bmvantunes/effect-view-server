@@ -1,6 +1,5 @@
 export type {
   FieldKey,
-  LiveQueryViewportCompleteRawSelectForRow,
   NumericFieldKey,
   RowFromSchema,
   RowSchema,

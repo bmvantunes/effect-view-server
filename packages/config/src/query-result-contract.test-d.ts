@@ -1,16 +1,19 @@
 import { describe, expectTypeOf, it } from "@effect/vitest";
 import * as BigDecimal from "effect/BigDecimal";
+import type * as PublicConfig from "./index";
 import {
   type GroupedQuery,
   type GroupedResult,
   type ExactRawQuery,
   type LiveQueryRow,
-  type LiveQueryViewportCompleteRawSelectForRow,
   type PickRawFields,
   type RawQuery,
   type ValidateLiveQuery,
 } from "./index";
-import type { CompleteRawSelectWitnessRow } from "./query-core";
+import type {
+  CompleteRawSelectWitnessRow,
+  LiveQueryViewportCompleteRawSelectForRow,
+} from "./query-core";
 
 import { viewServer } from "../test-harness/live-query";
 import { Order } from "../test-harness/schemas";
@@ -46,6 +49,9 @@ const forgedCompleteOrderSelect = Object.assign(["id"] as const, {
   ): typeof Order.Type => row,
 });
 declare const choose: boolean;
+
+// @ts-expect-error complete-projection authority is private to source implementations.
+export type _NoPublicCompleteSelect = PublicConfig.LiveQueryViewportCompleteRawSelectForRow;
 
 describe("Query result contracts", () => {
   it("recognizes an invariant complete raw-row projection without weakening ordinary selects", () => {

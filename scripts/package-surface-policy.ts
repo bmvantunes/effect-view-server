@@ -422,6 +422,10 @@ export const packageSurfacePolicy = {
           "React bindings may use client transports but must not import runtime, server, engine, or in-memory outside the testing entrypoint.",
         relativeOverrides: [
           {
+            allowedWorkspaceSpecifiers: ["@effect-view-server/config/internal"],
+            relativePath: "src/live-query-viewport.ts",
+          },
+          {
             allowedWorkspaceSpecifiers: [
               "@effect-view-server/in-memory",
               "@effect-view-server/in-memory/testing",

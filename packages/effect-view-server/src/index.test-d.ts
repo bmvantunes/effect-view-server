@@ -1,4 +1,8 @@
 import { describe, expectTypeOf, it } from "@effect/vitest";
+import type * as PublicConfig from "./config";
+
+// @ts-expect-error row-only complete-projection authority is not a public facade export.
+export type _NoPublicCompleteSelect = PublicConfig.LiveQueryViewportCompleteRawSelectForRow;
 import type { DescMessage } from "@bufbuild/protobuf";
 import { EmptySchema, TimestampSchema, type Timestamp } from "@bufbuild/protobuf/wkt";
 import { ViewServerId, defineViewServerConfig, viewSchema } from "effect-view-server/config";

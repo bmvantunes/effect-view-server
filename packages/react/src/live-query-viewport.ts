@@ -4,7 +4,6 @@ import type {
   GroupedQuery,
   LiveQueryResult,
   LiveQueryRow,
-  LiveQueryViewportCompleteRawSelectForRow,
   OrderBy,
   RawQuery,
   TopicDefinitions,
@@ -13,6 +12,8 @@ import type {
   ViewServerTransportError,
   Where,
 } from "@effect-view-server/config";
+// This type-only internal seam keeps complete-projection authority source-owned and erases at runtime.
+import type { LiveQueryViewportCompleteRawSelectForRow } from "@effect-view-server/config/internal";
 import {
   liveQueryFailureResult,
   makeIncrementalClientState,

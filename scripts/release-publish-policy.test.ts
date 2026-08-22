@@ -321,10 +321,22 @@ describe("release publish policy", () => {
         "export const windows = true;//# sourceMappingURL=windows.js.map\r\nexport const next = true;\r\n",
       ),
     ).toStrictEqual("export const windows = true;\r\nexport const next = true;\r\n");
+    expect(
+      stripSourceMapReference(
+        "export const windows = true;\r\n  //# sourceMappingURL=windows.js.map\r\nexport const next = true;\r\n",
+      ),
+    ).toStrictEqual("export const windows = true;\r\nexport const next = true;\r\n");
     expect(stripSourceMapReference('writer.writeComment(`//# sourceMappingURL=${url}`);'))
       .toStrictEqual('writer.writeComment(`//# sourceMappingURL=${url}`);');
     expect(stripSourceMapReference('const embedded = "/*# sourceMappingURL=fake.js.map */";'))
       .toStrictEqual('const embedded = "/*# sourceMappingURL=fake.js.map */";');
+    expect(
+      stripSourceMapReference(
+        "const embedded = `first line\n//# sourceMappingURL=fake.js.map\n${value}\n/*@ sourceMappingURL=also-fake.js.map */\n`;",
+      ),
+    ).toStrictEqual(
+      "const embedded = `first line\n//# sourceMappingURL=fake.js.map\n${value}\n/*@ sourceMappingURL=also-fake.js.map */\n`;",
+    );
   });
 
   it("rejects source maps and private workspace references", () => {

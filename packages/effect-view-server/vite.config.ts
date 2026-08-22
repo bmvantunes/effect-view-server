@@ -53,6 +53,7 @@ export default defineConfig({
       "src/kafka-server.ts",
       "src/kafka-node.ts",
       "src/react.ts",
+      "src/react-viewport-base-row.ts",
       "src/react-testing.ts",
       "src/runtime.ts",
       "src/server.ts",

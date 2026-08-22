@@ -728,10 +728,32 @@ describe("internal Seam checker", () => {
   it("requires facade files to be exact reexport-only projections", () => {
     const clientProjection = facadeProjectionFor("effect-view-server/client");
     const kafkaProjection = facadeProjectionFor("effect-view-server/kafka/contract");
+    const reactProjection = facadeProjectionFor("effect-view-server/react");
     const sourceAdapterTestingProjection = facadeProjectionFor(
       "effect-view-server/source-adapter/testing",
     );
 
+    expect(
+      facadeProjectionViolationsForSource({
+        contents: [
+          'export * from "@effect-view-server/react";',
+          'export type * from "effect-view-server/react/viewport-base-row";',
+        ].join("\n"),
+        fileName: "packages/effect-view-server/src/react.ts",
+        projection: reactProjection,
+        relativePath: "packages/effect-view-server/src/react.ts",
+      }),
+    ).toStrictEqual([]);
+    expect(
+      facadeProjectionViolationsForSource({
+        contents: 'export * from "@effect-view-server/react";',
+        fileName: "packages/effect-view-server/src/react.ts",
+        projection: reactProjection,
+        relativePath: "packages/effect-view-server/src/react.ts",
+      }),
+    ).toStrictEqual([
+      "packages/effect-view-server/src/react.ts must exclusively re-export all of @effect-view-server/react plus type-only all of effect-view-server/react/viewport-base-row.",
+    ]);
     expect(
       facadeProjectionViolationsForSource({
         contents: [

@@ -3,6 +3,7 @@ export type PackageSurfaceEntrypoint = {
   readonly sourceEntrypoint: string;
   readonly facade?: {
     readonly additionalAllReexports?: ReadonlyArray<string>;
+    readonly additionalTypeAllReexports?: ReadonlyArray<string>;
     readonly exportKey: string;
     readonly sourceEntrypoint: string;
   };
@@ -28,6 +29,10 @@ export type PackageSurfacePolicy = {
   readonly deepImportSuffixes: ReadonlyArray<string>;
   readonly facade: {
     readonly directory: string;
+    readonly entrypoints: ReadonlyArray<{
+      readonly exportKey: string;
+      readonly sourceEntrypoint: string;
+    }>;
     readonly packageName: string;
   };
   readonly packages: ReadonlyArray<PrivatePackageSurface>;
@@ -97,6 +102,12 @@ export const packageSurfacePolicy = {
   ],
   facade: {
     directory: "effect-view-server",
+    entrypoints: [
+      {
+        exportKey: "./react/viewport-base-row",
+        sourceEntrypoint: "src/react-viewport-base-row.ts",
+      },
+    ],
     packageName: "effect-view-server",
   },
   packages: [
@@ -425,7 +436,11 @@ export const packageSurfacePolicy = {
         {
           exportKey: ".",
           sourceEntrypoint: "src/index.tsx",
-          facade: { exportKey: "./react", sourceEntrypoint: "src/react.ts" },
+          facade: {
+            additionalTypeAllReexports: ["effect-view-server/react/viewport-base-row"],
+            exportKey: "./react",
+            sourceEntrypoint: "src/react.ts",
+          },
         },
         {
           exportKey: "./testing",
@@ -816,14 +831,18 @@ export const workspaceEntrypointPolicies = packageSurfacePolicy.packages.flatMap
   })),
 );
 
-export const consumerPackageSpecifiers: ReadonlyArray<string> =
-  packageSurfacePolicy.packages.flatMap((packagePolicy) =>
+export const consumerPackageSpecifiers: ReadonlyArray<string> = [
+  ...packageSurfacePolicy.packages.flatMap((packagePolicy) =>
     packagePolicy.entrypoints.flatMap((entrypoint) =>
       "facade" in entrypoint
         ? [packageSpecifierFor(packageSurfacePolicy.facade.packageName, entrypoint.facade.exportKey)]
         : [],
     ),
-  );
+  ),
+  ...packageSurfacePolicy.facade.entrypoints.map((entrypoint) =>
+    packageSpecifierFor(packageSurfacePolicy.facade.packageName, entrypoint.exportKey),
+  ),
+];
 
 export const approvedPackageSpecifiers: ReadonlyArray<string> = [
   ...workspacePackageSpecifiers,
@@ -880,6 +899,7 @@ const expectedManifestExport = (
 };
 
 export type FacadeProjection = {
+  readonly additionalTypeAllReexports: ReadonlyArray<string>;
   readonly consumerExportKey: string;
   readonly consumerSourceEntrypoint: string;
   readonly consumerSpecifier: string;
@@ -896,6 +916,7 @@ export const facadeProjections: ReadonlyArray<FacadeProjection> =
       }
       return [
         {
+          additionalTypeAllReexports: facade.additionalTypeAllReexports ?? [],
           consumerExportKey: facade.exportKey,
           consumerSourceEntrypoint: facade.sourceEntrypoint,
           consumerSpecifier: packageSpecifierFor(
@@ -931,6 +952,11 @@ export const runtimeSymbolPolicies = [
       specifier: projection.consumerSpecifier,
     };
   }),
+  ...packageSurfacePolicy.facade.entrypoints.map((entrypoint) => ({
+    forbidden: [],
+    required: [],
+    specifier: packageSpecifierFor(packageSurfacePolicy.facade.packageName, entrypoint.exportKey),
+  })),
 ];
 
 export type SourceForbiddenExportPolicy = {
@@ -976,10 +1002,18 @@ export const expectedPackageSurfaces: ReadonlyArray<ExpectedPackageSurface> = [
   {
     directory: packageSurfacePolicy.facade.directory,
     packageName: packageSurfacePolicy.facade.packageName,
-    manifestExports: facadeProjections.map((projection) =>
-      expectedManifestExport(projection.consumerExportKey, projection.consumerSourceEntrypoint),
-    ),
-    packEntrypoints: facadeProjections.map((projection) => projection.consumerSourceEntrypoint),
+    manifestExports: facadeProjections
+      .map((projection) =>
+        expectedManifestExport(projection.consumerExportKey, projection.consumerSourceEntrypoint),
+      )
+      .concat(
+        packageSurfacePolicy.facade.entrypoints.map((entrypoint) =>
+          expectedManifestExport(entrypoint.exportKey, entrypoint.sourceEntrypoint),
+        ),
+      ),
+    packEntrypoints: facadeProjections
+      .map((projection) => projection.consumerSourceEntrypoint)
+      .concat(packageSurfacePolicy.facade.entrypoints.map((entrypoint) => entrypoint.sourceEntrypoint)),
   },
 ];
 

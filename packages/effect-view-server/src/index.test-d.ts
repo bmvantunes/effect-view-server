@@ -8,6 +8,7 @@ import {
   type LiveQueryViewport,
   type LiveQueryViewportBaseRow,
 } from "effect-view-server/react";
+import type { LiveQueryViewportBaseRow as PureLiveQueryViewportBaseRow } from "effect-view-server/react/viewport-base-row";
 import { createInMemoryViewServerReact } from "effect-view-server/react/testing";
 import { runViewServerRuntime } from "effect-view-server/runtime";
 import type {
@@ -524,6 +525,15 @@ describe("public effect-view-server subpath type contracts", () => {
     expectTypeOf<LiveQueryViewportBaseRow<typeof viewport.viewport>>().toEqualTypeOf<
       typeof Order.Type
     >();
+    expectTypeOf<PureLiveQueryViewportBaseRow<typeof viewport.viewport>>().toEqualTypeOf<
+      LiveQueryViewportBaseRow<typeof viewport.viewport>
+    >();
+    expectTypeOf<
+      LiveQueryViewportBaseRow<
+        | (typeof viewport.viewport & { readonly source: "left" })
+        | (typeof viewport.viewport & { readonly source: "right" })
+      >
+    >().toEqualTypeOf<typeof Order.Type>();
     expectTypeOf<LiveQueryViewportBaseRow<any>>().toBeNever();
     expectTypeOf<LiveQueryViewportBaseRow<unknown>>().toBeNever();
     expectTypeOf<LiveQueryViewportBaseRow<LiveQueryViewport<any, string>>>().toBeNever();
@@ -582,6 +592,21 @@ describe("public effect-view-server subpath type contracts", () => {
         readonly "__effect-view-server/LiveQueryViewportBaseRow@v1"?:
           | ((_row: typeof Order.Type) => typeof Order.Type)
           | ((_row: typeof Position.Type) => typeof Position.Type);
+      }>
+    >().toBeNever();
+    expectTypeOf<
+      LiveQueryViewportBaseRow<{
+        readonly "__effect-view-server/LiveQueryViewportBaseRow@v1"?: (
+          arg: typeof Order.Type,
+        ) => typeof Order.Type;
+      }>
+    >().toEqualTypeOf<typeof Order.Type>();
+    expectTypeOf<
+      LiveQueryViewportBaseRow<{
+        readonly "__effect-view-server/LiveQueryViewportBaseRow@v1"?: ((
+          _row: typeof Order.Type,
+        ) => typeof Order.Type) &
+          ((_row: typeof Position.Type) => typeof Position.Type);
       }>
     >().toBeNever();
     expectTypeOf<

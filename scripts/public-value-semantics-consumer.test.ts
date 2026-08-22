@@ -379,6 +379,12 @@ describe("published value semantics consumer", () => {
       expect(strictLockfile).not.toContain("typescript@6.0.3");
       expect(
         readFileSync(join(strictInstalledPackageDirectory, "dist", "react.d.ts"), "utf8"),
+      ).toContain('export type * from "effect-view-server/react/viewport-base-row"');
+      expect(
+        readFileSync(
+          join(strictInstalledPackageDirectory, "dist", "react-viewport-base-row.d.ts"),
+          "utf8",
+        ),
       ).toContain("LiveQueryViewportBaseRow");
       execFileSync(
         process.execPath,

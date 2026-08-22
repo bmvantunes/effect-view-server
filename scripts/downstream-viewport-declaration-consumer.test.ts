@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import {
+  existsSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
@@ -8,7 +9,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "@effect/vitest";
 import { inspectTypeScriptModule } from "./typescript-module-inspection";
@@ -90,6 +91,47 @@ const pack = (directory: string, destination: string): string => {
   return join(destination, result[0].filename);
 };
 
+type DeclarationClosureFile = {
+  readonly path: string;
+  readonly source: string;
+};
+
+const declarationPathForSpecifier = (sourcePath: string, specifier: string): string => {
+  const resolved = resolve(dirname(sourcePath), specifier);
+  const candidates = [
+    resolved,
+    resolved.replace(/\.mjs$/, ".d.mts"),
+    resolved.replace(/\.js$/, ".d.ts"),
+    `${resolved}.d.mts`,
+    `${resolved}.d.ts`,
+  ];
+  const path = candidates.find((candidate) => existsSync(candidate));
+  if (path === undefined) {
+    throw new Error(`Cannot resolve declaration ${specifier} from ${sourcePath}.`);
+  }
+  return path;
+};
+
+const collectDeclarationClosure = (entryPath: string): ReadonlyArray<DeclarationClosureFile> => {
+  const files = new Map<string, DeclarationClosureFile>();
+  const pending = [entryPath];
+  while (pending.length > 0) {
+    const path = pending.pop();
+    if (path === undefined || files.has(path)) {
+      continue;
+    }
+    const source = readFileSync(path, "utf8");
+    files.set(path, { path, source });
+    const inspection = inspectTypeScriptModule({ fileName: path, source });
+    for (const specifier of inspection.moduleSpecifiers) {
+      if (specifier.startsWith(".")) {
+        pending.push(declarationPathForSpecifier(path, specifier));
+      }
+    }
+  }
+  return Array.from(files.values());
+};
+
 const selectViewServerTarball = (options: {
   readonly requestedTarball: string | undefined;
   readonly artifactsReady: boolean;
@@ -133,8 +175,18 @@ describe("downstream viewport declaration bundle", () => {
           types: "./dist/index.d.mts",
           import: "./dist/index.mjs",
         },
+        "./effect": {
+          types: "./dist/effect.d.mts",
+          import: "./dist/effect.mjs",
+        },
       },
       dependencies: {},
+      peerDependencies: {
+        effect: "4.0.0-rc.111",
+      },
+      peerDependenciesMeta: {
+        effect: { optional: true },
+      },
       devDependencies: {
         "@emnapi/core": "1.7.1",
         "@emnapi/runtime": "1.7.1",
@@ -159,7 +211,7 @@ describe("downstream viewport declaration bundle", () => {
         "",
         "export default defineConfig({",
         "  pack: {",
-        '    entry: { index: "src/index.ts" },',
+        '    entry: { effect: "src/effect.ts", index: "src/index.ts" },',
         "    dts: { tsgo: true },",
         "  },",
         "});",
@@ -179,10 +231,20 @@ describe("downstream viewport declaration bundle", () => {
     writeFileSync(
       join(downstreamDirectory, "src", "index.ts"),
       [
-        'import type { LiveQueryViewportBaseRow } from "effect-view-server/react";',
+        'import type { LiveQueryViewportBaseRow } from "effect-view-server/react/viewport-base-row";',
         "",
         "export type BundledViewportBaseRow<Viewport> = LiveQueryViewportBaseRow<Viewport>;",
         "export const clientReady = true;",
+        "",
+      ].join("\n"),
+    );
+    writeFileSync(
+      join(downstreamDirectory, "src", "effect.ts"),
+      [
+        'import type { Effect } from "effect";',
+        "",
+        "export type OptionalEffect = Effect<void>;",
+        "export const effectReady = true;",
         "",
       ].join("\n"),
     );
@@ -242,30 +304,47 @@ describe("downstream viewport declaration bundle", () => {
     expect(packCount).toBe(2);
   });
 
-  it("bundles the source-owned base row without downstream Effect references", () => {
-    const downstreamDeclaration = readFileSync(
+  it("isolates the complete Client root declaration closure from the optional Effect entry", () => {
+    const declarationClosure = collectDeclarationClosure(
       join(downstreamDirectory, "dist", "index.d.mts"),
-      "utf8",
     );
+    const downstreamDeclaration = declarationClosure.map(({ source }) => source).join("\n");
     const downstreamRuntime = readFileSync(
       join(downstreamDirectory, "dist", "index.mjs"),
       "utf8",
     );
     expect(downstreamDeclaration).toContain("BundledViewportBaseRow");
     expect(
-      inspectTypeScriptModule({
-        fileName: "index.d.mts",
-        source: downstreamDeclaration,
-      }).moduleSpecifiers.filter(
-        (specifier) =>
-          specifier === "effect" ||
-          specifier.startsWith("effect/") ||
-          specifier === "effect-view-server" ||
-          specifier.startsWith("effect-view-server/"),
+      declarationClosure.flatMap(({ path, source }) =>
+        inspectTypeScriptModule({ fileName: path, source }).moduleSpecifiers.filter(
+          (specifier) =>
+            specifier === "effect" ||
+            specifier.startsWith("effect/") ||
+            specifier === "effect-view-server" ||
+            specifier.startsWith("effect-view-server/"),
+        ),
       ),
     ).toStrictEqual([]);
+    expect(declarationClosure.map(({ source }) => source).join("\n")).not.toMatch(
+      /\bdeclare\s+(?:global|module)\b|stackTraceLimit|\bReact(?:Node|Element|Portal|HTML)?\b/,
+    );
     expect(downstreamRuntime).not.toContain("effect-view-server");
     expect(downstreamRuntime).not.toMatch(/(?:from|import\()[^\n]*["']effect(?:\/|["'])/);
+  });
+
+  it("packs a source-owned pure helper declaration and an empty runtime module", () => {
+    const installedPackage = join(downstreamDirectory, "node_modules", "effect-view-server");
+    const declarationPath = join(installedPackage, "dist", "react-viewport-base-row.d.ts");
+    const runtimePath = join(installedPackage, "dist", "react-viewport-base-row.js");
+    const declaration = readFileSync(declarationPath, "utf8");
+    const inspection = inspectTypeScriptModule({ fileName: declarationPath, source: declaration });
+
+    expect(declaration).toContain("type LiveQueryViewportBaseRow<Viewport>");
+    expect(inspection.moduleSpecifiers).toStrictEqual([]);
+    expect(declaration).not.toMatch(
+      /\bdeclare\s+(?:global|module)\b|stackTraceLimit|\bReact(?:Node|Element|Portal|HTML)?\b|\bEffect\b/,
+    );
+    expect(readFileSync(runtimePath, "utf8").trim()).toBe("export {};");
   });
 
   it(
@@ -339,6 +418,10 @@ describe("downstream viewport declaration bundle", () => {
           "const exactForward: Order = extractedOrder;",
           "const exactBackward: BundledViewportBaseRow<typeof orders> = expectedOrder;",
           "const matching: ExactSource<Order, typeof orders> = orders;",
+          'type SameRowViewportUnion = (typeof orders & { readonly source: "left" }) | (typeof orders & { readonly source: "right" });',
+          "declare const sameRowUnion: SameRowViewportUnion;",
+          "const sameRowUnionForward: Order = null as unknown as BundledViewportBaseRow<SameRowViewportUnion>;",
+          "const sameRowUnionBackward: BundledViewportBaseRow<SameRowViewportUnion> = expectedOrder;",
           "// @ts-expect-error a viewport for another Topic Row is rejected invariantly.",
           "const wrong: ExactSource<Order, typeof positions> = positions;",
           "type RejectAny = RequireNever<BundledViewportBaseRow<any>>;",
@@ -353,12 +436,16 @@ describe("downstream viewport declaration bundle", () => {
           "type RejectNonInvariantWitness = RequireNever<BundledViewportBaseRow<{ readonly \"__effect-view-server/LiveQueryViewportBaseRow@v1\"?: (_row: Order) => Order & { readonly note?: string } }>>;",
           "type RejectPartlyCallableWitness = RequireNever<BundledViewportBaseRow<{ readonly \"__effect-view-server/LiveQueryViewportBaseRow@v1\"?: ((_row: Order) => Order) | 0 }>>;",
           "type RejectMixedCallableWitness = RequireNever<BundledViewportBaseRow<{ readonly \"__effect-view-server/LiveQueryViewportBaseRow@v1\"?: ((_row: Order) => Order) | ((_row: typeof positionConfig.topics.positions.schema.Type) => typeof positionConfig.topics.positions.schema.Type) }>>;",
+          "type RejectOverloadedWitness = RequireNever<BundledViewportBaseRow<{ readonly \"__effect-view-server/LiveQueryViewportBaseRow@v1\"?: ((_row: Order) => Order) & ((_row: typeof positionConfig.topics.positions.schema.Type) => typeof positionConfig.topics.positions.schema.Type) }>>;",
           "type RejectUnwitnessed = RequireNever<BundledViewportBaseRow<{ readonly destroy: () => void }>>;",
           "void exactForward;",
           "void exactBackward;",
           "void matching;",
+          "void sameRowUnion;",
+          "void sameRowUnionForward;",
+          "void sameRowUnionBackward;",
           "void wrong;",
-          "type Rejected = RejectAny | RejectUnknown | RejectErasedViewport | RejectStringIndex | RejectPatternIndex | RejectUnsafeUnion | RejectMixedViewportUnion | RejectIntersectedViewports | RejectEquivalentViewportUnion | RejectNonInvariantWitness | RejectPartlyCallableWitness | RejectMixedCallableWitness | RejectUnwitnessed;",
+          "type Rejected = RejectAny | RejectUnknown | RejectErasedViewport | RejectStringIndex | RejectPatternIndex | RejectUnsafeUnion | RejectMixedViewportUnion | RejectIntersectedViewports | RejectEquivalentViewportUnion | RejectNonInvariantWitness | RejectPartlyCallableWitness | RejectMixedCallableWitness | RejectOverloadedWitness | RejectUnwitnessed;",
           "",
         ].join("\n"),
       );
@@ -374,6 +461,11 @@ describe("downstream viewport declaration bundle", () => {
             "const keys = Reflect.ownKeys(facade);",
             'if (keys.length !== 2 || keys[0] !== "createViewServerReact" || keys[1] !== Symbol.toStringTag) {',
             '  throw new Error(`Unexpected React facade keys: ${keys.map(String).join(", ")}`);',
+            "}",
+            'const helper = await import("effect-view-server/react/viewport-base-row");',
+            "const helperKeys = Reflect.ownKeys(helper);",
+            "if (helperKeys.length !== 1 || helperKeys[0] !== Symbol.toStringTag) {",
+            '  throw new Error(`Unexpected pure helper keys: ${helperKeys.map(String).join(", ")}`);',
             "}",
           ].join("\n"),
         ],
@@ -428,9 +520,10 @@ describe("downstream viewport declaration bundle", () => {
           "type NonInvariantWitness = RequireNever<BundledViewportBaseRow<{ readonly \"__effect-view-server/LiveQueryViewportBaseRow@v1\"?: (_row: ClientRow) => OptionalClientRow }>>;",
           "type PartlyCallableWitness = RequireNever<BundledViewportBaseRow<{ readonly \"__effect-view-server/LiveQueryViewportBaseRow@v1\"?: ((_row: ClientRow) => ClientRow) | 0 }>>;",
           "type MixedCallableWitness = RequireNever<BundledViewportBaseRow<{ readonly \"__effect-view-server/LiveQueryViewportBaseRow@v1\"?: ((_row: ClientRow) => ClientRow) | ((_row: OtherClientRow) => OtherClientRow) }>>;",
+          "type OverloadedWitness = RequireNever<BundledViewportBaseRow<{ readonly \"__effect-view-server/LiveQueryViewportBaseRow@v1\"?: ((_row: ClientRow) => ClientRow) & ((_row: OtherClientRow) => OtherClientRow) }>>;",
           "type Unwitnessed = RequireNever<BundledViewportBaseRow<{ readonly ready: true }>>;",
           "if (!clientReady) throw new Error(\"downstream runtime was not ready\");",
-          "type ClientRejection = StringIndex | PatternIndex | UnsafeUnion | MixedWitnessUnion | IntersectedWitnesses | EquivalentWitnessUnion | NonInvariantWitness | PartlyCallableWitness | MixedCallableWitness | Unwitnessed;",
+          "type ClientRejection = StringIndex | PatternIndex | UnsafeUnion | MixedWitnessUnion | IntersectedWitnesses | EquivalentWitnessUnion | NonInvariantWitness | PartlyCallableWitness | MixedCallableWitness | OverloadedWitness | Unwitnessed;",
           "",
         ].join("\n"),
       );

@@ -19,8 +19,8 @@ describe("Package Surface Policy", () => {
     expect(packageSurfacePolicy.packages).toHaveLength(15);
     expect(workspacePackageSpecifiers).toHaveLength(33);
     expect(new Set(workspacePackageSpecifiers).size).toBe(33);
-    expect(consumerPackageSpecifiers).toHaveLength(24);
-    expect(new Set(consumerPackageSpecifiers).size).toBe(24);
+    expect(consumerPackageSpecifiers).toHaveLength(25);
+    expect(new Set(consumerPackageSpecifiers).size).toBe(25);
     expect(consumerPackageSpecifiers).not.toContain("effect-view-server");
     expect(
       expectedPackageSurfaces
@@ -112,8 +112,13 @@ describe("Package Surface Policy", () => {
         "src/internal.ts",
       ],
     });
-    expect(facadeSurface?.manifestExports).toHaveLength(24);
-    expect(facadeSurface?.packEntrypoints).toHaveLength(24);
+    expect(facadeSurface?.manifestExports).toHaveLength(25);
+    expect(facadeSurface?.packEntrypoints).toHaveLength(25);
+    expect(facadeSurface?.manifestExports).toContainEqual({
+      exportKey: "./react/viewport-base-row",
+      importTarget: "./dist/react-viewport-base-row.js",
+      typesTarget: "./dist/react-viewport-base-row.d.ts",
+    });
     expect(kafkaContractProjection.workspaceSpecifier).toBe(
       "@effect-view-server/kafka/contract",
     );

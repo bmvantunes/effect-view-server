@@ -9,7 +9,6 @@ import {
   makeLiveQueryViewport,
   makeLiveQueryViewportBinding,
   type LiveQueryViewport,
-  type LiveQueryViewportBaseRow,
 } from "./live-query-viewport";
 
 const Order = Schema.Struct({
@@ -36,20 +35,6 @@ const positionViewServer = defineViewServerConfig({
   topics: {
     positions: {
       schema: Position,
-    },
-  },
-});
-
-const optionalOrderViewServer = defineViewServerConfig({
-  topics: {
-    orders: {
-      schema: Schema.Struct({
-        id: ViewServerId,
-        status: Schema.Literals(["open", "closed"]),
-        price: Schema.Number,
-        region: Schema.String,
-        note: Schema.optionalKey(Schema.String),
-      }),
     },
   },
 });
@@ -85,18 +70,13 @@ const directViewport = makeLiveQueryViewport({
 });
 
 describe("Live Query Viewport type contracts", () => {
-  it("exposes one invariant base Topic row independently of query results", () => {
+  it("keeps one invariant viewport shape independently of query results", () => {
     const result = react.useLiveQueryViewport("orders");
     const binding = makeLiveQueryViewportBinding<typeof viewServer.topics, "orders">();
     type Viewport = typeof result.viewport;
 
-    expectTypeOf<LiveQueryViewportBaseRow<Viewport>>().toEqualTypeOf<typeof Order.Type>();
-    expectTypeOf<LiveQueryViewportBaseRow<typeof directViewport>>().toEqualTypeOf<
-      typeof Order.Type
-    >();
-    expectTypeOf<LiveQueryViewportBaseRow<typeof binding.viewport>>().toEqualTypeOf<
-      typeof Order.Type
-    >();
+    expectTypeOf(directViewport).toMatchTypeOf<Viewport>();
+    expectTypeOf(binding.viewport).toMatchTypeOf<Viewport>();
 
     const rawGeneration = result.viewport.replace({
       window: { firstRow: 0, lastRow: 9 },
@@ -115,10 +95,10 @@ describe("Live Query Viewport type contracts", () => {
       sink: { setRowCount: () => undefined, setRowData: () => undefined },
     });
 
-    expectTypeOf<LiveQueryViewportBaseRow<Viewport>>().toEqualTypeOf<typeof Order.Type>();
+    expectTypeOf<typeof result.viewport>().toEqualTypeOf<Viewport>();
   });
 
-  it("rejects mismatched base rows and unsafe extraction inputs", () => {
+  it("rejects mismatched base rows", () => {
     const orderViewport = react.useLiveQueryViewport("orders").viewport;
     const positionViewport = positionReact.useLiveQueryViewport("positions").viewport;
     const requireOrderViewport = (
@@ -129,81 +109,7 @@ describe("Live Query Viewport type contracts", () => {
     // @ts-expect-error the viewport base Topic row is invariant.
     requireOrderViewport(positionViewport);
 
-    expectTypeOf<LiveQueryViewportBaseRow<typeof positionViewport>>().toEqualTypeOf<
-      typeof Position.Type
-    >();
-    expectTypeOf<
-      LiveQueryViewportBaseRow<
-        | (LiveQueryViewport<typeof viewServer.topics, "orders"> & { readonly source: "left" })
-        | (LiveQueryViewport<typeof viewServer.topics, "orders"> & { readonly source: "right" })
-      >
-    >().toEqualTypeOf<typeof Order.Type>();
-    expectTypeOf<LiveQueryViewportBaseRow<any>>().toBeNever();
-    expectTypeOf<LiveQueryViewportBaseRow<unknown>>().toBeNever();
-    expectTypeOf<LiveQueryViewportBaseRow<LiveQueryViewport<any, string>>>().toBeNever();
-    expectTypeOf<
-      LiveQueryViewportBaseRow<
-        Readonly<Record<string, (_row: typeof Order.Type) => typeof Order.Type>>
-      >
-    >().toBeNever();
-    expectTypeOf<
-      LiveQueryViewportBaseRow<
-        Readonly<
-          Record<`__effect-view-server/${string}`, (_row: typeof Order.Type) => typeof Order.Type>
-        >
-      >
-    >().toBeNever();
-    expectTypeOf<
-      LiveQueryViewportBaseRow<
-        | LiveQueryViewport<typeof viewServer.topics, "orders">
-        | Readonly<Record<string, (_row: typeof Order.Type) => typeof Order.Type>>
-      >
-    >().toBeNever();
-    expectTypeOf<
-      LiveQueryViewportBaseRow<
-        | LiveQueryViewport<typeof viewServer.topics, "orders">
-        | LiveQueryViewport<typeof positionViewServer.topics, "positions">
-      >
-    >().toBeNever();
-    expectTypeOf<
-      LiveQueryViewportBaseRow<
-        LiveQueryViewport<typeof viewServer.topics, "orders"> &
-          LiveQueryViewport<typeof positionViewServer.topics, "positions">
-      >
-    >().toBeNever();
-    expectTypeOf<
-      LiveQueryViewportBaseRow<
-        | LiveQueryViewport<typeof viewServer.topics, "orders">
-        | LiveQueryViewport<typeof optionalOrderViewServer.topics, "orders">
-      >
-    >().toBeNever();
-    expectTypeOf<
-      LiveQueryViewportBaseRow<{
-        readonly "__effect-view-server/LiveQueryViewportBaseRow@v1"?: (_row: {
-          readonly id: string;
-        }) => { readonly id: string; readonly note?: string };
-      }>
-    >().toBeNever();
-    expectTypeOf<
-      LiveQueryViewportBaseRow<{
-        readonly "__effect-view-server/LiveQueryViewportBaseRow@v1"?:
-          | ((_row: typeof Order.Type) => typeof Order.Type)
-          | 0;
-      }>
-    >().toBeNever();
-    expectTypeOf<
-      LiveQueryViewportBaseRow<{
-        readonly "__effect-view-server/LiveQueryViewportBaseRow@v1"?:
-          | ((_row: typeof Order.Type) => typeof Order.Type)
-          | ((_row: typeof Position.Type) => typeof Position.Type);
-      }>
-    >().toBeNever();
-    expectTypeOf<
-      LiveQueryViewportBaseRow<{
-        readonly replace: (...args: ReadonlyArray<never>) => unknown;
-        readonly destroy: () => void;
-      }>
-    >().toBeNever();
+    expectTypeOf(positionViewport).not.toEqualTypeOf(orderViewport);
   });
 
   it("binds the configured topic and exposes chrome without rows", () => {

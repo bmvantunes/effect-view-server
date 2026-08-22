@@ -205,6 +205,19 @@ receive the complete canonical group key. Both maps describe the same
 rows move or aggregates change. Keys are never derived from viewport position.
 Existing sinks that only accept the first `rowsByIndex` argument remain valid.
 
+Structural adapters that need the complete configured Topic Row import the
+declaration-only extractor from the pure subpath:
+
+```ts
+import type { LiveQueryViewportBaseRow } from "effect-view-server/react/viewport-base-row";
+
+type BaseRow = LiveQueryViewportBaseRow<typeof viewport>;
+```
+
+The subpath owns its helper declaration directly, imports neither React nor
+Effect, and has an empty runtime module. `effect-view-server/react` re-exports
+the same helper for compatibility; it does not maintain a second extractor.
+
 ### Source Diagnostics
 
 `useSourceHealth(...)` consumes the same scoped framework-neutral diagnostics

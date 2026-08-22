@@ -96,6 +96,10 @@
       "types": "./dist/react.d.ts",
       "import": "./dist/react.js"
     },
+    "./react/viewport-base-row": {
+      "types": "./dist/react-viewport-base-row.d.ts",
+      "import": "./dist/react-viewport-base-row.js"
+    },
     "./react/testing": {
       "types": "./dist/react-testing.d.ts",
       "import": "./dist/react-testing.js"

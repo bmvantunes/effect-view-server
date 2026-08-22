@@ -94,9 +94,13 @@ scroll-only changes. Each replacement is switch-latest: obsolete snapshots,
 deltas, statuses, failures, and sink writes are ignored. See the Public API
 guide for the complete adapter contract. Structural adapters can recover the
 complete configured Topic Row with the type-only
-`LiveQueryViewportBaseRow<typeof viewport>` helper. That invariant witness does
-not change when a viewport selects a raw projection, produces grouped rows,
-moves its window, or replaces its source, and it adds no runtime property.
+`LiveQueryViewportBaseRow<typeof viewport>` helper from
+`effect-view-server/react/viewport-base-row`. That pure subpath has an empty
+runtime module and declarations that import neither React nor Effect, so a
+Client-only adapter can bundle the helper without retaining View Server peers.
+The invariant witness does not change when a viewport selects a raw projection,
+produces grouped rows, moves its window, or replaces its source, and it adds no
+runtime property.
 
 React applications should install the package and compatible peer dependencies:
 

@@ -488,17 +488,33 @@ export const facadeProjectionViolationsForSource = ({
     violations.push(`${relativePath} must contain only package re-export declarations.`);
   }
   const expectedWorkspaceSpecifiers = projection.workspaceSpecifiers;
+  const expectedReexports = [
+    ...expectedWorkspaceSpecifiers.map((moduleSpecifier) => ({
+      kind: "all" as const,
+      moduleSpecifier,
+      typeOnly: false,
+    })),
+    ...projection.additionalTypeAllReexports.map((moduleSpecifier) => ({
+      kind: "all" as const,
+      moduleSpecifier,
+      typeOnly: true,
+    })),
+  ];
   if (
-    inspection.reexports.length !== expectedWorkspaceSpecifiers.length ||
+    inspection.reexports.length !== expectedReexports.length ||
     inspection.reexports.some(
       (reexport, index) =>
-        reexport.kind !== "all" ||
-        reexport.moduleSpecifier !== expectedWorkspaceSpecifiers[index] ||
-        reexport.typeOnly,
+        reexport.kind !== expectedReexports[index]?.kind ||
+        reexport.moduleSpecifier !== expectedReexports[index]?.moduleSpecifier ||
+        reexport.typeOnly !== expectedReexports[index]?.typeOnly,
     )
   ) {
+    const expectedDescription =
+      projection.additionalTypeAllReexports.length === 0
+        ? `all of ${expectedWorkspaceSpecifiers.join(" and ")}`
+        : `all of ${expectedWorkspaceSpecifiers.join(" and ")} plus type-only all of ${projection.additionalTypeAllReexports.join(" and ")}`;
     violations.push(
-      `${relativePath} must exclusively re-export all of ${expectedWorkspaceSpecifiers.join(" and ")}.`,
+      `${relativePath} must exclusively re-export ${expectedDescription}.`,
     );
   }
   return violations;

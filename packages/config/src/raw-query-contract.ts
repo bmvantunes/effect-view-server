@@ -1,4 +1,9 @@
-import type { CompleteRawSelectWitnessRow, FieldKey, PickTupleFields } from "./query-core";
+import type {
+  CompleteRawSelectWitnessKey,
+  CompleteRawSelectWitnessRow,
+  FieldKey,
+  PickTupleFields,
+} from "./query-core";
 import type { ExactQueryWindow, RejectArrayExtraKeys, RejectExtraKeys } from "./query-exact";
 import type { ExactWhere, Where } from "./query-filter";
 import type { ExactRawOrderBy, OrderBy } from "./query-sort";
@@ -22,8 +27,6 @@ type ExactRawSelectFields<Row, Select> =
         readonly [Index in keyof Select]: ExactRawSelectField<Row, Select[Index]>;
       }
     : never;
-
-type CompleteRawSelectWitnessKey = "__effect-view-server/LiveQueryViewportCompleteRawSelect@v1";
 
 type ExactCompleteRawSelectFields<Row, Select extends ReadonlyArray<unknown>> = [
   Select[number],

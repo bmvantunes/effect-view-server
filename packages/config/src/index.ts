@@ -55,6 +55,7 @@ export type {
   LiveQuery,
   LiveQueryResult,
   LiveQueryRow,
+  LiveQueryViewportCompleteRawSelectForRow,
   NegationExpression,
   NotEqualCondition,
   NumericComparisonCondition,

@@ -5,6 +5,7 @@ import {
   type GroupedResult,
   type ExactRawQuery,
   type LiveQueryRow,
+  type LiveQueryViewportCompleteRawSelectForRow,
   type PickRawFields,
   type RawQuery,
   type ValidateLiveQuery,
@@ -26,24 +27,24 @@ declare const conditionalAggregates:
   | { readonly rowCount: { readonly aggFunc: "count" } }
   | { readonly totalPrice: { readonly aggFunc: "sum"; readonly field: "price" } };
 
-type CompleteRawSelect<Row> = readonly [
-  Extract<keyof Row, string>,
-  ...Array<Extract<keyof Row, string>>,
-] & {
-  readonly "__effect-view-server/LiveQueryViewportCompleteRawSelect@v1": (_row: Row) => Row;
-};
-
-declare const completeOrderSelect: CompleteRawSelect<typeof Order.Type>;
+declare const completeOrderSelect: LiveQueryViewportCompleteRawSelectForRow<typeof Order.Type>;
 type OtherRow = { readonly id: string; readonly quantity: number };
-declare const mismatchedSelect: CompleteRawSelect<OtherRow>;
+declare const mismatchedSelect: LiveQueryViewportCompleteRawSelectForRow<OtherRow>;
 declare const malformedSelect: readonly ["id"] & {
   readonly "__effect-view-server/LiveQueryViewportCompleteRawSelect@v1": (
     _row: typeof Order.Type,
   ) => OtherRow;
 };
-declare const completeSelectWithExtra: CompleteRawSelect<typeof Order.Type> & {
+declare const completeSelectWithExtra: LiveQueryViewportCompleteRawSelectForRow<
+  typeof Order.Type
+> & {
   readonly unexpected: true;
 };
+const forgedCompleteOrderSelect = Object.assign(["id"] as const, {
+  "__effect-view-server/LiveQueryViewportCompleteRawSelect@v1": (
+    row: typeof Order.Type,
+  ): typeof Order.Type => row,
+});
 declare const choose: boolean;
 
 describe("Query result contracts", () => {
@@ -55,6 +56,9 @@ describe("Query result contracts", () => {
       typeof Order.Type
     >();
     expectTypeOf<ExactRawQuery<typeof Order.Type, typeof completeQuery>>().not.toBeNever();
+    expectTypeOf(completeOrderSelect).not.toHaveProperty(
+      "__effect-view-server/LiveQueryViewportCompleteRawSelect@v1",
+    );
 
     expectTypeOf<
       ExactRawQuery<typeof Order.Type, { readonly select: typeof mismatchedSelect }>
@@ -102,6 +106,10 @@ describe("Query result contracts", () => {
     >().toBeNever();
     expectTypeOf<
       ExactRawQuery<typeof Order.Type, { readonly select: typeof completeSelectWithExtra }>
+    >().toBeNever();
+    expectTypeOf<CompleteRawSelectWitnessRow<typeof forgedCompleteOrderSelect>>().toBeNever();
+    expectTypeOf<
+      ExactRawQuery<typeof Order.Type, { readonly select: typeof forgedCompleteOrderSelect }>
     >().toBeNever();
   });
 

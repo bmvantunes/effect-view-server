@@ -4,6 +4,7 @@ import type {
   GroupedQuery,
   LiveQueryResult,
   LiveQueryRow,
+  LiveQueryViewportCompleteRawSelectForRow,
   OrderBy,
   RawQuery,
   TopicDefinitions,
@@ -45,13 +46,6 @@ type LiveQueryViewportWitnessRow<Topics, Topic> =
           : Topic extends keyof Topics
             ? TopicRow<Topics, Topic>
             : never;
-
-type LiveQueryViewportCompleteRawSelect<Row> = readonly [
-  Extract<keyof Row, string>,
-  ...Array<Extract<keyof Row, string>>,
-] & {
-  readonly "__effect-view-server/LiveQueryViewportCompleteRawSelect@v1": (_row: Row) => Row;
-};
 
 export type LiveQueryViewportWindow = {
   readonly firstRow: number;
@@ -160,6 +154,9 @@ export type LiveQueryViewport<
   readonly "__effect-view-server/LiveQueryViewportBaseRow@v1"?: (
     _row: LiveQueryViewportWitnessRow<Topics, Topic>,
   ) => LiveQueryViewportWitnessRow<Topics, Topic>;
+  readonly "__effect-view-server/LiveQueryViewportCompleteRawSelect@v1"?: LiveQueryViewportCompleteRawSelectForRow<
+    LiveQueryViewportWitnessRow<Topics, Topic>
+  >;
   readonly replace: <
     const Query extends LiveQueryViewportQuery<TopicRow<Topics, NoInfer<Topic>>>,
     const Sink extends LiveQueryViewportSink<LiveQueryRow<TopicRow<Topics, Topic>, NoInfer<Query>>>,
@@ -174,7 +171,7 @@ export type UseLiveQueryViewportResult<
   Topic extends Extract<keyof Topics, string>,
 > = {
   readonly viewport: LiveQueryViewport<Topics, Topic>;
-  readonly completeRawSelect: LiveQueryViewportCompleteRawSelect<TopicRow<Topics, Topic>>;
+  readonly completeRawSelect: LiveQueryViewportCompleteRawSelectForRow<TopicRow<Topics, Topic>>;
   readonly totalRows: number;
   readonly version: number;
   readonly status: LiveQueryResult<never>["status"];

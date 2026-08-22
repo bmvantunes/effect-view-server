@@ -218,6 +218,7 @@ describe("useLiveQueryViewport", () => {
     function CompleteRawViewport() {
       const result = useLiveQueryViewport("orders");
       observedSelects.push(result.completeRawSelect);
+      expect(Reflect.ownKeys(result.completeRawSelect)).toStrictEqual(["0", "1", "2", "length"]);
       return (
         <>
           <button

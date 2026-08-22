@@ -57,7 +57,8 @@ const publicPackageJson = {
   publishConfig: { provenance: true },
   dependencies: {
     "@effect-view-server/client": "workspace:*",
-    effect: "4.0.0-rc.109",
+    effect: "4.0.0-rc.111",
+    "typescript-compiler-api": "npm:typescript@6.0.3",
   },
   devDependencies: { "@effect-view-server/runtime": "workspace:*" },
   peerDependencies: { react: "19.2.8" },
@@ -274,7 +275,7 @@ describe("release publish policy", () => {
       engines: { node: ">=26.0.0" },
       files: ["dist", "README.md"],
       publishConfig: { access: "public", provenance: true },
-      dependencies: { effect: "4.0.0-rc.109" },
+      dependencies: { effect: "4.0.0-rc.111" },
       peerDependencies: { react: "19.2.8" },
       peerDependenciesMeta: { react: { optional: true } },
     });

@@ -123,11 +123,12 @@ const PackageExports = Schema.StructWithRest(
   [Schema.Record(Schema.String, Schema.Unknown)],
 );
 const PackagePeerDependencies = Schema.StructWithRest(
-  Schema.Struct({ effect: Schema.String }),
+  Schema.Struct({ effect: Schema.String, typescript: Schema.String }),
   [Schema.Record(Schema.String, Schema.String)],
 );
 const PackageManifest = Schema.StructWithRest(
   Schema.Struct({
+    dependencies: Schema.Record(Schema.String, Schema.String),
     exports: PackageExports,
     peerDependencies: PackagePeerDependencies,
   }),
@@ -272,6 +273,77 @@ describe("published value semantics consumer", () => {
       expect(packedPaths).toContain("dist/value-semantics.d.ts");
       expect(packedPaths).not.toContain("dist/effect-schemaast-compat.d.ts");
 
+      const strictConsumerDirectory = join(temporaryRoot, "strict-consumer");
+      mkdirSync(strictConsumerDirectory, { recursive: true });
+      writeFileSync(
+        join(strictConsumerDirectory, "package.json"),
+        `${JSON.stringify(
+          {
+            name: "effect-view-server-strict-peer-consumer",
+            private: true,
+            packageManager: "pnpm@11.9.0",
+            dependencies: {
+              effect: "4.0.0-rc.111",
+              "effect-view-server": `file:${join(temporaryRoot, packResult.filename)}`,
+              redis: "6.2.1",
+              typescript: "7.0.2",
+              vite: "npm:@voidzero-dev/vite-plus-core@0.2.8",
+            },
+          },
+          null,
+          2,
+        )}\n`,
+      );
+      writeFileSync(
+        join(strictConsumerDirectory, "pnpm-workspace.yaml"),
+        [
+          "packages:",
+          "  - .",
+          "",
+          "autoInstallPeers: false",
+          "strictPeerDependencies: true",
+          "",
+          "onlyBuiltDependencies:",
+          "  - msgpackr-extract",
+          "",
+          "allowBuilds:",
+          "  msgpackr-extract: true",
+          "",
+        ].join("\n"),
+      );
+      execFileSync("pnpm", ["install", "--offline"], {
+        cwd: strictConsumerDirectory,
+        stdio: "inherit",
+      });
+
+      const strictInstalledPackageDirectory = join(
+        strictConsumerDirectory,
+        "node_modules",
+        "effect-view-server",
+      );
+      const strictInstalledManifest = decodePackageManifest(
+        readFileSync(join(strictInstalledPackageDirectory, "package.json"), "utf8"),
+      );
+      expect(strictInstalledManifest.dependencies).not.toHaveProperty("typescript-compiler-api");
+      expect(strictInstalledManifest.peerDependencies).toMatchObject({
+        effect: "4.0.0-rc.111",
+        typescript: ">=7.0.0 <8.0.0",
+      });
+      const strictLockfile = readFileSync(
+        join(strictConsumerDirectory, "pnpm-lock.yaml"),
+        "utf8",
+      );
+      expect(strictLockfile).toContain(
+        "@effect/platform-node-shared@4.0.0-rc.111(effect@4.0.0-rc.111)",
+      );
+      expect(strictLockfile).toMatch(
+        /effect-view-server@file:[^\n]+\(effect@4\.0\.0-rc\.111\)[^\n]*\(typescript@7\.0\.2\)/,
+      );
+      expect(strictLockfile).not.toContain("typescript@6.0.3");
+      expect(
+        readFileSync(join(strictInstalledPackageDirectory, "dist", "react.d.ts"), "utf8"),
+      ).toContain("LiveQueryViewportBaseRow");
+
       extract({
         cwd: installedPackageDirectory,
         file: join(temporaryRoot, packResult.filename),
@@ -297,7 +369,7 @@ describe("published value semantics consumer", () => {
       const valueSemanticsExport = installedManifest.exports["./value-semantics"];
       const entryTarget = valueSemanticsExport.import;
       const declarationTarget = valueSemanticsExport.types;
-      expect(installedManifest.peerDependencies.effect).toBe("4.0.0-rc.109");
+      expect(installedManifest.peerDependencies.effect).toBe("4.0.0-rc.111");
 
       const graph = collectStaticModuleGraph(
         join(installedPackageDirectory, entryTarget.replace(/^\.\//, "")),
@@ -393,5 +465,5 @@ describe("published value semantics consumer", () => {
         { cwd: consumerDirectory, stdio: "inherit" },
       );
     }
-  }, 30_000);
+  }, 60_000);
 });

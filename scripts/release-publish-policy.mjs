@@ -1,6 +1,7 @@
 export const expectedPublishRepository = "bmvantunes/effect-view-server";
 export const internalPackageScope = "@effect-view-server/";
 export const publicPackageName = "effect-view-server";
+const privateToolingDependencies = new Set(["typescript-compiler-api"]);
 
 const cloneJson = (value) => structuredClone(value);
 
@@ -8,7 +9,10 @@ const omitInternalDependencies = (dependencies) =>
   dependencies === undefined
     ? undefined
     : Object.fromEntries(
-        Object.entries(dependencies).filter(([name]) => !name.startsWith(internalPackageScope)),
+        Object.entries(dependencies).filter(
+          ([name]) =>
+            !name.startsWith(internalPackageScope) && !privateToolingDependencies.has(name),
+        ),
       );
 
 const definedEntries = (entries) =>

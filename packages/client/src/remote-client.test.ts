@@ -1423,9 +1423,14 @@ describe("remote ViewServer client", () => {
     Effect.gen(function* () {
       const server = yield* makeTestRpcServer();
       server.setHealthSummaryRows([
-        { ...healthSummaryWireRow(), status: "degraded", runtimeStatus: "degraded" },
+        Object.assign({}, healthSummaryWireRow(), {
+          status: "degraded" as const,
+          runtimeStatus: "degraded" as const,
+        }),
       ]);
-      server.setHealthTopicRows([{ ...healthTopicWireRow(), status: "stopping" }]);
+      server.setHealthTopicRows([
+        Object.assign({}, healthTopicWireRow(), { status: "stopping" as const }),
+      ]);
       server.setHealth({
         ...health(0, 0),
         status: "degraded",
@@ -1510,7 +1515,7 @@ describe("remote ViewServer client", () => {
           {
             type: "update",
             key: "orders",
-            row: { ...healthTopicWireRow(), rowCount: 25 },
+            row: Object.assign({}, healthTopicWireRow(), { rowCount: 25 }),
             index: 0,
           },
           {

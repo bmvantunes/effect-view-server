@@ -99,11 +99,11 @@ type DeclarationClosureFile = {
 const declarationPathForSpecifier = (sourcePath: string, specifier: string): string => {
   const resolved = resolve(dirname(sourcePath), specifier);
   const candidates = [
-    resolved,
-    resolved.replace(/\.mjs$/, ".d.mts"),
-    resolved.replace(/\.js$/, ".d.ts"),
+    ...(resolved.endsWith(".mjs") ? [resolved.replace(/\.mjs$/, ".d.mts")] : []),
+    ...(resolved.endsWith(".js") ? [resolved.replace(/\.js$/, ".d.ts")] : []),
     `${resolved}.d.mts`,
     `${resolved}.d.ts`,
+    resolved,
   ];
   const path = candidates.find((candidate) => existsSync(candidate));
   if (path === undefined) {
@@ -304,6 +304,30 @@ describe("downstream viewport declaration bundle", () => {
     expect(packCount).toBe(2);
   });
 
+  it("prefers declaration siblings when runtime and declaration files both exist", () => {
+    for (const [runtimeExtension, declarationExtension] of [
+      ["mjs", "d.mts"],
+      ["js", "d.ts"],
+    ] as const) {
+      const fixture = mkdtempSync(join(tmpdir(), "view-server-declaration-closure-"));
+      const entryPath = join(fixture, "index.d.mts");
+      const declarationPath = join(fixture, `shared.${declarationExtension}`);
+      const runtimePath = join(fixture, `shared.${runtimeExtension}`);
+      writeFileSync(entryPath, `export * from "./shared.${runtimeExtension}";\n`);
+      writeFileSync(
+        declarationPath,
+        "declare global { interface LeakedAmbient {} }\nexport {};\n",
+      );
+      writeFileSync(runtimePath, "export const runtimeOnly = true;\n");
+
+      const closure = collectDeclarationClosure(entryPath);
+
+      expect(closure.map(({ path }) => path)).toStrictEqual([entryPath, declarationPath]);
+      expect(closure.map(({ source }) => source).join("\n")).toMatch(/\bdeclare\s+global\b/);
+      rmSync(fixture, { force: true, recursive: true });
+    }
+  });
+
   it("isolates the complete Client root declaration closure from the optional Effect entry", () => {
     const declarationClosure = collectDeclarationClosure(
       join(downstreamDirectory, "dist", "index.d.mts"),
@@ -420,7 +444,8 @@ describe("downstream viewport declaration bundle", () => {
           "const matching: ExactSource<Order, typeof orders> = orders;",
           'type SameRowViewportUnion = (typeof orders & { readonly source: "left" }) | (typeof orders & { readonly source: "right" });',
           "declare const sameRowUnion: SameRowViewportUnion;",
-          "const sameRowUnionForward: Order = null as unknown as BundledViewportBaseRow<SameRowViewportUnion>;",
+          "declare const extractedSameRowUnion: BundledViewportBaseRow<SameRowViewportUnion>;",
+          "const sameRowUnionForward: Order = extractedSameRowUnion;",
           "const sameRowUnionBackward: BundledViewportBaseRow<SameRowViewportUnion> = expectedOrder;",
           "// @ts-expect-error a viewport for another Topic Row is rejected invariantly.",
           "const wrong: ExactSource<Order, typeof positions> = positions;",

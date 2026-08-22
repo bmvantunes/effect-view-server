@@ -85,6 +85,14 @@ type LiveQueryViewportBaseRowMemberValidity<Viewport> = Viewport extends unknown
     : true
   : never;
 
+type LiveQueryViewportBaseRowMemberUniformity<Viewport, Rows> = Viewport extends unknown
+  ? [LiveQueryViewportBaseRowMember<Viewport>] extends [Rows]
+    ? [Rows] extends [LiveQueryViewportBaseRowMember<Viewport>]
+      ? true
+      : false
+    : false
+  : never;
+
 export type LiveQueryViewportBaseRow<Viewport> =
   IsAny<Viewport> extends true
     ? never
@@ -92,7 +100,12 @@ export type LiveQueryViewportBaseRow<Viewport> =
       ? never
       : false extends LiveQueryViewportBaseRowMemberValidity<Viewport>
         ? never
-        : LiveQueryViewportBaseRowMembers<Viewport>;
+        : false extends LiveQueryViewportBaseRowMemberUniformity<
+              Viewport,
+              LiveQueryViewportBaseRowMembers<Viewport>
+            >
+          ? never
+          : LiveQueryViewportBaseRowMembers<Viewport>;
 
 export type LiveQueryViewportWindow = {
   readonly firstRow: number;

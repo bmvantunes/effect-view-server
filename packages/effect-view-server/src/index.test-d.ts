@@ -82,6 +82,19 @@ const viewServer = defineViewServerConfig({
   },
 });
 
+const Position = Schema.Struct({
+  id: ViewServerId,
+  quantity: Schema.Number,
+});
+
+const positionViewServer = defineViewServerConfig({
+  topics: {
+    positions: {
+      schema: Position,
+    },
+  },
+});
+
 class PublicReportingCallbackDependency extends Context.Service<
   PublicReportingCallbackDependency,
   { readonly report: () => void }
@@ -515,6 +528,12 @@ describe("public effect-view-server subpath type contracts", () => {
       LiveQueryViewportBaseRow<
         | LiveQueryViewport<typeof viewServer.topics, "orders">
         | Readonly<Record<string, (_row: typeof Order.Type) => typeof Order.Type>>
+      >
+    >().toBeNever();
+    expectTypeOf<
+      LiveQueryViewportBaseRow<
+        | LiveQueryViewport<typeof viewServer.topics, "orders">
+        | LiveQueryViewport<typeof positionViewServer.topics, "positions">
       >
     >().toBeNever();
     expectTypeOf<

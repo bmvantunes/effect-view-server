@@ -118,6 +118,12 @@ describe("Live Query Viewport type contracts", () => {
     expectTypeOf<LiveQueryViewportBaseRow<typeof positionViewport>>().toEqualTypeOf<
       typeof Position.Type
     >();
+    expectTypeOf<
+      LiveQueryViewportBaseRow<
+        | (LiveQueryViewport<typeof viewServer.topics, "orders"> & { readonly source: "left" })
+        | (LiveQueryViewport<typeof viewServer.topics, "orders"> & { readonly source: "right" })
+      >
+    >().toEqualTypeOf<typeof Order.Type>();
     expectTypeOf<LiveQueryViewportBaseRow<any>>().toBeNever();
     expectTypeOf<LiveQueryViewportBaseRow<unknown>>().toBeNever();
     expectTypeOf<LiveQueryViewportBaseRow<LiveQueryViewport<any, string>>>().toBeNever();
@@ -137,6 +143,12 @@ describe("Live Query Viewport type contracts", () => {
       LiveQueryViewportBaseRow<
         | LiveQueryViewport<typeof viewServer.topics, "orders">
         | Readonly<Record<string, (_row: typeof Order.Type) => typeof Order.Type>>
+      >
+    >().toBeNever();
+    expectTypeOf<
+      LiveQueryViewportBaseRow<
+        | LiveQueryViewport<typeof viewServer.topics, "orders">
+        | LiveQueryViewport<typeof positionViewServer.topics, "positions">
       >
     >().toBeNever();
     expectTypeOf<

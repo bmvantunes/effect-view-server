@@ -10,10 +10,13 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "@effect/vitest";
+import { afterAll, beforeAll, describe, expect, it } from "@effect/vitest";
 import { inspectTypeScriptModule } from "./typescript-module-inspection";
 
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
+const commandTimeoutMilliseconds = 60_000;
+const setupTimeoutMilliseconds = 360_000;
+const scenarioTimeoutMilliseconds = 200_000;
 
 const writeJson = (path: string, value: unknown): void => {
   writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
@@ -41,7 +44,16 @@ const installStrictly = (directory: string): void => {
     cwd: directory,
     killSignal: "SIGTERM",
     stdio: "inherit",
-    timeout: 55_000,
+    timeout: commandTimeoutMilliseconds,
+  });
+};
+
+const run = (command: string, args: ReadonlyArray<string>, directory: string): void => {
+  execFileSync(command, args, {
+    cwd: directory,
+    killSignal: "SIGTERM",
+    stdio: "inherit",
+    timeout: commandTimeoutMilliseconds,
   });
 };
 
@@ -57,7 +69,12 @@ const pack = (directory: string, destination: string): string => {
       "--cache",
       join(destination, ".npm-cache"),
     ],
-    { cwd: repositoryRoot, encoding: "utf8" },
+    {
+      cwd: repositoryRoot,
+      encoding: "utf8",
+      killSignal: "SIGTERM",
+      timeout: commandTimeoutMilliseconds,
+    },
   );
   const result: unknown = JSON.parse(output);
   if (
@@ -73,125 +90,187 @@ const pack = (directory: string, destination: string): string => {
   return join(destination, result[0].filename);
 };
 
+const selectViewServerTarball = (options: {
+  readonly requestedTarball: string | undefined;
+  readonly artifactsReady: boolean;
+  readonly buildLocal: () => void;
+  readonly packLocal: () => string;
+}): string => {
+  if (options.requestedTarball !== undefined) {
+    return resolve(options.requestedTarball);
+  }
+  if (!options.artifactsReady) {
+    options.buildLocal();
+  }
+  return options.packLocal();
+};
+
 describe("downstream viewport declaration bundle", () => {
+  const temporaryRoot = mkdtempSync(join(tmpdir(), "view-server-viewport-bundle-"));
+  const downstreamDirectory = join(temporaryRoot, "downstream");
+  let viewServerTarball = "";
+  let downstreamTarball = "";
+
+  beforeAll(() => {
+    viewServerTarball = selectViewServerTarball({
+      requestedTarball: process.env.VIEW_SERVER_VIEWPORT_CONSUMER_TARBALL,
+      artifactsReady: process.env.VIEW_SERVER_REPOSITORY_TEST_ARTIFACTS_READY === "1",
+      buildLocal: () =>
+        run("vp", ["run", "effect-view-server#build"], repositoryRoot),
+      packLocal: () =>
+        pack(join(repositoryRoot, "packages", "effect-view-server"), temporaryRoot),
+    });
+
+    mkdirSync(join(downstreamDirectory, "src"), { recursive: true });
+    writeJson(join(downstreamDirectory, "package.json"), {
+      name: "downstream-viewport-adapter",
+      version: "1.0.0",
+      type: "module",
+      packageManager: "pnpm@11.9.0",
+      files: ["dist"],
+      exports: {
+        ".": {
+          types: "./dist/index.d.mts",
+          import: "./dist/index.mjs",
+        },
+      },
+      dependencies: {},
+      devDependencies: {
+        "@emnapi/core": "1.7.1",
+        "@emnapi/runtime": "1.7.1",
+        "@effect/atom-react": "4.0.0-rc.111",
+        "@types/node": "26.2.0",
+        "@types/react": "19.2.18",
+        "@types/react-dom": "19.2.4",
+        effect: "4.0.0-rc.111",
+        "effect-view-server": `file:${viewServerTarball}`,
+        react: "19.2.8",
+        "react-dom": "19.2.8",
+        redis: "6.2.1",
+        typescript: "7.0.2",
+        vite: "8.0.0",
+        "vite-plus": "0.2.8",
+      },
+    });
+    writeFileSync(
+      join(downstreamDirectory, "vite.config.ts"),
+      [
+        'import { defineConfig } from "vite-plus";',
+        "",
+        "export default defineConfig({",
+        "  pack: {",
+        '    entry: { index: "src/index.ts" },',
+        "    dts: { tsgo: true },",
+        "  },",
+        "});",
+        "",
+      ].join("\n"),
+    );
+    writeJson(join(downstreamDirectory, "tsconfig.json"), {
+      compilerOptions: {
+        declaration: true,
+        exactOptionalPropertyTypes: true,
+        module: "preserve",
+        moduleResolution: "bundler",
+        strict: true,
+      },
+      include: ["src"],
+    });
+    writeFileSync(
+      join(downstreamDirectory, "src", "index.ts"),
+      [
+        'import type { LiveQueryViewportBaseRow } from "effect-view-server/react";',
+        "",
+        "export type BundledViewportBaseRow<Viewport> = LiveQueryViewportBaseRow<Viewport>;",
+        "export const clientReady = true;",
+        "",
+      ].join("\n"),
+    );
+    installStrictly(downstreamDirectory);
+    run("vp", ["pack"], downstreamDirectory);
+    downstreamTarball = pack(downstreamDirectory, temporaryRoot);
+  }, setupTimeoutMilliseconds);
+
+  afterAll(() => rmSync(temporaryRoot, { force: true, recursive: true }));
+
+  it("selects local and configured View Server tarballs", () => {
+    let buildCount = 0;
+    let packCount = 0;
+    const localTarball = selectViewServerTarball({
+      requestedTarball: undefined,
+      artifactsReady: false,
+      buildLocal: () => {
+        buildCount += 1;
+      },
+      packLocal: () => {
+        packCount += 1;
+        return "/local/effect-view-server.tgz";
+      },
+    });
+    expect(localTarball).toBe("/local/effect-view-server.tgz");
+    expect(buildCount).toBe(1);
+    expect(packCount).toBe(1);
+
+    const readyTarball = selectViewServerTarball({
+      requestedTarball: undefined,
+      artifactsReady: true,
+      buildLocal: () => {
+        buildCount += 1;
+      },
+      packLocal: () => {
+        packCount += 1;
+        return "/ready/effect-view-server.tgz";
+      },
+    });
+    expect(readyTarball).toBe("/ready/effect-view-server.tgz");
+    expect(buildCount).toBe(1);
+    expect(packCount).toBe(2);
+
+    const configuredTarball = selectViewServerTarball({
+      requestedTarball: "/registry/effect-view-server.tgz",
+      artifactsReady: false,
+      buildLocal: () => {
+        buildCount += 1;
+      },
+      packLocal: () => {
+        packCount += 1;
+        return "/unused/effect-view-server.tgz";
+      },
+    });
+    expect(configuredTarball).toBe("/registry/effect-view-server.tgz");
+    expect(buildCount).toBe(1);
+    expect(packCount).toBe(2);
+  });
+
+  it("bundles the source-owned base row without downstream Effect references", () => {
+    const downstreamDeclaration = readFileSync(
+      join(downstreamDirectory, "dist", "index.d.mts"),
+      "utf8",
+    );
+    const downstreamRuntime = readFileSync(
+      join(downstreamDirectory, "dist", "index.mjs"),
+      "utf8",
+    );
+    expect(downstreamDeclaration).toContain("BundledViewportBaseRow");
+    expect(
+      inspectTypeScriptModule({
+        fileName: "index.d.mts",
+        source: downstreamDeclaration,
+      }).moduleSpecifiers.filter(
+        (specifier) =>
+          specifier === "effect" ||
+          specifier.startsWith("effect/") ||
+          specifier === "effect-view-server" ||
+          specifier.startsWith("effect-view-server/"),
+      ),
+    ).toStrictEqual([]);
+    expect(downstreamRuntime).not.toContain("effect-view-server");
+    expect(downstreamRuntime).not.toMatch(/(?:from|import\()[^\n]*["']effect(?:\/|["'])/);
+  });
+
   it(
-    "preserves the source-owned base row without Effect in the downstream root",
-    ({ onTestFinished }) => {
-      const temporaryRoot = mkdtempSync(join(tmpdir(), "view-server-viewport-bundle-"));
-      onTestFinished(() => rmSync(temporaryRoot, { force: true, recursive: true }));
-
-      const requestedViewServerTarball =
-        process.env.VIEW_SERVER_VIEWPORT_CONSUMER_TARBALL;
-      const viewServerTarball =
-        requestedViewServerTarball === undefined
-          ? (() => {
-              if (process.env.VIEW_SERVER_REPOSITORY_TEST_ARTIFACTS_READY !== "1") {
-                execFileSync("vp", ["run", "effect-view-server#build"], {
-                  cwd: repositoryRoot,
-                  stdio: "inherit",
-                });
-              }
-              return pack(
-                join(repositoryRoot, "packages", "effect-view-server"),
-                temporaryRoot,
-              );
-            })()
-          : resolve(requestedViewServerTarball);
-
-      const downstreamDirectory = join(temporaryRoot, "downstream");
-      mkdirSync(join(downstreamDirectory, "src"), { recursive: true });
-      writeJson(join(downstreamDirectory, "package.json"), {
-        name: "downstream-viewport-adapter",
-        version: "1.0.0",
-        type: "module",
-        packageManager: "pnpm@11.9.0",
-        files: ["dist"],
-        exports: {
-          ".": {
-            types: "./dist/index.d.mts",
-            import: "./dist/index.mjs",
-          },
-        },
-        dependencies: {},
-        devDependencies: {
-          "@emnapi/core": "1.7.1",
-          "@emnapi/runtime": "1.7.1",
-          "@effect/atom-react": "4.0.0-rc.111",
-          "@types/node": "26.2.0",
-          "@types/react": "19.2.18",
-          "@types/react-dom": "19.2.4",
-          effect: "4.0.0-rc.111",
-          "effect-view-server": `file:${viewServerTarball}`,
-          react: "19.2.8",
-          "react-dom": "19.2.8",
-          redis: "6.2.1",
-          typescript: "7.0.2",
-          vite: "8.0.0",
-          "vite-plus": "0.2.8",
-        },
-      });
-      writeFileSync(
-        join(downstreamDirectory, "vite.config.ts"),
-        [
-          'import { defineConfig } from "vite-plus";',
-          "",
-          "export default defineConfig({",
-          "  pack: {",
-          '    entry: { index: "src/index.ts" },',
-          "    dts: { tsgo: true },",
-          "  },",
-          "});",
-          "",
-        ].join("\n"),
-      );
-      writeJson(join(downstreamDirectory, "tsconfig.json"), {
-        compilerOptions: {
-          declaration: true,
-          exactOptionalPropertyTypes: true,
-          module: "preserve",
-          moduleResolution: "bundler",
-          strict: true,
-        },
-        include: ["src"],
-      });
-      writeFileSync(
-        join(downstreamDirectory, "src", "index.ts"),
-        [
-          'import type { LiveQueryViewportBaseRow } from "effect-view-server/react";',
-          "",
-          "export type BundledViewportBaseRow<Viewport> = LiveQueryViewportBaseRow<Viewport>;",
-          "export const clientReady = true;",
-          "",
-        ].join("\n"),
-      );
-      installStrictly(downstreamDirectory);
-      execFileSync("vp", ["pack"], { cwd: downstreamDirectory, stdio: "inherit" });
-
-      const downstreamDeclaration = readFileSync(
-        join(downstreamDirectory, "dist", "index.d.mts"),
-        "utf8",
-      );
-      const downstreamRuntime = readFileSync(
-        join(downstreamDirectory, "dist", "index.mjs"),
-        "utf8",
-      );
-      expect(downstreamDeclaration).toContain("BundledViewportBaseRow");
-      expect(
-        inspectTypeScriptModule({
-          fileName: "index.d.mts",
-          source: downstreamDeclaration,
-        }).moduleSpecifiers.filter(
-          (specifier) =>
-            specifier === "effect" ||
-            specifier.startsWith("effect/") ||
-            specifier === "effect-view-server" ||
-            specifier.startsWith("effect-view-server/"),
-        ),
-      ).toStrictEqual([]);
-      expect(downstreamRuntime).not.toContain("effect-view-server");
-      expect(downstreamRuntime).not.toMatch(/(?:from|import\()[^\n]*["']effect(?:\/|["'])/);
-
-      const downstreamTarball = pack(downstreamDirectory, temporaryRoot);
+    "accepts a real matching viewport and rejects unsafe sources",
+    () => {
       const integrationDirectory = join(temporaryRoot, "integration-consumer");
       mkdirSync(integrationDirectory, { recursive: true });
       writeJson(join(integrationDirectory, "package.json"), {
@@ -271,8 +350,8 @@ describe("downstream viewport declaration bundle", () => {
         ].join("\n"),
       );
       installStrictly(integrationDirectory);
-      execFileSync("vp", ["exec", "tsc"], { cwd: integrationDirectory, stdio: "inherit" });
-      execFileSync(
+      run("vp", ["exec", "tsc"], integrationDirectory);
+      run(
         process.execPath,
         [
           "--input-type=module",
@@ -285,9 +364,15 @@ describe("downstream viewport declaration bundle", () => {
             "}",
           ].join("\n"),
         ],
-        { cwd: integrationDirectory, stdio: "inherit" },
+        integrationDirectory,
       );
+    },
+    scenarioTimeoutMilliseconds,
+  );
 
+  it(
+    "installs and imports the downstream artifact without Effect",
+    () => {
       const clientDirectory = join(temporaryRoot, "client-only-consumer");
       mkdirSync(clientDirectory, { recursive: true });
       writeJson(join(clientDirectory, "package.json"), {
@@ -332,13 +417,13 @@ describe("downstream viewport declaration bundle", () => {
       ).toStrictEqual([]);
       const clientLockfile = readFileSync(join(clientDirectory, "pnpm-lock.yaml"), "utf8");
       expect(clientLockfile).not.toMatch(/^\s{2}(?:effect|effect-view-server)@/m);
-      execFileSync("vp", ["exec", "tsc"], { cwd: clientDirectory, stdio: "inherit" });
-      execFileSync(
+      run("vp", ["exec", "tsc"], clientDirectory);
+      run(
         process.execPath,
         ["--input-type=module", "--eval", 'await import("downstream-viewport-adapter")'],
-        { cwd: clientDirectory, stdio: "inherit" },
+        clientDirectory,
       );
     },
-    120_000,
+    scenarioTimeoutMilliseconds,
   );
 });

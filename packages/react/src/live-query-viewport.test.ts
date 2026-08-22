@@ -253,8 +253,7 @@ describe("Live Query Viewport Module", () => {
   it("keeps the base-row witness declaration-only", () => {
     const binding = makeLiveQueryViewportBinding<Topics, "orders">();
 
-    expect(Object.getOwnPropertySymbols(binding.viewport)).toStrictEqual([]);
-    expect(Object.keys(binding.viewport)).toStrictEqual(["replace", "destroy"]);
+    expect(Reflect.ownKeys(binding.viewport)).toStrictEqual(["replace", "destroy"]);
   });
 
   it("validates inclusive absolute windows", () => {

@@ -29,8 +29,6 @@ import type * as Cause from "effect/Cause";
 import * as Atom from "effect/unstable/reactivity/Atom";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 
-declare const LiveQueryViewportBaseRowTypeId: unique symbol;
-
 type IsAny<Value> = 0 extends 1 & Value ? true : false;
 
 type IsUnknown<Value> = IsAny<Value> extends true ? false : unknown extends Value ? true : false;
@@ -68,8 +66,8 @@ export type LiveQueryViewportBaseRow<Viewport> =
     ? never
     : IsUnknown<Viewport> extends true
       ? never
-      : typeof LiveQueryViewportBaseRowTypeId extends keyof Viewport
-        ? Exclude<Viewport[typeof LiveQueryViewportBaseRowTypeId], undefined> extends (
+      : "__effect-view-server/LiveQueryViewportBaseRow@v1" extends keyof Viewport
+        ? Exclude<Viewport["__effect-view-server/LiveQueryViewportBaseRow@v1"], undefined> extends (
             _row: infer Input,
           ) => infer Output
           ? ExactSafeRow<Input, Output>
@@ -180,7 +178,7 @@ export type LiveQueryViewport<
   Topics extends TopicDefinitions,
   Topic extends Extract<keyof Topics, string>,
 > = {
-  readonly [LiveQueryViewportBaseRowTypeId]?: (
+  readonly "__effect-view-server/LiveQueryViewportBaseRow@v1"?: (
     _row: LiveQueryViewportWitnessRow<Topics, Topic>,
   ) => LiveQueryViewportWitnessRow<Topics, Topic>;
   readonly replace: <

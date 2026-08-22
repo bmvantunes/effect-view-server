@@ -498,6 +498,13 @@ describe("public effect-view-server subpath type contracts", () => {
     >();
     expectTypeOf<LiveQueryViewportBaseRow<any>>().toBeNever();
     expectTypeOf<LiveQueryViewportBaseRow<unknown>>().toBeNever();
+    expectTypeOf<LiveQueryViewportBaseRow<LiveQueryViewport<any, string>>>().toBeNever();
+    expectTypeOf<
+      LiveQueryViewportBaseRow<{
+        readonly replace: (...args: ReadonlyArray<never>) => unknown;
+        readonly destroy: () => void;
+      }>
+    >().toBeNever();
     const rawGeneration = viewport.viewport.replace({
       window: { firstRow: 0, lastRow: 19 },
       query: {

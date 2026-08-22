@@ -438,15 +438,32 @@ describe("release publish policy", () => {
         manifestContents: "not json",
       }),
     ).toStrictEqual(["validated release artifact manifest is not valid JSON"]);
+    for (const manifestContents of [
+      "null",
+      "[]",
+      JSON.stringify({ ...manifest, schemaVersion: 2 }),
+      JSON.stringify({ ...manifest, files: "index.js" }),
+    ]) {
+      expect(
+        validatedReleaseArtifactViolations({
+          expectedCommit: "head-object",
+          files,
+          manifestContents,
+        }),
+      ).toStrictEqual(["validated release artifact manifest does not match this tested commit"]);
+    }
   });
 
   it("keeps the workflow on direct publish and out of staged-only mode", () => {
     const releaseWorkflow = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
-    const validateJob = releaseWorkflow.slice(
-      releaseWorkflow.indexOf("\n  validate:"),
-      releaseWorkflow.indexOf("\n  smoke-benchmarks:"),
-    );
-    const publishJob = releaseWorkflow.slice(releaseWorkflow.indexOf("\n  publish:"));
+    const validateStart = releaseWorkflow.indexOf("\n  validate:");
+    const validateEnd = releaseWorkflow.indexOf("\n  smoke-benchmarks:");
+    const publishStart = releaseWorkflow.indexOf("\n  publish:");
+    expect(validateStart).toBeGreaterThanOrEqual(0);
+    expect(validateEnd).toBeGreaterThan(validateStart);
+    expect(publishStart).toBeGreaterThan(validateEnd);
+    const validateJob = releaseWorkflow.slice(validateStart, validateEnd);
+    const publishJob = releaseWorkflow.slice(publishStart);
 
     expect(releaseWorkflow).toContain("publish:");
     expect(releaseWorkflow).toContain("id-token: write");

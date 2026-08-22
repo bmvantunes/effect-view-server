@@ -44,10 +44,14 @@ const sourceMapReferenceRanges = (contents) => {
       protectedIndex += 1;
     }
     const protectedRange = protectedRanges[protectedIndex];
+    const insideProtectedRange =
+      protectedRange !== undefined &&
+      protectedRange.pos <= tokenStart &&
+      tokenStart < protectedRange.end;
     if (
       (token === ts.SyntaxKind.SingleLineCommentTrivia ||
         token === ts.SyntaxKind.MultiLineCommentTrivia) &&
-      !(protectedRange?.pos <= tokenStart && tokenStart < protectedRange.end) &&
+      !insideProtectedRange &&
       sourceMapReferenceDirective.test(scanner.getTokenText())
     ) {
       ranges.push({ pos: tokenStart, end: tokenEnd });

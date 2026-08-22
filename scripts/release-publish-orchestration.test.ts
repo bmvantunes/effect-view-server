@@ -104,10 +104,26 @@ const makeReleaseTree = (version = "0.0.6") => {
     "export declare const nested: true;\n",
   );
   writeFileSync(join(publicPackageDirectory, "dist", "nested", "data.txt"), "ready\n");
+  writeFileSync(
+    join(publicPackageDirectory, "dist", "nested", validatedReleaseArtifactManifestName),
+    "nested manifest payload\n",
+  );
+  writeFileSync(
+    join(publicPackageDirectory, "dist", "nested", `my-${validatedReleaseArtifactManifestName}`),
+    "prefixed manifest payload\n",
+  );
   const releaseFiles = [
     { relativePath: "index.d.ts", contents: "export declare const ready: true;\n" },
     { relativePath: "index.js", contents: "export const ready = true;\n" },
     { relativePath: "nested/data.txt", contents: "ready\n" },
+    {
+      relativePath: `nested/my-${validatedReleaseArtifactManifestName}`,
+      contents: "prefixed manifest payload\n",
+    },
+    {
+      relativePath: `nested/${validatedReleaseArtifactManifestName}`,
+      contents: "nested manifest payload\n",
+    },
     { relativePath: "nested/types.d.ts", contents: "export declare const nested: true;\n" },
   ];
   writeFileSync(
@@ -174,6 +190,8 @@ const makeScenario = ({
     manifest: Record<string, unknown>;
     nestedDeclaration: string;
     nestedFile: string;
+    nestedNamedManifest: string;
+    nestedPrefixedManifest: string;
     readme: string;
     runtime: string;
     sourceMapExists: boolean;
@@ -260,6 +278,14 @@ const makeScenario = ({
           "utf8",
         ),
         nestedFile: readFileSync(join(publishDirectory, "dist", "nested", "data.txt"), "utf8"),
+        nestedNamedManifest: readFileSync(
+          join(publishDirectory, "dist", "nested", validatedReleaseArtifactManifestName),
+          "utf8",
+        ),
+        nestedPrefixedManifest: readFileSync(
+          join(publishDirectory, "dist", "nested", `my-${validatedReleaseArtifactManifestName}`),
+          "utf8",
+        ),
         readme: readFileSync(join(publishDirectory, "README.md"), "utf8"),
         runtime: readFileSync(join(publishDirectory, "dist", "index.js"), "utf8"),
         sourceMapExists: existsSync(join(publishDirectory, "dist", "index.js.map")),
@@ -342,6 +368,8 @@ describe("release publish orchestration", () => {
       },
       nestedDeclaration: "export declare const nested: true;\n",
       nestedFile: "ready\n",
+      nestedNamedManifest: "nested manifest payload\n",
+      nestedPrefixedManifest: "prefixed manifest payload\n",
       readme: "# Public package\n",
       runtime: "export const ready = true;\n",
       sourceMapExists: false,
@@ -527,6 +555,17 @@ describe("release publish orchestration", () => {
     missingManifest.cleanup();
     tamperedArtifact.cleanup();
     unsafeArtifact.cleanup();
+  });
+
+  it("identifies a missing tested commit before validating the artifact", () => {
+    const { GITHUB_SHA: _githubSha, ...missingShaEnvironment } = trustedEnvironment;
+    const scenario = makeScenario({ env: missingShaEnvironment });
+
+    expect(scenario.run).toThrowError(
+      "Refusing npm publish without GITHUB_SHA identifying the tested commit.",
+    );
+
+    scenario.cleanup();
   });
 
   it("repairs the tag when a retry finds the computed version already public", () => {

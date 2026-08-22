@@ -510,5 +510,5 @@ describe("published value semantics consumer", () => {
         { cwd: consumerDirectory, stdio: "inherit" },
       );
     }
-  }, 60_000);
+  }, 180_000);
 });

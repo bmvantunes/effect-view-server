@@ -128,6 +128,9 @@ const assertCleanPublishedFiles = (publishDirectory) => {
 };
 
 const assertValidatedReleaseArtifact = (distDirectory, expectedCommit) => {
+  if (typeof expectedCommit !== "string" || expectedCommit.length === 0) {
+    throw new Error("Refusing npm publish without GITHUB_SHA identifying the tested commit.");
+  }
   const manifestPath = join(distDirectory, validatedReleaseArtifactManifestName);
   if (!existsSync(manifestPath)) {
     throw new Error("Refusing npm publish without the validated release artifact manifest.");
@@ -406,11 +409,12 @@ const preparePublicPackage = ({
 }) => {
   const sourceDistDirectory = join(publicPackageDirectory, "dist");
   const distDirectory = join(publishDirectory, "dist");
+  const manifestPath = join(sourceDistDirectory, validatedReleaseArtifactManifestName);
 
   assertValidatedReleaseArtifact(sourceDistDirectory, testedCommit);
   cpSync(sourceDistDirectory, distDirectory, {
     recursive: true,
-    filter: (source) => !source.endsWith(validatedReleaseArtifactManifestName),
+    filter: (source) => source !== manifestPath,
   });
   cpSync(join(publicPackageDirectory, "README.md"), join(publishDirectory, "README.md"));
   writeFileSync(

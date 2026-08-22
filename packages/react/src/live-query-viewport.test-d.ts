@@ -40,6 +40,20 @@ const positionViewServer = defineViewServerConfig({
   },
 });
 
+const optionalOrderViewServer = defineViewServerConfig({
+  topics: {
+    orders: {
+      schema: Schema.Struct({
+        id: ViewServerId,
+        status: Schema.Literals(["open", "closed"]),
+        price: Schema.Number,
+        region: Schema.String,
+        note: Schema.optionalKey(Schema.String),
+      }),
+    },
+  },
+});
+
 const sourceAdapter = SourceAdapter.make({
   identity: { name: "viewport-type-source" },
   failure: Schema.Never,
@@ -118,9 +132,78 @@ describe("Live Query Viewport type contracts", () => {
     expectTypeOf<LiveQueryViewportBaseRow<typeof positionViewport>>().toEqualTypeOf<
       typeof Position.Type
     >();
+    expectTypeOf<
+      LiveQueryViewportBaseRow<
+        | (LiveQueryViewport<typeof viewServer.topics, "orders"> & { readonly source: "left" })
+        | (LiveQueryViewport<typeof viewServer.topics, "orders"> & { readonly source: "right" })
+      >
+    >().toEqualTypeOf<typeof Order.Type>();
     expectTypeOf<LiveQueryViewportBaseRow<any>>().toBeNever();
     expectTypeOf<LiveQueryViewportBaseRow<unknown>>().toBeNever();
     expectTypeOf<LiveQueryViewportBaseRow<LiveQueryViewport<any, string>>>().toBeNever();
+    expectTypeOf<
+      LiveQueryViewportBaseRow<
+        Readonly<Record<string, (_row: typeof Order.Type) => typeof Order.Type>>
+      >
+    >().toBeNever();
+    expectTypeOf<
+      LiveQueryViewportBaseRow<
+        Readonly<
+          Record<`__effect-view-server/${string}`, (_row: typeof Order.Type) => typeof Order.Type>
+        >
+      >
+    >().toBeNever();
+    expectTypeOf<
+      LiveQueryViewportBaseRow<
+        | LiveQueryViewport<typeof viewServer.topics, "orders">
+        | Readonly<Record<string, (_row: typeof Order.Type) => typeof Order.Type>>
+      >
+    >().toBeNever();
+    expectTypeOf<
+      LiveQueryViewportBaseRow<
+        | LiveQueryViewport<typeof viewServer.topics, "orders">
+        | LiveQueryViewport<typeof positionViewServer.topics, "positions">
+      >
+    >().toBeNever();
+    expectTypeOf<
+      LiveQueryViewportBaseRow<
+        LiveQueryViewport<typeof viewServer.topics, "orders"> &
+          LiveQueryViewport<typeof positionViewServer.topics, "positions">
+      >
+    >().toBeNever();
+    expectTypeOf<
+      LiveQueryViewportBaseRow<
+        | LiveQueryViewport<typeof viewServer.topics, "orders">
+        | LiveQueryViewport<typeof optionalOrderViewServer.topics, "orders">
+      >
+    >().toBeNever();
+    expectTypeOf<
+      LiveQueryViewportBaseRow<{
+        readonly "__effect-view-server/LiveQueryViewportBaseRow@v1"?: (_row: {
+          readonly id: string;
+        }) => { readonly id: string; readonly note?: string };
+      }>
+    >().toBeNever();
+    expectTypeOf<
+      LiveQueryViewportBaseRow<{
+        readonly "__effect-view-server/LiveQueryViewportBaseRow@v1"?:
+          | ((_row: typeof Order.Type) => typeof Order.Type)
+          | 0;
+      }>
+    >().toBeNever();
+    expectTypeOf<
+      LiveQueryViewportBaseRow<{
+        readonly "__effect-view-server/LiveQueryViewportBaseRow@v1"?:
+          | ((_row: typeof Order.Type) => typeof Order.Type)
+          | ((_row: typeof Position.Type) => typeof Position.Type);
+      }>
+    >().toBeNever();
+    expectTypeOf<
+      LiveQueryViewportBaseRow<{
+        readonly replace: (...args: ReadonlyArray<never>) => unknown;
+        readonly destroy: () => void;
+      }>
+    >().toBeNever();
   });
 
   it("binds the configured topic and exposes chrome without rows", () => {

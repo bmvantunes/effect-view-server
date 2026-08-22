@@ -1,7 +1,19 @@
 import { describe, expect, it } from "@effect/vitest";
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import {
+  chmodSync,
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   compareReleaseTags,
+  createValidatedReleaseArtifactManifest,
   incrementReleaseVersion,
   internalPublishViolations,
   oidcPublishEnvironmentViolations,
@@ -13,8 +25,12 @@ import {
   publishDecision,
   releaseTypeFromChangesets,
   sanitizePublicPackageJson,
-  stripSourceMapReference,
+  validatedReleaseArtifactViolations,
 } from "./release-publish-policy.mjs";
+import {
+  stripSourceMapReference,
+  validatedPublishedFileViolations,
+} from "./release-validated-artifact.mjs";
 
 const trustedEnvironment = {
   ACTIONS_ID_TOKEN_REQUEST_TOKEN: "token",
@@ -23,6 +39,7 @@ const trustedEnvironment = {
   GITHUB_EVENT_NAME: "push",
   GITHUB_REF: "refs/heads/main",
   GITHUB_REPOSITORY: "bmvantunes/effect-view-server",
+  GITHUB_SHA: "head-object",
 };
 
 const workspacePackages = [
@@ -294,7 +311,7 @@ describe("release publish policy", () => {
 
   it("accepts clean files and strips source map references", () => {
     expect(
-      publishedFileViolations([
+      validatedPublishedFileViolations([
         { relativePath: "dist/client.js", contents: "export const ok = true;" },
         {
           relativePath: "dist/compiler.js",
@@ -341,7 +358,7 @@ describe("release publish policy", () => {
 
   it("rejects source maps and private workspace references", () => {
     expect(
-      publishedFileViolations([
+      validatedPublishedFileViolations([
         { relativePath: "dist/client.js.map", contents: "{}" },
         { relativePath: "dist/client.js", contents: "//# sourceMappingURL=client.js.map" },
         {
@@ -378,13 +395,153 @@ describe("release publish policy", () => {
     ]);
   });
 
+  it("binds validated release artifact contents to the tested commit", () => {
+    const files = [
+      { relativePath: "index.d.ts", contents: "export declare const ready: true;\n" },
+      { relativePath: "index.js", contents: "export const ready = true;\n" },
+    ];
+    const manifest = createValidatedReleaseArtifactManifest(files, "head-object");
+
+    expect(
+      validatedReleaseArtifactViolations({
+        expectedCommit: "head-object",
+        files,
+        manifestContents: JSON.stringify(manifest),
+      }),
+    ).toStrictEqual([]);
+    expect(
+      validatedReleaseArtifactViolations({
+        expectedCommit: "other-object",
+        files,
+        manifestContents: JSON.stringify(manifest),
+      }),
+    ).toStrictEqual(["validated release artifact manifest does not match this tested commit"]);
+    expect(
+      validatedReleaseArtifactViolations({
+        expectedCommit: "head-object",
+        files: [{ ...files[0], contents: "tampered\n" }, files[1]],
+        manifestContents: JSON.stringify(manifest),
+      }),
+    ).toStrictEqual([
+      "validated release artifact contents do not match their integrity manifest",
+    ]);
+    expect(
+      validatedReleaseArtifactViolations({
+        expectedCommit: "head-object",
+        files,
+        manifestContents: "not json",
+      }),
+    ).toStrictEqual(["validated release artifact manifest is not valid JSON"]);
+  });
+
   it("keeps the workflow on direct publish and out of staged-only mode", () => {
     const releaseWorkflow = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
+    const validateJob = releaseWorkflow.slice(
+      releaseWorkflow.indexOf("\n  validate:"),
+      releaseWorkflow.indexOf("\n  smoke-benchmarks:"),
+    );
+    const publishJob = releaseWorkflow.slice(releaseWorkflow.indexOf("\n  publish:"));
 
     expect(releaseWorkflow).toContain("publish:");
     expect(releaseWorkflow).toContain("id-token: write");
-    expect(releaseWorkflow).toContain("node scripts/release-publish.mjs");
+    expect(validateJob).toContain("run: node scripts/prepare-release-artifact.mjs");
+    expect(validateJob.indexOf("run: node scripts/prepare-release-artifact.mjs")).toBeLessThan(
+      validateJob.indexOf("uses: actions/upload-artifact@v6"),
+    );
+    expect(publishJob).toContain("run-install: false");
+    expect(publishJob).not.toContain("vp install");
+    expect(publishJob).toContain("run: node scripts/release-publish.mjs");
     expect(releaseWorkflow).not.toContain("npm stage publish");
     expect(releaseWorkflow).not.toContain("NPM_TOKEN");
+  });
+
+  it("executes the exact publish entrypoint without workspace dependencies", () => {
+    const rootDirectory = mkdtempSync(join(tmpdir(), "view-server-clean-publish-"));
+    const scriptsDirectory = join(rootDirectory, "scripts");
+    const packageDirectory = join(rootDirectory, "packages", "effect-view-server");
+    const distDirectory = join(packageDirectory, "dist");
+    const binDirectory = join(rootDirectory, "bin");
+    mkdirSync(scriptsDirectory, { recursive: true });
+    mkdirSync(distDirectory, { recursive: true });
+    mkdirSync(binDirectory);
+    mkdirSync(join(rootDirectory, ".changeset"));
+    for (const name of [
+      "release-publish.mjs",
+      "release-publish-orchestration.mjs",
+      "release-publish-policy.mjs",
+    ]) {
+      copyFileSync(new URL(name, import.meta.url), join(scriptsDirectory, name));
+    }
+    const runtime = "export const ready = true;\n";
+    writeFileSync(join(distDirectory, "index.js"), runtime);
+    writeFileSync(
+      join(distDirectory, ".release-artifact.json"),
+      `${JSON.stringify(
+        createValidatedReleaseArtifactManifest(
+          [{ relativePath: "index.js", contents: runtime }],
+          "head-object",
+        ),
+      )}\n`,
+    );
+    writeFileSync(join(packageDirectory, "README.md"), "# Public package\n");
+    writeFileSync(
+      join(packageDirectory, "package.json"),
+      `${JSON.stringify({
+        name: "effect-view-server",
+        version: "0.0.6",
+        type: "module",
+        exports: { ".": "./dist/index.js" },
+      })}\n`,
+    );
+    writeFileSync(
+      join(rootDirectory, ".changeset", "release.md"),
+      '---\n"effect-view-server": patch\n---\n',
+    );
+    const gitPath = join(binDirectory, "git");
+    writeFileSync(
+      gitPath,
+      `#!/bin/sh
+if [ "$1" = "tag" ] && [ "$2" = "--list" ]; then echo effect-view-server@0.0.6; exit 0; fi
+if [ "$1" = "diff" ]; then echo .changeset/release.md; exit 0; fi
+if [ "$1" = "rev-parse" ] && [ "$4" = "HEAD^{}" ]; then echo head-object; exit 0; fi
+if [ "$1" = "rev-parse" ]; then exit 1; fi
+exit 0
+`,
+    );
+    const npmPath = join(binDirectory, "npm");
+    writeFileSync(
+      npmPath,
+      `#!/bin/sh
+if [ "$1" = "view" ] && [ "$2" = "effect-view-server" ]; then echo '"0.0.6"'; exit 0; fi
+if [ "$1" = "view" ]; then exit 1; fi
+if [ "$1" = "publish" ]; then echo published; exit 0; fi
+exit 1
+`,
+    );
+    chmodSync(gitPath, 0o755);
+    chmodSync(npmPath, 0o755);
+
+    const execution = spawnSync(process.execPath, [join(scriptsDirectory, "release-publish.mjs")], {
+      cwd: rootDirectory,
+      encoding: "utf8",
+      env: {
+        ACTIONS_ID_TOKEN_REQUEST_TOKEN: "token",
+        ACTIONS_ID_TOKEN_REQUEST_URL: "https://token.actions.githubusercontent.com",
+        GITHUB_ACTIONS: "true",
+        GITHUB_EVENT_NAME: "push",
+        GITHUB_REF: "refs/heads/main",
+        GITHUB_REPOSITORY: "bmvantunes/effect-view-server",
+        GITHUB_SHA: "head-object",
+        PATH: `${binDirectory}:/usr/bin:/bin`,
+      },
+    });
+
+    expect(execution.status).toBe(0);
+    expect(execution.stderr).toBe("");
+    expect(execution.stdout).toContain("effect-view-server@0.0.7 published as patch.");
+    expect(readFileSync(join(distDirectory, ".release-artifact.json"), "utf8")).toContain(
+      "head-object",
+    );
+    rmSync(rootDirectory, { force: true, recursive: true });
   });
 });

@@ -1,9 +1,11 @@
-import ts from "typescript-compiler-api";
+import { createHash } from "node:crypto";
 
 export const expectedPublishRepository = "bmvantunes/effect-view-server";
 export const internalPackageScope = "@effect-view-server/";
 export const publicPackageName = "effect-view-server";
 const privateToolingDependencies = new Set(["typescript-compiler-api"]);
+export const validatedReleaseArtifactManifestName = ".release-artifact.json";
+const validatedReleaseArtifactSchemaVersion = 1;
 
 const cloneJson = (value) => structuredClone(value);
 
@@ -115,54 +117,6 @@ export const compareReleaseTags = (left, right) => {
   return left.tag.localeCompare(right.tag);
 };
 
-const sourceMapReferenceDirective =
-  /^(?:\/\/[#@][\t ]*sourceMappingURL=[^\r\n]*|\/\*[#@][\t ]*sourceMappingURL=[^\r\n]*\*\/)$/;
-
-const sourceMapReferenceRanges = (contents) => {
-  const ranges = new Map();
-  const sourceFile = ts.createSourceFile(
-    "published.ts",
-    contents,
-    ts.ScriptTarget.Latest,
-    true,
-    ts.ScriptKind.TS,
-  );
-  const addRanges = (candidates) => {
-    for (const candidate of candidates ?? []) {
-      if (sourceMapReferenceDirective.test(contents.slice(candidate.pos, candidate.end))) {
-        ranges.set(`${candidate.pos}:${candidate.end}`, candidate);
-      }
-    }
-  };
-  const visit = (node) => {
-    addRanges(ts.getLeadingCommentRanges(contents, node.pos));
-    addRanges(ts.getTrailingCommentRanges(contents, node.end));
-    ts.forEachChild(node, visit);
-  };
-  visit(sourceFile);
-  return [...ranges.values()].sort((left, right) => left.pos - right.pos);
-};
-
-export const stripSourceMapReference = (contents) => {
-  let sanitized = contents;
-  for (const range of sourceMapReferenceRanges(contents).toReversed()) {
-    const lineStart = contents.lastIndexOf("\n", range.pos - 1) + 1;
-    const ownsLine = contents.slice(lineStart, range.pos).trim().length === 0;
-    const start = ownsLine ? lineStart : range.pos;
-    let end = range.end;
-    if (ownsLine && contents.startsWith("\r\n", end)) {
-      end += 2;
-    } else if (ownsLine && contents[end] === "\n") {
-      end += 1;
-    }
-    sanitized = `${sanitized.slice(0, start)}${sanitized.slice(end)}`;
-  }
-  return sanitized;
-};
-
-const hasSourceMapReference = (contents) =>
-  sourceMapReferenceRanges(contents).length > 0;
-
 const hasInternalWorkspaceReference = (file) =>
   file.relativePath === "package.json"
     ? file.contents.includes(internalPackageScope)
@@ -201,13 +155,51 @@ export const sanitizePublicPackageJson = (packageJson) =>
 export const publishedFileViolations = (files) =>
   files.flatMap((file) => [
     ...(file.relativePath.endsWith(".map") ? [`${file.relativePath} is a source map`] : []),
-    ...(hasSourceMapReference(file.contents)
-      ? [`${file.relativePath} references a source map`]
-      : []),
     ...(hasInternalWorkspaceReference(file)
       ? [`${file.relativePath} references ${internalPackageScope}`]
       : []),
   ]);
+
+const artifactDigest = (contents) => createHash("sha256").update(contents).digest("hex");
+
+export const createValidatedReleaseArtifactManifest = (files, commit) => ({
+  schemaVersion: validatedReleaseArtifactSchemaVersion,
+  commit,
+  files: files
+    .filter((file) => file.relativePath !== validatedReleaseArtifactManifestName)
+    .map((file) => ({
+      path: file.relativePath,
+      sha256: artifactDigest(file.contents),
+    }))
+    .sort((left, right) => left.path.localeCompare(right.path)),
+});
+
+export const validatedReleaseArtifactViolations = ({
+  expectedCommit,
+  files,
+  manifestContents,
+}) => {
+  let manifest;
+  try {
+    manifest = JSON.parse(manifestContents);
+  } catch {
+    return ["validated release artifact manifest is not valid JSON"];
+  }
+  if (
+    manifest === null ||
+    typeof manifest !== "object" ||
+    Array.isArray(manifest) ||
+    manifest.schemaVersion !== validatedReleaseArtifactSchemaVersion ||
+    manifest.commit !== expectedCommit ||
+    !Array.isArray(manifest.files)
+  ) {
+    return ["validated release artifact manifest does not match this tested commit"];
+  }
+  const expectedManifest = createValidatedReleaseArtifactManifest(files, expectedCommit);
+  return JSON.stringify(manifest) === JSON.stringify(expectedManifest)
+    ? []
+    : ["validated release artifact contents do not match their integrity manifest"];
+};
 
 export const internalPublishViolations = (workspacePackages) =>
   workspacePackages

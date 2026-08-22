@@ -11,6 +11,10 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ReleasePublishCommandError, runReleasePublish } from "./release-publish-orchestration.mjs";
+import {
+  createValidatedReleaseArtifactManifest,
+  validatedReleaseArtifactManifestName,
+} from "./release-publish-policy.mjs";
 
 type CommandOptions = {
   cwd?: string;
@@ -39,6 +43,7 @@ const trustedEnvironment = {
   GITHUB_EVENT_NAME: "push",
   GITHUB_REF: "refs/heads/main",
   GITHUB_REPOSITORY: "bmvantunes/effect-view-server",
+  GITHUB_SHA: "head-object",
 };
 
 const result = ({
@@ -88,20 +93,29 @@ const makeReleaseTree = (version = "0.0.6") => {
   writeFileSync(join(publicPackageDirectory, "README.md"), "# Public package\n");
   writeFileSync(
     join(publicPackageDirectory, "dist", "index.js"),
-    "export const ready = true;\n//# sourceMappingURL=index.js.map\n",
+    "export const ready = true;\n",
   );
   writeFileSync(
     join(publicPackageDirectory, "dist", "index.d.ts"),
-    "export declare const ready: true;\n//# sourceMappingURL=index.d.ts.map\n",
+    "export declare const ready: true;\n",
   );
   writeFileSync(
     join(publicPackageDirectory, "dist", "nested", "types.d.ts"),
-    "export declare const nested: true;\n//# sourceMappingURL=types.d.ts.map\n",
+    "export declare const nested: true;\n",
   );
   writeFileSync(join(publicPackageDirectory, "dist", "nested", "data.txt"), "ready\n");
-  writeFileSync(join(publicPackageDirectory, "dist", "index.js.map"), "{}\n");
+  const releaseFiles = [
+    { relativePath: "index.d.ts", contents: "export declare const ready: true;\n" },
+    { relativePath: "index.js", contents: "export const ready = true;\n" },
+    { relativePath: "nested/data.txt", contents: "ready\n" },
+    { relativePath: "nested/types.d.ts", contents: "export declare const nested: true;\n" },
+  ];
+  writeFileSync(
+    join(publicPackageDirectory, "dist", validatedReleaseArtifactManifestName),
+    `${JSON.stringify(createValidatedReleaseArtifactManifest(releaseFiles, "head-object"))}\n`,
+  );
 
-  return { publicPackageDirectory, rootDirectory, temporaryDirectory };
+  return { publicPackageDirectory, releaseFiles, rootDirectory, temporaryDirectory };
 };
 
 type ReleaseTree = ReturnType<typeof makeReleaseTree>;
@@ -124,6 +138,8 @@ const makeScenario = ({
   headTargetSequence,
   rootCommitOutput = "root-object\n",
   commandError,
+  missingValidatedManifest = false,
+  tamperedPublishedFile = false,
   unsafePublishedFile = false,
 }: {
   env?: NodeJS.ProcessEnv;
@@ -143,6 +159,8 @@ const makeScenario = ({
   headTargetSequence?: ReadonlyArray<string | null>;
   rootCommitOutput?: string;
   commandError?: Error;
+  missingValidatedManifest?: boolean;
+  tamperedPublishedFile?: boolean;
   unsafePublishedFile?: boolean;
 } = {}) => {
   const calls: Array<CommandCall> = [];
@@ -163,9 +181,39 @@ const makeScenario = ({
 
   writeFileSync(join(releaseTree.rootDirectory, ".changeset", "release.md"), changeset);
   if (unsafePublishedFile) {
+    const unsafeContents =
+      'import { client } from "@effect-view-server/client";\nexport { client };\n';
     writeFileSync(
       join(releaseTree.publicPackageDirectory, "dist", "unsafe.js"),
-      'import { client } from "@effect-view-server/client";\nexport { client };\n',
+      unsafeContents,
+    );
+    writeFileSync(
+      join(
+        releaseTree.publicPackageDirectory,
+        "dist",
+        validatedReleaseArtifactManifestName,
+      ),
+      `${JSON.stringify(
+        createValidatedReleaseArtifactManifest(
+          [...releaseTree.releaseFiles, { relativePath: "unsafe.js", contents: unsafeContents }],
+          "head-object",
+        ),
+      )}\n`,
+    );
+  }
+  if (missingValidatedManifest) {
+    rmSync(
+      join(
+        releaseTree.publicPackageDirectory,
+        "dist",
+        validatedReleaseArtifactManifestName,
+      ),
+    );
+  }
+  if (tamperedPublishedFile) {
+    writeFileSync(
+      join(releaseTree.publicPackageDirectory, "dist", "index.js"),
+      "export const ready = false;\n",
     );
   }
 
@@ -454,9 +502,20 @@ describe("release publish orchestration", () => {
 
   it("propagates command adapter errors and rejects private references in the artifact", () => {
     const commandError = makeScenario({ commandError: new Error("spawn failure") });
+    const missingManifest = makeScenario({ missingValidatedManifest: true });
+    const tamperedArtifact = makeScenario({ tamperedPublishedFile: true });
     const unsafeArtifact = makeScenario({ unsafePublishedFile: true });
 
     expect(commandError.run).toThrowError("spawn failure");
+    expect(missingManifest.run).toThrowError(
+      "Refusing npm publish without the validated release artifact manifest.",
+    );
+    expect(tamperedArtifact.run).toThrowError(
+      [
+        "Refusing npm publish because the validated release artifact failed integrity checks.",
+        "- validated release artifact contents do not match their integrity manifest",
+      ].join("\n"),
+    );
     expect(unsafeArtifact.run).toThrowError(
       [
         "Refusing npm publish because the publish artifact contains private workspace artifacts.",
@@ -465,6 +524,8 @@ describe("release publish orchestration", () => {
     );
 
     commandError.cleanup();
+    missingManifest.cleanup();
+    tamperedArtifact.cleanup();
     unsafeArtifact.cleanup();
   });
 

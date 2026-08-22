@@ -45,6 +45,9 @@ jobs:
       - name: Ready gate
         run: vp run -w ready
 
+      - name: Prepare validated public package
+        run: node scripts/prepare-release-artifact.mjs
+
       - name: Upload validated public package
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@v6

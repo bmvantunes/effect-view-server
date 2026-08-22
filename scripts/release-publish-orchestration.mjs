@@ -22,7 +22,8 @@ import {
   publishDecision,
   releaseTypeFromChangesets,
   sanitizePublicPackageJson,
-  stripSourceMapReference,
+  validatedReleaseArtifactManifestName,
+  validatedReleaseArtifactViolations,
 } from "./release-publish-policy.mjs";
 
 const publicPackageRelativeDirectory = join("packages", "effect-view-server");
@@ -113,23 +114,6 @@ const collectPublishedFiles = (directory, baseDirectory = directory) => {
   return files;
 };
 
-const stripPublishedSourceMapReferences = (directory) => {
-  for (const entry of readdirSync(directory, { withFileTypes: true })) {
-    const path = join(directory, entry.name);
-
-    if (entry.isDirectory()) {
-      stripPublishedSourceMapReferences(path);
-      continue;
-    }
-
-    if (!path.endsWith(".js") && !path.endsWith(".d.ts")) {
-      continue;
-    }
-
-    writeFileSync(path, stripSourceMapReference(readFileSync(path, "utf8")));
-  }
-};
-
 const assertCleanPublishedFiles = (publishDirectory) => {
   const violations = publishedFileViolations(collectPublishedFiles(publishDirectory));
 
@@ -137,6 +121,26 @@ const assertCleanPublishedFiles = (publishDirectory) => {
     throw new Error(
       [
         "Refusing npm publish because the publish artifact contains private workspace artifacts.",
+        ...violations.map((violation) => `- ${violation}`),
+      ].join("\n"),
+    );
+  }
+};
+
+const assertValidatedReleaseArtifact = (distDirectory, expectedCommit) => {
+  const manifestPath = join(distDirectory, validatedReleaseArtifactManifestName);
+  if (!existsSync(manifestPath)) {
+    throw new Error("Refusing npm publish without the validated release artifact manifest.");
+  }
+  const violations = validatedReleaseArtifactViolations({
+    expectedCommit,
+    files: collectPublishedFiles(distDirectory),
+    manifestContents: readFileSync(manifestPath, "utf8"),
+  });
+  if (violations.length > 0) {
+    throw new Error(
+      [
+        "Refusing npm publish because the validated release artifact failed integrity checks.",
         ...violations.map((violation) => `- ${violation}`),
       ].join("\n"),
     );
@@ -398,14 +402,16 @@ const preparePublicPackage = ({
   packageJson,
   publishDirectory,
   releaseVersion,
+  testedCommit,
 }) => {
+  const sourceDistDirectory = join(publicPackageDirectory, "dist");
   const distDirectory = join(publishDirectory, "dist");
 
-  cpSync(join(publicPackageDirectory, "dist"), distDirectory, {
+  assertValidatedReleaseArtifact(sourceDistDirectory, testedCommit);
+  cpSync(sourceDistDirectory, distDirectory, {
     recursive: true,
-    filter: (source) => !source.endsWith(".map"),
+    filter: (source) => !source.endsWith(validatedReleaseArtifactManifestName),
   });
-  stripPublishedSourceMapReferences(distDirectory);
   cpSync(join(publicPackageDirectory, "README.md"), join(publishDirectory, "README.md"));
   writeFileSync(
     join(publishDirectory, "package.json"),
@@ -468,6 +474,7 @@ export const runReleasePublish = ({
       publicPackageDirectory,
       publishDirectory,
       releaseVersion: release.version,
+      testedCommit: env.GITHUB_SHA,
     });
 
     const tagName = packageTagName(release.version);

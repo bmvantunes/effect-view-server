@@ -20,6 +20,10 @@ import { runReleasePublish } from "./release-publish-orchestration.mjs";
 import { inspectTypeScriptModule } from "./typescript-module-inspection";
 
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
+const testedCommit = execFileSync("git", ["rev-parse", "HEAD"], {
+  cwd: repositoryRoot,
+  encoding: "utf8",
+}).trim();
 
 const copyConsumerPackage = (sourceDirectory: string, targetDirectory: string): void => {
   mkdirSync(targetDirectory, { recursive: true });
@@ -106,6 +110,7 @@ const trustedEnvironment = {
   GITHUB_EVENT_NAME: "push",
   GITHUB_REF: "refs/heads/main",
   GITHUB_REPOSITORY: "bmvantunes/effect-view-server",
+  GITHUB_SHA: testedCommit,
 };
 
 const commandResult = ({
@@ -251,6 +256,11 @@ describe("published value semantics consumer", () => {
         }
         throw new Error(`Unexpected release command: ${executable} ${args.join(" ")}`);
       };
+
+      execFileSync(process.execPath, ["scripts/prepare-release-artifact.mjs"], {
+        cwd: repositoryRoot,
+        stdio: "inherit",
+      });
 
       expect(
         runReleasePublish({

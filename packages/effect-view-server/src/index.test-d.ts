@@ -95,6 +95,21 @@ const positionViewServer = defineViewServerConfig({
   },
 });
 
+const optionalOrderViewServer = defineViewServerConfig({
+  topics: {
+    orders: {
+      schema: Schema.Struct({
+        id: ViewServerId,
+        customerId: Schema.String,
+        status: Schema.Literals(["open", "closed"]),
+        price: Schema.Number,
+        region: Schema.String,
+        note: Schema.optionalKey(Schema.String),
+      }),
+    },
+  },
+});
+
 class PublicReportingCallbackDependency extends Context.Service<
   PublicReportingCallbackDependency,
   { readonly report: () => void }
@@ -535,6 +550,19 @@ describe("public effect-view-server subpath type contracts", () => {
         | LiveQueryViewport<typeof viewServer.topics, "orders">
         | LiveQueryViewport<typeof positionViewServer.topics, "positions">
       >
+    >().toBeNever();
+    expectTypeOf<
+      LiveQueryViewportBaseRow<
+        | LiveQueryViewport<typeof viewServer.topics, "orders">
+        | LiveQueryViewport<typeof optionalOrderViewServer.topics, "orders">
+      >
+    >().toBeNever();
+    expectTypeOf<
+      LiveQueryViewportBaseRow<{
+        readonly "__effect-view-server/LiveQueryViewportBaseRow@v1"?: (_row: {
+          readonly id: string;
+        }) => { readonly id: string; readonly note?: string };
+      }>
     >().toBeNever();
     expectTypeOf<
       LiveQueryViewportBaseRow<{

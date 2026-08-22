@@ -23,6 +23,14 @@ type ExactRawSelectFields<Row, Select> =
       }
     : never;
 
+type CompleteRawSelectWitnessKey = "__effect-view-server/LiveQueryViewportCompleteRawSelect@v1";
+
+type ExactCompleteRawSelectFields<Row, Select extends ReadonlyArray<unknown>> = [
+  Select[number],
+] extends [FieldKey<Row>]
+  ? unknown
+  : never;
+
 type IsExact<Left, Right> =
   (<Value>() => Value extends Left ? 1 : 2) extends <Value>() => Value extends Right ? 1 : 2
     ? (<Value>() => Value extends Right ? 1 : 2) extends <Value>() => Value extends Left ? 1 : 2
@@ -37,8 +45,8 @@ type ExactRawSelect<Row, Query> = Query extends {
     ? IsExact<CompleteRawSelectWitnessRow<Select>, Row> extends true
       ? {
           readonly select: Select &
-            RejectArrayExtraKeys<Select> &
-            ExactRawSelectFields<Row, Select>;
+            RejectArrayExtraKeys<Select, CompleteRawSelectWitnessKey> &
+            ExactCompleteRawSelectFields<Row, Select>;
         }
       : {
           readonly select: Select &

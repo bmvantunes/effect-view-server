@@ -9,6 +9,7 @@ import {
   type RawQuery,
   type ValidateLiveQuery,
 } from "./index";
+import type { CompleteRawSelectWitnessRow } from "./query-core";
 
 import { viewServer } from "../test-harness/live-query";
 import { Order } from "../test-harness/schemas";
@@ -25,15 +26,25 @@ declare const conditionalAggregates:
   | { readonly rowCount: { readonly aggFunc: "count" } }
   | { readonly totalPrice: { readonly aggFunc: "sum"; readonly field: "price" } };
 
-type CompleteRawField<Row> = Extract<keyof Row, string> & {
+type CompleteRawSelect<Row> = readonly [
+  Extract<keyof Row, string>,
+  ...Array<Extract<keyof Row, string>>,
+] & {
   readonly "__effect-view-server/LiveQueryViewportCompleteRawSelect@v1": (_row: Row) => Row;
 };
-
-type CompleteRawSelect<Row> = readonly [CompleteRawField<Row>, ...Array<CompleteRawField<Row>>];
 
 declare const completeOrderSelect: CompleteRawSelect<typeof Order.Type>;
 type OtherRow = { readonly id: string; readonly quantity: number };
 declare const mismatchedSelect: CompleteRawSelect<OtherRow>;
+declare const malformedSelect: readonly ["id"] & {
+  readonly "__effect-view-server/LiveQueryViewportCompleteRawSelect@v1": (
+    _row: typeof Order.Type,
+  ) => OtherRow;
+};
+declare const completeSelectWithExtra: CompleteRawSelect<typeof Order.Type> & {
+  readonly unexpected: true;
+};
+declare const choose: boolean;
 
 describe("Query result contracts", () => {
   it("recognizes an invariant complete raw-row projection without weakening ordinary selects", () => {
@@ -47,6 +58,50 @@ describe("Query result contracts", () => {
 
     expectTypeOf<
       ExactRawQuery<typeof Order.Type, { readonly select: typeof mismatchedSelect }>
+    >().toBeNever();
+
+    const detachedSelect = [completeOrderSelect[0]] as const;
+    const detachedQuery = { select: detachedSelect } satisfies RawQuery<typeof Order.Type>;
+    expectTypeOf<LiveQueryRow<typeof Order.Type, typeof detachedQuery>>().toEqualTypeOf<
+      Partial<typeof Order.Type>
+    >();
+    expectTypeOf(detachedSelect).not.toHaveProperty(
+      "__effect-view-server/LiveQueryViewportCompleteRawSelect@v1",
+    );
+    const mappedSelect = completeOrderSelect.map((field) => field);
+    const slicedSelect = completeOrderSelect.slice();
+    const spreadSelect = [...completeOrderSelect] as const;
+    expectTypeOf<CompleteRawSelectWitnessRow<typeof mappedSelect>>().toBeNever();
+    expectTypeOf<CompleteRawSelectWitnessRow<typeof slicedSelect>>().toBeNever();
+    expectTypeOf<CompleteRawSelectWitnessRow<typeof spreadSelect>>().toBeNever();
+    expectTypeOf<
+      ExactRawQuery<typeof Order.Type, { readonly select: typeof mappedSelect }>
+    >().toBeNever();
+    expectTypeOf<
+      ExactRawQuery<typeof Order.Type, { readonly select: typeof slicedSelect }>
+    >().toBeNever();
+    expectTypeOf<
+      ExactRawQuery<typeof Order.Type, { readonly select: typeof spreadSelect }>
+    >().toBeNever();
+
+    const mixedQuery = {
+      select: choose ? completeOrderSelect : (["id"] as const),
+    } satisfies RawQuery<typeof Order.Type>;
+    expectTypeOf<LiveQueryRow<typeof Order.Type, typeof mixedQuery>>().toEqualTypeOf<
+      Partial<typeof Order.Type>
+    >();
+
+    expectTypeOf<
+      CompleteRawSelectWitnessRow<typeof completeOrderSelect | readonly ["id"]>
+    >().toBeNever();
+    expectTypeOf<
+      CompleteRawSelectWitnessRow<typeof completeOrderSelect | typeof malformedSelect>
+    >().toBeNever();
+    expectTypeOf<
+      CompleteRawSelectWitnessRow<typeof completeOrderSelect | typeof mismatchedSelect>
+    >().toBeNever();
+    expectTypeOf<
+      ExactRawQuery<typeof Order.Type, { readonly select: typeof completeSelectWithExtra }>
     >().toBeNever();
   });
 

@@ -68,7 +68,10 @@ export type LiveQueryViewportBaseRow<Viewport> =
           ? never
           : LiveQueryViewportBaseRowMembers<Viewport>;
 
-type LiveQueryViewportCompleteRawField<Row> = Extract<keyof Row, string> & {
+type LiveQueryViewportCompleteRawSelectForRow<Row> = readonly [
+  Extract<keyof Row, string>,
+  ...Array<Extract<keyof Row, string>>,
+] & {
   readonly "__effect-view-server/LiveQueryViewportCompleteRawSelect@v1": (_row: Row) => Row;
 };
 
@@ -76,8 +79,5 @@ export type LiveQueryViewportCompleteRawSelect<Viewport> =
   LiveQueryViewportBaseRow<Viewport> extends infer Row
     ? [Row] extends [never]
       ? never
-      : readonly [
-          LiveQueryViewportCompleteRawField<Row>,
-          ...Array<LiveQueryViewportCompleteRawField<Row>>,
-        ]
+      : LiveQueryViewportCompleteRawSelectForRow<Row>
     : never;

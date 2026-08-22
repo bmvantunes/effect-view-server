@@ -47,13 +47,12 @@ type IsExact<Left, Right> =
       : false
     : false;
 
-export type CompleteRawSelectWitnessRow<Select> = Select extends readonly [
+export type CompleteRawSelectWitnessRow<Select> = [Select] extends [
   {
     readonly "__effect-view-server/LiveQueryViewportCompleteRawSelect@v1": (
       _row: infer Input,
     ) => infer Output;
   },
-  ...ReadonlyArray<unknown>,
 ]
   ? IsAny<Input> extends true
     ? never

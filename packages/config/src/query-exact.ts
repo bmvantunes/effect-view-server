@@ -67,9 +67,15 @@ type InvalidArrayLengthKey<Candidate extends ReadonlyArray<unknown>> =
       ? never
       : "length";
 
-export type RejectArrayExtraKeys<Candidate extends ReadonlyArray<unknown>> = {
+export type RejectArrayExtraKeys<
+  Candidate extends ReadonlyArray<unknown>,
+  AllowedKey extends PropertyKey = never,
+> = {
   readonly [Key in
-    | Exclude<keyof Candidate, ArrayPrototypeKeys<Candidate> | TupleIndexKeys<Candidate>>
+    | Exclude<
+        keyof Candidate,
+        ArrayPrototypeKeys<Candidate> | TupleIndexKeys<Candidate> | AllowedKey
+      >
     | OverriddenArrayPrototypeKey<Candidate>
     | InvalidArrayLengthKey<Candidate>]: never;
 };

@@ -178,6 +178,26 @@ describe("Live Query Viewport type contracts", () => {
         },
       },
     });
+
+    const detachedSelect = [result.completeRawSelect[0]] as const;
+    result.viewport.replace({
+      window: { firstRow: 0, lastRow: 9 },
+      query: { select: detachedSelect, where: [], orderBy: [] },
+      sink: {
+        setRowCount: () => undefined,
+        setRowData: (rows) => {
+          expectTypeOf(rows[0]).toEqualTypeOf<
+            | {
+                readonly id?: string;
+                readonly status?: "open" | "closed";
+                readonly price?: number;
+                readonly region?: string;
+              }
+            | undefined
+          >();
+        },
+      },
+    });
   });
 
   it("infers grouped result rows into the sink", () => {

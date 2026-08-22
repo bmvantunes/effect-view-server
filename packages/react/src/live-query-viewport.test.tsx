@@ -196,6 +196,71 @@ describe("useLiveQueryViewport", () => {
     await Effect.runPromise(runtime.close);
   });
 
+  it("owns one stable complete raw projection across window movement", async () => {
+    const runtime = createInMemoryViewServer(viewServer);
+    await Effect.runPromise(
+      runtime.client.publishMany("orders", [
+        { id: "order-1", status: "open", price: 10 },
+        { id: "order-2", status: "closed", price: 20 },
+      ]),
+    );
+    const grid = makeGridModel<typeof Order.Type>();
+    const observedSelects: Array<ReadonlyArray<string>> = [];
+    let generation: LiveQueryViewportGeneration | undefined;
+
+    function CompleteRawViewport() {
+      const result = useLiveQueryViewport("orders");
+      observedSelects.push(result.completeRawSelect);
+      return (
+        <>
+          <button
+            type="button"
+            onClick={() => {
+              generation = result.viewport.replace({
+                window: { firstRow: 0, lastRow: 0 },
+                query: {
+                  select: result.completeRawSelect,
+                  where: [],
+                  orderBy: [{ field: "id", direction: "asc" }],
+                },
+                sink: grid.sink,
+              });
+            }}
+          >
+            load complete rows
+          </button>
+          <output role="status">{`${result.status}:${result.totalRows}`}</output>
+        </>
+      );
+    }
+
+    const view = await render(
+      <ViewServerClientProvider client={runtime.liveClient}>
+        <CompleteRawViewport />
+      </ViewServerClientProvider>,
+    );
+    await view.getByRole("button", { name: "load complete rows" }).click();
+    await expect.poll(grid.rows).toStrictEqual({
+      0: { id: "order-1", status: "open", price: 10 },
+    });
+    expect(grid.rowKeys()).toStrictEqual({ 0: "order-1" });
+    expect(observedSelects[0]).toStrictEqual(["id", "status", "price"]);
+    expect(Object.isFrozen(observedSelects[0])).toBe(true);
+
+    if (generation === undefined) {
+      throw new Error("Expected the complete-row viewport generation to be installed.");
+    }
+    generation.setWindow({ firstRow: 1, lastRow: 1 });
+    await expect.poll(grid.rows).toStrictEqual({
+      1: { id: "order-2", status: "closed", price: 20 },
+    });
+    expect(grid.rowKeys()).toStrictEqual({ 1: "order-2" });
+    expect(observedSelects.every((select) => Object.is(select, observedSelects[0]))).toBe(true);
+
+    await view.unmount();
+    await Effect.runPromise(runtime.close);
+  });
+
   it("accepts a descendant grid connection from its first layout effect", async () => {
     const runtime = createInMemoryViewServer(viewServer);
     const requests: Array<Queue.Queue<ViewServerLiveEvent<object>>> = [];

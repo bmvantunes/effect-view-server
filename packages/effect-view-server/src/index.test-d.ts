@@ -8,7 +8,10 @@ import {
   type LiveQueryViewport,
   type LiveQueryViewportBaseRow,
 } from "effect-view-server/react";
-import type { LiveQueryViewportBaseRow as PureLiveQueryViewportBaseRow } from "effect-view-server/react/viewport-base-row";
+import type {
+  LiveQueryViewportBaseRow as PureLiveQueryViewportBaseRow,
+  LiveQueryViewportCompleteRawSelect,
+} from "effect-view-server/react/viewport-base-row";
 import { createInMemoryViewServerReact } from "effect-view-server/react/testing";
 import { runViewServerRuntime } from "effect-view-server/runtime";
 import type {
@@ -528,6 +531,16 @@ describe("public effect-view-server subpath type contracts", () => {
     expectTypeOf<PureLiveQueryViewportBaseRow<typeof viewport.viewport>>().toEqualTypeOf<
       LiveQueryViewportBaseRow<typeof viewport.viewport>
     >();
+    expectTypeOf(viewport.completeRawSelect).toEqualTypeOf<
+      LiveQueryViewportCompleteRawSelect<typeof viewport.viewport>
+    >();
+    expectTypeOf<LiveQueryViewportCompleteRawSelect<any>>().toBeNever();
+    expectTypeOf<LiveQueryViewportCompleteRawSelect<unknown>>().toBeNever();
+    expectTypeOf<
+      LiveQueryViewportCompleteRawSelect<
+        Readonly<Record<string, (_row: typeof Order.Type) => typeof Order.Type>>
+      >
+    >().toBeNever();
     expectTypeOf<
       LiveQueryViewportBaseRow<
         | (typeof viewport.viewport & { readonly source: "left" })
@@ -635,6 +648,20 @@ describe("public effect-view-server subpath type contracts", () => {
       },
     });
     rawGeneration.setWindow({ firstRow: 20, lastRow: 39 });
+    viewport.viewport.replace({
+      window: { firstRow: 0, lastRow: 19 },
+      query: {
+        select: viewport.completeRawSelect,
+        where: [],
+        orderBy: [{ field: "price", direction: "desc" }],
+      },
+      sink: {
+        setRowCount: () => undefined,
+        setRowData: (rows) => {
+          expectTypeOf(rows[0]).toEqualTypeOf<typeof Order.Type | undefined>();
+        },
+      },
+    });
     viewport.viewport.replace({
       window: { firstRow: 0, lastRow: 19 },
       query: {

@@ -3,6 +3,8 @@ import * as BigDecimal from "effect/BigDecimal";
 import {
   type GroupedQuery,
   type GroupedResult,
+  type ExactRawQuery,
+  type LiveQueryRow,
   type PickRawFields,
   type RawQuery,
   type ValidateLiveQuery,
@@ -23,7 +25,31 @@ declare const conditionalAggregates:
   | { readonly rowCount: { readonly aggFunc: "count" } }
   | { readonly totalPrice: { readonly aggFunc: "sum"; readonly field: "price" } };
 
+type CompleteRawField<Row> = Extract<keyof Row, string> & {
+  readonly "__effect-view-server/LiveQueryViewportCompleteRawSelect@v1": (_row: Row) => Row;
+};
+
+type CompleteRawSelect<Row> = readonly [CompleteRawField<Row>, ...Array<CompleteRawField<Row>>];
+
+declare const completeOrderSelect: CompleteRawSelect<typeof Order.Type>;
+type OtherRow = { readonly id: string; readonly quantity: number };
+declare const mismatchedSelect: CompleteRawSelect<OtherRow>;
+
 describe("Query result contracts", () => {
+  it("recognizes an invariant complete raw-row projection without weakening ordinary selects", () => {
+    const completeQuery = {
+      select: completeOrderSelect,
+    } satisfies RawQuery<typeof Order.Type>;
+    expectTypeOf<LiveQueryRow<typeof Order.Type, typeof completeQuery>>().toEqualTypeOf<
+      typeof Order.Type
+    >();
+    expectTypeOf<ExactRawQuery<typeof Order.Type, typeof completeQuery>>().not.toBeNever();
+
+    expectTypeOf<
+      ExactRawQuery<typeof Order.Type, { readonly select: typeof mismatchedSelect }>
+    >().toBeNever();
+  });
+
   it("keeps common raw fields required and conditional fields optional", () => {
     const unequalQuery = {
       select: conditionalUnequalSelect,

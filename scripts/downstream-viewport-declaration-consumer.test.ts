@@ -231,9 +231,10 @@ describe("downstream viewport declaration bundle", () => {
     writeFileSync(
       join(downstreamDirectory, "src", "index.ts"),
       [
-        'import type { LiveQueryViewportBaseRow } from "effect-view-server/react/viewport-base-row";',
+        'import type { LiveQueryViewportBaseRow, LiveQueryViewportCompleteRawSelect } from "effect-view-server/react/viewport-base-row";',
         "",
         "export type BundledViewportBaseRow<Viewport> = LiveQueryViewportBaseRow<Viewport>;",
+        "export type BundledViewportCompleteRawSelect<Viewport> = LiveQueryViewportCompleteRawSelect<Viewport>;",
         "export const clientReady = true;",
         "",
       ].join("\n"),
@@ -338,6 +339,7 @@ describe("downstream viewport declaration bundle", () => {
       "utf8",
     );
     expect(downstreamDeclaration).toContain("BundledViewportBaseRow");
+    expect(downstreamDeclaration).toContain("BundledViewportCompleteRawSelect");
     expect(
       declarationClosure.flatMap(({ path, source }) =>
         inspectTypeScriptModule({ fileName: path, source }).moduleSpecifiers.filter(
@@ -364,6 +366,7 @@ describe("downstream viewport declaration bundle", () => {
     const inspection = inspectTypeScriptModule({ fileName: declarationPath, source: declaration });
 
     expect(declaration).toContain("type LiveQueryViewportBaseRow<Viewport>");
+    expect(declaration).toContain("type LiveQueryViewportCompleteRawSelect<Viewport>");
     expect(inspection.moduleSpecifiers).toStrictEqual([]);
     expect(declaration).not.toMatch(
       /\bdeclare\s+(?:global|module)\b|stackTraceLimit|\bReact(?:Node|Element|Portal|HTML)?\b|\bEffect\b/,
@@ -414,9 +417,9 @@ describe("downstream viewport declaration bundle", () => {
       writeFileSync(
         join(integrationDirectory, "consumer.ts"),
         [
-          'import type { BundledViewportBaseRow } from "downstream-viewport-adapter";',
+          'import type { BundledViewportBaseRow, BundledViewportCompleteRawSelect } from "downstream-viewport-adapter";',
           'import { ViewServerId, defineViewServerConfig } from "effect-view-server/config";',
-          'import type { LiveQueryViewport } from "effect-view-server/react";',
+          'import type { LiveQueryViewport, UseLiveQueryViewportResult } from "effect-view-server/react";',
           'import { Schema } from "effect";',
           "",
           "const orderConfig = defineViewServerConfig({",
@@ -429,6 +432,7 @@ describe("downstream viewport declaration bundle", () => {
           "  topics: { orders: { schema: Schema.Struct({ id: ViewServerId, total: Schema.Number, note: Schema.optionalKey(Schema.String) }) } },",
           "});",
           'declare const orders: LiveQueryViewport<typeof orderConfig.topics, "orders">;',
+          'declare const orderSource: UseLiveQueryViewportResult<typeof orderConfig.topics, "orders">;',
           'declare const positions: LiveQueryViewport<typeof positionConfig.topics, "positions">;',
           'declare const optionalOrders: LiveQueryViewport<typeof optionalOrderConfig.topics, "orders">;',
           "type Order = typeof orderConfig.topics.orders.schema.Type;",
@@ -442,6 +446,8 @@ describe("downstream viewport declaration bundle", () => {
           "const exactForward: Order = extractedOrder;",
           "const exactBackward: BundledViewportBaseRow<typeof orders> = expectedOrder;",
           "const matching: ExactSource<Order, typeof orders> = orders;",
+          "const completeSelect: BundledViewportCompleteRawSelect<typeof orders> = orderSource.completeRawSelect;",
+          'const completeField: "id" | "total" = completeSelect[0];',
           'type SameRowViewportUnion = (typeof orders & { readonly source: "left" }) | (typeof orders & { readonly source: "right" });',
           "declare const sameRowUnion: SameRowViewportUnion;",
           "declare const extractedSameRowUnion: BundledViewportBaseRow<SameRowViewportUnion>;",
@@ -450,6 +456,9 @@ describe("downstream viewport declaration bundle", () => {
           "// @ts-expect-error a viewport for another Topic Row is rejected invariantly.",
           "const wrong: ExactSource<Order, typeof positions> = positions;",
           "type RejectAny = RequireNever<BundledViewportBaseRow<any>>;",
+          "type RejectCompleteAny = RequireNever<BundledViewportCompleteRawSelect<any>>;",
+          "type RejectCompleteUnknown = RequireNever<BundledViewportCompleteRawSelect<unknown>>;",
+          "type RejectCompleteUnwitnessed = RequireNever<BundledViewportCompleteRawSelect<{ readonly destroy: () => void }>>;",
           "type RejectUnknown = RequireNever<BundledViewportBaseRow<unknown>>;",
           "type RejectErasedViewport = RequireNever<BundledViewportBaseRow<LiveQueryViewport<any, string>>>;",
           "type RejectStringIndex = RequireNever<BundledViewportBaseRow<Readonly<Record<string, (_row: Order) => Order>>>>;",
@@ -466,11 +475,13 @@ describe("downstream viewport declaration bundle", () => {
           "void exactForward;",
           "void exactBackward;",
           "void matching;",
+          "void completeSelect;",
+          "void completeField;",
           "void sameRowUnion;",
           "void sameRowUnionForward;",
           "void sameRowUnionBackward;",
           "void wrong;",
-          "type Rejected = RejectAny | RejectUnknown | RejectErasedViewport | RejectStringIndex | RejectPatternIndex | RejectUnsafeUnion | RejectMixedViewportUnion | RejectIntersectedViewports | RejectEquivalentViewportUnion | RejectNonInvariantWitness | RejectPartlyCallableWitness | RejectMixedCallableWitness | RejectOverloadedWitness | RejectUnwitnessed;",
+          "type Rejected = RejectAny | RejectCompleteAny | RejectCompleteUnknown | RejectCompleteUnwitnessed | RejectUnknown | RejectErasedViewport | RejectStringIndex | RejectPatternIndex | RejectUnsafeUnion | RejectMixedViewportUnion | RejectIntersectedViewports | RejectEquivalentViewportUnion | RejectNonInvariantWitness | RejectPartlyCallableWitness | RejectMixedCallableWitness | RejectOverloadedWitness | RejectUnwitnessed;",
           "",
         ].join("\n"),
       );
@@ -528,10 +539,15 @@ describe("downstream viewport declaration bundle", () => {
       writeFileSync(
         join(clientDirectory, "consumer.ts"),
         [
-          'import { clientReady, type BundledViewportBaseRow } from "downstream-viewport-adapter";',
+          'import { clientReady, type BundledViewportBaseRow, type BundledViewportCompleteRawSelect } from "downstream-viewport-adapter";',
           "type RequireNever<Value extends never> = Value;",
           "type ClientRow = { readonly id: string };",
           "type ClientWitness = { readonly \"__effect-view-server/LiveQueryViewportBaseRow@v1\"?: (_row: ClientRow) => ClientRow };",
+          "type CompleteClientSelect = BundledViewportCompleteRawSelect<ClientWitness>;",
+          "declare const completeClientSelect: CompleteClientSelect;",
+          'const completeClientField: "id" = completeClientSelect[0];',
+          "type CompleteAny = RequireNever<BundledViewportCompleteRawSelect<any>>;",
+          "type CompleteUnknown = RequireNever<BundledViewportCompleteRawSelect<unknown>>;",
           "type OtherClientRow = { readonly key: number };",
           "type OtherClientWitness = { readonly \"__effect-view-server/LiveQueryViewportBaseRow@v1\"?: (_row: OtherClientRow) => OtherClientRow };",
           "type OptionalClientRow = ClientRow & { readonly note?: string };",
@@ -548,7 +564,9 @@ describe("downstream viewport declaration bundle", () => {
           "type OverloadedWitness = RequireNever<BundledViewportBaseRow<{ readonly \"__effect-view-server/LiveQueryViewportBaseRow@v1\"?: ((_row: ClientRow) => ClientRow) & ((_row: OtherClientRow) => OtherClientRow) }>>;",
           "type Unwitnessed = RequireNever<BundledViewportBaseRow<{ readonly ready: true }>>;",
           "if (!clientReady) throw new Error(\"downstream runtime was not ready\");",
-          "type ClientRejection = StringIndex | PatternIndex | UnsafeUnion | MixedWitnessUnion | IntersectedWitnesses | EquivalentWitnessUnion | NonInvariantWitness | PartlyCallableWitness | MixedCallableWitness | OverloadedWitness | Unwitnessed;",
+          "void completeClientSelect;",
+          "void completeClientField;",
+          "type ClientRejection = CompleteAny | CompleteUnknown | StringIndex | PatternIndex | UnsafeUnion | MixedWitnessUnion | IntersectedWitnesses | EquivalentWitnessUnion | NonInvariantWitness | PartlyCallableWitness | MixedCallableWitness | OverloadedWitness | Unwitnessed;",
           "",
         ].join("\n"),
       );

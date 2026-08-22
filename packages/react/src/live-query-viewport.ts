@@ -46,6 +46,15 @@ type LiveQueryViewportWitnessRow<Topics, Topic> =
             ? TopicRow<Topics, Topic>
             : never;
 
+type LiveQueryViewportCompleteRawField<Row> = Extract<keyof Row, string> & {
+  readonly "__effect-view-server/LiveQueryViewportCompleteRawSelect@v1": (_row: Row) => Row;
+};
+
+type LiveQueryViewportCompleteRawSelect<Row> = readonly [
+  LiveQueryViewportCompleteRawField<Row>,
+  ...Array<LiveQueryViewportCompleteRawField<Row>>,
+];
+
 export type LiveQueryViewportWindow = {
   readonly firstRow: number;
   readonly lastRow: number;
@@ -167,6 +176,7 @@ export type UseLiveQueryViewportResult<
   Topic extends Extract<keyof Topics, string>,
 > = {
   readonly viewport: LiveQueryViewport<Topics, Topic>;
+  readonly completeRawSelect: LiveQueryViewportCompleteRawSelect<TopicRow<Topics, Topic>>;
   readonly totalRows: number;
   readonly version: number;
   readonly status: LiveQueryResult<never>["status"];

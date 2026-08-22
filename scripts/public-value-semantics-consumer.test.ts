@@ -20,6 +20,10 @@ import { runReleasePublish } from "./release-publish-orchestration.mjs";
 import { inspectTypeScriptModule } from "./typescript-module-inspection";
 
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
+const testedCommit = execFileSync("git", ["rev-parse", "HEAD"], {
+  cwd: repositoryRoot,
+  encoding: "utf8",
+}).trim();
 
 const copyConsumerPackage = (sourceDirectory: string, targetDirectory: string): void => {
   mkdirSync(targetDirectory, { recursive: true });
@@ -106,6 +110,7 @@ const trustedEnvironment = {
   GITHUB_EVENT_NAME: "push",
   GITHUB_REF: "refs/heads/main",
   GITHUB_REPOSITORY: "bmvantunes/effect-view-server",
+  GITHUB_SHA: testedCommit,
 };
 
 const commandResult = ({
@@ -123,11 +128,12 @@ const PackageExports = Schema.StructWithRest(
   [Schema.Record(Schema.String, Schema.Unknown)],
 );
 const PackagePeerDependencies = Schema.StructWithRest(
-  Schema.Struct({ effect: Schema.String }),
+  Schema.Struct({ effect: Schema.String, typescript: Schema.String }),
   [Schema.Record(Schema.String, Schema.String)],
 );
 const PackageManifest = Schema.StructWithRest(
   Schema.Struct({
+    dependencies: Schema.Record(Schema.String, Schema.String),
     exports: PackageExports,
     peerDependencies: PackagePeerDependencies,
   }),
@@ -251,6 +257,11 @@ describe("published value semantics consumer", () => {
         throw new Error(`Unexpected release command: ${executable} ${args.join(" ")}`);
       };
 
+      execFileSync(process.execPath, ["scripts/prepare-release-artifact.mjs"], {
+        cwd: repositoryRoot,
+        stdio: "inherit",
+      });
+
       expect(
         runReleasePublish({
           command,
@@ -271,6 +282,112 @@ describe("published value semantics consumer", () => {
       expect(packedPaths).toContain("dist/value-semantics.js");
       expect(packedPaths).toContain("dist/value-semantics.d.ts");
       expect(packedPaths).not.toContain("dist/effect-schemaast-compat.d.ts");
+
+      const strictConsumerDirectory = join(temporaryRoot, "strict-consumer");
+      mkdirSync(strictConsumerDirectory, { recursive: true });
+      writeFileSync(
+        join(strictConsumerDirectory, "package.json"),
+        `${JSON.stringify(
+          {
+            name: "effect-view-server-strict-peer-consumer",
+            private: true,
+            packageManager: "pnpm@11.9.0",
+            dependencies: {
+              "@emnapi/core": "1.7.1",
+              "@emnapi/runtime": "1.7.1",
+              "@effect/vitest": "4.0.0-rc.111",
+              effect: "4.0.0-rc.111",
+              "effect-view-server": `file:${join(temporaryRoot, packResult.filename)}`,
+              redis: "6.2.1",
+              typescript: "7.0.2",
+              vite: "8.0.0",
+              vitest: "4.1.10",
+            },
+          },
+          null,
+          2,
+        )}\n`,
+      );
+      writeFileSync(
+        join(strictConsumerDirectory, "pnpm-workspace.yaml"),
+        [
+          "packages:",
+          "  - .",
+          "",
+          "autoInstallPeers: false",
+          "strictPeerDependencies: true",
+          "",
+          "onlyBuiltDependencies:",
+          "  - msgpackr-extract",
+          "",
+          "allowBuilds:",
+          "  msgpackr-extract: true",
+          "",
+        ].join("\n"),
+      );
+      execFileSync("vp", ["install"], {
+        cwd: strictConsumerDirectory,
+        killSignal: "SIGTERM",
+        stdio: "inherit",
+        timeout: 55_000,
+      });
+
+      const strictInstalledPackageDirectory = join(
+        strictConsumerDirectory,
+        "node_modules",
+        "effect-view-server",
+      );
+      const strictInstalledManifest = decodePackageManifest(
+        readFileSync(join(strictInstalledPackageDirectory, "package.json"), "utf8"),
+      );
+      expect(strictInstalledManifest.dependencies).toStrictEqual({
+        "@bufbuild/protobuf": "2.13.0",
+        "@connectrpc/connect": "2.1.2",
+        "@connectrpc/connect-node": "2.1.2",
+        "@effect/platform-browser": "4.0.0-rc.111",
+        "@effect/platform-node": "4.0.0-rc.111",
+        "@effect/platform-node-shared": "4.0.0-rc.111",
+        "@platformatic/kafka": "2.9.0",
+      });
+      for (const path of packedPaths.filter(
+        (path) => path.endsWith(".js") || path.endsWith(".d.ts"),
+      )) {
+        expect(readFileSync(join(strictInstalledPackageDirectory, path), "utf8")).not.toContain(
+          "typescript-compiler-api",
+        );
+      }
+      expect(strictInstalledManifest.peerDependencies).toStrictEqual({
+        "@effect/atom-react": "4.0.0-rc.111",
+        "@effect/vitest": "4.0.0-rc.111",
+        effect: "4.0.0-rc.111",
+        react: "19.2.8",
+        "react-dom": "19.2.8",
+        typescript: ">=7.0.0 <8.0.0",
+        vite: "*",
+      });
+      const strictLockfile = readFileSync(
+        join(strictConsumerDirectory, "pnpm-lock.yaml"),
+        "utf8",
+      );
+      expect(strictLockfile).toContain(
+        "@effect/platform-node-shared@4.0.0-rc.111(effect@4.0.0-rc.111)",
+      );
+      expect(strictLockfile).not.toContain("@effect/platform-node-shared@4.0.0-rc.112");
+      expect(strictLockfile).toMatch(
+        /effect-view-server@file:[^\n]+\(effect@4\.0\.0-rc\.111\)[^\n]*\(typescript@7\.0\.2\)/,
+      );
+      expect(strictLockfile).not.toContain("typescript@6.0.3");
+      expect(
+        readFileSync(join(strictInstalledPackageDirectory, "dist", "react.d.ts"), "utf8"),
+      ).toContain("LiveQueryViewportBaseRow");
+      execFileSync(
+        process.execPath,
+        ["--input-type=module", "--eval", 'await import("effect-view-server/source-adapter/testing")'],
+        {
+          cwd: strictConsumerDirectory,
+          stdio: "inherit",
+        },
+      );
 
       extract({
         cwd: installedPackageDirectory,
@@ -297,7 +414,7 @@ describe("published value semantics consumer", () => {
       const valueSemanticsExport = installedManifest.exports["./value-semantics"];
       const entryTarget = valueSemanticsExport.import;
       const declarationTarget = valueSemanticsExport.types;
-      expect(installedManifest.peerDependencies.effect).toBe("4.0.0-rc.109");
+      expect(installedManifest.peerDependencies.effect).toBe("4.0.0-rc.111");
 
       const graph = collectStaticModuleGraph(
         join(installedPackageDirectory, entryTarget.replace(/^\.\//, "")),
@@ -393,5 +510,5 @@ describe("published value semantics consumer", () => {
         { cwd: consumerDirectory, stdio: "inherit" },
       );
     }
-  }, 30_000);
+  }, 180_000);
 });

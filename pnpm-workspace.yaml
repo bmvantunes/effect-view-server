@@ -11,22 +11,22 @@ onlyBuiltDependencies:
 
 catalog:
   "@bufbuild/protobuf": 2.13.0
-  "@effect/platform-browser": 4.0.0-rc.109
-  "@effect/platform-node": 4.0.0-rc.109
+  "@effect/platform-browser": 4.0.0-rc.111
+  "@effect/platform-node": 4.0.0-rc.111
   "@effect/tsgo": 0.36.4
-  "@effect/vitest": 4.0.0-rc.109
+  "@effect/vitest": 4.0.0-rc.111
   "@types/node": 26.2.0
   "@vitest/browser": 4.1.10
   "@vitest/browser-playwright": 4.1.10
   "@vitest/coverage-istanbul": 4.1.10
   "@vitest/runner": 4.1.10
-  effect: 4.0.0-rc.109
+  effect: 4.0.0-rc.111
   typescript: 7.0.2
   typescript-compiler-api: npm:typescript@6.0.3
   vite: npm:@voidzero-dev/vite-plus-core@0.2.8
   vitest: 4.1.10
   vite-plus: 0.2.8
-  "@effect/atom-react": 4.0.0-rc.109
+  "@effect/atom-react": 4.0.0-rc.111
   scheduler: 0.27.0
   vitest-browser-react: 2.2.0
   "@platformatic/kafka": 2.9.0
@@ -60,12 +60,12 @@ allowBuilds:
   esbuild: true
   msgpackr-extract: true
 minimumReleaseAgeExclude:
-  - "@effect/atom-react@4.0.0-rc.109"
-  - "@effect/platform-browser@4.0.0-rc.109"
-  - "@effect/platform-node-shared@4.0.0-rc.109"
-  - "@effect/platform-node@4.0.0-rc.109"
-  - "@effect/vitest@4.0.0-rc.109"
-  - effect@4.0.0-rc.109
+  - "@effect/atom-react@4.0.0-rc.111"
+  - "@effect/platform-browser@4.0.0-rc.111"
+  - "@effect/platform-node-shared@4.0.0-rc.111"
+  - "@effect/platform-node@4.0.0-rc.111"
+  - "@effect/vitest@4.0.0-rc.111"
+  - effect@4.0.0-rc.111
   - "@tanstack/react-router@1.170.27"
   - "@tanstack/react-start-client@1.168.25"
   - "@tanstack/react-start-rsc@0.1.43"

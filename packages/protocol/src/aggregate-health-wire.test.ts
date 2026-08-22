@@ -405,13 +405,12 @@ describe("Aggregate Source Health wire contract", () => {
           ...encoded,
           sources: {
             ...encoded.sources,
-            materialized: {
-              ...materialized,
+            materialized: Object.assign({}, materialized, {
               adapter: {
                 name: "different-adapter",
                 version: "1",
               },
-            },
+            }),
           },
         }),
       );
@@ -458,16 +457,13 @@ describe("Aggregate Source Health wire contract", () => {
           sources: {
             ...encoded.sources,
             leased: [
-              {
-                ...first,
-                target: {
-                  ...target,
-                  route: {
-                    ...route,
+              Object.assign({}, first, {
+                target: Object.assign({}, target, {
+                  route: Object.assign({}, route, {
                     extra: "not-a-route-field",
-                  },
-                },
-              },
+                  }),
+                }),
+              }),
             ],
           },
         }),
@@ -477,16 +473,13 @@ describe("Aggregate Source Health wire contract", () => {
           ...encoded,
           sources: {
             ...encoded.sources,
-            materialized: {
-              ...materialized,
-              metrics: {
-                ...metrics,
-                adapter: {
-                  ...adapterMetrics,
+            materialized: Object.assign({}, materialized, {
+              metrics: Object.assign({}, metrics, {
+                adapter: Object.assign({}, adapterMetrics, {
                   observed: 9,
-                },
-              },
-            },
+                }),
+              }),
+            }),
           },
         }),
       );

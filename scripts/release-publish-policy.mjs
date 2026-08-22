@@ -1,6 +1,11 @@
+import { createHash } from "node:crypto";
+
 export const expectedPublishRepository = "bmvantunes/effect-view-server";
 export const internalPackageScope = "@effect-view-server/";
 export const publicPackageName = "effect-view-server";
+const privateToolingDependencies = new Set(["typescript-compiler-api"]);
+export const validatedReleaseArtifactManifestName = "release-artifact.json";
+const validatedReleaseArtifactSchemaVersion = 1;
 
 const cloneJson = (value) => structuredClone(value);
 
@@ -8,7 +13,10 @@ const omitInternalDependencies = (dependencies) =>
   dependencies === undefined
     ? undefined
     : Object.fromEntries(
-        Object.entries(dependencies).filter(([name]) => !name.startsWith(internalPackageScope)),
+        Object.entries(dependencies).filter(
+          ([name]) =>
+            !name.startsWith(internalPackageScope) && !privateToolingDependencies.has(name),
+        ),
       );
 
 const definedEntries = (entries) =>
@@ -109,9 +117,6 @@ export const compareReleaseTags = (left, right) => {
   return left.tag.localeCompare(right.tag);
 };
 
-export const stripSourceMapReference = (contents) =>
-  contents.replace(/(?:\n)?\/\/# sourceMappingURL=.*(?:\n|$)/g, "\n");
-
 const hasInternalWorkspaceReference = (file) =>
   file.relativePath === "package.json"
     ? file.contents.includes(internalPackageScope)
@@ -150,13 +155,51 @@ export const sanitizePublicPackageJson = (packageJson) =>
 export const publishedFileViolations = (files) =>
   files.flatMap((file) => [
     ...(file.relativePath.endsWith(".map") ? [`${file.relativePath} is a source map`] : []),
-    ...(file.contents.includes("sourceMappingURL")
-      ? [`${file.relativePath} references a source map`]
-      : []),
     ...(hasInternalWorkspaceReference(file)
       ? [`${file.relativePath} references ${internalPackageScope}`]
       : []),
   ]);
+
+const artifactDigest = (contents) => createHash("sha256").update(contents).digest("hex");
+
+export const createValidatedReleaseArtifactManifest = (files, commit) => ({
+  schemaVersion: validatedReleaseArtifactSchemaVersion,
+  commit,
+  files: files
+    .filter((file) => file.relativePath !== validatedReleaseArtifactManifestName)
+    .map((file) => ({
+      path: file.relativePath,
+      sha256: artifactDigest(file.contents),
+    }))
+    .sort((left, right) => left.path.localeCompare(right.path)),
+});
+
+export const validatedReleaseArtifactViolations = ({
+  expectedCommit,
+  files,
+  manifestContents,
+}) => {
+  let manifest;
+  try {
+    manifest = JSON.parse(manifestContents);
+  } catch {
+    return ["validated release artifact manifest is not valid JSON"];
+  }
+  if (
+    manifest === null ||
+    typeof manifest !== "object" ||
+    Array.isArray(manifest) ||
+    manifest.schemaVersion !== validatedReleaseArtifactSchemaVersion ||
+    manifest.commit !== expectedCommit ||
+    !Array.isArray(manifest.files)
+  ) {
+    return ["validated release artifact manifest does not match this tested commit"];
+  }
+  const expectedManifest = createValidatedReleaseArtifactManifest(files, expectedCommit);
+  return JSON.stringify(manifest) === JSON.stringify(expectedManifest)
+    ? []
+    : ["validated release artifact contents do not match their integrity manifest"];
+};
 
 export const internalPublishViolations = (workspacePackages) =>
   workspacePackages

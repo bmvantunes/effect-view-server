@@ -62,9 +62,8 @@ export default defineConfig({
       "src/value-semantics.ts",
     ],
     {
-      deps: {
-        neverBundle: ["typescript-compiler-api"],
-      },
+      // The testing subpath bundles TypeScript, whose Node runtime reads these CommonJS globals.
+      shims: true,
       alias: {
         "effect-view-server/source-adapter/server": fileURLToPath(
           new URL("../source-adapter/dist/server.js", import.meta.url),

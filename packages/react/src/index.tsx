@@ -65,6 +65,7 @@ import {
 
 export type {
   LiveQueryViewport,
+  LiveQueryViewportBaseRow,
   LiveQueryViewportGeneration,
   LiveQueryViewportGroupedQuery,
   LiveQueryViewportQuery,

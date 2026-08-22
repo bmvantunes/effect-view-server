@@ -1,5 +1,6 @@
 export { validateDecodedRow } from "./decoded-row-validation";
 export { isViewServerIdSchema } from "./view-server-id";
+export type { LiveQueryViewportCompleteRawSelectForRow } from "./query-core";
 export type {
   ViewServerRuntimeDecodedMutation,
   ViewServerRuntimeDecodedMutationClient,

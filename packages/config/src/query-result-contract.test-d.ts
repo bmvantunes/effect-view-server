@@ -1,12 +1,19 @@
 import { describe, expectTypeOf, it } from "@effect/vitest";
 import * as BigDecimal from "effect/BigDecimal";
+import type * as PublicConfig from "./index";
 import {
   type GroupedQuery,
   type GroupedResult,
+  type ExactRawQuery,
+  type LiveQueryRow,
   type PickRawFields,
   type RawQuery,
   type ValidateLiveQuery,
 } from "./index";
+import type {
+  CompleteRawSelectWitnessRow,
+  LiveQueryViewportCompleteRawSelectForRow,
+} from "./query-core";
 
 import { viewServer } from "../test-harness/live-query";
 import { Order } from "../test-harness/schemas";
@@ -23,7 +30,95 @@ declare const conditionalAggregates:
   | { readonly rowCount: { readonly aggFunc: "count" } }
   | { readonly totalPrice: { readonly aggFunc: "sum"; readonly field: "price" } };
 
+declare const completeOrderSelect: LiveQueryViewportCompleteRawSelectForRow<typeof Order.Type>;
+type OtherRow = { readonly id: string; readonly quantity: number };
+declare const mismatchedSelect: LiveQueryViewportCompleteRawSelectForRow<OtherRow>;
+declare const malformedSelect: readonly ["id"] & {
+  readonly "__effect-view-server/LiveQueryViewportCompleteRawSelect@v1": (
+    _row: typeof Order.Type,
+  ) => OtherRow;
+};
+declare const completeSelectWithExtra: LiveQueryViewportCompleteRawSelectForRow<
+  typeof Order.Type
+> & {
+  readonly unexpected: true;
+};
+const forgedCompleteOrderSelect = Object.assign(["id"] as const, {
+  "__effect-view-server/LiveQueryViewportCompleteRawSelect@v1": (
+    row: typeof Order.Type,
+  ): typeof Order.Type => row,
+});
+declare const choose: boolean;
+
+// @ts-expect-error complete-projection authority is private to source implementations.
+export type _NoPublicCompleteSelect = PublicConfig.LiveQueryViewportCompleteRawSelectForRow;
+
 describe("Query result contracts", () => {
+  it("recognizes an invariant complete raw-row projection without weakening ordinary selects", () => {
+    const completeQuery = {
+      select: completeOrderSelect,
+    } satisfies RawQuery<typeof Order.Type>;
+    expectTypeOf<LiveQueryRow<typeof Order.Type, typeof completeQuery>>().toEqualTypeOf<
+      typeof Order.Type
+    >();
+    expectTypeOf<ExactRawQuery<typeof Order.Type, typeof completeQuery>>().not.toBeNever();
+    expectTypeOf(completeOrderSelect).not.toHaveProperty(
+      "__effect-view-server/LiveQueryViewportCompleteRawSelect@v1",
+    );
+
+    expectTypeOf<
+      ExactRawQuery<typeof Order.Type, { readonly select: typeof mismatchedSelect }>
+    >().toBeNever();
+
+    const detachedSelect = [completeOrderSelect[0]] as const;
+    const detachedQuery = { select: detachedSelect } satisfies RawQuery<typeof Order.Type>;
+    expectTypeOf<LiveQueryRow<typeof Order.Type, typeof detachedQuery>>().toEqualTypeOf<
+      Partial<typeof Order.Type>
+    >();
+    expectTypeOf(detachedSelect).not.toHaveProperty(
+      "__effect-view-server/LiveQueryViewportCompleteRawSelect@v1",
+    );
+    const mappedSelect = completeOrderSelect.map((field) => field);
+    const slicedSelect = completeOrderSelect.slice();
+    const spreadSelect = [...completeOrderSelect] as const;
+    expectTypeOf<CompleteRawSelectWitnessRow<typeof mappedSelect>>().toBeNever();
+    expectTypeOf<CompleteRawSelectWitnessRow<typeof slicedSelect>>().toBeNever();
+    expectTypeOf<CompleteRawSelectWitnessRow<typeof spreadSelect>>().toBeNever();
+    expectTypeOf<
+      ExactRawQuery<typeof Order.Type, { readonly select: typeof mappedSelect }>
+    >().toBeNever();
+    expectTypeOf<
+      ExactRawQuery<typeof Order.Type, { readonly select: typeof slicedSelect }>
+    >().toBeNever();
+    expectTypeOf<
+      ExactRawQuery<typeof Order.Type, { readonly select: typeof spreadSelect }>
+    >().toBeNever();
+
+    const mixedQuery = {
+      select: choose ? completeOrderSelect : (["id"] as const),
+    } satisfies RawQuery<typeof Order.Type>;
+    expectTypeOf<LiveQueryRow<typeof Order.Type, typeof mixedQuery>>().toEqualTypeOf<
+      Partial<typeof Order.Type>
+    >();
+
+    expectTypeOf<
+      CompleteRawSelectWitnessRow<typeof completeOrderSelect | readonly ["id"]>
+    >().toBeNever();
+    expectTypeOf<
+      CompleteRawSelectWitnessRow<typeof completeOrderSelect | typeof malformedSelect>
+    >().toBeNever();
+    expectTypeOf<
+      CompleteRawSelectWitnessRow<typeof completeOrderSelect | typeof mismatchedSelect>
+    >().toBeNever();
+    expectTypeOf<
+      ExactRawQuery<typeof Order.Type, { readonly select: typeof completeSelectWithExtra }>
+    >().toBeNever();
+    expectTypeOf<CompleteRawSelectWitnessRow<typeof forgedCompleteOrderSelect>>().toBeNever();
+    expectTypeOf<
+      ExactRawQuery<typeof Order.Type, { readonly select: typeof forgedCompleteOrderSelect }>
+    >().toBeNever();
+  });
+
   it("keeps common raw fields required and conditional fields optional", () => {
     const unequalQuery = {
       select: conditionalUnequalSelect,

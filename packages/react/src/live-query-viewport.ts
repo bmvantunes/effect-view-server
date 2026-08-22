@@ -12,6 +12,8 @@ import type {
   ViewServerTransportError,
   Where,
 } from "@effect-view-server/config";
+// This type-only internal seam keeps complete-projection authority source-owned and erases at runtime.
+import type { LiveQueryViewportCompleteRawSelectForRow } from "@effect-view-server/config/internal";
 import {
   liveQueryFailureResult,
   makeIncrementalClientState,
@@ -153,6 +155,9 @@ export type LiveQueryViewport<
   readonly "__effect-view-server/LiveQueryViewportBaseRow@v1"?: (
     _row: LiveQueryViewportWitnessRow<Topics, Topic>,
   ) => LiveQueryViewportWitnessRow<Topics, Topic>;
+  readonly "__effect-view-server/LiveQueryViewportCompleteRawSelect@v1"?: LiveQueryViewportCompleteRawSelectForRow<
+    LiveQueryViewportWitnessRow<Topics, Topic>
+  >;
   readonly replace: <
     const Query extends LiveQueryViewportQuery<TopicRow<Topics, NoInfer<Topic>>>,
     const Sink extends LiveQueryViewportSink<LiveQueryRow<TopicRow<Topics, Topic>, NoInfer<Query>>>,
@@ -167,6 +172,7 @@ export type UseLiveQueryViewportResult<
   Topic extends Extract<keyof Topics, string>,
 > = {
   readonly viewport: LiveQueryViewport<Topics, Topic>;
+  readonly completeRawSelect: LiveQueryViewportCompleteRawSelectForRow<TopicRow<Topics, Topic>>;
   readonly totalRows: number;
   readonly version: number;
   readonly status: LiveQueryResult<never>["status"];

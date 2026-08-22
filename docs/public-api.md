@@ -198,6 +198,30 @@ const generation = useLiveQueryViewport("manualOrders").viewport.replace({
 });
 ```
 
+When a structural adapter lawfully needs every configured raw field, use the
+Viewport Source's frozen `completeRawSelect` rather than rebuilding the Topic
+Schema's field list:
+
+```tsx
+const source = useLiveQueryViewport("manualOrders");
+
+source.viewport.replace({
+  window: { firstRow: 100, lastRow: 149 },
+  query: {
+    select: source.completeRawSelect,
+    where: [],
+    orderBy: [{ field: "price", direction: "desc" }],
+  },
+  sink,
+});
+```
+
+This selection uses the ordinary Raw Query transport and equality semantics,
+but its source-owned type makes the sink row exactly the configured Topic Row.
+Changing between a narrow selection and `completeRawSelect` is a semantic query
+change. Window movement retains the chosen selection. Grouped Queries remain a
+separate result domain and do not accept this metadata.
+
 Every `setRowData` call contains rows and keys at exactly the same absolute
 indexes. Raw queries receive the authoritative public row key; grouped queries
 receive the complete canonical group key. Both maps describe the same
@@ -209,9 +233,13 @@ Structural adapters that need the complete configured Topic Row import the
 declaration-only extractor from the pure subpath:
 
 ```ts
-import type { LiveQueryViewportBaseRow } from "effect-view-server/react/viewport-base-row";
+import type {
+  LiveQueryViewportBaseRow,
+  LiveQueryViewportCompleteRawSelect,
+} from "effect-view-server/react/viewport-base-row";
 
 type BaseRow = LiveQueryViewportBaseRow<typeof viewport>;
+type CompleteSelect = LiveQueryViewportCompleteRawSelect<typeof viewport>;
 ```
 
 The subpath owns its helper declaration directly, imports neither React nor

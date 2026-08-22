@@ -152,6 +152,54 @@ describe("Live Query Viewport type contracts", () => {
     generation.release();
   });
 
+  it("infers the complete configured raw row from source-owned projection metadata", () => {
+    const result = react.useLiveQueryViewport("orders");
+    const query = {
+      select: result.completeRawSelect,
+      where: [],
+      orderBy: [],
+    } as const;
+
+    result.viewport.replace({
+      window: { firstRow: 0, lastRow: 9 },
+      query,
+      sink: {
+        setRowCount: () => undefined,
+        setRowData: (rows) => {
+          expectTypeOf(rows[0]).toEqualTypeOf<
+            | {
+                readonly id: string;
+                readonly status: "open" | "closed";
+                readonly price: number;
+                readonly region: string;
+              }
+            | undefined
+          >();
+        },
+      },
+    });
+
+    const detachedSelect = [result.completeRawSelect[0]] as const;
+    result.viewport.replace({
+      window: { firstRow: 0, lastRow: 9 },
+      query: { select: detachedSelect, where: [], orderBy: [] },
+      sink: {
+        setRowCount: () => undefined,
+        setRowData: (rows) => {
+          expectTypeOf(rows[0]).toEqualTypeOf<
+            | {
+                readonly id?: string;
+                readonly status?: "open" | "closed";
+                readonly price?: number;
+                readonly region?: string;
+              }
+            | undefined
+          >();
+        },
+      },
+    });
+  });
+
   it("infers grouped result rows into the sink", () => {
     react.useLiveQueryViewport("orders").viewport.replace({
       window: { firstRow: 0, lastRow: 19 },

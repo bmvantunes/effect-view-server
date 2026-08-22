@@ -67,3 +67,52 @@ export type LiveQueryViewportBaseRow<Viewport> =
             >
           ? never
           : LiveQueryViewportBaseRowMembers<Viewport>;
+
+type LiveQueryViewportCompleteRawSelectMember<Viewport> =
+  "__effect-view-server/LiveQueryViewportCompleteRawSelect@v1" extends Exclude<
+    keyof Viewport,
+    "__effect-view-server/LiveQueryViewportCompleteRawSelect@v1"
+  >
+    ? never
+    : "__effect-view-server/LiveQueryViewportCompleteRawSelect@v1" extends keyof Viewport
+      ? Exclude<Viewport["__effect-view-server/LiveQueryViewportCompleteRawSelect@v1"], undefined>
+      : never;
+
+type LiveQueryViewportCompleteRawSelectMembers<Viewport> = Viewport extends unknown
+  ? LiveQueryViewportCompleteRawSelectMember<Viewport>
+  : never;
+
+type IsSafeCompleteRawSelect<Select> =
+  IsAny<Select> extends true
+    ? false
+    : IsUnknown<Select> extends true
+      ? false
+      : [Select] extends [readonly [string, ...ReadonlyArray<string>]]
+        ? true
+        : false;
+
+type LiveQueryViewportCompleteRawSelectMemberValidity<Viewport> = Viewport extends unknown
+  ? IsSafeCompleteRawSelect<LiveQueryViewportCompleteRawSelectMember<Viewport>>
+  : never;
+
+type LiveQueryViewportCompleteRawSelectMemberUniformity<Viewport, Select> = Viewport extends unknown
+  ? IsSafeCompleteRawSelect<LiveQueryViewportCompleteRawSelectMember<Viewport>> extends true
+    ? IsExact<LiveQueryViewportCompleteRawSelectMember<Viewport>, Select>
+    : false
+  : never;
+
+export type LiveQueryViewportCompleteRawSelect<Viewport> =
+  IsAny<Viewport> extends true
+    ? never
+    : IsUnknown<Viewport> extends true
+      ? never
+      : [LiveQueryViewportBaseRow<Viewport>] extends [never]
+        ? never
+        : false extends LiveQueryViewportCompleteRawSelectMemberValidity<Viewport>
+          ? never
+          : false extends LiveQueryViewportCompleteRawSelectMemberUniformity<
+                Viewport,
+                LiveQueryViewportCompleteRawSelectMembers<Viewport>
+              >
+            ? never
+            : LiveQueryViewportCompleteRawSelectMembers<Viewport>;

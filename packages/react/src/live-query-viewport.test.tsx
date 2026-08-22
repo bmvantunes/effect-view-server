@@ -46,6 +46,13 @@ const Order = Schema.Struct({
   price: Schema.Number,
 });
 
+const ArchivedOrder = Schema.Struct({
+  id: ViewServerId,
+  status: Schema.Literals(["open", "closed"]),
+  price: Schema.Number,
+  archivedAt: Schema.String,
+});
+
 const viewServer = defineViewServerConfig({
   topics: {
     orders: {
@@ -64,7 +71,7 @@ const multiTopicViewServer = defineViewServerConfig({
       schema: Order,
     },
     archivedOrders: {
-      schema: Order,
+      schema: ArchivedOrder,
     },
   },
 });
@@ -193,6 +200,150 @@ describe("useLiveQueryViewport", () => {
     ).toBe('<output role="status">loading:0</output>');
     const health = await Effect.runPromise(runtime.client.health());
     expect(health.engine.topics.orders.activeSubscriptions).toBe(0);
+    await Effect.runPromise(runtime.close);
+  });
+
+  it("owns one stable complete raw projection across window movement", async () => {
+    const runtime = createInMemoryViewServer(viewServer);
+    await Effect.runPromise(
+      runtime.client.publishMany("orders", [
+        { id: "order-1", status: "open", price: 10 },
+        { id: "order-2", status: "closed", price: 20 },
+      ]),
+    );
+    const grid = makeGridModel<typeof Order.Type>();
+    const observedSelects: Array<ReadonlyArray<string>> = [];
+    let generation: LiveQueryViewportGeneration | undefined;
+
+    function CompleteRawViewport() {
+      const result = useLiveQueryViewport("orders");
+      observedSelects.push(result.completeRawSelect);
+      expect(Reflect.ownKeys(result.completeRawSelect)).toStrictEqual(["0", "1", "2", "length"]);
+      return (
+        <>
+          <button
+            type="button"
+            onClick={() => {
+              generation = result.viewport.replace({
+                window: { firstRow: 0, lastRow: 0 },
+                query: {
+                  select: result.completeRawSelect,
+                  where: [],
+                  orderBy: [{ field: "id", direction: "asc" }],
+                },
+                sink: grid.sink,
+              });
+            }}
+          >
+            load complete rows
+          </button>
+          <output role="status">{`${result.status}:${result.totalRows}`}</output>
+        </>
+      );
+    }
+
+    const view = await render(
+      <ViewServerClientProvider client={runtime.liveClient}>
+        <CompleteRawViewport />
+      </ViewServerClientProvider>,
+    );
+    await view.getByRole("button", { name: "load complete rows" }).click();
+    await expect.poll(grid.rows).toStrictEqual({
+      0: { id: "order-1", status: "open", price: 10 },
+    });
+    expect(grid.rowKeys()).toStrictEqual({ 0: "order-1" });
+    expect(observedSelects[0]).toStrictEqual(["id", "status", "price"]);
+    expect(Object.isFrozen(observedSelects[0])).toBe(true);
+
+    if (generation === undefined) {
+      throw new Error("Expected the complete-row viewport generation to be installed.");
+    }
+    generation.setWindow({ firstRow: 1, lastRow: 1 });
+    await expect.poll(grid.rows).toStrictEqual({
+      1: { id: "order-2", status: "closed", price: 20 },
+    });
+    expect(grid.rowKeys()).toStrictEqual({ 1: "order-2" });
+    expect(observedSelects.every((select) => Object.is(select, observedSelects[0]))).toBe(true);
+
+    await view.unmount();
+    await Effect.runPromise(runtime.close);
+  });
+
+  it("treats narrow and complete projections as one semantic replacement each", async () => {
+    const runtime = createInMemoryViewServer(viewServer);
+    const observedSelects: Array<ReadonlyArray<string>> = [];
+    const window = { firstRow: 0, lastRow: 9 } as const;
+    const sinkIdentity = {
+      setRowCount: () => undefined,
+      setRowData: (
+        _rowsByIndex: { readonly [index: number]: unknown },
+        _rowKeysByIndex: { readonly [index: number]: string },
+      ) => undefined,
+    };
+    const narrowSink: LiveQueryViewportSink<{ readonly id: string }> = sinkIdentity;
+    const completeSink: LiveQueryViewportSink<TopicRow<typeof viewServer.topics, "orders">> =
+      sinkIdentity;
+    expect(Object.is(narrowSink, completeSink)).toBe(true);
+    const client: ViewServerLiveClient<typeof viewServer.topics> = {
+      ...runtime.liveClient,
+      subscribe: adaptQuerySubstrate((_topic, query) =>
+        Effect.gen(function* () {
+          observedSelects.push(Schema.decodeUnknownSync(Schema.Array(Schema.String))(query.select));
+          const events = yield* Queue.unbounded<ViewServerLiveEvent<object>>();
+          return { events: Stream.fromQueue(events), close: () => Effect.void };
+        }),
+      ),
+    };
+    function ProjectionTransitions() {
+      const result = useLiveQueryViewport("orders");
+      return (
+        <>
+          <button
+            type="button"
+            onClick={() => {
+              result.viewport.replace({
+                window,
+                query: { select: ["id"], where: [], orderBy: [] },
+                sink: narrowSink,
+              });
+            }}
+          >
+            narrow projection
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              result.viewport.replace({
+                window,
+                query: { select: result.completeRawSelect, where: [], orderBy: [] },
+                sink: completeSink,
+              });
+            }}
+          >
+            complete projection
+          </button>
+        </>
+      );
+    }
+
+    const view = await render(
+      <ViewServerClientProvider client={client}>
+        <ProjectionTransitions />
+      </ViewServerClientProvider>,
+    );
+    await view.getByRole("button", { name: "narrow projection" }).click();
+    await expect.poll(() => observedSelects.length).toBe(1);
+    await view.getByRole("button", { name: "narrow projection" }).click();
+    await expect.poll(() => observedSelects.length).toBe(1);
+    await view.getByRole("button", { name: "complete projection" }).click();
+    await expect.poll(() => observedSelects.length).toBe(2);
+    await view.getByRole("button", { name: "complete projection" }).click();
+    await expect.poll(() => observedSelects.length).toBe(2);
+    await view.getByRole("button", { name: "narrow projection" }).click();
+    await expect.poll(() => observedSelects.length).toBe(3);
+    expect(observedSelects).toStrictEqual([["id"], ["id", "status", "price"], ["id"]]);
+
+    await view.unmount();
     await Effect.runPromise(runtime.close);
   });
 
@@ -1174,9 +1325,11 @@ describe("useLiveQueryViewport", () => {
     let retainedViewport:
       | LiveQueryViewport<typeof multiTopicViewServer.topics, "orders" | "archivedOrders">
       | undefined;
+    const completeSelects = new Map<string, ReadonlyArray<string>>();
 
     function TopicViewport(props: { readonly topic: "orders" | "archivedOrders" }) {
       const result = multiTopicReact.useLiveQueryViewport(props.topic);
+      completeSelects.set(props.topic, result.completeRawSelect);
       return (
         <button
           type="button"
@@ -1204,6 +1357,7 @@ describe("useLiveQueryViewport", () => {
       </MultiTopicClientProvider>,
     );
     await view.getByRole("button", { name: "load orders" }).click();
+    expect(completeSelects.get("orders")).toStrictEqual(["id", "status", "price"]);
     await expect
       .poll(async () => {
         const health = await Effect.runPromise(runtime.client.health());
@@ -1216,6 +1370,13 @@ describe("useLiveQueryViewport", () => {
         <TopicViewport topic="archivedOrders" />
       </MultiTopicClientProvider>,
     );
+    expect(completeSelects.get("archivedOrders")).toStrictEqual([
+      "id",
+      "status",
+      "price",
+      "archivedAt",
+    ]);
+    expect(completeSelects.get("archivedOrders")).not.toBe(completeSelects.get("orders"));
     await expect
       .poll(async () => {
         const health = await Effect.runPromise(runtime.client.health());
@@ -1368,11 +1529,13 @@ describe("useLiveQueryViewport", () => {
     });
     const oldClient = makeClient(oldRequests);
     const currentClient = makeClient(currentRequests);
-    const grid = makeGridModel<{ readonly id: string }>();
+    const grid = makeGridModel<typeof Order.Type>();
     let retainedViewport: LiveQueryViewport<typeof viewServer.topics, "orders"> | undefined;
+    let retainedCompleteSelect: ReadonlyArray<string> | undefined;
 
     function ClientViewport() {
       const result = useLiveQueryViewport("orders");
+      retainedCompleteSelect ??= result.completeRawSelect;
       return (
         <>
           <output role="status">
@@ -1384,7 +1547,7 @@ describe("useLiveQueryViewport", () => {
               retainedViewport = result.viewport;
               result.viewport.replace({
                 window: { firstRow: 0, lastRow: 9 },
-                query: { select: ["id"], where: [], orderBy: [] },
+                query: { select: result.completeRawSelect, where: [], orderBy: [] },
                 sink: grid.sink,
               });
             }}
@@ -1407,13 +1570,15 @@ describe("useLiveQueryViewport", () => {
         type: "snapshot",
         topic: "orders",
         queryId: "old-client",
-        rows: [{ id: "old-client" }],
+        rows: [{ id: "old-client", status: "open", price: 10 }],
         keys: ["old-client"],
         totalRows: 1,
         version: 1,
       }),
     );
-    await expect.poll(grid.rows).toStrictEqual({ 0: { id: "old-client" } });
+    await expect.poll(grid.rows).toStrictEqual({
+      0: { id: "old-client", status: "open", price: 10 },
+    });
 
     await view.rerender(
       <ViewServerClientProvider client={currentClient}>
@@ -1421,6 +1586,7 @@ describe("useLiveQueryViewport", () => {
       </ViewServerClientProvider>,
     );
     expect(retainedViewport).toBeDefined();
+    expect(retainedCompleteSelect).toStrictEqual(["id", "status", "price"]);
     await expect.poll(() => currentRequests.length).toBe(1);
     expect(grid.rows()).toStrictEqual({});
     await Effect.runPromise(
@@ -1428,26 +1594,31 @@ describe("useLiveQueryViewport", () => {
         type: "snapshot",
         topic: "orders",
         queryId: "current-client",
-        rows: [{ id: "current-client" }],
+        rows: [{ id: "current-client", status: "closed", price: 20 }],
         keys: ["current-client"],
         totalRows: 1,
         version: 2,
       }),
     );
-    await expect.poll(grid.rows).toStrictEqual({ 0: { id: "current-client" } });
+    await expect.poll(grid.rows).toStrictEqual({
+      0: { id: "current-client", status: "closed", price: 20 },
+    });
+    expect(grid.rowKeys()).toStrictEqual({ 0: "current-client" });
 
     await Effect.runPromise(
       Queue.offer(oldRequests[0]!, {
         type: "snapshot",
         topic: "orders",
         queryId: "old-client",
-        rows: [{ id: "obsolete-client-late" }],
+        rows: [{ id: "obsolete-client-late", status: "open", price: 999 }],
         keys: ["obsolete-client-late"],
         totalRows: 1,
         version: 3,
       }),
     );
-    await expect.poll(grid.rows).toStrictEqual({ 0: { id: "current-client" } });
+    await expect.poll(grid.rows).toStrictEqual({
+      0: { id: "current-client", status: "closed", price: 20 },
+    });
 
     await view.unmount();
     await Effect.runPromise(runtime.close);

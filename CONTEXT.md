@@ -288,6 +288,10 @@ _Avoid_: Seed provider, mock provider
 The transport-neutral React integration Module for virtualized grids. It binds one typed Live Query, one inclusive absolute row window, and one caller-owned sparse row sink. React observes only query chrome; row payloads flow directly to the sink. Every full replacement and scroll-only window change has switch-latest ownership, so older snapshots, deltas, statuses, failures, and sink writes cannot mutate the current generation.
 _Avoid_: Live grid, grid query language, rows in React state, best-effort cancellation
 
+**Complete Raw Projection**:
+The frozen non-empty Raw Query selection owned by one configured Viewport Source. It contains every field from that source's Topic Schema in canonical configuration order and carries an invariant declaration-only tuple witness, so selecting the complete tuple yields the exact Base Topic Row without a downstream schema copy. At runtime it remains an ordinary field-name array: query identity, transport, projection, authoritative keys, and window generations use the existing Raw Query path. Grouped Queries never consume it.
+_Avoid_: Select all flag, wildcard field, consumer field enumeration, cast projected row to base row
+
 **AG Grid Adapter**:
 The client integration boundary that translates AG Grid viewport, filter, sort, and grouping state into typed Live Queries while keeping the View Server query language independent of AG Grid.
 _Avoid_: AG Grid where model, AG Grid query language, core FilterModel
@@ -708,7 +712,7 @@ _Avoid_: Browser write, send, emit
 - A **Health Payload Codec** protects full runtime health payloads from missing or unknown configured topics.
 - A **View Server Provider** supplies a **Live Client** to React hooks.
 - A **View Server In-Memory Provider** supplies the same hook behavior through an **In-Memory View Server**.
-- A **Live Query Viewport** keeps viewport rows out of React state, derives its query window, and gives every replacement or scroll-only window change switch-latest ownership over row, count, status, and failure delivery. Its versioned, declaration-only **Base Topic Row Witness** invariantly identifies the complete configured Topic Row across raw projections, grouped results, window movement, source replacement, and downstream declaration bundling without adding runtime state. The pure `effect-view-server/react/viewport-base-row` subpath directly owns the extractor declaration, imports neither React nor Effect, and emits an empty runtime module; the ordinary React surface reuses that source-owned extractor.
+- A **Live Query Viewport** keeps viewport rows out of React state, derives its query window, and gives every replacement or scroll-only window change switch-latest ownership over row, count, status, and failure delivery. Its versioned, declaration-only **Base Topic Row Witness** invariantly identifies the complete configured Topic Row across raw projections, grouped results, window movement, source replacement, and downstream declaration bundling without adding runtime state. Its **Complete Raw Projection** is a stable source-owned field tuple that selects that exact row through the ordinary Raw Query path. The pure `effect-view-server/react/viewport-base-row` subpath directly owns both safe extractor declarations, imports neither React nor Effect, and emits an empty runtime module; the ordinary React surface reuses the source-owned base-row extractor.
 - An **AG Grid Adapter** accepts AG Grid state without making AG Grid state the canonical View Server query language.
 - An **AG Grid Adapter** validates every **AG Grid Set Key** against the bound Topic Row field schema without attempting to repair a lossy key creator.
 - A **Real View Server** and **In-Memory View Server** differ only by transport and ingress **Adapters**, not by query, storage, health, or subscription logic.

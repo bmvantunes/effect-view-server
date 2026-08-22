@@ -36,6 +36,42 @@ export type NumericFieldKey<Row> = Extract<
 
 export type FieldKey<Row> = Extract<keyof Row, string>;
 
+declare const completeRawSelectAuthority: unique symbol;
+
+export type LiveQueryViewportCompleteRawSelectForRow<Row> = readonly [
+  FieldKey<Row>,
+  ...Array<FieldKey<Row>>,
+] & {
+  readonly [completeRawSelectAuthority]: (_row: Row) => Row;
+};
+
+export type CompleteRawSelectWitnessKey = typeof completeRawSelectAuthority;
+
+type IsAny<Value> = 0 extends 1 & Value ? true : false;
+
+type IsUnknown<Value> = IsAny<Value> extends true ? false : unknown extends Value ? true : false;
+
+type IsExact<Left, Right> =
+  (<Value>() => Value extends Left ? 1 : 2) extends <Value>() => Value extends Right ? 1 : 2
+    ? (<Value>() => Value extends Right ? 1 : 2) extends <Value>() => Value extends Left ? 1 : 2
+      ? true
+      : false
+    : false;
+
+export type CompleteRawSelectWitnessRow<Select> = [Select] extends [
+  {
+    readonly [completeRawSelectAuthority]: (_row: infer Input) => infer Output;
+  },
+]
+  ? IsAny<Input> extends true
+    ? never
+    : IsUnknown<Input> extends true
+      ? never
+      : IsExact<Input, Output> extends true
+        ? Input
+        : never
+  : never;
+
 export type TopicDefinition<S extends RowSchema> = {
   readonly schema: S;
   readonly source?: SourceDefinitionAny | undefined;

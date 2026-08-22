@@ -134,6 +134,31 @@ export type UseSourceHealthHook<Topics extends TopicDefinitions> = <
 export const createViewServerReact = <const Topics extends TopicDefinitions>(
   config: ViewServerConfig<Topics>,
 ): ViewServerReactBindings<Topics> => {
+  function completeRawSelect<Topic extends Extract<keyof Topics, string>>(
+    topic: Topic,
+  ): UseLiveQueryViewportResult<Topics, Topic>["completeRawSelect"];
+  function completeRawSelect<Topic extends Extract<keyof Topics, string>>(
+    topic: Topic,
+  ): readonly string[] {
+    return Object.freeze(Object.keys(config.topics[topic]!.schema.fields));
+  }
+  const completeRawSelectByTopic = new Map<string, readonly string[]>();
+
+  function completeRawSelectForTopic<Topic extends Extract<keyof Topics, string>>(
+    topic: Topic,
+  ): UseLiveQueryViewportResult<Topics, Topic>["completeRawSelect"];
+  function completeRawSelectForTopic<Topic extends Extract<keyof Topics, string>>(
+    topic: Topic,
+  ): readonly string[] {
+    const existing = completeRawSelectByTopic.get(topic);
+    if (existing !== undefined) {
+      return existing;
+    }
+    const select = completeRawSelect(topic);
+    completeRawSelectByTopic.set(topic, select);
+    return select;
+  }
+
   const ClientContext = createContext<ViewServerLiveClient<Topics> | null>(null);
   const RemoteClientAtom = AtomReact.make((options: ViewServerClientOptions) =>
     Atom.make((get) =>
@@ -452,6 +477,7 @@ export const createViewServerReact = <const Topics extends TopicDefinitions>(
     const chrome = viewportState.read(result);
     return {
       viewport: binding.viewport,
+      completeRawSelect: completeRawSelectForTopic(topic),
       totalRows: chrome.totalRows,
       version: chrome.version,
       status: chrome.status,

@@ -53,7 +53,7 @@ type ExactSafeRow<Input, Output> =
             ? Input
             : never;
 
-type ExactSafeWitness<Witness> = Witness extends (_row: infer Input) => infer Output
+type ExactSafeWitness<Witness> = [Witness] extends [(_row: infer Input) => infer Output]
   ? IsExact<Witness, (_row: Input) => Output> extends true
     ? ExactSafeRow<Input, Output>
     : never

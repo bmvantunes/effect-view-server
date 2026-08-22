@@ -572,6 +572,20 @@ describe("public effect-view-server subpath type contracts", () => {
     >().toBeNever();
     expectTypeOf<
       LiveQueryViewportBaseRow<{
+        readonly "__effect-view-server/LiveQueryViewportBaseRow@v1"?:
+          | ((_row: typeof Order.Type) => typeof Order.Type)
+          | 0;
+      }>
+    >().toBeNever();
+    expectTypeOf<
+      LiveQueryViewportBaseRow<{
+        readonly "__effect-view-server/LiveQueryViewportBaseRow@v1"?:
+          | ((_row: typeof Order.Type) => typeof Order.Type)
+          | ((_row: typeof Position.Type) => typeof Position.Type);
+      }>
+    >().toBeNever();
+    expectTypeOf<
+      LiveQueryViewportBaseRow<{
         readonly replace: (...args: ReadonlyArray<never>) => unknown;
         readonly destroy: () => void;
       }>

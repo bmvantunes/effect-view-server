@@ -3,7 +3,11 @@ import type { DescMessage } from "@bufbuild/protobuf";
 import { EmptySchema, TimestampSchema, type Timestamp } from "@bufbuild/protobuf/wkt";
 import { ViewServerId, defineViewServerConfig, viewSchema } from "effect-view-server/config";
 import type { FalseExpression, LiveQueryResult, RowFromSchema } from "effect-view-server/config";
-import { createViewServerReact } from "effect-view-server/react";
+import {
+  createViewServerReact,
+  type LiveQueryViewport,
+  type LiveQueryViewportBaseRow,
+} from "effect-view-server/react";
 import { createInMemoryViewServerReact } from "effect-view-server/react/testing";
 import { runViewServerRuntime } from "effect-view-server/runtime";
 import type {
@@ -489,7 +493,12 @@ describe("public effect-view-server subpath type contracts", () => {
       }>
     >();
     const viewport = react.useLiveQueryViewport("orders");
-    viewport.viewport.replace({
+    expectTypeOf<LiveQueryViewportBaseRow<typeof viewport.viewport>>().toEqualTypeOf<
+      typeof Order.Type
+    >();
+    expectTypeOf<LiveQueryViewportBaseRow<any>>().toBeNever();
+    expectTypeOf<LiveQueryViewportBaseRow<unknown>>().toBeNever();
+    const rawGeneration = viewport.viewport.replace({
       window: { firstRow: 0, lastRow: 19 },
       query: {
         select: ["id", "price"],
@@ -508,6 +517,33 @@ describe("public effect-view-server subpath type contracts", () => {
         },
       },
     });
+    rawGeneration.setWindow({ firstRow: 20, lastRow: 39 });
+    viewport.viewport.replace({
+      window: { firstRow: 0, lastRow: 19 },
+      query: {
+        groupBy: ["status"],
+        aggregates: { rowCount: { aggFunc: "count" } },
+        where: [],
+        orderBy: [{ aggregate: "rowCount", direction: "desc" }],
+      },
+      sink: {
+        setRowCount: () => undefined,
+        setRowData: (rows) => {
+          expectTypeOf(rows[0]).toEqualTypeOf<
+            { readonly status: "open" | "closed"; readonly rowCount: bigint } | undefined
+          >();
+        },
+      },
+    });
+    expectTypeOf<LiveQueryViewportBaseRow<typeof viewport.viewport>>().toEqualTypeOf<
+      typeof Order.Type
+    >();
+    const requireOrdersViewport = (
+      _viewport: LiveQueryViewport<typeof viewServer.topics, "orders">,
+    ): void => undefined;
+    requireOrdersViewport(viewport.viewport);
+    // @ts-expect-error the emitted viewport witness rejects a different base Topic row.
+    requireOrdersViewport(publicProfileReact.useLiveQueryViewport("profiles").viewport);
     expectTypeOf(viewport).not.toHaveProperty("rows");
 
     const profileResult = publicProfileReact.useLiveQuery("profiles", {

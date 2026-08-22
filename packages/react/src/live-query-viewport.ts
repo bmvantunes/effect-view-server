@@ -29,6 +29,53 @@ import type * as Cause from "effect/Cause";
 import * as Atom from "effect/unstable/reactivity/Atom";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 
+declare const LiveQueryViewportBaseRowTypeId: unique symbol;
+
+type IsAny<Value> = 0 extends 1 & Value ? true : false;
+
+type IsUnknown<Value> = IsAny<Value> extends true ? false : unknown extends Value ? true : false;
+
+type ExactSafeRow<Input, Output> =
+  IsAny<Input> extends true
+    ? never
+    : IsUnknown<Input> extends true
+      ? never
+      : IsAny<Output> extends true
+        ? never
+        : IsUnknown<Output> extends true
+          ? never
+          : [Input] extends [Output]
+            ? [Output] extends [Input]
+              ? Input
+              : never
+            : never;
+
+type LiveQueryViewportWitnessRow<Topics, Topic> =
+  IsAny<Topics> extends true
+    ? never
+    : IsUnknown<Topics> extends true
+      ? never
+      : IsAny<Topic> extends true
+        ? never
+        : IsUnknown<Topic> extends true
+          ? never
+          : Topic extends keyof Topics
+            ? TopicRow<Topics, Topic>
+            : never;
+
+export type LiveQueryViewportBaseRow<Viewport> =
+  IsAny<Viewport> extends true
+    ? never
+    : IsUnknown<Viewport> extends true
+      ? never
+      : typeof LiveQueryViewportBaseRowTypeId extends keyof Viewport
+        ? Exclude<Viewport[typeof LiveQueryViewportBaseRowTypeId], undefined> extends (
+            _row: infer Input,
+          ) => infer Output
+          ? ExactSafeRow<Input, Output>
+          : never
+        : never;
+
 export type LiveQueryViewportWindow = {
   readonly firstRow: number;
   readonly lastRow: number;
@@ -133,6 +180,9 @@ export type LiveQueryViewport<
   Topics extends TopicDefinitions,
   Topic extends Extract<keyof Topics, string>,
 > = {
+  readonly [LiveQueryViewportBaseRowTypeId]?: (
+    _row: LiveQueryViewportWitnessRow<Topics, Topic>,
+  ) => LiveQueryViewportWitnessRow<Topics, Topic>;
   readonly replace: <
     const Query extends LiveQueryViewportQuery<TopicRow<Topics, NoInfer<Topic>>>,
     const Sink extends LiveQueryViewportSink<LiveQueryRow<TopicRow<Topics, Topic>, NoInfer<Query>>>,

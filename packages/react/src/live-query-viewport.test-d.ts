@@ -5,7 +5,12 @@ import { SourceAdapter } from "@effect-view-server/source-adapter";
 import { Schema } from "effect";
 import type * as BigDecimal from "effect/BigDecimal";
 import { createViewServerReact } from "./index";
-import { makeLiveQueryViewport } from "./live-query-viewport";
+import {
+  makeLiveQueryViewport,
+  makeLiveQueryViewportBinding,
+  type LiveQueryViewport,
+  type LiveQueryViewportBaseRow,
+} from "./live-query-viewport";
 
 const Order = Schema.Struct({
   id: ViewServerId,
@@ -18,6 +23,19 @@ const viewServer = defineViewServerConfig({
   topics: {
     orders: {
       schema: Order,
+    },
+  },
+});
+
+const Position = Schema.Struct({
+  id: ViewServerId,
+  quantity: Schema.Number,
+});
+
+const positionViewServer = defineViewServerConfig({
+  topics: {
+    positions: {
+      schema: Position,
     },
   },
 });
@@ -42,6 +60,7 @@ const leasedViewServer = defineViewServerConfig({
 });
 
 const react = createViewServerReact(viewServer);
+const positionReact = createViewServerReact(positionViewServer);
 const leasedReact = createViewServerReact(leasedViewServer);
 declare const liveClient: ViewServerLiveClient<typeof viewServer.topics>;
 const directViewport = makeLiveQueryViewport({
@@ -52,6 +71,58 @@ const directViewport = makeLiveQueryViewport({
 });
 
 describe("Live Query Viewport type contracts", () => {
+  it("exposes one invariant base Topic row independently of query results", () => {
+    const result = react.useLiveQueryViewport("orders");
+    const binding = makeLiveQueryViewportBinding<typeof viewServer.topics, "orders">();
+    type Viewport = typeof result.viewport;
+
+    expectTypeOf<LiveQueryViewportBaseRow<Viewport>>().toEqualTypeOf<typeof Order.Type>();
+    expectTypeOf<LiveQueryViewportBaseRow<typeof directViewport>>().toEqualTypeOf<
+      typeof Order.Type
+    >();
+    expectTypeOf<LiveQueryViewportBaseRow<typeof binding.viewport>>().toEqualTypeOf<
+      typeof Order.Type
+    >();
+
+    const rawGeneration = result.viewport.replace({
+      window: { firstRow: 0, lastRow: 9 },
+      query: { select: ["id"], where: [], orderBy: [] },
+      sink: { setRowCount: () => undefined, setRowData: () => undefined },
+    });
+    rawGeneration.setWindow({ firstRow: 10, lastRow: 19 });
+    result.viewport.replace({
+      window: { firstRow: 0, lastRow: 9 },
+      query: {
+        groupBy: ["status"],
+        aggregates: { rowCount: { aggFunc: "count" } },
+        where: [],
+        orderBy: [{ aggregate: "rowCount", direction: "desc" }],
+      },
+      sink: { setRowCount: () => undefined, setRowData: () => undefined },
+    });
+
+    expectTypeOf<LiveQueryViewportBaseRow<Viewport>>().toEqualTypeOf<typeof Order.Type>();
+  });
+
+  it("rejects mismatched base rows and unsafe extraction inputs", () => {
+    const orderViewport = react.useLiveQueryViewport("orders").viewport;
+    const positionViewport = positionReact.useLiveQueryViewport("positions").viewport;
+    const requireOrderViewport = (
+      _viewport: LiveQueryViewport<typeof viewServer.topics, "orders">,
+    ): void => undefined;
+
+    requireOrderViewport(orderViewport);
+    // @ts-expect-error the viewport base Topic row is invariant.
+    requireOrderViewport(positionViewport);
+
+    expectTypeOf<LiveQueryViewportBaseRow<typeof positionViewport>>().toEqualTypeOf<
+      typeof Position.Type
+    >();
+    expectTypeOf<LiveQueryViewportBaseRow<any>>().toBeNever();
+    expectTypeOf<LiveQueryViewportBaseRow<unknown>>().toBeNever();
+    expectTypeOf<LiveQueryViewportBaseRow<LiveQueryViewport<any, string>>>().toBeNever();
+  });
+
   it("binds the configured topic and exposes chrome without rows", () => {
     const result = react.useLiveQueryViewport("orders");
 

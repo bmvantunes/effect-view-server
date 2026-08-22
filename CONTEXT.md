@@ -289,7 +289,7 @@ The transport-neutral React integration Module for virtualized grids. It binds o
 _Avoid_: Live grid, grid query language, rows in React state, best-effort cancellation
 
 **Complete Raw Projection**:
-The frozen non-empty Raw Query selection owned by one configured Viewport Source. It contains every field from that source's Topic Schema in canonical configuration order and carries an invariant declaration-only field witness, so selecting it yields the exact Base Topic Row without a downstream schema copy. At runtime it remains an ordinary field-name array: query identity, transport, projection, authoritative keys, and window generations use the existing Raw Query path. Grouped Queries never consume it.
+The frozen non-empty Raw Query selection owned by one configured Viewport Source. It contains every field from that source's Topic Schema in canonical configuration order and carries an invariant declaration-only tuple witness, so selecting the complete tuple yields the exact Base Topic Row without a downstream schema copy. At runtime it remains an ordinary field-name array: query identity, transport, projection, authoritative keys, and window generations use the existing Raw Query path. Grouped Queries never consume it.
 _Avoid_: Select all flag, wildcard field, consumer field enumeration, cast projected row to base row
 
 **AG Grid Adapter**:

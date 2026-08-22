@@ -271,11 +271,23 @@ describe("useLiveQueryViewport", () => {
   it("treats narrow and complete projections as one semantic replacement each", async () => {
     const runtime = createInMemoryViewServer(viewServer);
     const observedSelects: Array<ReadonlyArray<string>> = [];
+    const window = { firstRow: 0, lastRow: 9 } as const;
+    const sinkIdentity = {
+      setRowCount: () => undefined,
+      setRowData: (
+        _rowsByIndex: { readonly [index: number]: unknown },
+        _rowKeysByIndex: { readonly [index: number]: string },
+      ) => undefined,
+    };
+    const narrowSink: LiveQueryViewportSink<{ readonly id: string }> = sinkIdentity;
+    const completeSink: LiveQueryViewportSink<TopicRow<typeof viewServer.topics, "orders">> =
+      sinkIdentity;
+    expect(Object.is(narrowSink, completeSink)).toBe(true);
     const client: ViewServerLiveClient<typeof viewServer.topics> = {
       ...runtime.liveClient,
       subscribe: adaptQuerySubstrate((_topic, query) =>
         Effect.gen(function* () {
-          observedSelects.push(query.select as ReadonlyArray<string>);
+          observedSelects.push(Schema.decodeUnknownSync(Schema.Array(Schema.String))(query.select));
           const events = yield* Queue.unbounded<ViewServerLiveEvent<object>>();
           return { events: Stream.fromQueue(events), close: () => Effect.void };
         }),
@@ -289,9 +301,9 @@ describe("useLiveQueryViewport", () => {
             type="button"
             onClick={() => {
               result.viewport.replace({
-                window: { firstRow: 0, lastRow: 9 },
+                window,
                 query: { select: ["id"], where: [], orderBy: [] },
-                sink: { setRowCount: () => undefined, setRowData: () => undefined },
+                sink: narrowSink,
               });
             }}
           >
@@ -301,9 +313,9 @@ describe("useLiveQueryViewport", () => {
             type="button"
             onClick={() => {
               result.viewport.replace({
-                window: { firstRow: 0, lastRow: 9 },
+                window,
                 query: { select: result.completeRawSelect, where: [], orderBy: [] },
-                sink: { setRowCount: () => undefined, setRowData: () => undefined },
+                sink: completeSink,
               });
             }}
           >
@@ -320,6 +332,10 @@ describe("useLiveQueryViewport", () => {
     );
     await view.getByRole("button", { name: "narrow projection" }).click();
     await expect.poll(() => observedSelects.length).toBe(1);
+    await view.getByRole("button", { name: "narrow projection" }).click();
+    await expect.poll(() => observedSelects.length).toBe(1);
+    await view.getByRole("button", { name: "complete projection" }).click();
+    await expect.poll(() => observedSelects.length).toBe(2);
     await view.getByRole("button", { name: "complete projection" }).click();
     await expect.poll(() => observedSelects.length).toBe(2);
     await view.getByRole("button", { name: "narrow projection" }).click();

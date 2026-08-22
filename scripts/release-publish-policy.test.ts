@@ -296,11 +296,17 @@ describe("release publish policy", () => {
     expect(
       publishedFileViolations([
         { relativePath: "dist/client.js", contents: "export const ok = true;" },
+        {
+          relativePath: "dist/compiler.js",
+          contents: 'const sourceMappingURL = "generated-at-runtime";',
+        },
         { relativePath: "README.md", contents: "# Public package\n" },
       ]),
     ).toStrictEqual([]);
     expect(stripSourceMapReference("export const ok = 1;\n//# sourceMappingURL=ok.js.map\n"))
       .toStrictEqual("export const ok = 1;\n");
+    expect(stripSourceMapReference('writer.writeComment(`//# sourceMappingURL=${url}`);'))
+      .toStrictEqual('writer.writeComment(`//# sourceMappingURL=${url}`);');
   });
 
   it("rejects source maps and private workspace references", () => {

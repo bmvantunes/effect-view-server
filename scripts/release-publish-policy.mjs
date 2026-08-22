@@ -114,7 +114,7 @@ export const compareReleaseTags = (left, right) => {
 };
 
 export const stripSourceMapReference = (contents) =>
-  contents.replace(/(?:\n)?\/\/# sourceMappingURL=.*(?:\n|$)/g, "\n");
+  contents.replace(/(?:^|\n)\/\/# sourceMappingURL=[^\r\n]*(?:\r?\n|$)/g, "\n");
 
 const hasInternalWorkspaceReference = (file) =>
   file.relativePath === "package.json"
@@ -154,7 +154,7 @@ export const sanitizePublicPackageJson = (packageJson) =>
 export const publishedFileViolations = (files) =>
   files.flatMap((file) => [
     ...(file.relativePath.endsWith(".map") ? [`${file.relativePath} is a source map`] : []),
-    ...(file.contents.includes("sourceMappingURL")
+    ...(/(?:^|\n)\/\/# sourceMappingURL=/.test(file.contents)
       ? [`${file.relativePath} references a source map`]
       : []),
     ...(hasInternalWorkspaceReference(file)

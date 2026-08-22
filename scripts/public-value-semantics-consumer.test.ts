@@ -283,11 +283,15 @@ describe("published value semantics consumer", () => {
             private: true,
             packageManager: "pnpm@11.9.0",
             dependencies: {
+              "@emnapi/core": "1.7.1",
+              "@emnapi/runtime": "1.7.1",
+              "@effect/vitest": "4.0.0-rc.111",
               effect: "4.0.0-rc.111",
               "effect-view-server": `file:${join(temporaryRoot, packResult.filename)}`,
               redis: "6.2.1",
               typescript: "7.0.2",
-              vite: "npm:@voidzero-dev/vite-plus-core@0.2.8",
+              vite: "8.0.0",
+              vitest: "4.1.10",
             },
           },
           null,
@@ -311,7 +315,7 @@ describe("published value semantics consumer", () => {
           "",
         ].join("\n"),
       );
-      execFileSync("pnpm", ["install", "--offline"], {
+      execFileSync("pnpm", ["install"], {
         cwd: strictConsumerDirectory,
         stdio: "inherit",
       });
@@ -325,6 +329,13 @@ describe("published value semantics consumer", () => {
         readFileSync(join(strictInstalledPackageDirectory, "package.json"), "utf8"),
       );
       expect(strictInstalledManifest.dependencies).not.toHaveProperty("typescript-compiler-api");
+      for (const path of packedPaths.filter(
+        (path) => path.endsWith(".js") || path.endsWith(".d.ts"),
+      )) {
+        expect(readFileSync(join(strictInstalledPackageDirectory, path), "utf8")).not.toContain(
+          "typescript-compiler-api",
+        );
+      }
       expect(strictInstalledManifest.peerDependencies).toMatchObject({
         effect: "4.0.0-rc.111",
         typescript: ">=7.0.0 <8.0.0",
@@ -343,6 +354,14 @@ describe("published value semantics consumer", () => {
       expect(
         readFileSync(join(strictInstalledPackageDirectory, "dist", "react.d.ts"), "utf8"),
       ).toContain("LiveQueryViewportBaseRow");
+      execFileSync(
+        process.execPath,
+        ["--input-type=module", "--eval", 'await import("effect-view-server/source-adapter/testing")'],
+        {
+          cwd: strictConsumerDirectory,
+          stdio: "inherit",
+        },
+      );
 
       extract({
         cwd: installedPackageDirectory,

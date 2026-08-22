@@ -305,13 +305,26 @@ describe("release publish policy", () => {
     ).toStrictEqual([]);
     expect(stripSourceMapReference("export const ok = 1;\n//# sourceMappingURL=ok.js.map\n"))
       .toStrictEqual("export const ok = 1;\n");
+    expect(stripSourceMapReference("//# sourceMappingURL=only.js.map")).toStrictEqual("");
+    expect(stripSourceMapReference("export {};//# sourceMappingURL=eof.js.map")).toStrictEqual(
+      "export {};",
+    );
     expect(
       stripSourceMapReference(
-        "export const first = 1;\n  //# sourceMappingURL=first.js.map\n\t/*# sourceMappingURL=second.js.map */\nexport const second = 2;\n",
+        "export const first = 1;\n  //# sourceMappingURL=first.js.map\n\t/*# sourceMappingURL=second.js.map */\nexport const second = 2;//@ sourceMappingURL=third.js.map\nexport const fourth = 4;/*@ sourceMappingURL=fourth.js.map */\n",
       ),
-    ).toStrictEqual("export const first = 1;\nexport const second = 2;\n");
+    ).toStrictEqual(
+      "export const first = 1;\nexport const second = 2;\nexport const fourth = 4;\n",
+    );
+    expect(
+      stripSourceMapReference(
+        "export const windows = true;//# sourceMappingURL=windows.js.map\r\nexport const next = true;\r\n",
+      ),
+    ).toStrictEqual("export const windows = true;\r\nexport const next = true;\r\n");
     expect(stripSourceMapReference('writer.writeComment(`//# sourceMappingURL=${url}`);'))
       .toStrictEqual('writer.writeComment(`//# sourceMappingURL=${url}`);');
+    expect(stripSourceMapReference('const embedded = "/*# sourceMappingURL=fake.js.map */";'))
+      .toStrictEqual('const embedded = "/*# sourceMappingURL=fake.js.map */";');
   });
 
   it("rejects source maps and private workspace references", () => {
@@ -327,6 +340,14 @@ describe("release publish policy", () => {
           relativePath: "dist/block.js",
           contents: "/*# sourceMappingURL=block.js.map */",
         },
+        {
+          relativePath: "dist/trailing-line.js",
+          contents: "export {};//@ sourceMappingURL=trailing-line.js.map",
+        },
+        {
+          relativePath: "dist/trailing-block.js",
+          contents: "export {};/*@ sourceMappingURL=trailing-block.js.map */",
+        },
         { relativePath: "package.json", contents: '"@effect-view-server/client":"0.0.0"' },
         {
           relativePath: "dist/client.d.ts",
@@ -338,6 +359,8 @@ describe("release publish policy", () => {
       "dist/client.js references a source map",
       "dist/indented.js references a source map",
       "dist/block.js references a source map",
+      "dist/trailing-line.js references a source map",
+      "dist/trailing-block.js references a source map",
       "package.json references @effect-view-server/",
       "dist/client.d.ts references @effect-view-server/",
     ]);

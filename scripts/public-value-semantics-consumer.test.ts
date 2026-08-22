@@ -329,6 +329,10 @@ describe("published value semantics consumer", () => {
         readFileSync(join(strictInstalledPackageDirectory, "package.json"), "utf8"),
       );
       expect(strictInstalledManifest.dependencies).not.toHaveProperty("typescript-compiler-api");
+      expect(strictInstalledManifest.dependencies).toMatchObject({
+        "@effect/platform-node": "4.0.0-rc.111",
+        "@effect/platform-node-shared": "4.0.0-rc.111",
+      });
       for (const path of packedPaths.filter(
         (path) => path.endsWith(".js") || path.endsWith(".d.ts"),
       )) {
@@ -347,6 +351,7 @@ describe("published value semantics consumer", () => {
       expect(strictLockfile).toContain(
         "@effect/platform-node-shared@4.0.0-rc.111(effect@4.0.0-rc.111)",
       );
+      expect(strictLockfile).not.toContain("@effect/platform-node-shared@4.0.0-rc.112");
       expect(strictLockfile).toMatch(
         /effect-view-server@file:[^\n]+\(effect@4\.0\.0-rc\.111\)[^\n]*\(typescript@7\.0\.2\)/,
       );

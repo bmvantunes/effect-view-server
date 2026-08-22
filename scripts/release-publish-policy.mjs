@@ -113,11 +113,29 @@ export const compareReleaseTags = (left, right) => {
   return left.tag.localeCompare(right.tag);
 };
 
-const sourceMapReferenceDirective =
-  /^[\t ]*(?:\/\/#\s*sourceMappingURL=[^\r\n]*|\/\*#\s*sourceMappingURL=[^*\r\n]*\*\/)[\t ]*(?:\r?\n|$)/m;
+const sourceMapReferenceDirectives = [
+  String.raw`(?:^[\t ]*)?\/\/[#@][\t ]*sourceMappingURL=[^\r\n"'\x60]*[\t ]*(?:\r?\n|$)`,
+  String.raw`(?:^[\t ]*)?\/\*[#@][\t ]*sourceMappingURL=[^*\r\n"'\x60]*\*\/[\t ]*(?:\r?\n|$)`,
+];
 
 export const stripSourceMapReference = (contents) =>
-  contents.replace(new RegExp(sourceMapReferenceDirective.source, "gm"), "");
+  sourceMapReferenceDirectives.reduce(
+    (sanitized, directive) =>
+      sanitized.replace(new RegExp(directive, "gm"), (match, offset) => {
+        const startsLine = offset === 0 || sanitized[offset - 1] === "\n";
+        if (startsLine) {
+          return "";
+        }
+        if (match.endsWith("\r\n")) {
+          return "\r\n";
+        }
+        return match.endsWith("\n") ? "\n" : "";
+      }),
+    contents,
+  );
+
+const hasSourceMapReference = (contents) =>
+  sourceMapReferenceDirectives.some((directive) => new RegExp(directive, "m").test(contents));
 
 const hasInternalWorkspaceReference = (file) =>
   file.relativePath === "package.json"
@@ -157,7 +175,7 @@ export const sanitizePublicPackageJson = (packageJson) =>
 export const publishedFileViolations = (files) =>
   files.flatMap((file) => [
     ...(file.relativePath.endsWith(".map") ? [`${file.relativePath} is a source map`] : []),
-    ...(sourceMapReferenceDirective.test(file.contents)
+    ...(hasSourceMapReference(file.contents)
       ? [`${file.relativePath} references a source map`]
       : []),
     ...(hasInternalWorkspaceReference(file)

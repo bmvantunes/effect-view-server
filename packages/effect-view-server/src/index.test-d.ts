@@ -16,6 +16,8 @@ import {
 import type {
   LiveQueryViewportBaseRow as PureLiveQueryViewportBaseRow,
   LiveQueryViewportCompleteRawSelect,
+  LiveQueryViewportRouteBy,
+  LiveQueryViewportWhere,
 } from "effect-view-server/react/viewport-base-row";
 import { createInMemoryViewServerReact } from "effect-view-server/react/testing";
 import { runViewServerRuntime } from "effect-view-server/runtime";
@@ -27,6 +29,7 @@ import type {
 } from "effect-view-server/runtime";
 import { createViewServerWebSocketServer } from "effect-view-server/server";
 import { createInMemoryViewServer } from "effect-view-server/in-memory";
+import { SourceAdapter } from "effect-view-server/source-adapter";
 import {
   decodeKafkaCodec,
   kafka as kafkaSourceAdapter,
@@ -90,6 +93,32 @@ const viewServer = defineViewServerConfig({
     },
   },
 });
+
+const viewportWitnessSourceAdapter = SourceAdapter.make({
+  identity: { name: "public-viewport-witness-source" },
+  failure: Schema.Never,
+  materialized: undefined,
+  leased: {
+    metrics: Schema.Struct({ observed: Schema.BigInt }),
+    rejectionLocation: Schema.Struct({ offset: Schema.BigInt }),
+    definitionOptions: SourceAdapter.definitionOptions<undefined>(),
+  },
+});
+
+const leasedViewportWitnessViewServer = defineViewServerConfig({
+  topics: {
+    orders: {
+      schema: Schema.Struct({
+        id: ViewServerId,
+        status: Schema.Literals(["open", "closed"]),
+        quantity: Schema.BigInt,
+      }),
+      source: viewportWitnessSourceAdapter.leasedSource(["status", "quantity"], undefined),
+    },
+  },
+});
+
+const leasedViewportWitnessReact = createViewServerReact(leasedViewportWitnessViewServer);
 
 const Position = Schema.Struct({
   id: ViewServerId,
@@ -539,6 +568,64 @@ describe("public effect-view-server subpath type contracts", () => {
     expectTypeOf<PureLiveQueryViewportBaseRow<typeof viewport.viewport>>().toEqualTypeOf<
       LiveQueryViewportBaseRow<typeof viewport.viewport>
     >();
+    expectTypeOf<LiveQueryViewportRouteBy<typeof viewport.viewport>>().toBeNever();
+    const materializedWhere: LiveQueryViewportWhere<typeof viewport.viewport> = [
+      { field: "price", type: "inRange", filter: 1, filterTo: 3 },
+      { field: "status", type: "equals", filter: "open" },
+    ];
+    const leasedWitnessViewport =
+      leasedViewportWitnessReact.useLiveQueryViewport("orders").viewport;
+    const exactRoute: LiveQueryViewportRouteBy<typeof leasedWitnessViewport> = {
+      status: "open",
+      quantity: 1n,
+    };
+    const exactWhere: LiveQueryViewportWhere<typeof leasedWitnessViewport> = [
+      { field: "quantity", type: "inRange", filter: 1n, filterTo: 3n },
+      { field: "status", type: "equals", filter: "closed" },
+    ];
+    // @ts-expect-error every leased Route Field is required.
+    const missingRoute: LiveQueryViewportRouteBy<typeof leasedWitnessViewport> = {
+      status: "open",
+    };
+    const extraRoute: LiveQueryViewportRouteBy<typeof leasedWitnessViewport> = {
+      status: "open",
+      quantity: 1n,
+      // @ts-expect-error extra Route Fields are rejected.
+      desk: "rates",
+    };
+    const wrongRoute: LiveQueryViewportRouteBy<typeof leasedWitnessViewport> = {
+      status: "open",
+      // @ts-expect-error Route values retain their exact domain.
+      quantity: 1,
+    };
+    const wrongWhere: LiveQueryViewportWhere<typeof leasedWitnessViewport> = [
+      // @ts-expect-error known Fields retain their exact operand domain.
+      { field: "quantity", type: "equals", filter: 1 },
+    ];
+    const mixedRange: LiveQueryViewportWhere<typeof leasedWitnessViewport> = [
+      // @ts-expect-error both range operands retain the same exact domain.
+      { field: "quantity", type: "inRange", filter: 1n, filterTo: 3 },
+    ];
+    const unknownWhere: LiveQueryViewportWhere<typeof leasedWitnessViewport> = [
+      // @ts-expect-error unknown source Fields are rejected.
+      { field: "desk", type: "equals", filter: "rates" },
+    ];
+    expectTypeOf<LiveQueryViewportRouteBy<any>>().toBeNever();
+    expectTypeOf<LiveQueryViewportRouteBy<unknown>>().toBeNever();
+    expectTypeOf<LiveQueryViewportWhere<any>>().toBeNever();
+    expectTypeOf<LiveQueryViewportWhere<unknown>>().toBeNever();
+    expectTypeOf<LiveQueryViewportRouteBy<{ readonly destroy: () => void }>>().toBeNever();
+    expectTypeOf<LiveQueryViewportWhere<{ readonly destroy: () => void }>>().toBeNever();
+    expectTypeOf<LiveQueryViewportWhere<LiveQueryViewport<any, string>>>().toBeNever();
+    void exactRoute;
+    void exactWhere;
+    void materializedWhere;
+    void missingRoute;
+    void extraRoute;
+    void wrongRoute;
+    void wrongWhere;
+    void mixedRange;
+    void unknownWhere;
     expectTypeOf(viewport.completeRawSelect).toEqualTypeOf<
       LiveQueryViewportCompleteRawSelect<typeof viewport.viewport>
     >();

@@ -268,15 +268,26 @@ declaration-only extractor from the pure subpath:
 import type {
   LiveQueryViewportBaseRow,
   LiveQueryViewportCompleteRawSelect,
+  LiveQueryViewportRouteBy,
+  LiveQueryViewportWhere,
 } from "effect-view-server/react/viewport-base-row";
 
 type BaseRow = LiveQueryViewportBaseRow<typeof viewport>;
 type CompleteSelect = LiveQueryViewportCompleteRawSelect<typeof viewport>;
+type RouteBy = LiveQueryViewportRouteBy<typeof viewport>;
+type ExternalWhere = LiveQueryViewportWhere<typeof viewport>;
 ```
 
-The subpath owns its helper declaration directly, imports neither React nor
+`RouteBy` is the exact required Route object for a leased source and `never` for
+a materialized source. `ExternalWhere` is the source-native Filter Expression
+collection for the complete Topic Row, including schema-admitted Filterable
+Scalar domains such as exact number, bigint, and BigDecimal numeric kinds. These witnesses let a
+structural adapter preserve source-owned query domains without importing or
+reconstructing View Server schemas.
+
+The subpath owns its helper declarations directly, imports neither React nor
 Effect, and has an empty runtime module. `effect-view-server/react` re-exports
-the same helper for compatibility; it does not maintain a second extractor.
+the same helpers for compatibility; it does not maintain a second extractor.
 
 ### Source Diagnostics
 

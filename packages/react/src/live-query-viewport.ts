@@ -6,7 +6,10 @@ import type {
   LiveQueryRow,
   OrderBy,
   RawQuery,
+  RouteFieldKey,
+  RouteFieldValue,
   TopicDefinitions,
+  TopicRouteBy,
   TopicRow,
   ViewServerRuntimeError,
   ViewServerTransportError,
@@ -48,6 +51,26 @@ type LiveQueryViewportWitnessRow<Topics, Topic> =
           : Topic extends keyof Topics
             ? TopicRow<Topics, Topic>
             : never;
+
+type LiveQueryViewportWitnessRouteBy<Topics, Topic> =
+  LiveQueryViewportWitnessRow<Topics, Topic> extends infer Row
+    ? [Row] extends [never]
+      ? never
+      : Topic extends keyof Topics
+        ? [TopicRouteBy<Topics, Topic>] extends [never]
+          ? undefined
+          : {
+              readonly [Field in Extract<
+                TopicRouteBy<Topics, Topic>,
+                RouteFieldKey<Row>
+              >]-?: RouteFieldValue<Row, Field>;
+            }
+        : never
+    : never;
+
+type LiveQueryViewportWitnessWhere<Topics, Topic> = Where<
+  LiveQueryViewportWitnessRow<Topics, Topic>
+>;
 
 const LiveQueryViewportSemanticKeyTypeId: unique symbol = Symbol("LiveQueryViewportSemanticKey");
 
@@ -172,6 +195,12 @@ export type LiveQueryViewport<
   readonly "__effect-view-server/LiveQueryViewportCompleteRawSelect@v1"?: LiveQueryViewportCompleteRawSelectForRow<
     LiveQueryViewportWitnessRow<Topics, Topic>
   >;
+  readonly "__effect-view-server/LiveQueryViewportRouteBy@v1"?: (
+    _routeBy: LiveQueryViewportWitnessRouteBy<Topics, Topic>,
+  ) => LiveQueryViewportWitnessRouteBy<Topics, Topic>;
+  readonly "__effect-view-server/LiveQueryViewportWhere@v1"?: (
+    _where: LiveQueryViewportWitnessWhere<Topics, Topic>,
+  ) => LiveQueryViewportWitnessWhere<Topics, Topic>;
   readonly semanticKey: <
     const Query extends LiveQueryViewportQuery<TopicRow<Topics, NoInfer<Topic>>>,
   >(

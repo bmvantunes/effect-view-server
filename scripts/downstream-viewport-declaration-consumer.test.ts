@@ -374,6 +374,24 @@ describe("downstream viewport declaration bundle", () => {
     expect(readFileSync(runtimePath, "utf8").trim()).toBe("export {};");
   });
 
+  it("keeps the packed semantic key opaque in emitted declarations", () => {
+    const installedPackage = join(downstreamDirectory, "node_modules", "effect-view-server");
+    const declarationClosure = collectDeclarationClosure(
+      join(installedPackage, "dist", "react.d.ts"),
+    );
+    const semanticDeclaration = declarationClosure
+      .map(({ source }) => source)
+      .find((source) => source.includes("type LiveQueryViewportSemanticKey ="));
+    expect(semanticDeclaration).toBeDefined();
+    const semanticKeyType = semanticDeclaration!.match(
+      /declare const LiveQueryViewportSemanticKeyTypeId: unique symbol;[\s\S]*?type LiveQueryViewportSemanticKey = \{[\s\S]*?\n\};/,
+    );
+    expect(semanticKeyType).not.toBeNull();
+    expect(semanticKeyType![0]).not.toMatch(
+      /\b(?:Effect|Schema|Normalized|Ast|AST|criteriaKey|canonical)\b/,
+    );
+  });
+
   it(
     "accepts a real matching viewport and rejects unsafe sources",
     () => {
@@ -421,7 +439,8 @@ describe("downstream viewport declaration bundle", () => {
           'import { ViewServerId, defineViewServerConfig } from "effect-view-server/config";',
           'import type { ExactRawQuery, LiveQueryRow } from "effect-view-server/config";',
           'import type * as PublicConfig from "effect-view-server/config";',
-          'import type { LiveQueryViewport, UseLiveQueryViewportResult } from "effect-view-server/react";',
+          'import type { LiveQueryViewport, LiveQueryViewportSemanticKey, UseLiveQueryViewportResult } from "effect-view-server/react";',
+          'import { SourceAdapter } from "effect-view-server/source-adapter";',
           'import { Schema } from "effect";',
           "",
           "const orderConfig = defineViewServerConfig({",
@@ -433,10 +452,29 @@ describe("downstream viewport declaration bundle", () => {
           "const optionalOrderConfig = defineViewServerConfig({",
           "  topics: { orders: { schema: Schema.Struct({ id: ViewServerId, total: Schema.Number, note: Schema.optionalKey(Schema.String) }) } },",
           "});",
+          "const sourceAdapter = SourceAdapter.make({",
+          '  identity: { name: "packed-viewport-source" },',
+          "  failure: Schema.Never,",
+          "  materialized: undefined,",
+          "  leased: {",
+          "    metrics: Schema.Struct({ observed: Schema.BigInt }),",
+          "    rejectionLocation: Schema.Struct({ offset: Schema.BigInt }),",
+          "    definitionOptions: SourceAdapter.definitionOptions<undefined>(),",
+          "  },",
+          "});",
+          "const leasedOrderConfig = defineViewServerConfig({",
+          "  topics: {",
+          "    orders: {",
+          "      schema: Schema.Struct({ id: ViewServerId, region: Schema.String }),",
+          '      source: sourceAdapter.leasedSource(["region"], undefined),',
+          "    },",
+          "  },",
+          "});",
           'declare const orders: LiveQueryViewport<typeof orderConfig.topics, "orders">;',
           'declare const orderSource: UseLiveQueryViewportResult<typeof orderConfig.topics, "orders">;',
           'declare const positions: LiveQueryViewport<typeof positionConfig.topics, "positions">;',
           'declare const optionalOrders: LiveQueryViewport<typeof optionalOrderConfig.topics, "orders">;',
+          'declare const leasedOrders: LiveQueryViewport<typeof leasedOrderConfig.topics, "orders">;',
           "type Order = typeof orderConfig.topics.orders.schema.Type;",
           "type RequireNever<Value extends never> = Value;",
           "// @ts-expect-error row-only complete-projection authority is not public.",
@@ -460,6 +498,16 @@ describe("downstream viewport declaration bundle", () => {
           "const exactForward: Order = extractedOrder;",
           "const exactBackward: BundledViewportBaseRow<typeof orders> = expectedOrder;",
           "const matching: ExactSource<Order, typeof orders> = orders;",
+          'const semanticKey: LiveQueryViewportSemanticKey = orders.semanticKey({ select: ["id"], where: [], orderBy: [] });',
+          'const equivalentSemanticKey = orders.semanticKey({ select: ["id"], where: [], orderBy: [] });',
+          "const semanticallyEqual = Object.is(semanticKey, equivalentSemanticKey);",
+          "// @ts-expect-error source-free viewport semantic identity forbids routeBy.",
+          'orders.semanticKey({ routeBy: { id: "order-1" }, select: ["id"], where: [], orderBy: [] });',
+          'leasedOrders.semanticKey({ routeBy: { region: "emea" }, select: ["id"], where: [], orderBy: [] });',
+          "// @ts-expect-error leased viewport semantic identity requires routeBy.",
+          'leasedOrders.semanticKey({ select: ["id"], where: [], orderBy: [] });',
+          "// @ts-expect-error leased viewport semantic identity requires the exact route fields.",
+          'leasedOrders.semanticKey({ routeBy: { region: "emea", desk: "rates" }, select: ["id"], where: [], orderBy: [] });',
           "const completeSelect: BundledViewportCompleteRawSelect<typeof orders> = orderSource.completeRawSelect;",
           'const completeField: "id" | "total" = completeSelect[0];',
           "const detachedCompleteField = [completeSelect[0]] as const;",
@@ -496,6 +544,8 @@ describe("downstream viewport declaration bundle", () => {
           "void exactForward;",
           "void exactBackward;",
           "void matching;",
+          "void semanticKey;",
+          "void semanticallyEqual;",
           "void completeSelect;",
           "void completeField;",
           "void detachedCompleteField;",

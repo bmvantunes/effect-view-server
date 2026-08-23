@@ -183,6 +183,22 @@ const regional = useLiveQuery("regionalOrders", {
 pushes sparse rows and their authoritative keys into a caller-owned sink while
 React retains only chrome such as status, version, and total rows.
 
+`viewport.semanticKey(query)` returns an opaque, source-owned identity for the same exact
+topic query accepted by `replace`. Compare keys with `Object.is` before replacing: fresh
+allocations with the same admitted meaning share one key for the viewport lifetime, including
+exact `bigint` and BigDecimal routes. The key has no public representation and must not be
+serialized or reconstructed. Compare only keys created by the same viewport; different
+viewports own independent identity domains.
+
+```tsx
+const nextKey = source.viewport.semanticKey(nextQuery);
+
+if (!Object.is(currentKey, nextKey)) {
+  currentKey = nextKey;
+  generation = source.viewport.replace({ window, query: nextQuery, sink });
+}
+```
+
 ```tsx
 const generation = useLiveQueryViewport("manualOrders").viewport.replace({
   window: { firstRow: 100, lastRow: 149 },

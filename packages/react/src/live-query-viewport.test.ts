@@ -20,7 +20,7 @@ import {
 } from "@effect-view-server/config";
 import { createInMemoryViewServer } from "@effect-view-server/in-memory";
 import { SourceAdapter } from "@effect-view-server/source-adapter";
-import { Deferred, Effect, Fiber, Option, Queue, Schema, Stream } from "effect";
+import { BigDecimal, Deferred, Effect, Fiber, Option, Queue, Result, Schema, Stream } from "effect";
 import { AtomRef } from "effect/unstable/reactivity";
 import {
   liveQueryViewportChromeFromAsyncResult,
@@ -52,6 +52,10 @@ const viewServer = defineViewServerConfig({
 });
 
 type Topics = typeof viewServer.topics;
+
+const unusedSemanticKey = () => {
+  throw new Error("Semantic identity is unused by this viewport test double.");
+};
 
 const makeBindingEntry = (
   viewport: LiveQueryViewport<Topics, "orders">,
@@ -95,6 +99,26 @@ const leasedViewServer = defineViewServerConfig({
 });
 
 type LeasedTopics = typeof leasedViewServer.topics;
+
+const ExactRoutedOrder = Schema.Struct({
+  id: ViewServerId,
+  amount: Schema.BigDecimal,
+  sequence: Schema.BigInt,
+  tier: Schema.Literals(["gold", "silver"]),
+  status: Schema.Literals(["open", "closed"]),
+  price: Schema.Number,
+});
+
+const exactRoutedViewServer = defineViewServerConfig({
+  topics: {
+    orders: {
+      schema: ExactRoutedOrder,
+      source: sourceAdapter.leasedSource(["amount", "sequence", "tier"], undefined),
+    },
+  },
+});
+
+type ExactRoutedTopics = typeof exactRoutedViewServer.topics;
 
 type ManualRequest = {
   readonly query: Readonly<Record<string, unknown>>;
@@ -253,7 +277,50 @@ describe("Live Query Viewport Module", () => {
   it("keeps the base-row witness declaration-only", () => {
     const binding = makeLiveQueryViewportBinding<Topics, "orders">();
 
-    expect(Reflect.ownKeys(binding.viewport)).toStrictEqual(["replace", "destroy"]);
+    expect(Reflect.ownKeys(binding.viewport)).toStrictEqual(["semanticKey", "replace", "destroy"]);
+  });
+
+  it("keeps semantic identity stable across binding activation and deactivation", () => {
+    const binding = makeLiveQueryViewportBinding<Topics, "orders">({ rowSchema: Order });
+    const query = { select: ["id"] as const, where: [], orderBy: [] };
+    const beforeActivation = binding.viewport.semanticKey(query);
+    const viewport: LiveQueryViewport<Topics, "orders"> = {
+      semanticKey: binding.viewport.semanticKey,
+      replace: () => ({ setWindow: () => undefined, release: () => undefined }),
+      destroy: () => undefined,
+    };
+    const entry = makeBindingEntry(viewport);
+
+    binding.install(entry);
+    const whileActive = binding.viewport.semanticKey({ ...query });
+    binding.uninstall(entry);
+    const whileInactive = binding.viewport.semanticKey({ ...query });
+
+    expect(Object.is(beforeActivation, whileActive)).toBe(true);
+    expect(Object.is(beforeActivation, whileInactive)).toBe(true);
+  });
+
+  it("delegates semantic identity when a binding does not own the row schema", () => {
+    const binding = makeLiveQueryViewportBinding<Topics, "orders">();
+    const query = { select: ["id"] as const, where: [], orderBy: [] };
+
+    expect(() => binding.viewport.semanticKey(query)).toThrowError(
+      "Live Query Viewport semantic identity is not installed.",
+    );
+
+    const owner = makeLiveQueryViewportBinding<Topics, "orders">({ rowSchema: Order });
+    const viewport: LiveQueryViewport<Topics, "orders"> = {
+      semanticKey: owner.viewport.semanticKey,
+      replace: () => ({ setWindow: () => undefined, release: () => undefined }),
+      destroy: () => undefined,
+    };
+    const entry = makeBindingEntry(viewport);
+    binding.install(entry);
+
+    expect(
+      Object.is(binding.viewport.semanticKey(query), owner.viewport.semanticKey({ ...query })),
+    ).toBe(true);
+    binding.uninstall(entry);
   });
 
   it("validates inclusive absolute windows", () => {
@@ -324,12 +391,14 @@ describe("Live Query Viewport Module", () => {
     let currentDestroys = 0;
     let currentReplaces = 0;
     const oldViewport = {
+      semanticKey: unusedSemanticKey,
       replace: () => generation,
       destroy: () => {
         oldDestroys += 1;
       },
     } satisfies LiveQueryViewport<Topics, "orders">;
     const currentViewport = {
+      semanticKey: unusedSemanticKey,
       replace: () => {
         currentReplaces += 1;
         return generation;
@@ -388,6 +457,7 @@ describe("Live Query Viewport Module", () => {
     const generation = { setWindow: () => undefined, release: () => undefined };
     const makeEntry = (label: string) => {
       const viewport = {
+        semanticKey: unusedSemanticKey,
         replace: () => {
           replacements.push(`${label}:public`);
           return generation;
@@ -407,6 +477,7 @@ describe("Live Query Viewport Module", () => {
     };
     const binding = makeLiveQueryViewportBinding<Topics, "orders">({
       deferDeactivation: true,
+      rowSchema: Order,
     });
     binding.install(makeEntry("old"));
     const queryTarget = {
@@ -547,10 +618,12 @@ describe("Live Query Viewport Module", () => {
     let replayedRequest: unknown;
     const generation = { setWindow: () => undefined, release: () => undefined };
     const oldViewport = {
+      semanticKey: unusedSemanticKey,
       replace: () => generation,
       destroy: () => undefined,
     } satisfies LiveQueryViewport<Topics, "orders">;
     const currentViewport = {
+      semanticKey: unusedSemanticKey,
       replace: (request) => {
         replayedRequest = request;
         return generation;
@@ -606,6 +679,7 @@ describe("Live Query Viewport Module", () => {
     });
     const makeEntry = (label: string) => {
       const viewport: LiveQueryViewport<Topics, "orders"> = {
+        semanticKey: unusedSemanticKey,
         replace: (request) => {
           events.push(`${label}:${request.window.firstRow}`);
           return { setWindow: () => undefined, release: () => undefined };
@@ -655,6 +729,7 @@ describe("Live Query Viewport Module", () => {
   it("keeps the active generation owned when caller field capture throws", () => {
     const events: Array<string> = [];
     const viewport: LiveQueryViewport<Topics, "orders"> = {
+      semanticKey: unusedSemanticKey,
       replace: () => ({
         setWindow: (window) => {
           events.push(`window:${window.firstRow}`);
@@ -721,6 +796,7 @@ describe("Live Query Viewport Module", () => {
     let reenterRelease = true;
     const makeEntry = (label: string) => {
       const viewport: LiveQueryViewport<Topics, "orders"> = {
+        semanticKey: unusedSemanticKey,
         replace: (request) => {
           events.push(`${label}:replace:${request.window.firstRow}`);
           return {
@@ -762,6 +838,7 @@ describe("Live Query Viewport Module", () => {
     });
     const makeEntry = (label: string) => {
       const viewport: LiveQueryViewport<Topics, "orders"> = {
+        semanticKey: unusedSemanticKey,
         replace: (request) => {
           events.push(`${label}:replace:${request.window.firstRow}`);
           return { setWindow: () => undefined, release: () => undefined };
@@ -814,6 +891,7 @@ describe("Live Query Viewport Module", () => {
     });
     const makeEntry = (label: string) => {
       const viewport: LiveQueryViewport<Topics, "orders"> = {
+        semanticKey: unusedSemanticKey,
         replace: (request) => {
           events.push(`${label}:replace:${request.window.firstRow}`);
           return { setWindow: () => undefined, release: () => undefined };
@@ -860,6 +938,7 @@ describe("Live Query Viewport Module", () => {
     });
     let reenterInitialInstall = true;
     const initialViewport: LiveQueryViewport<Topics, "orders"> = {
+      semanticKey: unusedSemanticKey,
       replace: (request) => {
         events.push(`initial:replace:${request.window.firstRow}`);
         if (reenterInitialInstall) {
@@ -890,6 +969,7 @@ describe("Live Query Viewport Module", () => {
 
     let reenterReplay = true;
     const replayViewport: LiveQueryViewport<Topics, "orders"> = {
+      semanticKey: unusedSemanticKey,
       replace: (request) => {
         events.push(`replay:replace:${request.window.firstRow}`);
         if (reenterReplay) {
@@ -912,6 +992,7 @@ describe("Live Query Viewport Module", () => {
     binding.install(makeBindingEntry(replayViewport));
     binding.flush();
     const finalViewport: LiveQueryViewport<Topics, "orders"> = {
+      semanticKey: unusedSemanticKey,
       replace: (request) => {
         events.push(`final:replace:${request.window.firstRow}`);
         return { setWindow: () => undefined, release: () => undefined };
@@ -934,6 +1015,7 @@ describe("Live Query Viewport Module", () => {
   it("abandons a query snapshot when reentrant destruction loses ownership", () => {
     const generation = { setWindow: () => undefined, release: () => undefined };
     const makeViewport = (replace: LiveQueryViewport<Topics, "orders">["replace"]) => ({
+      semanticKey: unusedSemanticKey,
       replace,
       destroy: () => undefined,
     });
@@ -966,6 +1048,7 @@ describe("Live Query Viewport Module", () => {
   it("abandons a query snapshot when a reentrant controller switch loses ownership", () => {
     const generation = { setWindow: () => undefined, release: () => undefined };
     const makeViewport = (replace: LiveQueryViewport<Topics, "orders">["replace"]) => ({
+      semanticKey: unusedSemanticKey,
       replace,
       destroy: () => undefined,
     });
@@ -998,6 +1081,7 @@ describe("Live Query Viewport Module", () => {
 
   it("abandons an installed generation when reentrant destruction loses ownership", () => {
     const makeViewport = (replace: LiveQueryViewport<Topics, "orders">["replace"]) => ({
+      semanticKey: unusedSemanticKey,
       replace,
       destroy: () => undefined,
     });
@@ -1032,6 +1116,7 @@ describe("Live Query Viewport Module", () => {
   it("abandons an installed generation when a reentrant controller switch loses ownership", () => {
     const generation = { setWindow: () => undefined, release: () => undefined };
     const makeViewport = (replace: LiveQueryViewport<Topics, "orders">["replace"]) => ({
+      semanticKey: unusedSemanticKey,
       replace,
       destroy: () => undefined,
     });
@@ -1075,6 +1160,7 @@ describe("Live Query Viewport Module", () => {
     const events: Array<string> = [];
     const makeEntry = (label: string) => {
       const viewport: LiveQueryViewport<Topics, "orders"> = {
+        semanticKey: unusedSemanticKey,
         replace: (request) => {
           events.push(`${label}:replace:${request.window.firstRow}-${request.window.lastRow}`);
           let released = false;
@@ -1334,6 +1420,245 @@ describe("Live Query Viewport Module", () => {
       expect(projected.rowData).toStrictEqual([{ 10: { id: "leased-order" } }]);
 
       yield* Fiber.interrupt(fiber);
+      viewport.destroy();
+      yield* base.close;
+    }),
+  );
+
+  it.effect("owns exact semantic query keys for the viewport lifetime", () =>
+    Effect.gen(function* () {
+      const base = createInMemoryViewServer(viewServer);
+      const requests: Array<ManualRequest> = [];
+      const health = AtomRef.make<ViewServerHealth<ExactRoutedTopics>>({
+        ...base.liveClient.health.value,
+        sources: { orders: [] },
+      });
+      const client = {
+        subscribe: adaptQuerySubstrate<ExactRoutedTopics>((_, query) =>
+          Effect.gen(function* () {
+            const events = yield* Queue.unbounded<ViewServerLiveEvent<object>>();
+            requests.push({ query, events, closes: 0 });
+            return { events: Stream.fromQueue(events), close: () => Effect.void };
+          }),
+        ),
+        subscribeHealthSummary: base.liveClient.subscribeHealthSummary,
+        subscribeHealth: base.liveClient.subscribeHealth,
+        subscribeSourceHealth: () => Effect.die("unused source health"),
+        health,
+        close: Effect.void,
+      } satisfies ViewServerLiveClient<ExactRoutedTopics>;
+      let currentStream: ViewportChromeStream = Stream.never;
+      const viewport = makeLiveQueryViewport<ExactRoutedTopics, "orders">({
+        client,
+        config: exactRoutedViewServer,
+        topic: "orders",
+        publish: (command) => {
+          currentStream = command.stream;
+        },
+      });
+      const query = () => ({
+        routeBy: {
+          amount: BigDecimal.make(150n, 2),
+          sequence: 12n,
+          tier: "gold" as const,
+        },
+        select: ["id"] as const,
+        where: [],
+        orderBy: [],
+      });
+
+      const firstKey = viewport.semanticKey(query());
+      const secondKey = viewport.semanticKey(query());
+      expect(Object.is(firstKey, secondKey)).toBe(true);
+      expect(Object.isFrozen(firstKey)).toBe(true);
+      expect(Object.keys(firstKey)).toStrictEqual([]);
+
+      const distinctKeys = [
+        viewport.semanticKey({
+          ...query(),
+          routeBy: { ...query().routeBy, amount: BigDecimal.make(15n, 1) },
+        }),
+        viewport.semanticKey({
+          ...query(),
+          routeBy: { ...query().routeBy, sequence: 13n },
+        }),
+        viewport.semanticKey({
+          ...query(),
+          routeBy: { ...query().routeBy, tier: "silver" },
+        }),
+        viewport.semanticKey({ ...query(), select: ["id", "price"] }),
+        viewport.semanticKey({
+          ...query(),
+          where: [{ field: "status", type: "equals", filter: "open" }],
+        }),
+        viewport.semanticKey({
+          ...query(),
+          orderBy: [{ field: "price", direction: "asc" }],
+        }),
+        viewport.semanticKey({
+          routeBy: query().routeBy,
+          groupBy: ["status"],
+          aggregates: { rowCount: { aggFunc: "count" } },
+          where: [],
+          orderBy: [],
+        }),
+        viewport.semanticKey({
+          routeBy: query().routeBy,
+          groupBy: ["status", "tier"],
+          aggregates: { rowCount: { aggFunc: "count" } },
+          where: [],
+          orderBy: [],
+        }),
+        viewport.semanticKey({
+          routeBy: query().routeBy,
+          groupBy: ["status"],
+          aggregates: { rowCount: { aggFunc: "count" } },
+          where: [],
+          orderBy: [{ aggregate: "rowCount", direction: "desc" }],
+        }),
+        viewport.semanticKey({
+          routeBy: query().routeBy,
+          groupBy: ["status"],
+          aggregates: { totalPrice: { aggFunc: "sum", field: "price" } },
+          where: [],
+          orderBy: [],
+        }),
+      ];
+      expect(new Set([firstKey, ...distinctKeys]).size).toBe(distinctKeys.length + 1);
+
+      let queryReflectionCount = 0;
+      const trackedQuery = new Proxy(query(), {
+        ownKeys: (target) => {
+          queryReflectionCount += 1;
+          return Reflect.ownKeys(target);
+        },
+      });
+      viewport.semanticKey(trackedQuery);
+      const reflectionCountAfterIdentity = queryReflectionCount;
+      const sink = makeSink<{ readonly id: string }>();
+      viewport.replace({
+        window: { firstRow: 0, lastRow: 9 },
+        query: trackedQuery,
+        sink: sink.sink,
+      });
+      const firstFiber = yield* currentStream.pipe(Stream.runDrain, Effect.forkChild);
+      yield* flush;
+      viewport.replace({
+        window: { firstRow: 0, lastRow: 9 },
+        query: query(),
+        sink: sink.sink,
+      });
+      yield* flush;
+      expect(requests).toHaveLength(1);
+      expect(queryReflectionCount).toBe(reflectionCountAfterIdentity);
+
+      const cyclicWhere: Array<unknown> = [];
+      cyclicWhere.push(cyclicWhere);
+      yield* Fiber.interrupt(firstFiber);
+      const cyclicQuery = {
+        ...query(),
+        where: cyclicWhere,
+      };
+      // @ts-expect-error runtime admission rejects cyclic filters.
+      const semanticFailure = Result.try(() => viewport.semanticKey(cyclicQuery));
+      expect(Result.isFailure(semanticFailure)).toBe(true);
+      viewport.replace({
+        window: { firstRow: 0, lastRow: 9 },
+        // @ts-expect-error runtime admission rejects cyclic filters.
+        query: cyclicQuery,
+        // @ts-expect-error invalid exact query makes the sink field uninhabitable.
+        sink: sink.sink,
+      });
+      const invalidChrome = Option.getOrThrow(yield* currentStream.pipe(Stream.runHead));
+      expect(invalidChrome).toStrictEqual({
+        totalRows: 0,
+        version: 0,
+        status: "error",
+        statusCode: "InvalidQuery",
+        message: liveQueryViewportFailureMessage(
+          Option.getOrThrow(Result.getFailure(semanticFailure)),
+        ),
+      });
+      expect(requests).toHaveLength(1);
+
+      const unsupportedQuery = {
+        ...query(),
+        where: [() => true],
+      };
+      // @ts-expect-error runtime admission rejects unsupported query values.
+      const unsupportedSemanticFailure = Result.try(() => viewport.semanticKey(unsupportedQuery));
+      expect(Result.isFailure(unsupportedSemanticFailure)).toBe(true);
+      viewport.replace({
+        window: { firstRow: 0, lastRow: 9 },
+        // @ts-expect-error runtime admission rejects unsupported query values.
+        query: unsupportedQuery,
+        // @ts-expect-error invalid exact query makes the sink field uninhabitable.
+        sink: sink.sink,
+      });
+      const unsupportedChrome = Option.getOrThrow(yield* currentStream.pipe(Stream.runHead));
+      expect(unsupportedChrome).toStrictEqual({
+        totalRows: 0,
+        version: 0,
+        status: "error",
+        statusCode: "InvalidQuery",
+        message: liveQueryViewportFailureMessage(
+          Option.getOrThrow(Result.getFailure(unsupportedSemanticFailure)),
+        ),
+      });
+      expect(requests).toHaveLength(1);
+
+      const invalidFilterQuery = {
+        ...query(),
+        where: [{ field: "status" as const, type: "equals" as const, filter: "missing" }],
+      };
+      const invalidFilterSemanticFailure = Result.try(() =>
+        Reflect.apply(viewport.semanticKey, viewport, [invalidFilterQuery]),
+      );
+      expect(Result.isFailure(invalidFilterSemanticFailure)).toBe(true);
+      Reflect.apply(viewport.replace, viewport, [
+        {
+          window: { firstRow: 0, lastRow: 9 },
+          query: invalidFilterQuery,
+          sink: sink.sink,
+        },
+      ]);
+      const invalidFilterChrome = Option.getOrThrow(yield* currentStream.pipe(Stream.runHead));
+      expect(invalidFilterChrome).toStrictEqual({
+        totalRows: 0,
+        version: 0,
+        status: "error",
+        statusCode: "InvalidQuery",
+        message: liveQueryViewportFailureMessage(
+          Option.getOrThrow(Result.getFailure(invalidFilterSemanticFailure)),
+        ),
+      });
+      expect(requests).toHaveLength(1);
+
+      const invalidRouteQuery = {
+        ...query(),
+        routeBy: { ...query().routeBy, tier: "bronze" as const },
+      };
+      // @ts-expect-error runtime admission rejects route values outside the configured schema.
+      const invalidRouteSemanticFailure = Result.try(() => viewport.semanticKey(invalidRouteQuery));
+      expect(Result.isFailure(invalidRouteSemanticFailure)).toBe(true);
+      viewport.replace({
+        window: { firstRow: 0, lastRow: 9 },
+        // @ts-expect-error runtime admission rejects route values outside the configured schema.
+        query: invalidRouteQuery,
+        sink: sink.sink,
+      });
+      const invalidRouteChrome = Option.getOrThrow(yield* currentStream.pipe(Stream.runHead));
+      expect(invalidRouteChrome).toStrictEqual({
+        totalRows: 0,
+        version: 0,
+        status: "error",
+        statusCode: "InvalidQuery",
+        message: liveQueryViewportFailureMessage(
+          Option.getOrThrow(Result.getFailure(invalidRouteSemanticFailure)),
+        ),
+      });
+      expect(requests).toHaveLength(1);
+
       viewport.destroy();
       yield* base.close;
     }),

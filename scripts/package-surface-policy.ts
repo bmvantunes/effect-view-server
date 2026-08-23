@@ -132,6 +132,10 @@ export const packageSurfacePolicy = {
           facade: { exportKey: "./client", sourceEntrypoint: "src/client.ts" },
         },
         {
+          exportKey: "./internal",
+          sourceEntrypoint: "src/internal.ts",
+        },
+        {
           exportKey: "./remote",
           sourceEntrypoint: "src/remote.ts",
           facade: {
@@ -422,7 +426,10 @@ export const packageSurfacePolicy = {
           "React bindings may use client transports but must not import runtime, server, engine, or in-memory outside the testing entrypoint.",
         relativeOverrides: [
           {
-            allowedWorkspaceSpecifiers: ["@effect-view-server/config/internal"],
+            allowedWorkspaceSpecifiers: [
+              "@effect-view-server/client/internal",
+              "@effect-view-server/config/internal",
+            ],
             relativePath: "src/live-query-viewport.ts",
           },
           {
@@ -579,6 +586,11 @@ export const packageSurfacePolicy = {
       ],
       required: ["stableQueryKey", "applyEvent"],
       workspaceSpecifier: "@effect-view-server/client",
+    },
+    {
+      forbidden: [],
+      required: ["admitViewServerLiveQuery"],
+      workspaceSpecifier: "@effect-view-server/client/internal",
     },
     {
       forbidden: [],

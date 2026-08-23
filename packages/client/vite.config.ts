@@ -21,7 +21,7 @@ export default defineConfig({
       },
     },
   },
-  pack: libraryPack(["src/index.ts", "src/remote.ts"]),
+  pack: libraryPack(["src/index.ts", "src/internal.ts", "src/remote.ts"]),
   lint: {
     options: strictLintOptions,
   },

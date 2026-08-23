@@ -38,6 +38,7 @@ import type {
   LiveQueryViewport,
   LiveQueryViewportGeneration,
   LiveQueryViewportSink,
+  UseLiveQueryViewportResult,
 } from "./live-query-viewport";
 
 const Order = Schema.Struct({
@@ -200,6 +201,118 @@ describe("useLiveQueryViewport", () => {
     ).toBe('<output role="status">loading:0</output>');
     const health = await Effect.runPromise(runtime.client.health());
     expect(health.engine.topics.orders.activeSubscriptions).toBe(0);
+    await Effect.runPromise(runtime.close);
+  });
+
+  it("keeps a topic-bound whole result live beside the primary viewport generation", async () => {
+    const runtime = createInMemoryViewServer(viewServer);
+    await Effect.runPromise(
+      runtime.client.publishMany("orders", [
+        { id: "order-1", status: "open", price: 10 },
+        { id: "order-2", status: "closed", price: 20 },
+      ]),
+    );
+    const grid = makeGridModel<typeof Order.Type>();
+    const facetQuery = {
+      groupBy: ["status"],
+      aggregates: { rowCount: { aggFunc: "count" } },
+      where: [],
+      orderBy: [{ field: "status", direction: "asc" }],
+    } as const;
+
+    function FacetStatus(
+      props: Readonly<{
+        source: UseLiveQueryViewportResult<typeof viewServer.topics, "orders">;
+      }>,
+    ) {
+      const facet = props.source.useWholeResult(facetQuery);
+      return (
+        <output role="status">
+          {facet.status}:
+          {facet.rows.map((row) => `${row.status}-${String(row.rowCount)}`).join("|")}
+        </output>
+      );
+    }
+
+    function ConcurrentWholeResult(props: Readonly<{ showFacet: boolean }>) {
+      const source = useLiveQueryViewport("orders");
+      useLayoutEffect(() => {
+        const generation = source.viewport.replace({
+          window: { firstRow: 0, lastRow: 1 },
+          query: {
+            select: source.completeRawSelect,
+            where: [],
+            orderBy: [{ field: "id", direction: "asc" }],
+          },
+          sink: grid.sink,
+        });
+        return generation.release;
+      }, [source.completeRawSelect, source.viewport]);
+      return <>{props.showFacet ? <FacetStatus source={source} /> : null}</>;
+    }
+
+    const view = await render(
+      <StrictMode>
+        <ViewServerClientProvider client={runtime.liveClient}>
+          <ConcurrentWholeResult showFacet />
+        </ViewServerClientProvider>
+      </StrictMode>,
+    );
+    await expect.element(view.getByRole("status")).toHaveTextContent("ready:closed-1|open-1");
+    await expect.poll(() => Object.keys(grid.rows()).length).toBe(2);
+    await expect
+      .poll(async () => {
+        const health = await Effect.runPromise(runtime.client.health());
+        return health.engine.topics.orders.activeSubscriptions;
+      })
+      .toBe(2);
+
+    await Effect.runPromise(
+      runtime.client.publish("orders", { id: "order-3", status: "open", price: 30 }),
+    );
+    await expect.element(view.getByRole("status")).toHaveTextContent("ready:closed-1|open-2");
+
+    await Effect.runPromise(
+      runtime.client.publish("orders", { id: "order-1", status: "closed", price: 40 }),
+    );
+    await expect.element(view.getByRole("status")).toHaveTextContent("ready:closed-2|open-1");
+
+    await view.rerender(
+      <StrictMode>
+        <ViewServerClientProvider client={runtime.liveClient}>
+          <ConcurrentWholeResult showFacet={false} />
+        </ViewServerClientProvider>
+      </StrictMode>,
+    );
+    await expect
+      .poll(async () => {
+        const health = await Effect.runPromise(runtime.client.health());
+        return health.engine.topics.orders.activeSubscriptions;
+      })
+      .toBe(1);
+
+    await view.rerender(
+      <StrictMode>
+        <ViewServerClientProvider client={runtime.liveClient}>
+          <ConcurrentWholeResult showFacet />
+        </ViewServerClientProvider>
+      </StrictMode>,
+    );
+    await expect.element(view.getByRole("status")).toHaveTextContent("ready:closed-2|open-1");
+    await expect
+      .poll(async () => {
+        const health = await Effect.runPromise(runtime.client.health());
+        return health.engine.topics.orders.activeSubscriptions;
+      })
+      .toBe(2);
+
+    await view.unmount();
+    await expect
+      .poll(async () => {
+        const health = await Effect.runPromise(runtime.client.health());
+        return health.engine.topics.orders.activeSubscriptions;
+      })
+      .toBe(0);
     await Effect.runPromise(runtime.close);
   });
 

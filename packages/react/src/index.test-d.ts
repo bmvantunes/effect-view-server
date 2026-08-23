@@ -355,6 +355,63 @@ describe("React type contracts", () => {
     leasedReact.useLiveQuery("orders", partialRouteQuery);
   });
 
+  it("binds exact whole-result queries to one Viewport Source topic", () => {
+    const source = leasedReact.useLiveQueryViewport("orders");
+    const facet = source.useWholeResult({
+      routeBy: { region: "UsÁ", status: "open" },
+      groupBy: ["status"],
+      aggregates: { rowCount: { aggFunc: "count" } },
+      where: [{ field: "customerId", type: "startsWith", filter: "customer-" }],
+      orderBy: [{ field: "status", direction: "asc" }],
+    });
+
+    expectTypeOf(facet).toEqualTypeOf<
+      LiveQueryResult<{
+        readonly status: "open" | "closed" | "cancelled";
+        readonly rowCount: bigint;
+      }>
+    >();
+
+    // @ts-expect-error the topic-bound whole-result query requires every Route Field.
+    source.useWholeResult({
+      routeBy: { region: "UsÁ" },
+      groupBy: ["status"],
+      aggregates: { rowCount: { aggFunc: "count" } },
+    });
+    // @ts-expect-error the topic-bound whole-result query rejects extra Route Fields.
+    source.useWholeResult({
+      routeBy: { region: "UsÁ", status: "open", desk: "north" },
+      groupBy: ["status"],
+      aggregates: { rowCount: { aggFunc: "count" } },
+    });
+    // @ts-expect-error the topic-bound whole-result query preserves exact Route values.
+    source.useWholeResult({
+      routeBy: { region: 1, status: "open" },
+      groupBy: ["status"],
+      aggregates: { rowCount: { aggFunc: "count" } },
+      where: [],
+      orderBy: [],
+    });
+    // @ts-expect-error a whole-result query cannot truncate with offset.
+    source.useWholeResult({
+      routeBy: { region: "UsÁ", status: "open" },
+      groupBy: ["status"],
+      aggregates: { rowCount: { aggFunc: "count" } },
+      where: [],
+      orderBy: [],
+      offset: 1,
+    });
+    // @ts-expect-error a whole-result query cannot truncate with limit.
+    source.useWholeResult({
+      routeBy: { region: "UsÁ", status: "open" },
+      groupBy: ["status"],
+      aggregates: { rowCount: { aggFunc: "count" } },
+      where: [],
+      orderBy: [],
+      limit: 10,
+    });
+  });
+
   it("preserves exact Materialized and Leased Source Health diagnostics", () => {
     const materialized = leasedReact.useSourceHealth({ topic: "allOrders" });
     const leased = leasedReact.useSourceHealth({

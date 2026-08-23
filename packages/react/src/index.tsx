@@ -60,6 +60,7 @@ import {
   makeLiveQueryViewportAtom,
   makeLiveQueryViewportBinding,
   admitLiveQueryViewportQuery,
+  type LiveQueryViewportQuery,
   type UseLiveQueryViewportHook,
   type UseLiveQueryViewportResult,
 } from "./live-query-viewport";
@@ -75,6 +76,7 @@ export type {
   LiveQueryViewportWindow,
   UseLiveQueryViewportHook,
   UseLiveQueryViewportResult,
+  UseLiveQueryViewportWholeResultHook,
 } from "./live-query-viewport";
 
 export type ViewServerReactBindings<Topics extends TopicDefinitions> = {
@@ -440,6 +442,13 @@ export const createViewServerReact = <const Topics extends TopicDefinitions>(
   function useLiveQueryViewport<Topic extends Extract<keyof Topics, string>>(
     topic: Topic,
   ): UseLiveQueryViewportResult<Topics, Topic> {
+    function useWholeResult<
+      const Query extends LiveQueryViewportQuery<TopicRow<Topics, NoInfer<Topic>>>,
+    >(
+      query: ExactLiveQueryInputForTopic<Topics, NoInfer<Topic>, Query>,
+    ): LiveQueryResult<LiveQueryRow<TopicRow<Topics, Topic>, Query>> {
+      return useLiveQuery(topic, query);
+    }
     const client = useClient();
     // Topic identity owns the public facade. Client changes replace the installed
     // controller below without invalidating viewport references held by the grid.
@@ -484,6 +493,7 @@ export const createViewServerReact = <const Topics extends TopicDefinitions>(
     const chrome = viewportState.read(result);
     return {
       viewport: binding.viewport,
+      useWholeResult,
       completeRawSelect: completeRawSelectForTopic(topic),
       totalRows: chrome.totalRows,
       version: chrome.version,

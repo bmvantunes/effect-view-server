@@ -183,6 +183,22 @@ const regional = useLiveQuery("regionalOrders", {
 pushes sparse rows and their authoritative keys into a caller-owned sink while
 React retains only chrome such as status, version, and total rows.
 
+The source's `useWholeResult(query)` hook opens an independently scoped live
+subscription for complete projections such as grouped facets. It preserves the
+topic's exact Feed Route contract, rejects `offset` and `limit`, never replaces
+the sparse viewport generation, and releases with the component that called it.
+
+```tsx
+const source = useLiveQueryViewport("regionalOrders");
+const statuses = source.useWholeResult({
+  routeBy: { region: "eu" },
+  groupBy: ["status"],
+  aggregates: { rowCount: { aggFunc: "count" } },
+  where: [],
+  orderBy: [{ field: "status", direction: "asc" }],
+});
+```
+
 `viewport.semanticKey(query)` returns an opaque, source-owned identity for the same exact
 topic query accepted by `replace`. Compare keys with `Object.is` before replacing: fresh
 allocations with the same admitted meaning share one key for the viewport lifetime, including

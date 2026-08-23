@@ -1526,6 +1526,16 @@ describe("Live Query Viewport Module", () => {
       ];
       expect(new Set([firstKey, ...distinctKeys]).size).toBe(distinctKeys.length + 1);
 
+      const mutableWhere: Array<{
+        readonly field: "status";
+        readonly type: "equals";
+        readonly filter: "open";
+      }> = [];
+      const mutableQuery = { ...query(), where: mutableWhere };
+      const keyBeforeMutation = viewport.semanticKey(mutableQuery);
+      mutableWhere.push({ field: "status", type: "equals", filter: "open" });
+      expect(Object.is(viewport.semanticKey(mutableQuery), keyBeforeMutation)).toBe(false);
+
       let queryReflectionCount = 0;
       const trackedQuery = new Proxy(query(), {
         ownKeys: (target) => {
@@ -1543,6 +1553,7 @@ describe("Live Query Viewport Module", () => {
       });
       const firstFiber = yield* currentStream.pipe(Stream.runDrain, Effect.forkChild);
       yield* flush;
+      expect(queryReflectionCount).toBe(reflectionCountAfterIdentity + 1);
       viewport.replace({
         window: { firstRow: 0, lastRow: 9 },
         query: query(),
@@ -1550,7 +1561,6 @@ describe("Live Query Viewport Module", () => {
       });
       yield* flush;
       expect(requests).toHaveLength(1);
-      expect(queryReflectionCount).toBe(reflectionCountAfterIdentity);
 
       const cyclicWhere: Array<unknown> = [];
       cyclicWhere.push(cyclicWhere);

@@ -453,14 +453,9 @@ const makeLiveQueryViewportSemanticIdentity = (
   rowSchema: Parameters<typeof stableQueryKeyForRowSchema>[1],
   admitQuery?: (query: object) => object,
 ) => {
-  const capturedByInput = new WeakMap<object, CapturedSemanticQuery<object>>();
   const semanticKeys = new Map<string, LiveQueryViewportSemanticKey>();
   function capture<Query extends object>(query: Query): CapturedSemanticQuery<Query>;
   function capture(query: object): CapturedSemanticQuery<object> {
-    const cached = capturedByInput.get(query);
-    if (cached !== undefined) {
-      return cached;
-    }
     const snapshot = snapshotViewServerQuery(query);
     const captured = admitQuery?.(snapshot) ?? snapshot;
     const criteriaKey = stableQueryKeyForRowSchema(captured, rowSchema);
@@ -470,8 +465,6 @@ const makeLiveQueryViewportSemanticIdentity = (
       semanticKeys.set(criteriaKey, semanticKey);
     }
     const result = Object.freeze({ criteriaKey, query: captured, semanticKey });
-    capturedByInput.set(query, result);
-    capturedByInput.set(captured, result);
     return result;
   }
   return { capture };

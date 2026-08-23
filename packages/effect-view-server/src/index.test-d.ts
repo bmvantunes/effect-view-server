@@ -11,6 +11,7 @@ import {
   createViewServerReact,
   type LiveQueryViewport,
   type LiveQueryViewportBaseRow,
+  type LiveQueryViewportSemanticKey,
 } from "effect-view-server/react";
 import type {
   LiveQueryViewportBaseRow as PureLiveQueryViewportBaseRow,
@@ -532,6 +533,9 @@ describe("public effect-view-server subpath type contracts", () => {
     expectTypeOf<LiveQueryViewportBaseRow<typeof viewport.viewport>>().toEqualTypeOf<
       typeof Order.Type
     >();
+    expectTypeOf(
+      viewport.viewport.semanticKey({ select: ["id"], where: [], orderBy: [] }),
+    ).toEqualTypeOf<LiveQueryViewportSemanticKey>();
     expectTypeOf<PureLiveQueryViewportBaseRow<typeof viewport.viewport>>().toEqualTypeOf<
       LiveQueryViewportBaseRow<typeof viewport.viewport>
     >();

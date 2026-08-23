@@ -565,6 +565,7 @@ describe("internal Seam checker", () => {
       name: "@effect-view-server/client",
       exports: {
         ".": { types: "./dist/index.d.ts", import: "./dist/index.js" },
+        "./internal": { types: "./dist/internal.d.ts", import: "./dist/internal.js" },
         "./remote": { types: "./dist/remote.d.ts", import: "../escape.js" },
         "./extra": { types: "./dist/extra.d.ts", import: "./dist/extra.js" },
       },
@@ -594,6 +595,7 @@ describe("internal Seam checker", () => {
           name: "@effect-view-server/client",
           exports: {
             ".": "./dist/index.js",
+            "./internal": { types: "./dist/internal.d.ts", import: "./dist/internal.js" },
             "./remote": {
               types: "./dist/wrong.d.ts",
               import: "./dist/remote.js",
@@ -614,6 +616,7 @@ describe("internal Seam checker", () => {
           name: "@effect-view-server/client",
           exports: {
             ".": { types: "./dist/index.d.ts", import: "./dist/index.js" },
+            "./internal": { types: "./dist/internal.d.ts", import: "./dist/internal.js" },
           },
         }),
         surface: clientSurface,
@@ -623,7 +626,7 @@ describe("internal Seam checker", () => {
       packageSurfaceViolationsForViteConfig({
         surface: clientSurface,
         viteConfigContents:
-          'export default { pack: libraryPack(["src/index.ts", "src/index.ts", "src/remote.ts"]) };',
+          'export default { pack: libraryPack(["src/index.ts", "src/index.ts", "src/internal.ts", "src/remote.ts"]) };',
       }),
     ).toStrictEqual(["packages/client/vite.config.ts repeats pack entry src/index.ts."]);
     expect(
@@ -642,13 +645,14 @@ describe("internal Seam checker", () => {
     ).toStrictEqual([
       "packages/client/vite.config.ts:1:16 does not declare package pack in its default config object.",
       "packages/client/vite.config.ts is missing pack entry src/index.ts.",
+      "packages/client/vite.config.ts is missing pack entry src/internal.ts.",
       "packages/client/vite.config.ts is missing pack entry src/remote.ts.",
     ]);
     expect(
       packageSurfaceViolationsForViteConfig({
         surface: clientSurface,
         viteConfigContents:
-          'export default { pack: libraryPack(["src/index.ts", "src/remote.mts", "../escape.cts"]) };',
+          'export default { pack: libraryPack(["src/index.ts", "src/internal.ts", "src/remote.mts", "../escape.cts"]) };',
       }),
     ).toStrictEqual([
       "packages/client/vite.config.ts is missing pack entry src/remote.ts.",
@@ -660,7 +664,7 @@ describe("internal Seam checker", () => {
         surface: clientSurface,
         viteConfigContents: [
           "export default {",
-          '  pack: libraryPack(["src/index.ts"]),',
+          '  pack: libraryPack(["src/index.ts", "src/internal.ts"]),',
           '  pack: libraryPack(["src/remote.ts"]),',
           "  ...override,",
           "};",
@@ -680,6 +684,7 @@ describe("internal Seam checker", () => {
     mkdirSync(join(root, "packages", "client", "src"), { recursive: true });
     mkdirSync(join(root, "packages", "config", "src"), { recursive: true });
     writeFileSync(join(root, "packages", "client", "src", "index.ts"), "");
+    writeFileSync(join(root, "packages", "client", "src", "internal.ts"), "");
     for (const sourceEntrypoint of configSurface.packEntrypoints.filter(
       (entrypoint) => entrypoint !== "src/internal.ts",
     )) {

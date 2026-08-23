@@ -9,6 +9,7 @@ import {
   makeLiveQueryViewport,
   makeLiveQueryViewportBinding,
   type LiveQueryViewport,
+  type LiveQueryViewportSemanticKey,
 } from "./live-query-viewport";
 
 const Order = Schema.Struct({
@@ -303,7 +304,16 @@ describe("Live Query Viewport type contracts", () => {
   });
 
   it("preserves leased route requirements", () => {
-    leasedReact.useLiveQueryViewport("orders").viewport.replace({
+    const leasedViewport = leasedReact.useLiveQueryViewport("orders").viewport;
+    const semanticKey = leasedViewport.semanticKey({
+      routeBy: { region: "usa" },
+      select: ["id"],
+      where: [],
+      orderBy: [],
+    });
+    expectTypeOf(semanticKey).toEqualTypeOf<LiveQueryViewportSemanticKey>();
+
+    leasedViewport.replace({
       window: { firstRow: 0, lastRow: 9 },
       query: {
         routeBy: { region: "usa" },
@@ -341,6 +351,22 @@ describe("Live Query Viewport type contracts", () => {
         orderBy: [],
       },
       sink: { setRowCount: () => undefined, setRowData: () => undefined },
+    });
+    // @ts-expect-error leased viewport semantic identity requires the exact route.
+    leasedViewport.semanticKey({ select: ["id"], where: [], orderBy: [] });
+    // @ts-expect-error leased viewport semantic identity rejects extra Route Fields.
+    leasedViewport.semanticKey({
+      routeBy: { region: "usa", desk: "equities" },
+      select: ["id"],
+      where: [],
+      orderBy: [],
+    });
+    // @ts-expect-error source-free viewport semantic identity forbids routeBy.
+    react.useLiveQueryViewport("orders").viewport.semanticKey({
+      routeBy: { region: "usa" },
+      select: ["id"],
+      where: [],
+      orderBy: [],
     });
   });
 

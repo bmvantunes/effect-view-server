@@ -17,8 +17,8 @@ import {
 describe("Package Surface Policy", () => {
   it("owns one unique inventory of private and consumer package specifiers", () => {
     expect(packageSurfacePolicy.packages).toHaveLength(15);
-    expect(workspacePackageSpecifiers).toHaveLength(33);
-    expect(new Set(workspacePackageSpecifiers).size).toBe(33);
+    expect(workspacePackageSpecifiers).toHaveLength(34);
+    expect(new Set(workspacePackageSpecifiers).size).toBe(34);
     expect(consumerPackageSpecifiers).toHaveLength(25);
     expect(new Set(consumerPackageSpecifiers).size).toBe(25);
     expect(consumerPackageSpecifiers).not.toContain("effect-view-server");
@@ -26,7 +26,7 @@ describe("Package Surface Policy", () => {
       expectedPackageSurfaces
         .filter((surface) => surface.directory !== "effect-view-server")
         .flatMap((surface) => surface.packEntrypoints),
-    ).toHaveLength(33);
+    ).toHaveLength(34);
     expect(packageSurfacePolicy.runtimeSymbols.map((policy) => policy.workspaceSpecifier).sort()).toStrictEqual(
       [...workspacePackageSpecifiers].sort(),
     );

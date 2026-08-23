@@ -59,6 +59,7 @@ import {
   makeLiveQueryViewport,
   makeLiveQueryViewportAtom,
   makeLiveQueryViewportBinding,
+  admitLiveQueryViewportQuery,
   type UseLiveQueryViewportHook,
   type UseLiveQueryViewportResult,
 } from "./live-query-viewport";
@@ -69,6 +70,7 @@ export type {
   LiveQueryViewportGroupedQuery,
   LiveQueryViewportQuery,
   LiveQueryViewportRawQuery,
+  LiveQueryViewportSemanticKey,
   LiveQueryViewportSink,
   LiveQueryViewportWindow,
   UseLiveQueryViewportHook,
@@ -444,7 +446,12 @@ export const createViewServerReact = <const Topics extends TopicDefinitions>(
     // Installation stays in insertion effect so descendant layout effects can connect
     // immediately; controller deactivation is flushed from layout effects instead.
     const binding = useMemo(
-      () => makeLiveQueryViewportBinding<Topics, Topic>({ deferDeactivation: true }),
+      () =>
+        makeLiveQueryViewportBinding<Topics, Topic>({
+          deferDeactivation: true,
+          rowSchema: config.topics[topic]!.schema,
+          admitQuery: (query) => admitLiveQueryViewportQuery(config, topic, query),
+        }),
       [topic],
     );
     const viewportState = useMemo(() => makeLiveQueryViewportAtom(), [client, topic]);

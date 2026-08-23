@@ -22,6 +22,7 @@ import {
   type ClientStateChange,
   type ViewServerLiveClient,
 } from "@effect-view-server/client";
+import { admitViewServerLiveQuery } from "@effect-view-server/client/internal";
 import {
   ignoreLoggedTypedFailuresPreserveNonTypedFailures,
   snapshotViewServerQuery,
@@ -47,6 +48,18 @@ type LiveQueryViewportWitnessRow<Topics, Topic> =
           : Topic extends keyof Topics
             ? TopicRow<Topics, Topic>
             : never;
+
+const LiveQueryViewportSemanticKeyTypeId: unique symbol = Symbol("LiveQueryViewportSemanticKey");
+
+/**
+ * An opaque semantic identity owned by one Live Query Viewport.
+ *
+ * Compare keys with `Object.is`. Their representation is private and remains valid for the
+ * lifetime of the viewport that created them.
+ */
+export type LiveQueryViewportSemanticKey = {
+  readonly [LiveQueryViewportSemanticKeyTypeId]: true;
+};
 
 export type LiveQueryViewportWindow = {
   readonly firstRow: number;
@@ -124,6 +137,7 @@ type LiveQueryViewportCapturedInput<
   | {
       readonly _tag: "Success";
       readonly request: LiveQueryViewportRequest<Topics, Topic, Query, Sink>;
+      readonly criteriaKey?: string;
     }
   | {
       readonly _tag: "Failure";
@@ -158,6 +172,11 @@ export type LiveQueryViewport<
   readonly "__effect-view-server/LiveQueryViewportCompleteRawSelect@v1"?: LiveQueryViewportCompleteRawSelectForRow<
     LiveQueryViewportWitnessRow<Topics, Topic>
   >;
+  readonly semanticKey: <
+    const Query extends LiveQueryViewportQuery<TopicRow<Topics, NoInfer<Topic>>>,
+  >(
+    query: ExactLiveQueryInputForTopic<Topics, NoInfer<Topic>, Query>,
+  ) => LiveQueryViewportSemanticKey;
   readonly replace: <
     const Query extends LiveQueryViewportQuery<TopicRow<Topics, NoInfer<Topic>>>,
     const Sink extends LiveQueryViewportSink<LiveQueryRow<TopicRow<Topics, Topic>, NoInfer<Query>>>,
@@ -407,8 +426,48 @@ type LiveQueryViewportBindingEntry<
   readonly deactivate: () => void;
 };
 
+export const admitLiveQueryViewportQuery = <
+  const Topics extends TopicDefinitions,
+  Topic extends Extract<keyof Topics, string>,
+>(
+  config: { readonly topics: Topics },
+  topic: Topic,
+  query: object,
+): object => {
+  return admitViewServerLiveQuery(config, topic, query);
+};
+
 type LiveQueryViewportBindingOptions = {
   readonly deferDeactivation?: boolean;
+  readonly rowSchema?: Parameters<typeof stableQueryKeyForRowSchema>[1];
+  readonly admitQuery?: (query: object) => object;
+};
+
+type CapturedSemanticQuery<Query> = {
+  readonly criteriaKey: string;
+  readonly query: Query;
+  readonly semanticKey: LiveQueryViewportSemanticKey;
+};
+
+const makeLiveQueryViewportSemanticIdentity = (
+  rowSchema: Parameters<typeof stableQueryKeyForRowSchema>[1],
+  admitQuery?: (query: object) => object,
+) => {
+  const semanticKeys = new Map<string, LiveQueryViewportSemanticKey>();
+  function capture<Query extends object>(query: Query): CapturedSemanticQuery<Query>;
+  function capture(query: object): CapturedSemanticQuery<object> {
+    const snapshot = snapshotViewServerQuery(query);
+    const captured = admitQuery?.(snapshot) ?? snapshot;
+    const criteriaKey = stableQueryKeyForRowSchema(captured, rowSchema);
+    let semanticKey = semanticKeys.get(criteriaKey);
+    if (semanticKey === undefined) {
+      semanticKey = Object.freeze({ [LiveQueryViewportSemanticKeyTypeId]: true });
+      semanticKeys.set(criteriaKey, semanticKey);
+    }
+    const result = Object.freeze({ criteriaKey, query: captured, semanticKey });
+    return result;
+  }
+  return { capture };
 };
 
 type LiveQueryViewportBindingGeneration<
@@ -440,9 +499,14 @@ const capturedInputFrom = <
       LiveQueryRow<TopicRow<Topics, Topic>, NoInfer<Query>>,
       NoInfer<Sink>
     >,
+  criteriaKey?: string,
 ): LiveQueryViewportCapturedInput<Topics, Topic, Query, Sink> =>
   Result.isSuccess(captured)
-    ? { _tag: "Success", request: { window, query: captured.success, sink } }
+    ? {
+        _tag: "Success",
+        request: { window, query: captured.success, sink },
+        ...(criteriaKey === undefined ? {} : { criteriaKey }),
+      }
     : { _tag: "Failure", request: { window, sink }, failure: captured.failure };
 
 export type LiveQueryViewportBinding<
@@ -466,6 +530,10 @@ export const makeLiveQueryViewportBinding = <
   let replaceInvocation = 0;
   let pendingDeactivations = new Set<LiveQueryViewportBindingEntry<Topics, Topic>>();
   let terminal = false;
+  const semanticIdentity =
+    options.rowSchema === undefined
+      ? undefined
+      : makeLiveQueryViewportSemanticIdentity(options.rowSchema, options.admitQuery);
   const deactivate = (entry: LiveQueryViewportBindingEntry<Topics, Topic>): void => {
     // React's insertion effect cannot synchronously notify a consumer sink.
     if (options.deferDeactivation === true) {
@@ -487,7 +555,12 @@ export const makeLiveQueryViewportBinding = <
     }
     const ownsReplacement = (): boolean =>
       invocation === replaceInvocation && !terminal && current === entry;
-    const capturedQuery = Result.try(() => snapshotViewServerQuery(request.query));
+    const semanticQuery = Result.try(() => semanticIdentity?.capture(request.query));
+    const capturedQuery = Result.flatMap(semanticQuery, (captured) =>
+      captured === undefined
+        ? Result.try(() => snapshotViewServerQuery(request.query))
+        : Result.succeed(captured.query),
+    );
     if (!ownsReplacement()) {
       return inactiveLiveQueryViewportGeneration;
     }
@@ -500,7 +573,12 @@ export const makeLiveQueryViewportBinding = <
     let installedEntry = entry;
     const install = (nextEntry: LiveQueryViewportBindingEntry<Topics, Topic>) =>
       nextEntry.replaceCaptured<Query, Sink>(
-        capturedInputFrom<Topics, Topic, Query, Sink>(capturedQuery, window, sink),
+        capturedInputFrom<Topics, Topic, Query, Sink>(
+          capturedQuery,
+          window,
+          sink,
+          Result.isSuccess(semanticQuery) ? semanticQuery.success?.criteriaKey : undefined,
+        ),
       );
     let installedGeneration = install(entry);
     if (!ownsReplacement()) {
@@ -558,6 +636,16 @@ export const makeLiveQueryViewportBinding = <
     return bindingGeneration.generation;
   };
   const viewport: LiveQueryViewport<Topics, Topic> = {
+    semanticKey: (query) => {
+      if (semanticIdentity !== undefined) {
+        return semanticIdentity.capture(query).semanticKey;
+      }
+      const entry = current;
+      if (entry === undefined) {
+        throw new TypeError("Live Query Viewport semantic identity is not installed.");
+      }
+      return entry.viewport.semanticKey(query);
+    },
     replace,
     destroy: () => {
       if (terminal) {
@@ -666,6 +754,10 @@ export const makeLiveQueryViewport = <
   let pendingCleanups: Array<SinkCleanup> = [];
   let latestPendingCleanupBySink = new Map<unknown, SinkCleanup>();
   let terminal = false;
+  const semanticIdentity = makeLiveQueryViewportSemanticIdentity(
+    input.config.topics[input.topic]!.schema,
+    (query) => admitLiveQueryViewportQuery(input.config, input.topic, query),
+  );
 
   const isCurrent = (request: number): boolean => active?.request === request;
 
@@ -953,8 +1045,7 @@ export const makeLiveQueryViewport = <
 
     const { request } = input_;
     const query = request.query;
-    const topicDefinition = input.config.topics[input.topic]!;
-    const criteriaKey = stableQueryKeyForRowSchema(query, topicDefinition.schema);
+    const criteriaKey = input_.criteriaKey ?? semanticIdentity.capture(query).criteriaKey;
     const window = validateLiveQueryViewportWindow(request.window);
     if (epoch !== mutationEpoch || terminal) {
       return inactiveLiveQueryViewportGeneration;
@@ -1007,9 +1098,15 @@ export const makeLiveQueryViewport = <
     }
     const invocation = ++replaceInvocation;
     const epoch = ++mutationEpoch;
-    const captured = Result.try(() => snapshotViewServerQuery(request.query));
+    const semanticQuery = Result.try(() => semanticIdentity.capture(request.query));
+    const captured = Result.map(semanticQuery, ({ query }) => query);
     return installCaptured<Query, Sink>(
-      capturedInputFrom<Topics, Topic, Query, Sink>(captured, request.window, request.sink),
+      capturedInputFrom<Topics, Topic, Query, Sink>(
+        captured,
+        request.window,
+        request.sink,
+        Result.isSuccess(semanticQuery) ? semanticQuery.success.criteriaKey : undefined,
+      ),
       invocation,
       epoch,
     );
@@ -1085,6 +1182,7 @@ export const makeLiveQueryViewport = <
   };
 
   return {
+    semanticKey: (query) => semanticIdentity.capture(query).semanticKey,
     replace,
     replaceCaptured,
     destroy: () => {

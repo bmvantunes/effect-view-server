@@ -98,6 +98,10 @@ complete configured Topic Row with the type-only
 `effect-view-server/react/viewport-base-row`. That pure subpath has an empty
 runtime module and declarations that import neither React nor Effect, so a
 Client-only adapter can bundle the helper without retaining View Server peers.
+The same subpath exposes `LiveQueryViewportRouteBy<typeof viewport>` and
+`LiveQueryViewportWhere<typeof viewport>` for the exact source-owned Feed Route
+and Filter Expression domains; materialized viewports extract `never` for the
+Route.
 The invariant witness does not change when a viewport selects a raw projection,
 produces grouped rows, moves its window, or replaces its source, and it adds no
 runtime property.

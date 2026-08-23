@@ -116,3 +116,89 @@ export type LiveQueryViewportCompleteRawSelect<Viewport> =
               >
             ? never
             : LiveQueryViewportCompleteRawSelectMembers<Viewport>;
+
+type LiveQueryViewportInvariantWitnessMember<Viewport, Key extends PropertyKey> =
+  Key extends Exclude<keyof Viewport, Key>
+    ? never
+    : Key extends keyof Viewport
+      ? ExactSafeWitness<Exclude<Viewport[Key], undefined>>
+      : never;
+
+type LiveQueryViewportInvariantWitnessMembers<
+  Viewport,
+  Key extends PropertyKey,
+> = Viewport extends unknown ? LiveQueryViewportInvariantWitnessMember<Viewport, Key> : never;
+
+type LiveQueryViewportInvariantWitnessMemberValidity<
+  Viewport,
+  Key extends PropertyKey,
+> = Viewport extends unknown
+  ? [LiveQueryViewportInvariantWitnessMember<Viewport, Key>] extends [never]
+    ? false
+    : true
+  : never;
+
+type LiveQueryViewportInvariantWitnessMemberUniformity<
+  Viewport,
+  Key extends PropertyKey,
+  Members,
+> = Viewport extends unknown
+  ? IsExact<LiveQueryViewportInvariantWitnessMember<Viewport, Key>, Members>
+  : never;
+
+type LiveQueryViewportInvariantWitness<Viewport, Key extends PropertyKey> =
+  IsAny<Viewport> extends true
+    ? never
+    : IsUnknown<Viewport> extends true
+      ? never
+      : false extends LiveQueryViewportInvariantWitnessMemberValidity<Viewport, Key>
+        ? never
+        : false extends LiveQueryViewportInvariantWitnessMemberUniformity<
+              Viewport,
+              Key,
+              LiveQueryViewportInvariantWitnessMembers<Viewport, Key>
+            >
+          ? never
+          : LiveQueryViewportInvariantWitnessMembers<Viewport, Key>;
+
+type LiveQueryViewportCorrelatedWitnessValue<Viewport, Key extends PropertyKey> = [
+  LiveQueryViewportBaseRow<Viewport>,
+] extends [never]
+  ? never
+  : LiveQueryViewportInvariantWitness<Viewport, Key> extends Readonly<{
+        row: infer Row;
+        value: infer Value;
+      }>
+    ? IsAny<Row> extends true
+      ? never
+      : IsUnknown<Row> extends true
+        ? never
+        : IsAny<Value> extends true
+          ? never
+          : IsUnknown<Value> extends true
+            ? never
+            : IsExact<Row, LiveQueryViewportBaseRow<Viewport>> extends true
+              ? Value
+              : never
+    : never;
+
+/** Exact source-owned Feed Route values for a Viewport Source, or `never` when materialized. */
+export type LiveQueryViewportRouteBy<Viewport> =
+  undefined extends LiveQueryViewportCorrelatedWitnessValue<
+    Viewport,
+    "__effect-view-server/LiveQueryViewportRouteBy@v1"
+  >
+    ? never
+    : Exclude<
+        LiveQueryViewportCorrelatedWitnessValue<
+          Viewport,
+          "__effect-view-server/LiveQueryViewportRouteBy@v1"
+        >,
+        undefined
+      >;
+
+/** Exact source-owned Filter Expressions for a Viewport Source's complete Topic Row. */
+export type LiveQueryViewportWhere<Viewport> = LiveQueryViewportCorrelatedWitnessValue<
+  Viewport,
+  "__effect-view-server/LiveQueryViewportWhere@v1"
+>;

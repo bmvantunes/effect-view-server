@@ -6,6 +6,8 @@ import type {
   LiveQueryRow,
   OrderBy,
   RawQuery,
+  RouteFieldKey,
+  RouteFieldValue,
   TopicDefinitions,
   TopicRow,
   ViewServerRuntimeError,
@@ -13,7 +15,10 @@ import type {
   Where,
 } from "@effect-view-server/config";
 // This type-only internal seam keeps complete-projection authority source-owned and erases at runtime.
-import type { LiveQueryViewportCompleteRawSelectForRow } from "@effect-view-server/config/internal";
+import type {
+  LiveQueryViewportCompleteRawSelectForRow,
+  TopicRouteByTuple,
+} from "@effect-view-server/config/internal";
 import {
   liveQueryFailureResult,
   makeIncrementalClientState,
@@ -48,6 +53,48 @@ type LiveQueryViewportWitnessRow<Topics, Topic> =
           : Topic extends keyof Topics
             ? TopicRow<Topics, Topic>
             : never;
+
+type LiveQueryViewportWitnessRouteFields<RouteTuple> =
+  RouteTuple extends ReadonlyArray<string> ? RouteTuple[number] : never;
+
+type LiveQueryViewportWitnessRouteAlternative<Row, RouteTuple, AllFields> =
+  RouteTuple extends ReadonlyArray<string>
+    ? {
+        readonly [Field in Extract<RouteTuple[number], RouteFieldKey<Row>>]-?: RouteFieldValue<
+          Row,
+          Field
+        >;
+      } & {
+        readonly [Field in Exclude<
+          Extract<AllFields, RouteFieldKey<Row>>,
+          RouteTuple[number]
+        >]?: never;
+      }
+    : RouteTuple extends undefined
+      ? undefined
+      : never;
+
+type LiveQueryViewportWitnessRouteBy<Topics, Topic> =
+  LiveQueryViewportWitnessRow<Topics, Topic> extends infer Row
+    ? [Row] extends [never]
+      ? never
+      : Topic extends keyof Topics
+        ? LiveQueryViewportWitnessRouteAlternative<
+            Row,
+            TopicRouteByTuple<Topics, Topic>,
+            LiveQueryViewportWitnessRouteFields<TopicRouteByTuple<Topics, Topic>>
+          >
+        : never
+    : never;
+
+type LiveQueryViewportWitnessWhere<Topics, Topic> = Where<
+  LiveQueryViewportWitnessRow<Topics, Topic>
+>;
+
+type LiveQueryViewportCorrelatedWitness<Row, Value> = Readonly<{
+  row: Row;
+  value: Value;
+}>;
 
 const LiveQueryViewportSemanticKeyTypeId: unique symbol = Symbol("LiveQueryViewportSemanticKey");
 
@@ -171,6 +218,24 @@ export type LiveQueryViewport<
   ) => LiveQueryViewportWitnessRow<Topics, Topic>;
   readonly "__effect-view-server/LiveQueryViewportCompleteRawSelect@v1"?: LiveQueryViewportCompleteRawSelectForRow<
     LiveQueryViewportWitnessRow<Topics, Topic>
+  >;
+  readonly "__effect-view-server/LiveQueryViewportRouteBy@v1"?: (
+    _witness: LiveQueryViewportCorrelatedWitness<
+      LiveQueryViewportWitnessRow<Topics, Topic>,
+      LiveQueryViewportWitnessRouteBy<Topics, Topic>
+    >,
+  ) => LiveQueryViewportCorrelatedWitness<
+    LiveQueryViewportWitnessRow<Topics, Topic>,
+    LiveQueryViewportWitnessRouteBy<Topics, Topic>
+  >;
+  readonly "__effect-view-server/LiveQueryViewportWhere@v1"?: (
+    _witness: LiveQueryViewportCorrelatedWitness<
+      LiveQueryViewportWitnessRow<Topics, Topic>,
+      LiveQueryViewportWitnessWhere<Topics, Topic>
+    >,
+  ) => LiveQueryViewportCorrelatedWitness<
+    LiveQueryViewportWitnessRow<Topics, Topic>,
+    LiveQueryViewportWitnessWhere<Topics, Topic>
   >;
   readonly semanticKey: <
     const Query extends LiveQueryViewportQuery<TopicRow<Topics, NoInfer<Topic>>>,

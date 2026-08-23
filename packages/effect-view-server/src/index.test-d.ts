@@ -97,7 +97,11 @@ const viewServer = defineViewServerConfig({
 const viewportWitnessSourceAdapter = SourceAdapter.make({
   identity: { name: "public-viewport-witness-source" },
   failure: Schema.Never,
-  materialized: undefined,
+  materialized: {
+    metrics: Schema.Struct({ observed: Schema.BigInt }),
+    rejectionLocation: Schema.Struct({ offset: Schema.BigInt }),
+    definitionOptions: SourceAdapter.definitionOptions<undefined>(),
+  },
   leased: {
     metrics: Schema.Struct({ observed: Schema.BigInt }),
     rejectionLocation: Schema.Struct({ offset: Schema.BigInt }),
@@ -119,6 +123,37 @@ const leasedViewportWitnessViewServer = defineViewServerConfig({
 });
 
 const leasedViewportWitnessReact = createViewServerReact(leasedViewportWitnessViewServer);
+
+declare const alternateViewportRoute: boolean;
+const alternateRouteWitnessViewServer = defineViewServerConfig({
+  topics: {
+    orders: {
+      schema: Schema.Struct({
+        id: ViewServerId,
+        region: Schema.String,
+        desk: Schema.String,
+      }),
+      source: alternateViewportRoute
+        ? viewportWitnessSourceAdapter.leasedSource(["region"], undefined)
+        : viewportWitnessSourceAdapter.leasedSource(["desk"], undefined),
+    },
+  },
+});
+const alternateRouteWitnessReact = createViewServerReact(alternateRouteWitnessViewServer);
+
+const leasedOrMaterializedWitnessViewServer = defineViewServerConfig({
+  topics: {
+    orders: {
+      schema: Schema.Struct({ id: ViewServerId, region: Schema.String }),
+      source: alternateViewportRoute
+        ? viewportWitnessSourceAdapter.leasedSource(["region"], undefined)
+        : viewportWitnessSourceAdapter.materializedSource(undefined),
+    },
+  },
+});
+const leasedOrMaterializedWitnessReact = createViewServerReact(
+  leasedOrMaterializedWitnessViewServer,
+);
 
 const Position = Schema.Struct({
   id: ViewServerId,
@@ -583,6 +618,24 @@ describe("public effect-view-server subpath type contracts", () => {
       { field: "quantity", type: "inRange", filter: 1n, filterTo: 3n },
       { field: "status", type: "equals", filter: "closed" },
     ];
+    const alternateRouteViewport =
+      alternateRouteWitnessReact.useLiveQueryViewport("orders").viewport;
+    const alternateRegionRoute: LiveQueryViewportRouteBy<typeof alternateRouteViewport> = {
+      region: "emea",
+    };
+    const alternateDeskRoute: LiveQueryViewportRouteBy<typeof alternateRouteViewport> = {
+      desk: "rates",
+    };
+    // @ts-expect-error alternate source definitions never require both Route tuples at once.
+    const combinedAlternateRoute: LiveQueryViewportRouteBy<typeof alternateRouteViewport> = {
+      region: "emea",
+      desk: "rates",
+    };
+    // @ts-expect-error every alternate leased source still requires one exact Route tuple.
+    const missingAlternateRoute: LiveQueryViewportRouteBy<typeof alternateRouteViewport> = {};
+    const leasedOrMaterializedViewport =
+      leasedOrMaterializedWitnessReact.useLiveQueryViewport("orders").viewport;
+    expectTypeOf<LiveQueryViewportRouteBy<typeof leasedOrMaterializedViewport>>().toBeNever();
     // @ts-expect-error every leased Route Field is required.
     const missingRoute: LiveQueryViewportRouteBy<typeof leasedWitnessViewport> = {
       status: "open",
@@ -617,8 +670,42 @@ describe("public effect-view-server subpath type contracts", () => {
     expectTypeOf<LiveQueryViewportRouteBy<{ readonly destroy: () => void }>>().toBeNever();
     expectTypeOf<LiveQueryViewportWhere<{ readonly destroy: () => void }>>().toBeNever();
     expectTypeOf<LiveQueryViewportWhere<LiveQueryViewport<any, string>>>().toBeNever();
+    type MaterializedOrderViewport = typeof viewport.viewport;
+    type LeasedOrderViewport = typeof leasedWitnessViewport;
+    type CrossRowRouteWitness = Pick<
+      MaterializedOrderViewport,
+      "__effect-view-server/LiveQueryViewportBaseRow@v1"
+    > &
+      Pick<LeasedOrderViewport, "__effect-view-server/LiveQueryViewportRouteBy@v1">;
+    type CrossRowWhereWitness = Pick<
+      MaterializedOrderViewport,
+      "__effect-view-server/LiveQueryViewportBaseRow@v1"
+    > &
+      Pick<LeasedOrderViewport, "__effect-view-server/LiveQueryViewportWhere@v1">;
+    expectTypeOf<LiveQueryViewportRouteBy<CrossRowRouteWitness>>().toBeNever();
+    expectTypeOf<LiveQueryViewportWhere<CrossRowWhereWitness>>().toBeNever();
+    expectTypeOf<
+      LiveQueryViewportRouteBy<MaterializedOrderViewport | LeasedOrderViewport>
+    >().toBeNever();
+    expectTypeOf<
+      LiveQueryViewportWhere<MaterializedOrderViewport | LeasedOrderViewport>
+    >().toBeNever();
+    expectTypeOf<
+      LiveQueryViewportRouteBy<
+        Readonly<Record<string, (_row: typeof Order.Type) => typeof Order.Type>>
+      >
+    >().toBeNever();
+    expectTypeOf<
+      LiveQueryViewportWhere<
+        Readonly<Record<string, (_row: typeof Order.Type) => typeof Order.Type>>
+      >
+    >().toBeNever();
     void exactRoute;
     void exactWhere;
+    void alternateRegionRoute;
+    void alternateDeskRoute;
+    void combinedAlternateRoute;
+    void missingAlternateRoute;
     void materializedWhere;
     void missingRoute;
     void extraRoute;

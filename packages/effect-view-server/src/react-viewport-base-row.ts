@@ -161,18 +161,44 @@ type LiveQueryViewportInvariantWitness<Viewport, Key extends PropertyKey> =
           ? never
           : LiveQueryViewportInvariantWitnessMembers<Viewport, Key>;
 
+type LiveQueryViewportCorrelatedWitnessValue<Viewport, Key extends PropertyKey> = [
+  LiveQueryViewportBaseRow<Viewport>,
+] extends [never]
+  ? never
+  : LiveQueryViewportInvariantWitness<Viewport, Key> extends Readonly<{
+        row: infer Row;
+        value: infer Value;
+      }>
+    ? IsAny<Row> extends true
+      ? never
+      : IsUnknown<Row> extends true
+        ? never
+        : IsAny<Value> extends true
+          ? never
+          : IsUnknown<Value> extends true
+            ? never
+            : IsExact<Row, LiveQueryViewportBaseRow<Viewport>> extends true
+              ? Value
+              : never
+    : never;
+
 /** Exact source-owned Feed Route values for a Viewport Source, or `never` when materialized. */
-export type LiveQueryViewportRouteBy<Viewport> = Exclude<
-  [LiveQueryViewportBaseRow<Viewport>] extends [never]
+export type LiveQueryViewportRouteBy<Viewport> =
+  undefined extends LiveQueryViewportCorrelatedWitnessValue<
+    Viewport,
+    "__effect-view-server/LiveQueryViewportRouteBy@v1"
+  >
     ? never
-    : LiveQueryViewportInvariantWitness<
-        Viewport,
-        "__effect-view-server/LiveQueryViewportRouteBy@v1"
-      >,
-  undefined
->;
+    : Exclude<
+        LiveQueryViewportCorrelatedWitnessValue<
+          Viewport,
+          "__effect-view-server/LiveQueryViewportRouteBy@v1"
+        >,
+        undefined
+      >;
 
 /** Exact source-owned Filter Expressions for a Viewport Source's complete Topic Row. */
-export type LiveQueryViewportWhere<Viewport> = [LiveQueryViewportBaseRow<Viewport>] extends [never]
-  ? never
-  : LiveQueryViewportInvariantWitness<Viewport, "__effect-view-server/LiveQueryViewportWhere@v1">;
+export type LiveQueryViewportWhere<Viewport> = LiveQueryViewportCorrelatedWitnessValue<
+  Viewport,
+  "__effect-view-server/LiveQueryViewportWhere@v1"
+>;

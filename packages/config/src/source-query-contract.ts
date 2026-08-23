@@ -36,7 +36,7 @@ type LeasedRouteTuple<Source> = Source extends unknown
     ? SourceDefinitionRouteFields<Source> extends NonEmptyRouteBy
       ? SourceDefinitionRouteFields<Source>
       : never
-    : never
+    : undefined
   : never;
 
 export type TopicRouteBy<Topics, Topic extends keyof Topics> = Topics[Topic] extends {
@@ -49,7 +49,7 @@ export type TopicRouteByTuple<Topics, Topic extends keyof Topics> = Topics[Topic
   readonly source: infer Source;
 }
   ? LeasedRouteTuple<Source>
-  : never;
+  : undefined;
 
 export type ExactLeasedRouteQuery<Row, RouteBy extends string, Query> = [RouteBy] extends [never]
   ? { readonly routeBy?: never }

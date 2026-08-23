@@ -277,6 +277,9 @@ describe("useLiveQueryViewport", () => {
     );
     await expect.element(view.getByRole("status")).toHaveTextContent("ready:closed-2|open-1");
 
+    await Effect.runPromise(runtime.client.delete("orders", "order-2"));
+    await expect.element(view.getByRole("status")).toHaveTextContent("ready:closed-1|open-1");
+
     await view.rerender(
       <StrictMode>
         <ViewServerClientProvider client={runtime.liveClient}>
@@ -298,7 +301,7 @@ describe("useLiveQueryViewport", () => {
         </ViewServerClientProvider>
       </StrictMode>,
     );
-    await expect.element(view.getByRole("status")).toHaveTextContent("ready:closed-2|open-1");
+    await expect.element(view.getByRole("status")).toHaveTextContent("ready:closed-1|open-1");
     await expect
       .poll(async () => {
         const health = await Effect.runPromise(runtime.client.health());

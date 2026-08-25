@@ -42,12 +42,12 @@ This is a single-context repository using root `CONTEXT.md` and `docs/adr/`. See
 
 ### Engineering workflows
 
-- Use `.agents/skills/effect-ts/SKILL.md` for all Effect-related implementation and review work. The repository tracks `.repos/effect` as a submodule for source-level Effect checks.
-- Use `.agents/skills/vitest/SKILL.md` for tests, coverage, fixtures, and especially type tests. For type-heavy packages, read `.agents/skills/vitest/references/advanced-type-testing.md` before reviewing or writing tests.
+- Use `.agents/skills/effect-ts/SKILL.md` for all Effect-related implementation and review work.
+- Use `.agents/skills/vitest/SKILL.md` for tests, coverage, fixtures, and especially type tests.
 - Use `.agents/skills/vite/SKILL.md` for `vite.config.ts`, build, library packaging, and Vite/Vite+ integration work.
 - Use `.agents/skills/improve-codebase-architecture/SKILL.md` for architecture reviews. Use its vocabulary: Module, Interface, Implementation, Depth, Seam, Adapter, Leverage, Locality.
 - Use `.agents/skills/grill-me/SKILL.md` when a design decision is ambiguous enough that implementation should pause and the decision tree should be clarified first.
-- Implementation agents should not skip Effect skill research for services, layers, streams, resource management, typed errors, or tests.
+- Implementation agents should not skip installed Effect guidance and source research for services, layers, streams, resource management, typed errors, or tests.
 - Type-level regressions are product bugs. Prefer dedicated `.test-d.ts` files or explicit `expectTypeOf` coverage for public generic APIs, plus negative `@ts-expect-error` assertions for rejected calls.
 - Review agents should explicitly state whether findings are blocking or non-blocking.
 
@@ -62,7 +62,7 @@ This is a single-context repository using root `CONTEXT.md` and `docs/adr/`. See
 
 ## Effect Rules
 
-- Use Effect v4 RC APIs. When in doubt, check `.repos/effect` first.
+- Use the workspace-pinned Effect v4 RC APIs and follow the version-matched research workflow in `.agents/skills/effect-ts/SKILL.md`.
 - Use `Effect.gen` for workflows.
 - Use named `Effect.fn` for reusable operations and important runtime paths so spans/diagnostics are useful.
 - Prefer plain `return value` for plain values inside `Effect.gen`; prefer `return yield* effect` when the final value comes from an Effect.

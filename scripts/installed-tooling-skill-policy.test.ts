@@ -17,6 +17,7 @@ describe("installed tooling skill policy", () => {
     const effectSkill = readRepositoryFile(".agents/skills/effect-ts/SKILL.md");
     const viteSkill = readRepositoryFile(".agents/skills/vite/SKILL.md");
     const vitestSkill = readRepositoryFile(".agents/skills/vitest/SKILL.md");
+    const activeEnginePlan = readRepositoryFile("plans/v2-column-live-view-engine-plan.md");
     const rootPackage = JSON.parse(readRepositoryFile("package.json"));
     const gitmodules = repositoryPathExists(".gitmodules")
       ? readRepositoryFile(".gitmodules")
@@ -41,6 +42,11 @@ describe("installed tooling skill policy", () => {
       installedVitestPackageExists: repositoryPathExists("node_modules/vitest"),
       installedEffectVitestPackageExists: repositoryPathExists("node_modules/@effect/vitest"),
       repositoryAvoidsVendoredCheckout: !agentInstructions.includes(".repos/effect"),
+      activePlanAvoidsVendoredCheckout: !activeEnginePlan.includes(".repos/effect"),
+      activePlanUsesInstalledEffectGuide: activeEnginePlan.includes(
+        "node_modules/effect/AGENTS.md",
+      ),
+      activePlanUsesInstalledEffectSource: activeEnginePlan.includes("node_modules/effect/src"),
       repositoryHasNoEffectUpgradeCommand: rootPackage.scripts["upgrade-effect"] === undefined,
       repositoryHasNoEffectSubmodule: !gitmodules.includes(".repos/effect"),
       repositoryHasNoVendoredEffectCheckout: !repositoryPathExists(".repos/effect"),
@@ -68,6 +74,9 @@ describe("installed tooling skill policy", () => {
       installedVitestPackageExists: true,
       installedEffectVitestPackageExists: true,
       repositoryAvoidsVendoredCheckout: true,
+      activePlanAvoidsVendoredCheckout: true,
+      activePlanUsesInstalledEffectGuide: true,
+      activePlanUsesInstalledEffectSource: true,
       repositoryHasNoEffectUpgradeCommand: true,
       repositoryHasNoEffectSubmodule: true,
       repositoryHasNoVendoredEffectCheckout: true,

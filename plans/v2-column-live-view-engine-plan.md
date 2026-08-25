@@ -45,7 +45,7 @@ This keeps initial snapshots and live deltas on one authoritative state model.
 
 ## Effect v4 Setup Rules
 
-Before implementing product code, set up Effect v4 RC and the Effect language service.
+Use the workspace-pinned Effect v4 RC and its installed guidance.
 
 Required package baseline:
 
@@ -56,18 +56,20 @@ Required package baseline:
 
 Repository references:
 
-- Vendored Effect source of truth: `.repos/effect`
-- Repository Effect workflow guide: `.agents/skills/effect-ts/SKILL.md`
+- Effect workflow: `.agents/skills/effect-ts/SKILL.md`
+- Installed Effect guidance: `node_modules/effect/AGENTS.md`
+- Installed Effect source: `node_modules/effect/src`
 
-If implementation patterns conflict, the workspace pin and `.repos/effect` are the source of truth.
+If implementation patterns conflict, the workspace pin and its installed package
+guidance and source are the source of truth.
 
 Useful source files:
 
-- `.repos/effect/packages/effect/src/Config.ts`
-- `.repos/effect/packages/effect/src/ConfigProvider.ts`
-- `.repos/effect/packages/effect/src/Clock.ts`
-- `.repos/effect/packages/effect/src/Metric.ts`
-- `.repos/effect/packages/vitest`
+- `node_modules/effect/src/Config.ts`
+- `node_modules/effect/src/ConfigProvider.ts`
+- `node_modules/effect/src/Clock.ts`
+- `node_modules/effect/src/Metric.ts`
+- `node_modules/@effect/vitest`
 
 Runtime configuration must use Effect Config:
 

@@ -67,9 +67,11 @@ const reportingOptionKeyRecord = {
   onDependenciesUpdate: true,
   onHeartbeat: true,
 } satisfies {
-  readonly [Key in keyof NonNullable<
-    ViewServerRuntimeOptions<ViewServerRuntimeTopicDefinitions>["reporting"]
-  >]-?: true;
+  readonly [
+    Key in keyof NonNullable<
+      ViewServerRuntimeOptions<ViewServerRuntimeTopicDefinitions>["reporting"]
+    >
+  ]-?: true;
 };
 
 const reportingOptionKeys = new Set<PropertyKey>(Reflect.ownKeys(reportingOptionKeyRecord));

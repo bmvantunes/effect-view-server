@@ -84,24 +84,28 @@ type TopicSourceHealthValue<
   : never;
 
 export type ViewServerSourceHealth<Topics extends object = Record<string, object>> = {
-  readonly [Topic in keyof Topics as Topics[Topic] extends {
-    readonly source: SourceDefinitionAny;
-  }
-    ? "materialized" extends SourceDefinitionLifecycle<TopicSourceDefinition<Topics, Topic>>
-      ? never
-      : Topic
-    : never]: TopicSourceHealthValue<
+  readonly [
+    Topic in keyof Topics as Topics[Topic] extends {
+      readonly source: SourceDefinitionAny;
+    }
+      ? "materialized" extends SourceDefinitionLifecycle<TopicSourceDefinition<Topics, Topic>>
+        ? never
+        : Topic
+      : never
+  ]: TopicSourceHealthValue<
     TopicSourceDefinition<Topics, Topic>,
     Extract<TopicRow<Topics, Topic>, object>
   >;
 } & {
-  readonly [Topic in keyof Topics as Topics[Topic] extends {
-    readonly source: SourceDefinitionAny;
-  }
-    ? "materialized" extends SourceDefinitionLifecycle<TopicSourceDefinition<Topics, Topic>>
-      ? Topic
+  readonly [
+    Topic in keyof Topics as Topics[Topic] extends {
+      readonly source: SourceDefinitionAny;
+    }
+      ? "materialized" extends SourceDefinitionLifecycle<TopicSourceDefinition<Topics, Topic>>
+        ? Topic
+        : never
       : never
-    : never]?: TopicSourceHealthValue<
+  ]?: TopicSourceHealthValue<
     TopicSourceDefinition<Topics, Topic>,
     Extract<TopicRow<Topics, Topic>, object>
   >;

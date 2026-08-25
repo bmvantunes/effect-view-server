@@ -1510,18 +1510,14 @@ export const makeSourceAdapter = <
     runtimeService,
     failure: (failure: AdapterFailure) =>
       Schema.decodeUnknownEffect(input.failure)(failure).pipe(
-        Effect.map(
-          (decoded): SourceExecutionFailure<AdapterFailure> => ({
-            _tag: "AdapterFailure",
-            failure: decoded,
-          }),
-        ),
-        Effect.mapError(
-          (): SourceRuntimeFailure => ({
-            _tag: "InvalidSourceDefinition",
-            message: "Adapter Failure does not satisfy the declared Source Adapter Schema.",
-          }),
-        ),
+        Effect.map((decoded): SourceExecutionFailure<AdapterFailure> => ({
+          _tag: "AdapterFailure",
+          failure: decoded,
+        })),
+        Effect.mapError((): SourceRuntimeFailure => ({
+          _tag: "InvalidSourceDefinition",
+          message: "Adapter Failure does not satisfy the declared Source Adapter Schema.",
+        })),
       ),
     materializedSource: (options, retryPolicy) => {
       if (materialized === undefined) {

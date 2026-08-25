@@ -110,14 +110,13 @@ export const JsonCodecTcpRecursiveNode: Schema.Codec<
   unknown,
   never,
   never
-> = Schema.suspend(
-  (): Schema.Codec<JsonCodecTcpRecursiveNode, unknown, never, never> =>
-    Schema.Struct({
-      id: Schema.BigIntFromString,
-      amount: Schema.BigDecimal,
-      runtimeQuantity: Schema.BigInt,
-      child: Schema.NullOr(JsonCodecTcpRecursiveNode),
-    }),
+> = Schema.suspend((): Schema.Codec<JsonCodecTcpRecursiveNode, unknown, never, never> =>
+  Schema.Struct({
+    id: Schema.BigIntFromString,
+    amount: Schema.BigDecimal,
+    runtimeQuantity: Schema.BigInt,
+    child: Schema.NullOr(JsonCodecTcpRecursiveNode),
+  }),
 );
 
 export const JsonCodecTcpRecursiveOrder = Schema.Struct({

@@ -13,19 +13,19 @@ catalog:
   "@bufbuild/protobuf": 2.13.0
   "@effect/platform-browser": 4.0.0-rc.111
   "@effect/platform-node": 4.0.0-rc.111
-  "@effect/tsgo": 0.36.4
+  "@effect/tsgo": 0.37.0
   "@effect/vitest": 4.0.0-rc.111
   "@types/node": 26.2.0
-  "@vitest/browser": 4.1.10
-  "@vitest/browser-playwright": 4.1.10
-  "@vitest/coverage-istanbul": 4.1.10
-  "@vitest/runner": 4.1.10
+  "@vitest/browser": 4.1.11
+  "@vitest/browser-playwright": 4.1.11
+  "@vitest/coverage-istanbul": 4.1.11
+  "@vitest/runner": 4.1.11
   effect: 4.0.0-rc.111
   typescript: 7.0.2
   typescript-compiler-api: npm:typescript@6.0.3
-  vite: npm:@voidzero-dev/vite-plus-core@0.2.8
-  vitest: 4.1.10
-  vite-plus: 0.2.8
+  vite: npm:@voidzero-dev/vite-plus-core@0.3.0
+  vitest: 4.1.11
+  vite-plus: 0.3.0
   "@effect/atom-react": 4.0.0-rc.111
   scheduler: 0.27.0
   vitest-browser-react: 2.2.0
@@ -44,13 +44,14 @@ catalog:
   markdown-it: ^15.0.0
   tar: ^7.5.22
   oxlint: 1.79.0
+  oxlint-tsgolint: 7.0.2001
   "@oxlint/plugins": 1.79.0
   oxc-transform-react: 0.145.0
 overrides:
   "@effect-view-server/grpc>effect-view-server": "workspace:0.0.6"
   "@effect-view-server/kafka>effect-view-server": "workspace:0.0.6"
   undici: 8.5.0
-  vite: npm:@voidzero-dev/vite-plus-core@0.2.8
+  vite: npm:@voidzero-dev/vite-plus-core@0.3.0
 peerDependencyRules:
   allowAny:
     - vite
@@ -80,3 +81,11 @@ minimumReleaseAgeExclude:
   - "@tanstack/start-server-core@1.169.26"
   - "@tanstack/start-storage-context@1.167.24"
   - "@vitejs/plugin-react@6.1.0"
+  - "@effect/tsgo-darwin-arm64@0.37.0"
+  - "@effect/tsgo-darwin-x64@0.37.0"
+  - "@effect/tsgo-linux-arm64@0.37.0"
+  - "@effect/tsgo-linux-arm@0.37.0"
+  - "@effect/tsgo-linux-x64@0.37.0"
+  - "@effect/tsgo-win32-arm64@0.37.0"
+  - "@effect/tsgo-win32-x64@0.37.0"
+  - "@effect/tsgo@0.37.0"

@@ -10,6 +10,13 @@ Docs are local at `node_modules/vite-plus/docs` or online at https://viteplus.de
 
 `vp <name>` runs a built-in command. `vp run <name>` runs a `package.json` script or a `vite.config.ts` task. Scripts cannot overwrite built-ins, so `vp dev` and `vp run dev` may do different things. Check `package.json` and `vite.config.ts` first, and run `vp run <name>` when the project defines a script or task with that name.
 
+## Tool Versions
+
+Run `vp toolchain` to show versions and relationships in the active Vite+
+release. Add a tool name to select part of the graph. For example, run
+`vp toolchain vite`. Use `--global` to ignore the local `vite-plus` package. Use
+`vp why <package>` to show the package-manager dependency graph.
+
 ## Review Checklist
 
 - [ ] Run `vp install` after pulling remote changes and before getting started.
@@ -65,7 +72,8 @@ This is a single-context repository using root `CONTEXT.md` and `docs/adr/`. See
 - Use typed errors. Do not throw for expected domain/runtime/transport failures.
 - Use schemas at external boundaries: RPC, HTTP, Kafka, TCP, browser storage, and package-public decoding.
 - Use `Clock` for time. Do not use `Date`, `new Date()`, or `Date.now()` in implementation code.
-- Strict Effect LSP must pass before a task is considered done.
+- Strict Effect Oxlint diagnostics must pass through `vp check` before a task is considered done.
+  Use `vp run -w audit:effect` to inspect the explicitly deferred migration rules.
 
 ## Type Safety Rules
 
@@ -216,7 +224,8 @@ These issues block merge until fixed or explicitly accepted by the user:
 
 - Run the relevant focused tests first, then the package-level tests.
 - Run `vp check`.
-- Run strict Effect diagnostics.
+- Run strict Effect Oxlint diagnostics through `vp check`; use `vp run -w audit:effect` when
+  auditing deferred migration rules.
 - Run type tests for changed public APIs.
 - Run browser tests across Chromium, Firefox, and WebKit for React changes.
 - Run package export checks when package exports change.

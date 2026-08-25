@@ -71,13 +71,15 @@ export type RejectArrayExtraKeys<
   Candidate extends ReadonlyArray<unknown>,
   AllowedKey extends PropertyKey = never,
 > = {
-  readonly [Key in
-    | Exclude<
-        keyof Candidate,
-        ArrayPrototypeKeys<Candidate> | TupleIndexKeys<Candidate> | AllowedKey
-      >
-    | OverriddenArrayPrototypeKey<Candidate>
-    | InvalidArrayLengthKey<Candidate>]: never;
+  readonly [
+    Key in
+      | Exclude<
+          keyof Candidate,
+          ArrayPrototypeKeys<Candidate> | TupleIndexKeys<Candidate> | AllowedKey
+        >
+      | OverriddenArrayPrototypeKey<Candidate>
+      | InvalidArrayLengthKey<Candidate>
+  ]: never;
 };
 
 type InvalidArrayMember<Candidate extends ReadonlyArray<unknown>> = Candidate extends unknown

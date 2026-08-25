@@ -728,10 +728,12 @@ type KafkaCompactionCustomCodecUnionKeys<Definition> = Definition extends unknow
   : never;
 
 type RejectKafkaCompactionCustomCodecExtraKeys<Definition> = {
-  readonly [Key in Exclude<
-    KafkaCompactionCustomCodecUnionKeys<Definition>,
-    keyof KafkaCompactionCustomCodecShape
-  >]: never;
+  readonly [
+    Key in Exclude<
+      KafkaCompactionCustomCodecUnionKeys<Definition>,
+      keyof KafkaCompactionCustomCodecShape
+    >
+  ]: never;
 };
 
 const compactionBytesCodec = (): KafkaCompactionBytesCodec =>

@@ -15,10 +15,9 @@ import type {
 } from "./model";
 
 export type SourceRouteForDefinition<Definition, Row extends object> = {
-  readonly [Field in Extract<
-    SourceDefinitionRouteFields<Definition>[number],
-    keyof Row
-  >]: Row[Field];
+  readonly [
+    Field in Extract<SourceDefinitionRouteFields<Definition>[number], keyof Row>
+  ]: Row[Field];
 };
 
 type SourceLifecycleForDefinition<Definition> = Definition extends {

@@ -202,3 +202,52 @@ export type LiveQueryViewportWhere<Viewport> = LiveQueryViewportCorrelatedWitnes
   Viewport,
   "__effect-view-server/LiveQueryViewportWhere@v1"
 >;
+
+type LiveQueryViewportQueryAuthorityValue<Viewport> = LiveQueryViewportCorrelatedWitnessValue<
+  Viewport,
+  "__effect-view-server/LiveQueryViewportQueryAuthority@v1"
+>;
+
+type LiveQueryViewportActualQueryAuthority<Viewport> =
+  Viewport extends Readonly<{
+    semanticKey: infer SemanticKey;
+    replace: infer Replace;
+  }>
+    ? Readonly<{ semanticKey: SemanticKey; replace: Replace }>
+    : never;
+
+type ExactLiveQueryViewportQueryAuthority<Viewport, Authority> =
+  Authority extends Readonly<{ semanticKey: infer SemanticKey; replace: infer Replace }>
+    ? IsAny<SemanticKey> extends true
+      ? never
+      : IsUnknown<SemanticKey> extends true
+        ? never
+        : IsAny<Replace> extends true
+          ? never
+          : IsUnknown<Replace> extends true
+            ? never
+            : IsExact<
+                  Authority,
+                  Readonly<{ semanticKey: SemanticKey; replace: Replace }>
+                > extends true
+              ? IsExact<Authority, LiveQueryViewportActualQueryAuthority<Viewport>> extends true
+                ? Authority
+                : never
+              : never
+    : never;
+
+/**
+ * Exact source-owned raw and grouped query authority for a Live Query Viewport.
+ *
+ * Resolves to `never` when either `semanticKey` or `replace` has been narrowed, widened, or
+ * detached from the source-owned Viewport contract.
+ */
+export type LiveQueryViewportQueryAuthority<Viewport> =
+  IsAny<Viewport> extends true
+    ? never
+    : IsUnknown<Viewport> extends true
+      ? never
+      : ExactLiveQueryViewportQueryAuthority<
+          Viewport,
+          LiveQueryViewportQueryAuthorityValue<Viewport>
+        >;

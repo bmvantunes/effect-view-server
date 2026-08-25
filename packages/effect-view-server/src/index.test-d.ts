@@ -16,6 +16,7 @@ import {
 import type {
   LiveQueryViewportBaseRow as PureLiveQueryViewportBaseRow,
   LiveQueryViewportCompleteRawSelect,
+  LiveQueryViewportQueryAuthority,
   LiveQueryViewportRouteBy,
   LiveQueryViewportWhere,
 } from "effect-view-server/react/viewport-base-row";
@@ -603,6 +604,12 @@ describe("public effect-view-server subpath type contracts", () => {
     expectTypeOf<PureLiveQueryViewportBaseRow<typeof viewport.viewport>>().toEqualTypeOf<
       LiveQueryViewportBaseRow<typeof viewport.viewport>
     >();
+    expectTypeOf<LiveQueryViewportQueryAuthority<typeof viewport.viewport>>().toEqualTypeOf<
+      Readonly<{
+        semanticKey: (typeof viewport.viewport)["semanticKey"];
+        replace: (typeof viewport.viewport)["replace"];
+      }>
+    >();
     expectTypeOf<LiveQueryViewportRouteBy<typeof viewport.viewport>>().toBeNever();
     const materializedWhere: LiveQueryViewportWhere<typeof viewport.viewport> = [
       { field: "price", type: "inRange", filter: 1, filterTo: 3 },
@@ -670,6 +677,59 @@ describe("public effect-view-server subpath type contracts", () => {
     expectTypeOf<LiveQueryViewportRouteBy<{ readonly destroy: () => void }>>().toBeNever();
     expectTypeOf<LiveQueryViewportWhere<{ readonly destroy: () => void }>>().toBeNever();
     expectTypeOf<LiveQueryViewportWhere<LiveQueryViewport<any, string>>>().toBeNever();
+    expectTypeOf<LiveQueryViewportQueryAuthority<any>>().toBeNever();
+    expectTypeOf<LiveQueryViewportQueryAuthority<unknown>>().toBeNever();
+    type RawOnlySemanticKeyViewport = Omit<MaterializedOrderViewport, "semanticKey"> & {
+      readonly semanticKey: (query: {
+        readonly select: readonly ["id"];
+        readonly where: readonly [];
+        readonly orderBy: readonly [];
+      }) => LiveQueryViewportSemanticKey;
+    };
+    type RawOnlyReplaceViewport = Omit<MaterializedOrderViewport, "replace"> & {
+      readonly replace: (
+        request: Readonly<{
+          window: Readonly<{ firstRow: number; lastRow: number }>;
+          query: Readonly<{
+            select: readonly ["id"];
+            where: readonly [];
+            orderBy: readonly [];
+          }>;
+          sink: Readonly<{
+            setRowCount: (count: number, keepRenderedRows?: boolean) => void;
+            setRowData: (
+              rowsByIndex: Readonly<{ [index: number]: Readonly<{ id: string }> }>,
+              rowKeysByIndex: Readonly<{ [index: number]: string }>,
+            ) => void;
+          }>;
+        }>,
+      ) => Readonly<{
+        setWindow: (window: Readonly<{ firstRow: number; lastRow: number }>) => void;
+        release: () => void;
+      }>;
+    };
+    type SameAuthorityTaggedUnion =
+      | (MaterializedOrderViewport & Readonly<{ source: "left" }>)
+      | (MaterializedOrderViewport & Readonly<{ source: "right" }>);
+    expectTypeOf<LiveQueryViewportQueryAuthority<SameAuthorityTaggedUnion>>().toEqualTypeOf<
+      Readonly<{
+        semanticKey: MaterializedOrderViewport["semanticKey"];
+        replace: MaterializedOrderViewport["replace"];
+      }>
+    >();
+    expectTypeOf<LiveQueryViewportQueryAuthority<RawOnlySemanticKeyViewport>>().toBeNever();
+    expectTypeOf<LiveQueryViewportQueryAuthority<RawOnlyReplaceViewport>>().toBeNever();
+    expectTypeOf<
+      LiveQueryViewportQueryAuthority<MaterializedOrderViewport | RawOnlySemanticKeyViewport>
+    >().toBeNever();
+    expectTypeOf<
+      LiveQueryViewportQueryAuthority<MaterializedOrderViewport | RawOnlyReplaceViewport>
+    >().toBeNever();
+    expectTypeOf<
+      LiveQueryViewportQueryAuthority<
+        MaterializedOrderViewport | Readonly<{ semanticKey: () => unknown; replace: () => unknown }>
+      >
+    >().toBeNever();
     type MaterializedOrderViewport = typeof viewport.viewport;
     type LeasedOrderViewport = typeof leasedWitnessViewport;
     type CrossRowRouteWitness = Pick<

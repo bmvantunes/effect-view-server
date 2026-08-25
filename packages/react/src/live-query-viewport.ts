@@ -155,6 +155,13 @@ export type LiveQueryViewportQuery<Row> =
   | LiveQueryViewportRawQuery<Row>
   | LiveQueryViewportGroupedQuery<Row>;
 
+type LiveQueryViewportSemanticKeyOperation<
+  Topics extends TopicDefinitions,
+  Topic extends Extract<keyof Topics, string>,
+> = <const Query extends LiveQueryViewportQuery<TopicRow<Topics, NoInfer<Topic>>>>(
+  query: ExactLiveQueryInputForTopic<Topics, NoInfer<Topic>, Query>,
+) => LiveQueryViewportSemanticKey;
+
 export type LiveQueryViewportGeneration = {
   readonly setWindow: (window: LiveQueryViewportWindow) => void;
   readonly release: () => void;
@@ -174,6 +181,24 @@ type LiveQueryViewportRequest<
       NoInfer<Sink>
     >;
 };
+
+type LiveQueryViewportReplaceOperation<
+  Topics extends TopicDefinitions,
+  Topic extends Extract<keyof Topics, string>,
+> = <
+  const Query extends LiveQueryViewportQuery<TopicRow<Topics, NoInfer<Topic>>>,
+  const Sink extends LiveQueryViewportSink<LiveQueryRow<TopicRow<Topics, Topic>, NoInfer<Query>>>,
+>(
+  request: LiveQueryViewportRequest<Topics, Topic, Query, Sink>,
+) => LiveQueryViewportGeneration;
+
+type LiveQueryViewportQueryAuthority<
+  Topics extends TopicDefinitions,
+  Topic extends Extract<keyof Topics, string>,
+> = Readonly<{
+  semanticKey: LiveQueryViewportSemanticKeyOperation<Topics, Topic>;
+  replace: LiveQueryViewportReplaceOperation<Topics, Topic>;
+}>;
 
 type LiveQueryViewportCapturedInput<
   Topics extends TopicDefinitions,
@@ -237,17 +262,17 @@ export type LiveQueryViewport<
     LiveQueryViewportWitnessRow<Topics, Topic>,
     LiveQueryViewportWitnessWhere<Topics, Topic>
   >;
-  readonly semanticKey: <
-    const Query extends LiveQueryViewportQuery<TopicRow<Topics, NoInfer<Topic>>>,
-  >(
-    query: ExactLiveQueryInputForTopic<Topics, NoInfer<Topic>, Query>,
-  ) => LiveQueryViewportSemanticKey;
-  readonly replace: <
-    const Query extends LiveQueryViewportQuery<TopicRow<Topics, NoInfer<Topic>>>,
-    const Sink extends LiveQueryViewportSink<LiveQueryRow<TopicRow<Topics, Topic>, NoInfer<Query>>>,
-  >(
-    request: LiveQueryViewportRequest<Topics, Topic, Query, Sink>,
-  ) => LiveQueryViewportGeneration;
+  readonly "__effect-view-server/LiveQueryViewportQueryAuthority@v1"?: (
+    _witness: LiveQueryViewportCorrelatedWitness<
+      LiveQueryViewportWitnessRow<Topics, Topic>,
+      LiveQueryViewportQueryAuthority<Topics, Topic>
+    >,
+  ) => LiveQueryViewportCorrelatedWitness<
+    LiveQueryViewportWitnessRow<Topics, Topic>,
+    LiveQueryViewportQueryAuthority<Topics, Topic>
+  >;
+  readonly semanticKey: LiveQueryViewportSemanticKeyOperation<Topics, Topic>;
+  readonly replace: LiveQueryViewportReplaceOperation<Topics, Topic>;
   readonly destroy: () => void;
 };
 

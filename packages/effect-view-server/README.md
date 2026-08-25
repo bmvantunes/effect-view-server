@@ -102,6 +102,9 @@ The same subpath exposes `LiveQueryViewportRouteBy<typeof viewport>` and
 `LiveQueryViewportWhere<typeof viewport>` for the exact source-owned Feed Route
 and Filter Expression domains; materialized viewports extract `never` for the
 Route.
+It also exposes `LiveQueryViewportQueryAuthority<typeof viewport>`, which yields
+the exact source-owned `{ semanticKey, replace }` pair for raw and grouped
+queries or `never` after either operation is narrowed, widened, or detached.
 The invariant witness does not change when a viewport selects a raw projection,
 produces grouped rows, moves its window, or replaces its source, and it adds no
 runtime property.

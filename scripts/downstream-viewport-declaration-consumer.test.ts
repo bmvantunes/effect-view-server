@@ -231,10 +231,11 @@ describe("downstream viewport declaration bundle", () => {
     writeFileSync(
       join(downstreamDirectory, "src", "index.ts"),
       [
-        'import type { LiveQueryViewportBaseRow, LiveQueryViewportCompleteRawSelect, LiveQueryViewportRouteBy, LiveQueryViewportWhere } from "effect-view-server/react/viewport-base-row";',
+        'import type { LiveQueryViewportBaseRow, LiveQueryViewportCompleteRawSelect, LiveQueryViewportQueryAuthority, LiveQueryViewportRouteBy, LiveQueryViewportWhere } from "effect-view-server/react/viewport-base-row";',
         "",
         "export type BundledViewportBaseRow<Viewport> = LiveQueryViewportBaseRow<Viewport>;",
         "export type BundledViewportCompleteRawSelect<Viewport> = LiveQueryViewportCompleteRawSelect<Viewport>;",
+        "export type BundledViewportQueryAuthority<Viewport> = LiveQueryViewportQueryAuthority<Viewport>;",
         "export type BundledViewportRouteBy<Viewport> = LiveQueryViewportRouteBy<Viewport>;",
         "export type BundledViewportWhere<Viewport> = LiveQueryViewportWhere<Viewport>;",
         "export const clientReady = true;",
@@ -342,6 +343,7 @@ describe("downstream viewport declaration bundle", () => {
     );
     expect(downstreamDeclaration).toContain("BundledViewportBaseRow");
     expect(downstreamDeclaration).toContain("BundledViewportCompleteRawSelect");
+    expect(downstreamDeclaration).toContain("BundledViewportQueryAuthority");
     expect(
       declarationClosure.flatMap(({ path, source }) =>
         inspectTypeScriptModule({ fileName: path, source }).moduleSpecifiers.filter(
@@ -371,6 +373,7 @@ describe("downstream viewport declaration bundle", () => {
     expect(declaration).toContain("type LiveQueryViewportCompleteRawSelect<Viewport>");
     expect(declaration).toContain("type LiveQueryViewportRouteBy<Viewport>");
     expect(declaration).toContain("type LiveQueryViewportWhere<Viewport>");
+    expect(declaration).toContain("type LiveQueryViewportQueryAuthority<Viewport>");
     expect(inspection.moduleSpecifiers).toStrictEqual([]);
     expect(declaration).not.toMatch(
       /\bdeclare\s+(?:global|module)\b|stackTraceLimit|\bReact(?:Node|Element|Portal|HTML)?\b|\bEffect\b/,
@@ -439,7 +442,7 @@ describe("downstream viewport declaration bundle", () => {
       writeFileSync(
         join(integrationDirectory, "consumer.ts"),
         [
-          'import type { BundledViewportBaseRow, BundledViewportCompleteRawSelect, BundledViewportRouteBy, BundledViewportWhere } from "downstream-viewport-adapter";',
+          'import type { BundledViewportBaseRow, BundledViewportCompleteRawSelect, BundledViewportQueryAuthority, BundledViewportRouteBy, BundledViewportWhere } from "downstream-viewport-adapter";',
           'import { ViewServerId, defineViewServerConfig } from "effect-view-server/config";',
           'import type { ExactRawQuery, LiveQueryRow } from "effect-view-server/config";',
           'import type * as PublicConfig from "effect-view-server/config";',
@@ -508,6 +511,8 @@ describe("downstream viewport declaration bundle", () => {
           'declare const leasedOrMaterializedOrders: LiveQueryViewport<typeof leasedOrMaterializedConfig.topics, "orders">;',
           'declare const leasedOrderSource: UseLiveQueryViewportResult<typeof leasedOrderConfig.topics, "orders">;',
           "type Order = typeof orderConfig.topics.orders.schema.Type;",
+          "type Equal<Left, Right> = (<Value>() => Value extends Left ? 1 : 2) extends (<Value>() => Value extends Right ? 1 : 2) ? (<Value>() => Value extends Right ? 1 : 2) extends (<Value>() => Value extends Left ? 1 : 2) ? true : false : false;",
+          "type RequireTrue<Value extends true> = Value;",
           "type RequireNever<Value extends never> = Value;",
           "// @ts-expect-error row-only complete-projection authority is not public.",
           "type _NoPublicCompleteSelect = PublicConfig.LiveQueryViewportCompleteRawSelectForRow;",
@@ -530,6 +535,16 @@ describe("downstream viewport declaration bundle", () => {
           "const exactForward: Order = extractedOrder;",
           "const exactBackward: BundledViewportBaseRow<typeof orders> = expectedOrder;",
           "const matching: ExactSource<Order, typeof orders> = orders;",
+          "type ExactQueryAuthority = RequireTrue<Equal<BundledViewportQueryAuthority<typeof orders>, Readonly<{ semanticKey: (typeof orders)[\"semanticKey\"]; replace: (typeof orders)[\"replace\"] }>>>;",
+          "type SameQueryAuthorityUnion = (typeof orders & Readonly<{ source: \"left\" }>) | (typeof orders & Readonly<{ source: \"right\" }>);",
+          "type ExactUnionQueryAuthority = RequireTrue<Equal<BundledViewportQueryAuthority<SameQueryAuthorityUnion>, Readonly<{ semanticKey: (typeof orders)[\"semanticKey\"]; replace: (typeof orders)[\"replace\"] }>>>;",
+          "type RawOnlySemanticKeyViewport = Omit<typeof orders, \"semanticKey\"> & { readonly semanticKey: (query: { readonly select: readonly [\"id\"]; readonly where: readonly []; readonly orderBy: readonly [] }) => LiveQueryViewportSemanticKey };",
+          "type RawOnlyReplaceViewport = Omit<typeof orders, \"replace\"> & { readonly replace: (request: Readonly<{ window: Readonly<{ firstRow: number; lastRow: number }>; query: Readonly<{ select: readonly [\"id\"]; where: readonly []; orderBy: readonly [] }>; sink: Readonly<{ setRowCount: (count: number, keepRenderedRows?: boolean) => void; setRowData: (rowsByIndex: Readonly<{ [index: number]: Readonly<{ id: string }> }>, rowKeysByIndex: Readonly<{ [index: number]: string }>) => void }> }>) => Readonly<{ setWindow: (window: Readonly<{ firstRow: number; lastRow: number }>) => void; release: () => void }> };",
+          "type RejectRawOnlySemanticKeyAuthority = RequireNever<BundledViewportQueryAuthority<RawOnlySemanticKeyViewport>>;",
+          "type RejectRawOnlyReplaceAuthority = RequireNever<BundledViewportQueryAuthority<RawOnlyReplaceViewport>>;",
+          "type RejectMixedSemanticKeyAuthority = RequireNever<BundledViewportQueryAuthority<typeof orders | RawOnlySemanticKeyViewport>>;",
+          "type RejectMixedReplaceAuthority = RequireNever<BundledViewportQueryAuthority<typeof orders | RawOnlyReplaceViewport>>;",
+          "type RejectUnwitnessedQueryAuthority = RequireNever<BundledViewportQueryAuthority<typeof orders | Readonly<{ semanticKey: () => unknown; replace: () => unknown }>>>;",
           'const semanticKey: LiveQueryViewportSemanticKey = orders.semanticKey({ select: ["id"], where: [], orderBy: [] });',
           'const equivalentSemanticKey = orders.semanticKey({ select: ["id"], where: [], orderBy: [] });',
           "const semanticallyEqual = Object.is(semanticKey, equivalentSemanticKey);",

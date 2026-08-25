@@ -268,12 +268,14 @@ declaration-only extractor from the pure subpath:
 import type {
   LiveQueryViewportBaseRow,
   LiveQueryViewportCompleteRawSelect,
+  LiveQueryViewportQueryAuthority,
   LiveQueryViewportRouteBy,
   LiveQueryViewportWhere,
 } from "effect-view-server/react/viewport-base-row";
 
 type BaseRow = LiveQueryViewportBaseRow<typeof viewport>;
 type CompleteSelect = LiveQueryViewportCompleteRawSelect<typeof viewport>;
+type QueryAuthority = LiveQueryViewportQueryAuthority<typeof viewport>;
 type RouteBy = LiveQueryViewportRouteBy<typeof viewport>;
 type ExternalWhere = LiveQueryViewportWhere<typeof viewport>;
 ```
@@ -284,6 +286,10 @@ collection for the complete Topic Row, including schema-admitted Filterable
 Scalar domains such as exact number, bigint, and BigDecimal numeric kinds. These witnesses let a
 structural adapter preserve source-owned query domains without importing or
 reconstructing View Server schemas.
+
+`QueryAuthority` is the exact source-owned `{ semanticKey, replace }` pair for
+raw and grouped queries. It resolves to `never` if either operation is narrowed,
+widened, or detached from the Viewport contract.
 
 The subpath owns its helper declarations directly, imports neither React nor
 Effect, and has an empty runtime module. `effect-view-server/react` re-exports

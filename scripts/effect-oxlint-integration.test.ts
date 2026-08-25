@@ -11,6 +11,9 @@ import kafkaConfig from "../packages/kafka/vite.config";
 import config from "../vite.config";
 
 const effectPresets = [correctness, antipattern, effectNative, style];
+const repositoryRoot = new URL("../", import.meta.url);
+const readRepositoryJson = (relativePath: string) =>
+  JSON.parse(readFileSync(new URL(relativePath, repositoryRoot), "utf8"));
 const tasks = config.run?.tasks ?? {};
 const taskEntriesWithPrefix = (prefix: string) =>
   Object.entries(tasks).filter(([name]) => name.startsWith(prefix));
@@ -18,7 +21,7 @@ const taskCommand = (task: (typeof tasks)[string]) =>
   typeof task === "object" && !Array.isArray(task) ? task.command : task;
 const taskCwd = (task: (typeof tasks)[string]) =>
   typeof task === "object" && !Array.isArray(task) ? task.cwd : undefined;
-const effectRuleNames = [correctness, antipattern, effectNative, style]
+const effectRuleNames = effectPresets
   .flatMap((preset) => Object.keys(preset.rules ?? {}))
   .sort();
 const configuredEffectRules = Object.fromEntries(
@@ -51,8 +54,8 @@ describe("aggressive Effect Oxlint integration", () => {
   });
 
   it("uses Oxlint as the only command-line Effect diagnostics path", () => {
-    const rootPackage = JSON.parse(readFileSync("package.json", "utf8"));
-    const rootTsconfig = JSON.parse(readFileSync("tsconfig.json", "utf8"));
+    const rootPackage = readRepositoryJson("package.json");
+    const rootTsconfig = readRepositoryJson("tsconfig.json");
     const effectPlugin = rootTsconfig.compilerOptions.plugins.find(
       (plugin: { name?: string }) => plugin.name === "@effect/language-service",
     );
@@ -92,9 +95,7 @@ describe("aggressive Effect Oxlint integration", () => {
   });
 
   it("preserves the build graph used by repository checks", () => {
-    const facadePackage = JSON.parse(
-      readFileSync("packages/effect-view-server/package.json", "utf8"),
-    );
+    const facadePackage = readRepositoryJson("packages/effect-view-server/package.json");
     const declarationBuild = tasks["build:effect-declarations"];
     const declarationBuildTasks = taskEntriesWithPrefix("build:effect-declarations:");
     const allDeclarationBuilds = [

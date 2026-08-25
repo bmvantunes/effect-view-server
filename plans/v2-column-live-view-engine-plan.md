@@ -52,7 +52,7 @@ Required package baseline:
 - Use the workspace-pinned `effect` v4 RC; do not update it as part of unrelated work.
 - Current workspace baseline: `effect@4.0.0-rc.111`.
 - Use `@effect/vitest` for all tests.
-- Run strict Effect language-service diagnostics before considering a change complete.
+- Run `vp check` before considering a change complete.
 
 Repository references:
 
@@ -90,49 +90,8 @@ Testing rule:
 - Use `@effect/vitest` for tests.
 - Do not import directly from plain `vitest` unless there is a documented repository-level wrapper exception.
 
-Effect LSP must be installed and configured aggressively before product work starts. Recommended TypeScript plugin config:
-
-```json
-{
-  "compilerOptions": {
-    "plugins": [
-      {
-        "name": "@effect/language-service",
-        "refactors": true,
-        "diagnostics": true,
-        "diagnosticSeverity": {
-          "floatingEffect": "warning"
-        },
-        "diagnosticsName": true,
-        "missingDiagnosticNextLine": "warning",
-        "includeSuggestionsInTsc": true,
-        "ignoreEffectWarningsInTscExitCode": false,
-        "ignoreEffectErrorsInTscExitCode": false,
-        "ignoreEffectSuggestionsInTscExitCode": true,
-        "skipDisabledOptimization": false,
-        "quickinfo": true,
-        "quickinfoEffectParameters": "whenTruncated",
-        "quickinfoMaximumLength": -1,
-        "completions": true,
-        "goto": true,
-        "inlays": true,
-        "allowedDuplicatedPackages": [],
-        "barrelImportPackages": [],
-        "namespaceImportPackages": ["effect", "@effect/*"],
-        "topLevelNamedReexports": "ignore",
-        "importAliases": { "Array": "Arr" },
-        "noExternal": false,
-        "keyPatterns": [{ "target": "service", "pattern": "default", "skipLeadingPath": ["src/"] }],
-        "effectFn": ["span"],
-        "layerGraphFollowDepth": 0,
-        "mermaidProvider": "mermaid.live"
-      }
-    ]
-  }
-}
-```
-
-LSP diagnostics must be part of the normal validation loop and must report zero errors/warnings/messages before completion.
+Strict Effect diagnostics run through `vp check`. Use `vp run -w audit:effect` only
+when auditing explicitly deferred migration rules.
 
 ## Public API Direction
 
@@ -1403,8 +1362,8 @@ React tests must run in browser mode and prove real hook behavior.
 
 Required gates:
 
-- `vp check --fix`
-- Effect LSP diagnostics: 0 errors/warnings/messages
+- `vp check`
+- strict Effect Oxlint diagnostics pass through `vp check`
 - `vp run -r test`
 - `vp run -r build`
 - 100% coverage across all packages

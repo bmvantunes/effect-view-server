@@ -117,7 +117,7 @@ const deferredEffectTsgoRules = new Set([
 ]);
 
 const aggressiveEffectTsgoRules = Object.fromEntries(
-  [correctness, antipattern, effectNative, style].flatMap((preset) =>
+  effectTsgoPresets.flatMap((preset) =>
     Object.keys(preset.rules ?? {}).map((ruleName) => [
       ruleName,
       deferredEffectTsgoRules.has(ruleName) ? "off" : "error",

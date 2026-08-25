@@ -94,7 +94,7 @@ Understand and preserve anything reported by the first command before switching 
 2. Confirm the new worktree is clean and points at checkpoint `3d0fedd1eaa7b75c556cf2d88445dab62072808c`.
 3. Inspect the branch diff against `origin/main` and confirm the WIP code checkpoint changes only the two intended TCP files.
 4. Rerun the focused exact-coverage command and `vp run @effect-view-server/example-tcp-publisher-react#test`.
-5. Run `vp check`, strict Effect diagnostics (`vp run -w check:effect`), and `vp run -w ready` from the isolated #327 worktree.
+5. Run `vp check` (including strict Effect Oxlint diagnostics) and `vp run -w ready` from the isolated #327 worktree.
 6. Clean any TanStack generated route-tree drift with `scripts/clean-tanstack-route-tree.mjs` followed by `vp check --fix` on the generated route files. Confirm the diff returns to the two intended files.
 7. Run `vp run -w bench:baseline:smoke` serially. Do not run competing benchmark suites concurrently.
 8. Spawn three read-only reviewers in parallel: Effect, Vitest/type safety, and architecture/maintainability. Require explicit `BLOCKING` and `NON-BLOCKING` counts. Fix every blocker, rerun affected gates, then repeat all three reviewers until all report zero blockers.

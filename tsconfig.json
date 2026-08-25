@@ -8,17 +8,7 @@
       {
         "name": "@effect/language-service",
         "refactors": true,
-        "diagnostics": true,
-        "diagnosticSeverity": {
-          "floatingEffect": "warning"
-        },
-        "diagnosticsName": true,
-        "missingDiagnosticNextLine": "warning",
-        "includeSuggestionsInTsc": true,
-        "ignoreEffectWarningsInTscExitCode": false,
-        "ignoreEffectErrorsInTscExitCode": false,
-        "ignoreEffectSuggestionsInTscExitCode": true,
-        "skipDisabledOptimization": false,
+        "diagnostics": false,
         "quickinfo": true,
         "quickinfoEffectParameters": "whenTruncated",
         "quickinfoMaximumLength": -1,

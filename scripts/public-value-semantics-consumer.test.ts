@@ -250,7 +250,14 @@ describe("published value semantics consumer", () => {
           packOutput = execFileSync(
             "npm",
             ["pack", publishDirectory, "--json", "--pack-destination", temporaryRoot],
-            { cwd: repositoryRoot, encoding: "utf8" },
+            {
+              cwd: repositoryRoot,
+              encoding: "utf8",
+              env: {
+                ...process.env,
+                NPM_CONFIG_CACHE: join(temporaryRoot, "npm-cache"),
+              },
+            },
           );
           return commandResult({ stdout: "published\n" });
         }

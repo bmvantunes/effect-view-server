@@ -247,12 +247,10 @@ const decodeFixtureRow = <Row extends object>(
   candidate: unknown,
 ): Effect.Effect<Row, SourceExecutionFailure<SourceFixtureFailure>> =>
   Schema.decodeUnknownEffect(row)(candidate).pipe(
-    Effect.mapError(
-      (): SourceExecutionFailure<SourceFixtureFailure> => ({
-        _tag: "AdapterFailure",
-        failure: fixtureFailure("Fixture row did not satisfy its transport Schema.", "stream"),
-      }),
-    ),
+    Effect.mapError((): SourceExecutionFailure<SourceFixtureFailure> => ({
+      _tag: "AdapterFailure",
+      failure: fixtureFailure("Fixture row did not satisfy its transport Schema.", "stream"),
+    })),
   );
 
 const makeFixtureMutation = <Row extends object, Topic extends string>(

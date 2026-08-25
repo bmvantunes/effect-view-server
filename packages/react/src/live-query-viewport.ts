@@ -65,10 +65,9 @@ type LiveQueryViewportWitnessRouteAlternative<Row, RouteTuple, AllFields> =
           Field
         >;
       } & {
-        readonly [Field in Exclude<
-          Extract<AllFields, RouteFieldKey<Row>>,
-          RouteTuple[number]
-        >]?: never;
+        readonly [
+          Field in Exclude<Extract<AllFields, RouteFieldKey<Row>>, RouteTuple[number]>
+        ]?: never;
       }
     : RouteTuple extends undefined
       ? undefined

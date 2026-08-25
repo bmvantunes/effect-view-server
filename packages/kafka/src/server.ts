@@ -206,12 +206,10 @@ const bindRegionMetrics = <const Region extends string>(
   region: Region,
   metrics: KafkaRegionMetrics,
 ): KafkaRegionMetrics<Region> =>
-  Result.try(
-    (): KafkaRegionMetrics<Region> => ({
-      ...metrics,
-      region,
-    }),
-  ).pipe(
+  Result.try((): KafkaRegionMetrics<Region> => ({
+    ...metrics,
+    region,
+  })).pipe(
     Result.match({
       onFailure: () => emptyMetrics(region),
       onSuccess: (bound) => bound,

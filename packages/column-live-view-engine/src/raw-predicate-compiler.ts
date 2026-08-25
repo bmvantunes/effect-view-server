@@ -344,16 +344,15 @@ const compileInstructions = <Row extends RowObject>(
     }
   }
   return Object.freeze(
-    instructions.map(
-      (instruction): PredicateInstruction<Row> =>
-        instruction._tag === "condition"
-          ? Object.freeze({
-              _tag: "condition",
-              matches: instruction.matches,
-              whenFalse: instruction.whenFalse.index,
-              whenTrue: instruction.whenTrue.index,
-            })
-          : Object.freeze(instruction),
+    instructions.map((instruction): PredicateInstruction<Row> =>
+      instruction._tag === "condition"
+        ? Object.freeze({
+            _tag: "condition",
+            matches: instruction.matches,
+            whenFalse: instruction.whenFalse.index,
+            whenTrue: instruction.whenTrue.index,
+          })
+        : Object.freeze(instruction),
     ),
   );
 };

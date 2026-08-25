@@ -233,9 +233,9 @@ type PublicObjectInit<Value extends object> = string extends keyof Value
       readonly [Key in keyof Value]: PublicMessageProperty<Value[Key]>;
     }
   : {
-      readonly [Key in keyof Value as Key extends "$typeName" | "$unknown"
-        ? never
-        : Key]?: PublicMessageProperty<Value[Key]>;
+      readonly [
+        Key in keyof Value as Key extends "$typeName" | "$unknown" ? never : Key
+      ]?: PublicMessageProperty<Value[Key]>;
     };
 
 type PublicMessageInit<Value> =
@@ -322,10 +322,9 @@ type ExactFactoryOutputBranch<Candidate, Shape> =
                     >,
                     never
                   > & {
-                    readonly [Key in keyof NonUndefined<Candidate>]: Key extends keyof ShapeForCandidate<
-                      Candidate,
-                      Shape
-                    >
+                    readonly [
+                      Key in keyof NonUndefined<Candidate>
+                    ]: Key extends keyof ShapeForCandidate<Candidate, Shape>
                       ? ExactFactoryOutput<
                           NonUndefined<Candidate>[Key],
                           ShapeForCandidate<Candidate, Shape>[Key]

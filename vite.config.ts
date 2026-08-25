@@ -1,3 +1,4 @@
+import { antipattern, correctness, effectNative, style } from "@effect/tsgo/oxlint-presets";
 import { defineConfig } from "vite-plus";
 import { strictLintOptions } from "./tools/vite/lint-policy";
 
@@ -78,147 +79,55 @@ const declarationTasks = Object.fromEntries(
   ]),
 );
 
-const diagnosticsProjects = [
-  {
-    name: "source-adapter",
-    project: "packages/source-adapter",
-    declarationTask: declarationTaskName("source-adapter"),
-  },
-  {
-    name: "grpc",
-    project: "packages/grpc",
-    declarationTask: declarationTaskName("grpc"),
-  },
-  {
-    name: "source-adapter-testing",
-    project: "packages/source-adapter-testing",
-    declarationTask: declarationTaskName("source-adapter-testing"),
-  },
-  {
-    name: "kafka",
-    project: "packages/kafka",
-    declarationTask: declarationTaskName("kafka"),
-  },
-  { name: "config", project: "packages/config", declarationTask: undefined },
-  { name: "effect-utils", project: "packages/effect-utils", declarationTask: undefined },
-  {
-    name: "protocol",
-    project: "packages/protocol",
-    declarationTask: declarationTaskName("protocol"),
-  },
-  {
-    name: "client",
-    project: "packages/client",
-    declarationTask: declarationTaskName("client"),
-  },
-  {
-    name: "column-live-view-engine",
-    project: "packages/column-live-view-engine",
-    declarationTask: declarationTaskName("column-live-view-engine"),
-  },
-  {
-    name: "runtime-core",
-    project: "packages/runtime-core",
-    declarationTask: declarationTaskName("runtime-core"),
-  },
-  {
-    name: "source-adapter-conformance-host",
-    project: "packages/source-adapter-conformance-host",
-    declarationTask: declarationTaskName("source-adapter-conformance-host"),
-  },
-  {
-    name: "in-memory",
-    project: "packages/in-memory",
-    declarationTask: declarationTaskName("in-memory"),
-  },
-  {
-    name: "server",
-    project: "packages/server",
-    declarationTask: declarationTaskName("server"),
-  },
-  {
-    name: "runtime",
-    project: "packages/runtime",
-    declarationTask: declarationTaskName("runtime"),
-  },
-  {
-    name: "react",
-    project: "packages/react",
-    declarationTask: declarationTaskName("react"),
-  },
-  {
-    name: "facade",
-    project: "packages/effect-view-server",
-    declarationTask: declarationBuildTask,
-  },
-  {
-    name: "example:kafka-react",
-    project: "examples/kafka-react",
-    declarationTask: declarationBuildTask,
-  },
-  {
-    name: "example:grpc-leased-react",
-    project: "examples/grpc-leased-react",
-    declarationTask: declarationBuildTask,
-  },
-  {
-    name: "example:grpc-materialized-react",
-    project: "examples/grpc-materialized-react",
-    declarationTask: declarationBuildTask,
-  },
-  {
-    name: "example:combined-sources-react",
-    project: "examples/combined-sources-react",
-    declarationTask: declarationBuildTask,
-  },
-  {
-    name: "example:ssr-react",
-    project: "examples/ssr-react",
-    declarationTask: declarationBuildTask,
-  },
-  {
-    name: "example:tcp-publisher-react",
-    project: "examples/tcp-publisher-react",
-    declarationTask: declarationBuildTask,
-  },
-  {
-    name: "example:in-memory-react",
-    project: "examples/in-memory-react",
-    declarationTask: declarationBuildTask,
-  },
-  { name: "app", project: "apps/example", declarationTask: declarationBuildTask },
-] as const;
+const effectTsgoPresets = [correctness, antipattern, effectNative, style];
 
-const diagnosticsTaskName = (name: string) => `check:effect:${name}`;
+// The Oxlint integration is zero-debt: every clean rule is an error. Rules that already expose
+// repository-wide migration work stay explicitly disabled until that work can land atomically.
+const deferredEffectTsgoRules = new Set([
+  "effecttsgo/abort-controller-in-effect",
+  "effecttsgo/any-unknown-in-error-context",
+  "effecttsgo/async-function",
+  "effecttsgo/crypto-random-uuid",
+  "effecttsgo/deterministic-keys",
+  "effecttsgo/extends-native-error",
+  "effecttsgo/global-date",
+  "effecttsgo/global-fetch-in-effect",
+  "effecttsgo/global-random",
+  "effecttsgo/global-timers",
+  "effecttsgo/instance-of-schema",
+  "effecttsgo/lazy-effect",
+  "effecttsgo/missed-pipeable-opportunity",
+  "effecttsgo/missing-pipeable-signature",
+  "effecttsgo/nested-effect-gen-yield",
+  "effecttsgo/new-promise",
+  "effecttsgo/new-schema-class",
+  "effecttsgo/node-builtin-import",
+  "effecttsgo/prefer-schema-over-json",
+  "effecttsgo/prefer-typed-schema-decoder",
+  "effecttsgo/prefer-unsafe-constructor",
+  "effecttsgo/process-env",
+  "effecttsgo/redundant-map-error",
+  "effecttsgo/schema-number",
+  "effecttsgo/schema-sync-in-effect",
+  "effecttsgo/service-not-as-class",
+  "effecttsgo/strict-boolean-expressions",
+  "effecttsgo/strict-effect-provide",
+  "effecttsgo/unnecessary-arrow-block",
+  "effecttsgo/unnecessary-typeof-type",
+]);
 
-const diagnosticsAdditionalDependencies: Readonly<Record<string, ReadonlyArray<string>>> = {
-  kafka: [declarationTaskName("source-adapter-conformance-host")],
-};
-
-const effectDiagnosticsTask = (
-  project: string,
-  declarationTask: string | undefined,
-  additionalDependencies: ReadonlyArray<string>,
-) => ({
-  command: `effect-tsgo diagnostics --project ${project}/tsconfig.json --format text --strict`,
-  dependsOn: [
-    ...(declarationTask === undefined ? [] : [declarationTask]),
-    ...additionalDependencies,
-  ],
-});
-
-const diagnosticsTasks = Object.fromEntries(
-  diagnosticsProjects.map(({ name, project, declarationTask }) => [
-    diagnosticsTaskName(name),
-    effectDiagnosticsTask(project, declarationTask, diagnosticsAdditionalDependencies[name] ?? []),
-  ]),
+const aggressiveEffectTsgoRules = Object.fromEntries(
+  effectTsgoPresets.flatMap((preset) =>
+    Object.keys(preset.rules ?? {}).map((ruleName) => [
+      ruleName,
+      deferredEffectTsgoRules.has(ruleName) ? "off" : "error",
+    ]),
+  ),
 );
 
-const exampleDiagnosticsTasks = diagnosticsProjects
-  .filter(({ name }) => name.startsWith("example:"))
-  .map(({ name }) => diagnosticsTaskName(name));
-
-const allDiagnosticsTasks = diagnosticsProjects.map(({ name }) => diagnosticsTaskName(name));
+const deferredEffectTsgoAuditFlags = [...deferredEffectTsgoRules]
+  .map((ruleName) => `--warn=${ruleName}`)
+  .join(" ");
 
 export default defineConfig({
   test: {
@@ -272,6 +181,7 @@ export default defineConfig({
     ],
   },
   lint: {
+    extends: effectTsgoPresets,
     jsPlugins: [
       {
         name: "anti-slop",
@@ -286,11 +196,13 @@ export default defineConfig({
       "!scripts/anti-slop-rule.test.ts",
       // The bundled copy is an installation asset; lint the live plugin source instead.
       ".agents/skills/install-anti-slop/**",
-      "packages/source-adapter-testing/test-fixtures/package-adapter/invalid-types/**",
+      // Package fixtures intentionally contain invalid, duplicated, and non-Effect consumer code.
+      "packages/source-adapter-testing/test-fixtures/**",
       "tools/oxlint/anti-slop/**",
     ],
     options: strictLintOptions,
     rules: {
+      ...aggressiveEffectTsgoRules,
       "anti-slop/no-unsafe-dictionary-type": "error",
     },
   },
@@ -298,7 +210,6 @@ export default defineConfig({
     cache: true,
     tasks: {
       ...declarationTasks,
-      ...diagnosticsTasks,
       "build:effect-declarations": {
         command: "vp pack",
         cwd: "packages/effect-view-server",
@@ -312,13 +223,8 @@ export default defineConfig({
         command: "node scripts/run-grpc-source-adapter-bench.mjs",
         dependsOn: [declarationTaskName("runtime-core")],
       },
-      "examples:check:effect": {
-        command: 'node --eval ""',
-        dependsOn: exampleDiagnosticsTasks,
-      },
-      "check:effect": {
-        command: 'node --eval ""',
-        dependsOn: allDiagnosticsTasks,
+      "audit:effect": {
+        command: `vp lint ${deferredEffectTsgoAuditFlags}`,
       },
     },
   },

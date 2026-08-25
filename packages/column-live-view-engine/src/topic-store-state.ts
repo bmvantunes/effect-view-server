@@ -162,7 +162,6 @@ export const clearTopicStoreQueryExecutions = Effect.fn(
 
 export const collectTopicStoreActiveQueryCounts = Effect.fn(
   "ColumnLiveViewEngine.topicStore.queryExecutions.count",
-)(
-  (store: TopicStore): Effect.Effect<ActiveQueryExecutionCounts> =>
-    activeStoreQueryExecutionCounts(topicStoreState(store).queryResources.activeQueries),
+)((store: TopicStore): Effect.Effect<ActiveQueryExecutionCounts> =>
+  activeStoreQueryExecutionCounts(topicStoreState(store).queryResources.activeQueries),
 );

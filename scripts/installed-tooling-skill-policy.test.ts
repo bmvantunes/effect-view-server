@@ -43,6 +43,7 @@ describe("installed tooling skill policy", () => {
       repositoryAvoidsVendoredCheckout: !agentInstructions.includes(".repos/effect"),
       repositoryHasNoEffectUpgradeCommand: rootPackage.scripts["upgrade-effect"] === undefined,
       repositoryHasNoEffectSubmodule: !gitmodules.includes(".repos/effect"),
+      repositoryHasNoVendoredEffectCheckout: !repositoryPathExists(".repos/effect"),
       copiedEffectManualsStayAbsent: repositoryDirectoryIsAbsentOrEmpty(
         ".agents/skills/effect-ts/references",
       ),
@@ -69,6 +70,7 @@ describe("installed tooling skill policy", () => {
       repositoryAvoidsVendoredCheckout: true,
       repositoryHasNoEffectUpgradeCommand: true,
       repositoryHasNoEffectSubmodule: true,
+      repositoryHasNoVendoredEffectCheckout: true,
       copiedEffectManualsStayAbsent: true,
       copiedViteManualsStayAbsent: true,
       copiedVitestManualsStayAbsent: true,

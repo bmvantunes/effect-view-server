@@ -354,7 +354,7 @@ describe("published value semantics consumer", () => {
         "@effect/platform-browser": "4.0.0-rc.111",
         "@effect/platform-node": "4.0.0-rc.111",
         "@effect/platform-node-shared": "4.0.0-rc.111",
-        "@platformatic/kafka": "2.9.0",
+        "@platformatic/kafka": "2.11.0",
       });
       for (const path of packedPaths.filter(
         (path) => path.endsWith(".js") || path.endsWith(".d.ts"),

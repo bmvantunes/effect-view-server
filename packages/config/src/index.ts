@@ -11,8 +11,9 @@ import {
   isViewServerRowSchema,
   snapshotViewServerTopics,
   viewServerRowSchemaFieldsMatchAst,
+  viewServerTopicDefinitionPropertyIsIntrinsic,
 } from "./config-ownership";
-import { type ViewServerSystemTopicName, viewServerTopicNameIsReserved } from "./health-contract";
+import type { ViewServerSystemTopicName } from "./health-contract";
 import type { RejectExtraKeys } from "./query-exact";
 import type { FilterableScalar, RouteFieldKey } from "./query-filter";
 import type { RowFromSchema, RowSchema } from "./topic-contract";
@@ -144,11 +145,7 @@ type ViewServerTopicShape = {
 
 export type ViewServerConfigTopicShape = Record<string, ViewServerTopicShape>;
 export type ViewServerConfigTopicInputShape = Record<string, ViewServerTopicShape>;
-type ViewServerTopicCandidateShape = {
-  readonly schema?: unknown;
-  readonly source?: unknown;
-};
-type ViewServerConfigTopicCandidateShape = Record<string, ViewServerTopicCandidateShape>;
+type ViewServerConfigTopicCandidateShape = Record<string, unknown>;
 export type NormalizeViewServerTopicDefinitions<Topics> = Topics;
 
 export type ViewServerTopicConfig<Topics extends ViewServerConfigTopicShape> = {
@@ -221,6 +218,15 @@ type ViewServerConfigValidationError<Topic extends PropertyKey, Reason extends s
   };
 };
 
+type WithViewServerConfigValidationError<
+  Value,
+  Topic extends PropertyKey,
+  Reason extends string,
+  Details,
+> = Value extends object
+  ? Value & ViewServerConfigValidationError<Topic, Reason, Details>
+  : ViewServerConfigValidationError<Topic, Reason, Details>;
+
 type IsOptionalField<Row extends object, Field extends keyof Row> =
   {} extends Pick<Row, Field> ? true : false;
 
@@ -265,7 +271,11 @@ type RowFieldDifferenceMember<ExpectedRow extends object, ReceivedRow extends ob
 type RowFieldDifference<
   ExpectedRow extends object,
   ReceivedRow extends object,
-> = ReceivedRow extends unknown ? RowFieldDifferenceMember<ExpectedRow, ReceivedRow> : never;
+> = ExpectedRow extends unknown
+  ? ReceivedRow extends unknown
+    ? RowFieldDifferenceMember<ExpectedRow, ReceivedRow>
+    : never
+  : never;
 
 type CanonicalIdDetails<SchemaValue extends RowSchema> = SchemaValue extends {
   readonly fields: {
@@ -333,18 +343,12 @@ type ValidateSource<
               "source row does not match topic schema row",
               RowFieldDifference<Row, SourceDefinitionRow<Source>>
             >
-  : Source extends object
-    ? Source &
-        ViewServerConfigValidationError<
-          Topic,
-          "source must be created by SourceAdapter.make(...)",
-          { readonly received: Source }
-        >
-    : ViewServerConfigValidationError<
-        Topic,
-        "source must be created by SourceAdapter.make(...)",
-        { readonly received: Source }
-      >;
+  : WithViewServerConfigValidationError<
+      Source,
+      Topic,
+      "source must be created by SourceAdapter.make(...)",
+      { readonly received: Source }
+    >;
 
 type ValidateOptionalSource<
   Topic extends PropertyKey,
@@ -381,21 +385,21 @@ type ValidateTopic<TopicName extends PropertyKey, Topic> = Topic extends {
           "topic schema must define id as ViewServerId",
           CanonicalIdDetails<TopicSchema>
         >
-  : Topic &
-      ViewServerConfigValidationError<
-        TopicName,
-        "topic schema must expose concrete struct fields",
-        { readonly received: Topic }
-      >;
+  : WithViewServerConfigValidationError<
+      Topic,
+      TopicName,
+      "topic schema must expose concrete struct fields",
+      { readonly received: Topic }
+    >;
 
 type ValidateTopicDefinitions<Topics> = {
   readonly [Topic in keyof Topics]: Topic extends ViewServerSystemTopicName
-    ? Topics[Topic] &
-        ViewServerConfigValidationError<
-          Topic,
-          "topic name is reserved for system health streams",
-          { readonly received: Topic }
-        >
+    ? WithViewServerConfigValidationError<
+        Topics[Topic],
+        Topic,
+        "topic name is reserved for system health streams",
+        { readonly received: Topic }
+      >
     : ValidateTopic<Topic, Topics[Topic]>;
 };
 
@@ -455,13 +459,12 @@ export function defineViewServerConfig(input: { readonly topics: ViewServerConfi
   }
   const topics = snapshotViewServerTopics(input.topics);
   for (const topic of Object.keys(topics)) {
-    if (viewServerTopicNameIsReserved(topic)) {
-      throw new Error(`View Server topic name is reserved for system health streams: ${topic}`);
-    }
     const topicDefinition = topics[topic]!;
-    const unsupportedTopicProperty = ownPropertyNamesAreExact(
-      topicDefinition,
-      new Set(["schema", "source"]),
+    const allowedTopicProperties = new Set<PropertyKey>(["schema", "source"]);
+    const unsupportedTopicProperty = Reflect.ownKeys(topicDefinition).find(
+      (property) =>
+        !allowedTopicProperties.has(property) &&
+        !viewServerTopicDefinitionPropertyIsIntrinsic(topicDefinition, property),
     );
     if (unsupportedTopicProperty !== undefined) {
       throw new Error(

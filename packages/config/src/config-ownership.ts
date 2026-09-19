@@ -1,4 +1,5 @@
 import { Schema, SchemaAST } from "effect";
+import { viewServerTopicNameIsReserved } from "./health-contract";
 import type { RowSchema } from "./topic-contract";
 
 type TopicRegistry = Record<
@@ -79,6 +80,9 @@ export const viewServerRowSchemaFieldsMatchAst = (schema: RowSchema): boolean =>
 const snapshotOwnProperties = (value: object): { [key: PropertyKey]: unknown } => {
   const copied: { [key: PropertyKey]: unknown } = {};
   for (const property of Reflect.ownKeys(value)) {
+    if (viewServerTopicDefinitionPropertyIsIntrinsic(value, property)) {
+      continue;
+    }
     Object.defineProperty(copied, property, {
       configurable: true,
       enumerable: true,
@@ -89,13 +93,62 @@ const snapshotOwnProperties = (value: object): { [key: PropertyKey]: unknown } =
   return copied;
 };
 
-const snapshotTopicDefinition = (definition: TopicRegistry[string]) => {
+export const viewServerTopicDefinitionPropertyIsIntrinsic = (
+  value: object,
+  property: PropertyKey,
+): boolean =>
+  typeof value === "function" &&
+  (property === "length" ||
+    property === "name" ||
+    property === "arguments" ||
+    property === "caller" ||
+    property === "prototype");
+
+const copySnapshotProperties = (
+  target: object,
+  properties: { [key: PropertyKey]: unknown },
+): void => {
+  for (const property of Reflect.ownKeys(properties)) {
+    Object.defineProperty(target, property, {
+      configurable: true,
+      enumerable: true,
+      value: Reflect.get(properties, property, properties),
+      writable: true,
+    });
+  }
+};
+
+const snapshotTopicDefinition = (topic: string, definition: unknown) => {
+  if (definition === null || (typeof definition !== "object" && typeof definition !== "function")) {
+    throw new Error(`View Server topic ${topic} row schema must be an Effect Schema Struct.`);
+  }
   const copied = snapshotOwnProperties(definition);
   const schema = copied["schema"];
-  return Object.freeze({
-    ...copied,
-    ...(isViewServerRowSchema(schema) ? { schema: snapshotViewServerRowSchema(schema) } : {}),
-  });
+  if (isViewServerRowSchema(schema)) {
+    copied["schema"] = snapshotViewServerRowSchema(schema);
+  }
+  if (typeof definition === "function") {
+    const callableTarget = function (this: unknown, ...arguments_: ReadonlyArray<unknown>) {
+      return Reflect.apply(definition, this, arguments_);
+    };
+    if (Object.hasOwn(definition, "prototype")) {
+      Object.defineProperty(callableTarget, "prototype", {
+        value: Reflect.get(definition, "prototype", definition),
+      });
+    }
+    let callableSnapshot: typeof callableTarget;
+    callableSnapshot = new Proxy(callableTarget, {
+      construct: (_target, arguments_, newTarget) =>
+        Reflect.construct(
+          definition,
+          arguments_,
+          newTarget === callableSnapshot ? definition : newTarget,
+        ),
+    });
+    copySnapshotProperties(callableSnapshot, copied);
+    return Object.freeze(callableSnapshot);
+  }
+  return Object.freeze({ ...copied });
 };
 
 export function snapshotViewServerTopics<const Topics extends TopicRegistry>(
@@ -104,10 +157,13 @@ export function snapshotViewServerTopics<const Topics extends TopicRegistry>(
 export function snapshotViewServerTopics(topics: TopicRegistry): TopicRegistry {
   const snapshot: TopicRegistry = Object.create(null);
   for (const topic of Object.keys(topics)) {
+    if (viewServerTopicNameIsReserved(topic)) {
+      throw new Error(`View Server topic name is reserved for system health streams: ${topic}`);
+    }
     Object.defineProperty(snapshot, topic, {
       configurable: false,
       enumerable: true,
-      value: snapshotTopicDefinition(topics[topic]!),
+      value: snapshotTopicDefinition(topic, topics[topic]),
       writable: false,
     });
   }

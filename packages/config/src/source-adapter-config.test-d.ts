@@ -40,6 +40,15 @@ const Row = Schema.Struct({
   region: Schema.String,
   shard: Schema.BigInt,
 });
+const LeftUnionSchema = Schema.Struct({
+  id: ViewServerId,
+  left: Schema.String,
+});
+const RightUnionSchema = Schema.Struct({
+  id: ViewServerId,
+  right: Schema.Number,
+});
+declare const exclusiveUnionSchema: typeof LeftUnionSchema | typeof RightUnionSchema;
 type MissingFieldRow = {
   readonly id: string;
   readonly region: string;
@@ -864,6 +873,33 @@ describe("Source Adapter config type contracts", () => {
       },
     });
 
+    const idOnlySource = mappedSource("union-schema", { id: "id" });
+    type UnionSchemaInput = DefineViewServerConfigInput<{
+      readonly unionSchema: {
+        readonly schema: typeof exclusiveUnionSchema;
+        readonly source: typeof idOnlySource;
+      };
+    }>;
+    expectTypeOf<
+      UnionSchemaInput["topics"]["unionSchema"]["source"]["__viewServerConfigError"]
+    >().toEqualTypeOf<{
+      readonly __invalid: never;
+      readonly topic: "unionSchema";
+      readonly reason: "source row does not match topic schema row";
+      readonly details:
+        | { readonly field: "left"; readonly expected: string; readonly received: "missing" }
+        | { readonly field: "right"; readonly expected: number; readonly received: "missing" };
+    }>();
+    defineViewServerConfig({
+      topics: {
+        unionSchema: {
+          schema: exclusiveUnionSchema,
+          // @ts-expect-error Schema-union fields remain visible in the diagnostic.
+          source: idOnlySource,
+        },
+      },
+    });
+
     const neverSource = adapter.materializedSource<never>({ stream: "never" });
     type NeverSourceInput = DefineViewServerConfigInput<{
       readonly neverRow: { readonly schema: typeof Row; readonly source: typeof neverSource };
@@ -1084,6 +1120,40 @@ describe("Source Adapter config type contracts", () => {
       topics: {
         // @ts-expect-error Missing schemas receive the configured diagnostic.
         missingSchema: {},
+      },
+    });
+
+    type PrimitiveTopicInput = DefineViewServerConfigInput<{
+      readonly primitiveTopic: "topic";
+    }>;
+    expectTypeOf<
+      PrimitiveTopicInput["topics"]["primitiveTopic"]["__viewServerConfigError"]
+    >().toEqualTypeOf<{
+      readonly __invalid: never;
+      readonly topic: "primitiveTopic";
+      readonly reason: "topic schema must expose concrete struct fields";
+      readonly details: { readonly received: "topic" };
+    }>();
+    defineViewServerConfig({
+      topics: {
+        // @ts-expect-error Primitive topics receive the configured diagnostic.
+        primitiveTopic: "topic",
+      },
+    });
+
+    type NullTopicInput = DefineViewServerConfigInput<{
+      readonly nullTopic: null;
+    }>;
+    expectTypeOf<NullTopicInput["topics"]["nullTopic"]["__viewServerConfigError"]>().toEqualTypeOf<{
+      readonly __invalid: never;
+      readonly topic: "nullTopic";
+      readonly reason: "topic schema must expose concrete struct fields";
+      readonly details: { readonly received: null };
+    }>();
+    defineViewServerConfig({
+      topics: {
+        // @ts-expect-error Null topics receive the configured diagnostic.
+        nullTopic: null,
       },
     });
 

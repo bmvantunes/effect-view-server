@@ -2,7 +2,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { SourceAdapter } from "@effect-view-server/source-adapter";
 import { Schema } from "effect";
 import { snapshotViewServerTopics } from "./config-ownership";
-import { ViewServerId, defineViewServerConfig } from "./index";
+import { VIEW_SERVER_HEALTH_TOPIC, ViewServerId, defineViewServerConfig } from "./index";
 
 const Failure = Schema.TaggedStruct("ConfigOwnershipFailure", {
   message: Schema.String,
@@ -103,5 +103,72 @@ describe("View Server config atomic ownership", () => {
         topics,
       }),
     ).toThrow("View Server topic rows contains unsupported property: grpcSource.");
+  });
+
+  it("enumerates topic names once while enforcing reserved names on the owned snapshot", () => {
+    const definition = { schema: Schema.Struct({ id: ViewServerId }) };
+    let ownKeysCalls = 0;
+    const topics = new Proxy(
+      { [VIEW_SERVER_HEALTH_TOPIC]: definition },
+      {
+        ownKeys: () => {
+          ownKeysCalls += 1;
+          return ownKeysCalls === 1 ? [VIEW_SERVER_HEALTH_TOPIC] : ["orders"];
+        },
+      },
+    );
+
+    expect(() => snapshotViewServerTopics(topics)).toThrow(
+      `View Server topic name is reserved for system health streams: ${VIEW_SERVER_HEALTH_TOPIC}`,
+    );
+    expect(ownKeysCalls).toBe(1);
+  });
+
+  it("snapshots callable topic definitions accepted by the structural config interface", () => {
+    const Row = Schema.Struct({ id: ViewServerId });
+    const definition = Object.assign(() => "called", { schema: Row });
+
+    const config = defineViewServerConfig({ topics: { callable: definition } });
+
+    expect(config.topics.callable.schema.fields.id).toBe(ViewServerId);
+    expect(config.topics.callable()).toBe("called");
+    expect(config.topics.callable === definition).toBe(false);
+    expect(Object.isFrozen(config.topics.callable)).toBe(true);
+  });
+
+  it("preserves construct signatures on owned callable topic definitions", () => {
+    const Row = Schema.Struct({ id: ViewServerId });
+    class ConstructibleDefinition {
+      static readonly schema = Row;
+
+      constructor(readonly value: string) {}
+    }
+    const definition: {
+      new (value: string): ConstructibleDefinition;
+      readonly schema: typeof Row;
+    } = ConstructibleDefinition;
+
+    const config = defineViewServerConfig({
+      topics: { constructible: definition },
+    });
+    const instance = new config.topics.constructible("value");
+    class ExtendedDefinition extends config.topics.constructible {}
+    const extendedInstance = new ExtendedDefinition("extended");
+
+    expect({
+      extendedInstanceOfDefinition: extendedInstance instanceof ConstructibleDefinition,
+      extendedInstanceOfExtended: extendedInstance instanceof ExtendedDefinition,
+      extendedValue: extendedInstance.value,
+      frozen: Object.isFrozen(config.topics.constructible),
+      instanceOfDefinition: instance instanceof ConstructibleDefinition,
+      value: instance.value,
+    }).toStrictEqual({
+      extendedInstanceOfDefinition: true,
+      extendedInstanceOfExtended: true,
+      extendedValue: "extended",
+      frozen: true,
+      instanceOfDefinition: true,
+      value: "value",
+    });
   });
 });

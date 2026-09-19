@@ -16,6 +16,7 @@ import {
   resolveKafkaSchemaRegistryContracts,
   validateKafkaSchemaRegistryFrame,
   type KafkaSchemaRegistryContractIssue,
+  type KafkaSchemaRegistryCompatibility,
   type KafkaSchemaRegistryDeclaration,
   type KafkaSchemaRegistryReader,
   type KafkaSchemaRegistrySchemaVersion,
@@ -162,6 +163,33 @@ const generatedMessage = (
 };
 
 describe("Kafka Schema Registry Protobuf contracts", () => {
+  it.effect("accepts every configured Confluent compatibility policy", () =>
+    Effect.gen(function* () {
+      const compatibilities: ReadonlyArray<KafkaSchemaRegistryCompatibility> = [
+        "BACKWARD",
+        "BACKWARD_TRANSITIVE",
+        "FORWARD",
+        "FORWARD_TRANSITIVE",
+        "FULL",
+        "FULL_TRANSITIVE",
+        "NONE",
+      ];
+      for (const compatibility of compatibilities) {
+        const contracts = yield* resolveKafkaSchemaRegistryContracts(
+          [declaration()],
+          reader({
+            compatibility: { "orders-value": compatibility },
+            active: { "orders-value": [1] },
+            all: { "orders-value": [1] },
+            schemas: { "orders-value:1": schemaVersion(1, 41) },
+          }),
+          compatibility,
+        );
+        expect(contracts.map(({ subject }) => subject)).toStrictEqual(["orders-value"]);
+      }
+    }),
+  );
+
   it.effect("accepts FULL_TRANSITIVE WIRE history, anchors generated code, and caches IDs", () =>
     Effect.gen(function* () {
       const contracts = yield* resolveKafkaSchemaRegistryContracts(
@@ -231,6 +259,37 @@ describe("Kafka Schema Registry Protobuf contracts", () => {
         schemaId: null,
         message:
           'Subject "orders-value" requires effective FULL_TRANSITIVE compatibility; observed "BACKWARD_TRANSITIVE".',
+      });
+    }),
+  );
+
+  it.effect("rejects an effective policy different from the configured policy", () =>
+    Effect.gen(function* () {
+      const failure = yield* Effect.flip(
+        resolveKafkaSchemaRegistryContracts(
+          [declaration()],
+          reader({
+            compatibility: { "orders-value": "BACKWARD" },
+            active: { "orders-value": [1] },
+            all: { "orders-value": [1] },
+            schemas: { "orders-value:1": schemaVersion(1, 41) },
+          }),
+          "NONE",
+        ),
+      );
+
+      expect(failure.issues[0]).toStrictEqual({
+        _tag: "KafkaSchemaRegistryContractIssue",
+        region: "eu-west-1",
+        viewServerTopic: "orders",
+        sourceTopic: "source-orders",
+        side: "value",
+        subject: "orders-value",
+        code: "CompatibilityPolicyMismatch",
+        version: null,
+        schemaId: null,
+        message:
+          'Subject "orders-value" requires effective NONE compatibility; observed "BACKWARD".',
       });
     }),
   );

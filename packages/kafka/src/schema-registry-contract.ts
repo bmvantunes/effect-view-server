@@ -16,6 +16,20 @@ import {
 
 export type KafkaSchemaRegistrySide = "key" | "value";
 
+export const KafkaSchemaRegistryCompatibility = Schema.Literals([
+  "BACKWARD",
+  "BACKWARD_TRANSITIVE",
+  "FORWARD",
+  "FORWARD_TRANSITIVE",
+  "FULL",
+  "FULL_TRANSITIVE",
+  "NONE",
+]);
+export type KafkaSchemaRegistryCompatibility = typeof KafkaSchemaRegistryCompatibility.Type;
+
+export const defaultKafkaSchemaRegistryCompatibility: KafkaSchemaRegistryCompatibility =
+  "FULL_TRANSITIVE";
+
 export const KafkaSchemaRegistryContractIssueCode = Schema.Literals([
   "RegistryUnavailable",
   "CompatibilityPolicyMismatch",
@@ -261,6 +275,7 @@ const validateDeclaration = Effect.fn("KafkaSchemaRegistry.contract.validateDecl
   function* (
     declaration: KafkaSchemaRegistryDeclaration,
     reader: KafkaSchemaRegistryReader,
+    requiredCompatibility: KafkaSchemaRegistryCompatibility,
   ): Effect.fn.Return<KafkaResolvedSchemaRegistryContract, KafkaSchemaRegistryContractIssue> {
     const generatedFiles = descriptorGraph(declaration.descriptor.file);
     const loadedGraphs = new Map<string, LoadedGraph>();
@@ -490,13 +505,13 @@ const validateDeclaration = Effect.fn("KafkaSchemaRegistry.contract.validateDecl
     ): Effect.Effect<LoadedHistory, KafkaSchemaRegistryContractIssue> => {
       return Effect.gen(function* () {
         const compatibility = yield* readCompatibility(subject);
-        if (compatibility !== "FULL_TRANSITIVE") {
+        if (compatibility !== requiredCompatibility) {
           return yield* Effect.fail(
             issue(
               declaration,
               subject,
               "CompatibilityPolicyMismatch",
-              `Subject ${JSON.stringify(subject)} requires effective FULL_TRANSITIVE compatibility; observed ${JSON.stringify(compatibility)}.`,
+              `Subject ${JSON.stringify(subject)} requires effective ${requiredCompatibility} compatibility; observed ${JSON.stringify(compatibility)}.`,
             ),
           );
         }
@@ -708,10 +723,11 @@ export const inspectKafkaSchemaRegistryContracts = Effect.fn(
 )(function* (
   declarations: ReadonlyArray<KafkaSchemaRegistryDeclaration>,
   reader: KafkaSchemaRegistryReader,
+  requiredCompatibility: KafkaSchemaRegistryCompatibility = defaultKafkaSchemaRegistryCompatibility,
 ) {
   const sharedReader = sharedSchemaRegistryReader(reader);
   const results = yield* Effect.forEach(declarations, (declaration) =>
-    validateDeclaration(declaration, sharedReader).pipe(
+    validateDeclaration(declaration, sharedReader, requiredCompatibility).pipe(
       Effect.match({
         onFailure: (contractIssue) => ({ contractIssue }),
         onSuccess: (contract) => ({ contract }),
@@ -733,11 +749,16 @@ export const resolveKafkaSchemaRegistryContracts = Effect.fn(
 )(function* (
   declarations: ReadonlyArray<KafkaSchemaRegistryDeclaration>,
   reader: KafkaSchemaRegistryReader,
+  requiredCompatibility: KafkaSchemaRegistryCompatibility = defaultKafkaSchemaRegistryCompatibility,
 ): Effect.fn.Return<
   ReadonlyArray<KafkaResolvedSchemaRegistryContract>,
   KafkaSchemaRegistryContractValidationFailure
 > {
-  const resolution = yield* inspectKafkaSchemaRegistryContracts(declarations, reader);
+  const resolution = yield* inspectKafkaSchemaRegistryContracts(
+    declarations,
+    reader,
+    requiredCompatibility,
+  );
   const issues = resolution.issues;
   const firstIssue = issues[0];
   if (firstIssue !== undefined) {

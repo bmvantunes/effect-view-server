@@ -171,12 +171,16 @@ the default Topic Name Strategy only (`<topic>-key` and `<topic>-value`); there
 is no dynamic-schema fallback, Avro, or JSON Schema path.
 
 Before any Kafka consumer starts, the Layer requires effective
-`FULL_TRANSITIVE` compatibility for every used subject and recursive reference,
-loads the complete active history, and checks it against the configured
-generated descriptor using Buf `WIRE` semantics. Compatibility is directional
-and wire-level, not exact descriptor equality: adding a fresh-tag field is
-accepted, and deleting a field is accepted only when its number is reserved.
-Use a new topic/subject version for an incompatible change.
+`FULL_TRANSITIVE` compatibility for every used subject and recursive reference
+by default. Set the Region Registry option `requiredCompatibility` to another
+Confluent compatibility level, such as `"NONE"` for a development Registry,
+when that environment intentionally uses a different effective policy. This
+changes only the required Registry policy: the Layer still loads the complete
+active history and checks it against the configured generated descriptor using
+Buf `WIRE` semantics. Compatibility is directional and wire-level, not exact
+descriptor equality: adding a fresh-tag field is accepted, and deleting a field
+is accepted only when its number is reserved. Use a new topic/subject version
+for an incompatible change.
 
 At runtime, an unknown, deleted, or incompatible schema ID is a fatal Source
 failure before Mapping, settlement, or offset commit. A known compatible ID

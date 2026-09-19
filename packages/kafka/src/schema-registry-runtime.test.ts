@@ -532,6 +532,38 @@ describe("Kafka Schema Registry Region runtime", () => {
     ),
   );
 
+  it.effect("keeps the configured compatibility policy during first-seen ID refresh", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const orders = mutableSubject("source-orders-value", 41);
+        orders.compatibility = "NONE";
+        const calls: ReaderCalls = { compatibility: 0, versions: 0, schemas: 0 };
+        const runtime = yield* makeKafkaSchemaRegistryRuntime({
+          region: "eu",
+          endpoint: "https://registry.eu.example.com",
+          declarations: [declaration("orders", "source-orders")],
+          reader: mutableReader(new Map([["source-orders-value", orders]]), calls),
+          monitorInterval: Duration.hours(1),
+          requiredCompatibility: "NONE",
+        });
+
+        orders.active = [1, 2];
+        orders.all = [1, 2];
+        orders.schemas.set(2, schemaVersion("source-orders-value", 2, 42));
+
+        expect(
+          yield* validateSide(runtime, {
+            viewServerTopic: "orders",
+            sourceTopic: "source-orders",
+            side: "value",
+            bytes: frame(42),
+          }),
+        ).toStrictEqual(Uint8Array.from([]));
+        expect(calls).toStrictEqual({ compatibility: 2, versions: 4, schemas: 3 });
+      }),
+    ),
+  );
+
   it.effect("revalidates the complete key-value binding after refresh and guards tombstones", () =>
     Effect.scoped(
       Effect.gen(function* () {

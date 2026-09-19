@@ -47,8 +47,11 @@ import {
   type KafkaServerRegionMetricsInput,
 } from "./server";
 import {
+  KafkaSchemaRegistryCompatibility,
+  defaultKafkaSchemaRegistryCompatibility,
   type KafkaSchemaRegistryContractValidationFailure as KafkaSchemaRegistryContractValidationFailureType,
   type KafkaSchemaRegistryDeclaration,
+  type KafkaSchemaRegistryCompatibility as KafkaSchemaRegistryCompatibilityType,
 } from "./schema-registry-contract";
 import {
   kafkaSchemaRegistryHttpDefaults,
@@ -153,6 +156,7 @@ export type KafkaNodeSchemaRegistryAuthOptions =
 
 export type KafkaNodeSchemaRegistryOptions = {
   readonly url: string;
+  readonly requiredCompatibility?: KafkaSchemaRegistryCompatibilityType;
   readonly auth?: KafkaNodeSchemaRegistryAuthOptions;
   readonly headers?: Readonly<Record<string, string>>;
   readonly timeout?: number;
@@ -176,6 +180,7 @@ export type KafkaNodeRegionOptions = {
 };
 
 type KafkaNodeSchemaRegistrySnapshot = Omit<KafkaNodeSchemaRegistryOptions, "monitorInterval"> & {
+  readonly requiredCompatibility: KafkaSchemaRegistryCompatibilityType;
   readonly headers: Readonly<Record<string, string>>;
   readonly timeout: number;
   readonly retries: number;
@@ -822,6 +827,7 @@ const snapshotSchemaRegistry = (value: unknown): KafkaNodeSchemaRegistrySnapshot
   const fields = captureDataFields(value, message);
   const allowed = new Set([
     "url",
+    "requiredCompatibility",
     "auth",
     "headers",
     "timeout",
@@ -831,6 +837,11 @@ const snapshotSchemaRegistry = (value: unknown): KafkaNodeSchemaRegistrySnapshot
     "tls",
   ]);
   const url = fields.get("url");
+  const configuredCompatibility = fields.get("requiredCompatibility");
+  const requiredCompatibility =
+    configuredCompatibility === undefined
+      ? defaultKafkaSchemaRegistryCompatibility
+      : configuredCompatibility;
   const auth = fields.get("auth");
   const timeout = fields.get("timeout") ?? kafkaSchemaRegistryHttpDefaults.timeout;
   const retries = fields.get("retries") ?? kafkaSchemaRegistryHttpDefaults.retries;
@@ -841,6 +852,7 @@ const snapshotSchemaRegistry = (value: unknown): KafkaNodeSchemaRegistrySnapshot
     Array.from(fields.keys()).some((name) => !allowed.has(name)) ||
     typeof url !== "string" ||
     url.length === 0 ||
+    !Schema.is(KafkaSchemaRegistryCompatibility)(requiredCompatibility) ||
     typeof timeout !== "number" ||
     !Number.isFinite(timeout) ||
     timeout <= 0 ||
@@ -875,6 +887,7 @@ const snapshotSchemaRegistry = (value: unknown): KafkaNodeSchemaRegistrySnapshot
   const authSnapshot = auth === undefined ? undefined : snapshotSchemaRegistryAuth(auth);
   return Object.freeze({
     url: normalizedUrl.success,
+    requiredCompatibility,
     ...(authSnapshot === undefined ? {} : { auth: authSnapshot }),
     headers: snapshotSchemaRegistryHeaders(fields.get("headers"), authSnapshot !== undefined),
     timeout,
@@ -2412,6 +2425,7 @@ const makeManagedKafkaSchemaRegistry = Effect.fn("KafkaNode.schemaRegistry.manag
           declarations: input.declarations,
           reader,
           monitorInterval: input.options.monitorInterval,
+          requiredCompatibility: input.options.requiredCompatibility,
         });
       }),
     });

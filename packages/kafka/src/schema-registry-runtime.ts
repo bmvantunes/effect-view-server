@@ -17,6 +17,7 @@ import {
   type KafkaResolvedSchemaRegistryContract,
   type KafkaSchemaRegistryContractIssue,
   type KafkaSchemaRegistryContractValidationFailure,
+  type KafkaSchemaRegistryCompatibility,
   type KafkaSchemaRegistryDeclaration,
   type KafkaSchemaRegistryReader,
   type KafkaSchemaRegistrySide,
@@ -383,12 +384,17 @@ export const makeKafkaSchemaRegistryRuntime = Effect.fn("KafkaSchemaRegistryRunt
     readonly declarations: ReadonlyArray<KafkaSchemaRegistryDeclaration>;
     readonly reader: KafkaSchemaRegistryReader;
     readonly monitorInterval: Duration.Duration;
+    readonly requiredCompatibility?: KafkaSchemaRegistryCompatibility;
   }): Effect.fn.Return<
     KafkaSchemaRegistryRuntime,
     KafkaSchemaRegistryContractValidationFailure,
     Scope.Scope
   > {
-    const initial = yield* resolveKafkaSchemaRegistryContracts(input.declarations, input.reader);
+    const initial = yield* resolveKafkaSchemaRegistryContracts(
+      input.declarations,
+      input.reader,
+      input.requiredCompatibility,
+    );
     const state = yield* SubscriptionRef.make<RegistryState>({
       revision: 0,
       contracts: contractsByTopic(initial),
@@ -418,6 +424,7 @@ export const makeKafkaSchemaRegistryRuntime = Effect.fn("KafkaSchemaRegistryRunt
           const resolution = yield* inspectKafkaSchemaRegistryContracts(
             input.declarations,
             input.reader,
+            input.requiredCompatibility,
           );
           const contracts = new Map(current.contracts);
           for (const contract of resolution.contracts) {

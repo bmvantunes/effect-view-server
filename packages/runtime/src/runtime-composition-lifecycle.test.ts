@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import { ViewServerId, defineViewServerConfig } from "@effect-view-server/config";
-import { Cause, Deferred, Duration, Effect, Exit, Fiber, Schema } from "effect";
+import { Cause, Deferred, Duration, Effect, Exit, Fiber, Logger, Option, Schema } from "effect";
 import { HttpServerError } from "effect/unstable/http";
 import { makeDefaultRuntimeDependencies, makeViewServerRuntimeWithDependencies } from "./internal";
 import type { ViewServerRuntimeDependencies } from "./runtime-dependencies";
@@ -476,6 +476,87 @@ describe("generic runtime composition lifecycle", () => {
         "close:runtime-core",
       ]);
       expect(heartbeatStatuses).toStrictEqual(["Starting", "Ready", "Stopping"]);
+    }),
+  );
+
+  it.live("logs the fatal cause before closing a directly constructed runtime", () =>
+    Effect.gen(function* () {
+      const events: Array<string> = [];
+      const fatal = {
+        _tag: "ViewServerRuntimeError",
+        code: "RuntimeUnavailable",
+        topic: "orders",
+        message: "fatal after startup",
+      } as const;
+      const fatalSignal = yield* Deferred.make<typeof fatal>();
+      const loggedFatal = yield* Deferred.make<unknown>();
+      const logger = Logger.make<unknown, void>((options) => {
+        const message = Array.isArray(options.message) ? options.message[0] : undefined;
+        if (message === "View Server Runtime stopped after fatal failure.") {
+          Deferred.doneUnsafe(
+            loggedFatal,
+            Effect.succeed({
+              cause: Cause.findErrorOption(options.cause),
+              events: [...events],
+              level: options.logLevel,
+              message: options.message,
+            }),
+          );
+        }
+      });
+      const tracked = makeTrackedDependencies(events);
+      const dependencies = {
+        ...tracked,
+        makeRuntimeCore: (config, options) =>
+          tracked.makeRuntimeCore(config, options).pipe(
+            Effect.map((runtimeCore) => ({
+              ...runtimeCore,
+              fatal: Deferred.await(fatalSignal).pipe(Effect.flatMap(Effect.fail)),
+            })),
+          ),
+      } satisfies ViewServerRuntimeDependencies<typeof viewServer.topics>;
+      const runtime = yield* makeViewServerRuntimeWithDependencies(dependencies, viewServer, {
+        websocketPort: 0,
+      }).pipe(Effect.provide(Logger.layer([logger])));
+
+      yield* Deferred.succeed(fatalSignal, fatal);
+
+      expect(yield* Deferred.await(loggedFatal)).toStrictEqual({
+        cause: Option.some(fatal),
+        events: ["acquire:runtime-core", "acquire:server"],
+        level: "Error",
+        message: ["View Server Runtime stopped after fatal failure."],
+      });
+      yield* runtime.close;
+      expect(events).toStrictEqual([
+        "acquire:runtime-core",
+        "acquire:server",
+        "close:server",
+        "close:runtime-core",
+      ]);
+    }),
+  );
+
+  it.live("does not log an explicit runtime close as a fatal failure", () =>
+    Effect.gen(function* () {
+      const fatalLogs: Array<unknown> = [];
+      const logger = Logger.make<unknown, void>((options) => {
+        const message = Array.isArray(options.message) ? options.message[0] : undefined;
+        if (message === "View Server Runtime stopped after fatal failure.") {
+          fatalLogs.push(options.cause);
+        }
+      });
+      const runtime = yield* makeViewServerRuntimeWithDependencies(
+        makeTrackedDependencies([]),
+        viewServer,
+        {
+          websocketPort: 0,
+        },
+      ).pipe(Effect.provide(Logger.layer([logger])));
+
+      yield* runtime.close;
+
+      expect(fatalLogs).toStrictEqual([]);
     }),
   );
 

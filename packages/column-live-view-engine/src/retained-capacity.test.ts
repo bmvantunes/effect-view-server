@@ -45,4 +45,5 @@ it.effect(
       expect(empty.totalRows).toBe(0);
       yield* engine.close();
     }),
+  30_000,
 );

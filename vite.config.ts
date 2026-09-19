@@ -136,6 +136,9 @@ export default defineConfig({
     coverage: {
       provider: "istanbul",
       include: [
+        "scripts/kafka-capacity-runner.mjs",
+        "packages/kafka/benchmarks/capacity-model.ts",
+        "packages/kafka/benchmarks/capacity-report.ts",
         "scripts/benchmark-artifact-mechanics.mjs",
         "scripts/benchmark-artifact-io.mjs",
         "scripts/benchmark-baseline.mjs",
@@ -209,6 +212,10 @@ export default defineConfig({
   run: {
     cache: true,
     tasks: {
+      "benchmark:kafka": {
+        command: "node scripts/benchmark-kafka-capacity.mjs",
+        cache: false,
+      },
       ...declarationTasks,
       "build:effect-declarations": {
         command: "vp pack",

@@ -1,3 +1,4 @@
+import type { StringKeyIndex } from "@effect-view-server/effect-utils";
 import type { TopicRowEntry } from "./row-scan";
 
 type RowObject = object;
@@ -11,7 +12,7 @@ export type TopicRowStorageLifecycle<Row extends RowObject> = {
   readonly addSlotToScalarIndexes: (slot: number) => void;
   readonly columns: () => Iterable<TopicRowStorageLifecycleColumn>;
   readonly insertSlotIntoOrderedIndexes: (slot: number) => void;
-  readonly keyToSlot: Map<string, number>;
+  readonly keyToSlot: Pick<StringKeyIndex<number>, "get" | "set" | "delete">;
   readonly removeSlotFromOrderedIndexes: (slot: number) => void;
   readonly removeSlotFromScalarIndexes: (slot: number) => void;
   readonly slots: Array<TopicRowEntry<Row>>;

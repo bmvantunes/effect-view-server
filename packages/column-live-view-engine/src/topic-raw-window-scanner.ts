@@ -30,7 +30,7 @@ type RowObject = object;
 
 export type TopicRawWindowScanState = {
   readonly columns: ReadonlyMap<string, TopicColumnValues>;
-  readonly keyToSlot?: ReadonlyMap<string, number>;
+  readonly keyToSlot?: Pick<ReadonlyMap<string, number>, "get">;
   readonly orderedSlotIndexes: Map<string, OrderedSlotIndex>;
   readonly rawQueryMetadata: RawQueryCompilerMetadata;
   readonly rawPredicateSlotMatchers?: WeakMap<TopicRawPredicatePlan, SlotFilterMatcher>;

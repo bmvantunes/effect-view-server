@@ -1,4 +1,5 @@
 import { Cause, Effect, Exit } from "effect";
+export { StringKeyIndex } from "./string-key-index";
 
 export {
   materializeStrictJson,

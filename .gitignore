@@ -46,3 +46,4 @@ dist-ssr
 **/src/__screenshots__/
 packages/*/.artifacts/*
 !packages/*/.artifacts/.gitkeep
+benchmarks/kafka-capacity/.run.lock

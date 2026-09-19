@@ -1,5 +1,6 @@
 import type { RowSchema } from "@effect-view-server/config";
 import { Effect } from "effect";
+import { StringKeyIndex } from "@effect-view-server/effect-utils";
 import type {
   TopicRowChange,
   TopicRowChangeBatch,
@@ -92,7 +93,7 @@ export class TopicRowStorage {
   readonly valueSemantics: TopicRowValueSemantics;
 
   private readonly slots: Array<TopicRowEntry<object>> = [];
-  private readonly keyToSlot = new Map<string, number>();
+  private readonly keyToSlot = new StringKeyIndex<number>();
   private readonly columns = new Map<string, MutableTopicColumnValues>();
   private readonly columnWritePlan: Array<MutableTopicColumnValues> = [];
   private readonly columnWriteFields: Array<string> = [];

@@ -475,8 +475,8 @@ describe("Topic schema admission", () => {
     expect(() =>
       defineViewServerConfig({
         topics: {
+          // @ts-expect-error Runtime admission protects untyped callers that do not provide a Struct.
           invalidRow: {
-            // @ts-expect-error Runtime admission protects untyped callers that do not provide a Struct.
             schema: {},
           },
         },

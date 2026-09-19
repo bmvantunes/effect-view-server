@@ -1,5 +1,6 @@
 import { isSourceDefinition } from "@effect-view-server/source-adapter/definition";
 import type {
+  SourceDefinition,
   SourceDefinitionAny,
   SourceDefinitionLifecycle,
   SourceDefinitionRow,
@@ -13,7 +14,7 @@ import {
 } from "./config-ownership";
 import { type ViewServerSystemTopicName, viewServerTopicNameIsReserved } from "./health-contract";
 import type { RejectExtraKeys } from "./query-exact";
-import type { RouteFieldKey } from "./query-filter";
+import type { FilterableScalar, RouteFieldKey } from "./query-filter";
 import type { RowFromSchema, RowSchema } from "./topic-contract";
 import { viewServerRouteFieldSchemaHasCompleteScalarDomain } from "./route-field-contract";
 import { viewServerUnsupportedRuntimeFieldDomain } from "./schema-field-metadata";
@@ -143,6 +144,11 @@ type ViewServerTopicShape = {
 
 export type ViewServerConfigTopicShape = Record<string, ViewServerTopicShape>;
 export type ViewServerConfigTopicInputShape = Record<string, ViewServerTopicShape>;
+type ViewServerTopicCandidateShape = {
+  readonly schema: object;
+  readonly source?: object | undefined;
+};
+type ViewServerConfigTopicCandidateShape = Record<string, ViewServerTopicCandidateShape>;
 export type NormalizeViewServerTopicDefinitions<Topics> = Topics;
 
 export type ViewServerTopicConfig<Topics extends ViewServerConfigTopicShape> = {
@@ -164,6 +170,37 @@ type TypeEquals<A, B> =
       : false
     : false;
 
+type IsAny<Value> = 0 extends 1 & Value ? true : false;
+type IsUnknown<Value> = IsAny<Value> extends true ? false : unknown extends Value ? true : false;
+
+type SourceDefinitionDeclaredRow<Definition> =
+  Definition extends SourceDefinition<
+    infer _Adapter,
+    infer _Lifecycle,
+    infer _Options,
+    infer _RouteFields,
+    infer _RetryServices,
+    infer Row
+  >
+    ? Row
+    : never;
+
+type UnsafeSourceRowDetails<Source> =
+  IsAny<SourceDefinitionDeclaredRow<Source>> extends true
+    ? { readonly received: "any" }
+    : IsUnknown<SourceDefinitionDeclaredRow<Source>> extends true
+      ? { readonly received: "unknown" }
+      : { readonly received: SourceDefinitionDeclaredRow<Source> };
+
+type UnsafeSourceRowReason<Source> =
+  IsAny<SourceDefinitionDeclaredRow<Source>> extends true
+    ? "source row type must not be any or unknown"
+    : IsUnknown<SourceDefinitionDeclaredRow<Source>> extends true
+      ? "source row type must not be any or unknown"
+      : [SourceDefinitionDeclaredRow<Source>] extends [never]
+        ? "source row type must not be never"
+        : "source row type must not be any or unknown";
+
 type HasCanonicalId<SchemaValue extends RowSchema> = SchemaValue extends {
   readonly fields: {
     readonly id: infer Id;
@@ -172,7 +209,10 @@ type HasCanonicalId<SchemaValue extends RowSchema> = SchemaValue extends {
   ? TypeEquals<Id, typeof ViewServerId>
   : false;
 
+declare const ViewServerConfigValidationErrorTypeId: unique symbol;
+
 type ViewServerConfigValidationError<Topic extends PropertyKey, Reason extends string, Details> = {
+  readonly [ViewServerConfigValidationErrorTypeId]: never;
   readonly __viewServerConfigError: {
     readonly __invalid: never;
     readonly topic: Topic;
@@ -181,14 +221,28 @@ type ViewServerConfigValidationError<Topic extends PropertyKey, Reason extends s
   };
 };
 
-type RowFieldDifference<ExpectedRow extends object, ReceivedRow extends object> = {
+type IsOptionalField<Row extends object, Field extends keyof Row> =
+  {} extends Pick<Row, Field> ? true : false;
+
+type RowFieldDifferenceMember<ExpectedRow extends object, ReceivedRow extends object> = {
   readonly [Field in keyof ExpectedRow | keyof ReceivedRow]: Field extends keyof ExpectedRow
     ? Field extends keyof ReceivedRow
       ? TypeEquals<
           NormalizeRowMutability<ExpectedRow[Field]>,
           NormalizeRowMutability<ReceivedRow[Field]>
         > extends true
-        ? never
+        ? TypeEquals<
+            IsOptionalField<ExpectedRow, Field>,
+            IsOptionalField<ReceivedRow, Field>
+          > extends true
+          ? never
+          : {
+              readonly field: Field;
+              readonly expected: ExpectedRow[Field];
+              readonly received: ReceivedRow[Field];
+              readonly expectedOptional: IsOptionalField<ExpectedRow, Field>;
+              readonly receivedOptional: IsOptionalField<ReceivedRow, Field>;
+            }
         : {
             readonly field: Field;
             readonly expected: ExpectedRow[Field];
@@ -207,6 +261,11 @@ type RowFieldDifference<ExpectedRow extends object, ReceivedRow extends object> 
         }
       : never;
 }[keyof ExpectedRow | keyof ReceivedRow];
+
+type RowFieldDifference<
+  ExpectedRow extends object,
+  ReceivedRow extends object,
+> = ReceivedRow extends unknown ? RowFieldDifferenceMember<ExpectedRow, ReceivedRow> : never;
 
 type CanonicalIdDetails<SchemaValue extends RowSchema> = SchemaValue extends {
   readonly fields: {
@@ -236,7 +295,11 @@ type ValidateSourceRoute<Topic extends PropertyKey, Row, Source extends SourceDe
             ViewServerConfigValidationError<
               Topic,
               "leased source routeBy field is not a scalar topic row field",
-              { readonly field: InvalidRoute }
+              {
+                readonly field: InvalidRoute;
+                readonly expected: FilterableScalar;
+                readonly received: InvalidRoute extends keyof Row ? Row[InvalidRoute] : "missing";
+              }
             >
       : never
     : Source;
@@ -252,8 +315,8 @@ type ValidateSource<
       ? Source &
           ViewServerConfigValidationError<
             Topic,
-            "source row type must not be any or unknown",
-            { readonly received: "any or unknown" }
+            UnsafeSourceRowReason<Source>,
+            UnsafeSourceRowDetails<Source>
           >
       : TypeEquals<
             NormalizeRowMutability<SourceDefinitionRow<Source>>,
@@ -300,7 +363,7 @@ type ValidateTopic<TopicName extends PropertyKey, Topic> = Topic extends {
         { readonly received: Topic }
       >;
 
-type ValidateTopicDefinitions<Topics extends ViewServerConfigTopicInputShape> = {
+type ValidateTopicDefinitions<Topics> = {
   readonly [Topic in keyof Topics]: Topic extends ViewServerSystemTopicName
     ? Topics[Topic] &
         ViewServerConfigValidationError<
@@ -325,7 +388,7 @@ export type ViewServerConfig<Topics extends ViewServerConfigTopicShape> =
       }
     : never;
 
-export type DefineViewServerConfigInput<Topics extends ViewServerConfigTopicInputShape> = {
+export type DefineViewServerConfigInput<Topics extends ViewServerConfigTopicCandidateShape> = {
   readonly topics: Topics & ValidateTopicDefinitions<Topics>;
 };
 
@@ -355,12 +418,10 @@ const validateLeasedSourceRouteFields = (
   }
 };
 
-export function defineViewServerConfig<const Topics extends ViewServerConfigTopicInputShape>(
+export function defineViewServerConfig<const Topics extends ViewServerConfigTopicCandidateShape>(
   input: DefineViewServerConfigInput<Topics>,
-): ViewServerConfig<Topics>;
-export function defineViewServerConfig(input: {
-  readonly topics: ViewServerConfigTopicInputShape;
-}) {
+): Topics extends ViewServerConfigTopicShape ? ViewServerConfig<Topics> : never;
+export function defineViewServerConfig(input: { readonly topics: ViewServerConfigTopicShape }) {
   const unsupportedConfigProperty = ownPropertyNamesAreExact(input, new Set(["topics"]));
   if (unsupportedConfigProperty !== undefined) {
     throw new Error(

@@ -611,8 +611,8 @@ describe("Runtime client and configuration generic contracts", () => {
 
     defineViewServerConfig({
       topics: {
+        // @ts-expect-error topic schemas must expose concrete fields for query typing and wire validation
         loose: {
-          // @ts-expect-error topic schemas must expose concrete fields for query typing and wire validation
           schema: Schema.Record(Schema.String, Schema.String),
         },
       },

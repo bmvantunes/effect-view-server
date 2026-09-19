@@ -12,8 +12,10 @@ import {
   ViewServerId,
   type DefineViewServerConfigInput,
   type ExactLiveQueryInputForTopic,
+  type FilterableScalar,
   type TopicRow,
   type ViewServerHealth,
+  type ViewServerConfigTopicInputShape,
   type ViewServerSourceHealth,
 } from "./index";
 
@@ -69,6 +71,17 @@ type NarrowIdRow = {
   readonly id: `user:${string}`;
   readonly region: string;
 };
+type RequiredUndefinedNoteRow = {
+  readonly id: string;
+  readonly note: string | undefined;
+};
+type ExclusiveUnionRow =
+  | { readonly id: string; readonly left: string }
+  | { readonly id: string; readonly right: number };
+declare const exclusiveUnionInitial: ExclusiveUnionRow;
+declare const forgedNever: never;
+type InputFromPublicTopicConstraint<Topics extends ViewServerConfigTopicInputShape> =
+  DefineViewServerConfigInput<Topics>;
 type MappedDefinitionOptions<SourceRow extends object> = {
   readonly stream: string;
   readonly initial: SourceRow;
@@ -192,6 +205,9 @@ describe("Source Adapter config type contracts", () => {
     expectTypeOf<typeof ViewServerId.Type>().toEqualTypeOf<string>();
     expectTypeOf<typeof ViewServerId.Encoded>().toEqualTypeOf<string>();
     expectTypeOf(config.topics.all.schema.fields.id).toEqualTypeOf<typeof ViewServerId>();
+    expectTypeOf<
+      InputFromPublicTopicConstraint<typeof config.topics>["topics"]["all"]["schema"]
+    >().toEqualTypeOf<typeof Row>();
     expectTypeOf(sourceFreeConfig.topics.manual.schema.fields.id).toEqualTypeOf<
       typeof ViewServerId
     >();
@@ -558,7 +574,7 @@ describe("Source Adapter config type contracts", () => {
       readonly __invalid: never;
       readonly topic: "unsafeMaterializedRow";
       readonly reason: "source row type must not be any or unknown";
-      readonly details: { readonly received: "any or unknown" };
+      readonly details: { readonly received: "any" };
     }>();
     defineViewServerConfig({
       topics: {
@@ -769,6 +785,182 @@ describe("Source Adapter config type contracts", () => {
           schema: StringRegionRow,
           // @ts-expect-error Reports topic "narrowId", field "id", expected string, and the received template-literal type.
           source: narrowIdSource,
+        },
+      },
+    });
+  });
+
+  it("preserves diagnostic details for optional, union, route, and malformed inputs", () => {
+    const OptionalNoteRow = Schema.Struct({
+      id: ViewServerId,
+      note: Schema.optionalKey(Schema.String),
+    });
+    const requiredUndefinedNoteSource = mappedSource<RequiredUndefinedNoteRow>("optional-note", {
+      id: "event-1",
+      note: undefined,
+    });
+    type OptionalNoteInput = DefineViewServerConfigInput<{
+      readonly optionalNote: {
+        readonly schema: typeof OptionalNoteRow;
+        readonly source: typeof requiredUndefinedNoteSource;
+      };
+    }>;
+    expectTypeOf<
+      OptionalNoteInput["topics"]["optionalNote"]["source"]["__viewServerConfigError"]
+    >().toEqualTypeOf<{
+      readonly __invalid: never;
+      readonly topic: "optionalNote";
+      readonly reason: "source row does not match topic schema row";
+      readonly details: {
+        readonly field: "note";
+        readonly expected: string | undefined;
+        readonly received: string | undefined;
+        readonly expectedOptional: true;
+        readonly receivedOptional: false;
+      };
+    }>();
+    defineViewServerConfig({
+      topics: {
+        optionalNote: {
+          schema: OptionalNoteRow,
+          // @ts-expect-error Required `undefined` differs from an optional property.
+          source: requiredUndefinedNoteSource,
+        },
+      },
+    });
+
+    const IdOnlyRow = Schema.Struct({ id: ViewServerId });
+    const exclusiveUnionSource = mappedSource<ExclusiveUnionRow>(
+      "exclusive-union",
+      exclusiveUnionInitial,
+    );
+    type ExclusiveUnionInput = DefineViewServerConfigInput<{
+      readonly exclusiveUnion: {
+        readonly schema: typeof IdOnlyRow;
+        readonly source: typeof exclusiveUnionSource;
+      };
+    }>;
+    expectTypeOf<
+      ExclusiveUnionInput["topics"]["exclusiveUnion"]["source"]["__viewServerConfigError"]
+    >().toEqualTypeOf<{
+      readonly __invalid: never;
+      readonly topic: "exclusiveUnion";
+      readonly reason: "source row does not match topic schema row";
+      readonly details:
+        | { readonly field: "left"; readonly expected: "absent"; readonly received: string }
+        | { readonly field: "right"; readonly expected: "absent"; readonly received: number };
+    }>();
+    defineViewServerConfig({
+      topics: {
+        exclusiveUnion: {
+          schema: IdOnlyRow,
+          // @ts-expect-error Union-exclusive fields remain visible in the diagnostic.
+          source: exclusiveUnionSource,
+        },
+      },
+    });
+
+    const neverSource = adapter.materializedSource<never>({ stream: "never" });
+    type NeverSourceInput = DefineViewServerConfigInput<{
+      readonly neverRow: { readonly schema: typeof Row; readonly source: typeof neverSource };
+    }>;
+    expectTypeOf<
+      NeverSourceInput["topics"]["neverRow"]["source"]["__viewServerConfigError"]
+    >().toEqualTypeOf<{
+      readonly __invalid: never;
+      readonly topic: "neverRow";
+      readonly reason: "source row type must not be never";
+      readonly details: { readonly received: never };
+    }>();
+    defineViewServerConfig({
+      topics: {
+        neverRow: {
+          schema: Row,
+          // @ts-expect-error `never` is rejected separately from any/unknown.
+          source: neverSource,
+        },
+      },
+    });
+
+    const nestedRouteSource = adapter.leasedSource(["metadata"], { stream: "nested-route" });
+    type NestedRouteInput = DefineViewServerConfigInput<{
+      readonly nestedRoute: {
+        readonly schema: typeof NestedRow;
+        readonly source: typeof nestedRouteSource;
+      };
+    }>;
+    expectTypeOf<
+      NestedRouteInput["topics"]["nestedRoute"]["source"]["__viewServerConfigError"]
+    >().toEqualTypeOf<{
+      readonly __invalid: never;
+      readonly topic: "nestedRoute";
+      readonly reason: "leased source routeBy field is not a scalar topic row field";
+      readonly details: {
+        readonly field: "metadata";
+        readonly expected: FilterableScalar;
+        readonly received: typeof NestedRow.Type.metadata;
+      };
+    }>();
+    defineViewServerConfig({
+      topics: {
+        nestedRoute: {
+          schema: NestedRow,
+          // @ts-expect-error Route diagnostics report expected and received field types.
+          source: nestedRouteSource,
+        },
+      },
+    });
+
+    type MalformedSourceInput = DefineViewServerConfigInput<{
+      readonly malformedSource: { readonly schema: typeof Row; readonly source: {} };
+    }>;
+    expectTypeOf<
+      MalformedSourceInput["topics"]["malformedSource"]["source"]["__viewServerConfigError"]
+    >().toEqualTypeOf<{
+      readonly __invalid: never;
+      readonly topic: "malformedSource";
+      readonly reason: "source must be created by SourceAdapter.make(...)";
+      readonly details: { readonly received: {} };
+    }>();
+    defineViewServerConfig({
+      topics: {
+        malformedSource: {
+          schema: Row,
+          // @ts-expect-error Structural sources receive the configured diagnostic.
+          source: {},
+        },
+      },
+    });
+
+    type MalformedSchemaInput = DefineViewServerConfigInput<{
+      readonly malformedSchema: { readonly schema: {} };
+    }>;
+    expectTypeOf<
+      MalformedSchemaInput["topics"]["malformedSchema"]["__viewServerConfigError"]
+    >().toEqualTypeOf<{
+      readonly __invalid: never;
+      readonly topic: "malformedSchema";
+      readonly reason: "topic schema must expose concrete struct fields";
+      readonly details: { readonly received: { readonly schema: {} } };
+    }>();
+    defineViewServerConfig({
+      topics: {
+        // @ts-expect-error Malformed schemas receive the configured diagnostic.
+        malformedSchema: { schema: {} },
+      },
+    });
+
+    defineViewServerConfig({
+      topics: {
+        // @ts-expect-error The diagnostic marker cannot be forged without its private symbol.
+        forgedDiagnostic: {
+          schema: Schema.Struct({ id: Schema.String }),
+          __viewServerConfigError: {
+            __invalid: forgedNever,
+            topic: "forgedDiagnostic",
+            reason: "topic schema must define id as ViewServerId",
+            details: { field: "id", expected: ViewServerId, received: Schema.String },
+          },
         },
       },
     });

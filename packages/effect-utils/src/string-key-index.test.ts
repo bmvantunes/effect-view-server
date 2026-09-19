@@ -73,4 +73,21 @@ describe("StringKeyIndex", () => {
     late.set("same-prefix-", -1);
     expect(late.get("same-prefix-")).toBe(-1);
   });
+
+  it("reuses emptied branches while another key remains live", () => {
+    const index = new StringKeyIndex<number>();
+    index.set("sentinel", -1);
+    for (let value = 0; value < 140_000; value += 1) index.set(`row-${value}`, value);
+    for (let value = 0; value < 140_000; value += 1)
+      expect(index.delete(`row-${value}`)).toBe(true);
+    expect(index.size).toBe(1);
+    expect(index.get("sentinel")).toBe(-1);
+    expect(index.get("row-0")).toBeUndefined();
+    index.set("row-0", 3);
+    expect(index.get("row-0")).toBe(3);
+    expect(index.delete("sentinel")).toBe(true);
+    expect(index.get("row-0")).toBe(3);
+    expect(index.delete("row-0")).toBe(true);
+    expect(index.size).toBe(0);
+  });
 });

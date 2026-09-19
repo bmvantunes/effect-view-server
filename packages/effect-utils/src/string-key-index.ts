@@ -51,9 +51,11 @@ export class StringKeyIndex<Value> {
   }
 
   delete(key: string): boolean {
-    if (this.findLeaf(key)?.entries.delete(key) !== true) return false;
+    const leaf = this.findLeaf(key);
+    if (leaf?.entries.delete(key) !== true) return false;
     this.sizeValue -= 1;
     if (this.sizeValue === 0) this.root = keyNode();
+    else if (leaf.entries.size === 0) this.removeEmptyLeaf(key);
     return true;
   }
 
@@ -72,6 +74,25 @@ export class StringKeyIndex<Value> {
       node = next;
     }
     return node;
+  }
+
+  private removeEmptyLeaf(key: string): void {
+    // Only an emptied leaf retraverses the path. Remove its entire chain of
+    // single-child ancestors without allocating a stack on ordinary deletes.
+    let node = this.root;
+    let retainedBranch = this.root.branch!;
+    let retainedSymbol = 0;
+    while (node.branch !== undefined) {
+      const branch = node.branch;
+      const symbol = ((key.charCodeAt(branch.offset) + 1) >>> branch.shift) & 255;
+      if (branch.children.size > 1) {
+        retainedBranch = branch;
+        retainedSymbol = symbol;
+      }
+      node = branch.children.get(symbol)!;
+    }
+    // Another live entry remains, so at least one ancestor has another child.
+    retainedBranch.children.delete(retainedSymbol);
   }
 
   private split(node: KeyNode<Value>): void {

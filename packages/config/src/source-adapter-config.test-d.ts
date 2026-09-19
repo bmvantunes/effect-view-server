@@ -545,12 +545,27 @@ describe("Source Adapter config type contracts", () => {
       },
     });
 
+    const unsafeMaterializedSource = adapter.materializedSource<any>({ stream: "all" });
+    type UnsafeMaterializedInput = DefineViewServerConfigInput<{
+      readonly unsafeMaterializedRow: {
+        readonly schema: typeof Row;
+        readonly source: typeof unsafeMaterializedSource;
+      };
+    }>;
+    expectTypeOf<
+      UnsafeMaterializedInput["topics"]["unsafeMaterializedRow"]["source"]["__viewServerConfigError"]
+    >().toEqualTypeOf<{
+      readonly __invalid: never;
+      readonly topic: "unsafeMaterializedRow";
+      readonly reason: "source row type must not be any or unknown";
+      readonly details: { readonly received: "any or unknown" };
+    }>();
     defineViewServerConfig({
       topics: {
         unsafeMaterializedRow: {
           schema: Row,
           // @ts-expect-error Reports the unsafe row on topic "unsafeMaterializedRow".
-          source: adapter.materializedSource<any>({ stream: "all" }),
+          source: unsafeMaterializedSource,
         },
       },
     });

@@ -253,7 +253,7 @@ type ValidateSource<
           ViewServerConfigValidationError<
             Topic,
             "source row type must not be any or unknown",
-            { readonly received: SourceDefinitionRow<Source> }
+            { readonly received: "any or unknown" }
           >
       : TypeEquals<
             NormalizeRowMutability<SourceDefinitionRow<Source>>,

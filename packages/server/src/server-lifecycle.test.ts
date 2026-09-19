@@ -1,7 +1,10 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Cause, Deferred, Effect, Fiber, Logger, Ref, References, Semaphore } from "effect";
+import { Cause, Deferred, Effect, Exit, Fiber, Logger, Ref, References, Semaphore } from "effect";
 import * as Socket from "effect/unstable/socket/Socket";
+import * as Http from "node:http";
+import type * as Net from "node:net";
 import { makeViewServerWebSocketServer } from "./index";
+import { NodeHttpServerFactory } from "./node-http-server-factory";
 import { closeTrackedSockets, makeTrackedSocket } from "./websocket-tracking";
 import {
   bearerAuth,
@@ -158,6 +161,61 @@ describe("Real View Server lifecycle", () => {
         yield* closeInMemory;
       }),
     ),
+  );
+
+  it.live("releases the HTTP listener when startup is interrupted", () =>
+    Effect.gen(function* () {
+      const inMemory = createServerTestRuntime(viewServer);
+      const closeInMemory = yield* makeRetryableClose(inMemory.close);
+      yield* Effect.addFinalizer(() => closeInMemory);
+      const port = yield* Effect.scoped(reserveTcpPort());
+      const listenStarted = yield* Deferred.make<void>();
+      const makeNodeServer = () => {
+        const server = Http.createServer();
+        const listen = server.listen.bind(server);
+        Object.defineProperty(server, "listen", {
+          value: (options: Net.ListenOptions, _callback: () => void) =>
+            listen(options, () => Deferred.doneUnsafe(listenStarted, Effect.void)),
+        });
+        return server;
+      };
+      const startup = yield* makeViewServerWebSocketServer(
+        viewServer,
+        {
+          liveClient: inMemory.liveClient,
+          runtime: inMemory.client,
+        },
+        { host: "127.0.0.1", port },
+      ).pipe(
+        Effect.provideService(NodeHttpServerFactory, makeNodeServer),
+        Effect.forkChild({ startImmediately: true }),
+      );
+
+      yield* Deferred.await(listenStarted).pipe(Effect.timeout("1 second"));
+      yield* Fiber.interrupt(startup);
+      const startupExit = yield* Fiber.await(startup);
+      expect(
+        Exit.match(startupExit, {
+          onFailure: Cause.hasInterruptsOnly,
+          onSuccess: () => false,
+        }),
+      ).toBe(true);
+
+      const restarted = yield* makeViewServerWebSocketServer(
+        viewServer,
+        {
+          liveClient: inMemory.liveClient,
+          runtime: inMemory.client,
+        },
+        { host: "127.0.0.1", port },
+      );
+      const closeRestarted = yield* makeRetryableClose(restarted.close);
+      yield* Effect.addFinalizer(() => closeRestarted);
+
+      expect(restarted.url).toContain(`:${port}/rpc`);
+      yield* closeRestarted;
+      yield* closeInMemory;
+    }).pipe(Effect.scoped),
   );
 
   it.live("closes tracked websocket clients when interrupted during the open hook", () =>

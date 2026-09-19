@@ -283,6 +283,14 @@ type CanonicalIdDetails<SchemaValue extends RowSchema> = SchemaValue extends {
       readonly received: "missing";
     };
 
+type InvalidRouteDetails<InvalidRoute, Row> = InvalidRoute extends PropertyKey
+  ? {
+      readonly field: InvalidRoute;
+      readonly expected: FilterableScalar;
+      readonly received: InvalidRoute extends keyof Row ? Row[InvalidRoute] : "missing";
+    }
+  : never;
+
 type ValidateSourceRoute<Topic extends PropertyKey, Row, Source extends SourceDefinitionAny> =
   SourceDefinitionLifecycle<Source> extends "leased"
     ? Exclude<
@@ -295,11 +303,7 @@ type ValidateSourceRoute<Topic extends PropertyKey, Row, Source extends SourceDe
             ViewServerConfigValidationError<
               Topic,
               "leased source routeBy field is not a scalar topic row field",
-              {
-                readonly field: InvalidRoute;
-                readonly expected: FilterableScalar;
-                readonly received: InvalidRoute extends keyof Row ? Row[InvalidRoute] : "missing";
-              }
+              InvalidRouteDetails<InvalidRoute, Row>
             >
       : never
     : Source;
@@ -336,20 +340,35 @@ type ValidateSource<
         { readonly received: Source }
       >;
 
+type ValidateOptionalSource<
+  Topic extends PropertyKey,
+  Row extends object,
+  Source,
+> = Source extends undefined ? undefined : ValidateSource<Topic, Row, Source>;
+
+type ValidateTopicSource<
+  TopicName extends PropertyKey,
+  Topic,
+  Row extends object,
+> = "source" extends keyof Topic
+  ? {} extends Pick<Topic, "source">
+    ? {
+        readonly source?: ValidateOptionalSource<TopicName, Row, Topic["source"]>;
+      }
+    : {
+        readonly source: ValidateOptionalSource<TopicName, Row, Topic["source"]>;
+      }
+  : {};
+
 type ValidateTopic<TopicName extends PropertyKey, Topic> = Topic extends {
   readonly schema: infer TopicSchema extends RowSchema;
 }
   ? HasCanonicalId<TopicSchema> extends true
-    ? Topic extends { readonly source: infer Source }
-      ? Topic &
-          RejectExtraKeys<Topic, ViewServerTopicShape> & {
-            readonly schema: TopicSchema;
-            readonly source: ValidateSource<TopicName, RowFromSchema<TopicSchema>, Source>;
-          }
-      : Topic &
-          RejectExtraKeys<Topic, ViewServerTopicShape> & {
-            readonly schema: TopicSchema;
-          }
+    ? Topic &
+        RejectExtraKeys<Topic, ViewServerTopicShape> &
+        ValidateTopicSource<TopicName, Topic, RowFromSchema<TopicSchema>> & {
+          readonly schema: TopicSchema;
+        }
     : Topic &
         ViewServerConfigValidationError<
           TopicName,

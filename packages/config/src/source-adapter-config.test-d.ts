@@ -80,6 +80,10 @@ type ExclusiveUnionRow =
   | { readonly id: string; readonly right: number };
 declare const exclusiveUnionInitial: ExclusiveUnionRow;
 declare const forgedNever: never;
+declare const optionalMalformedSourceTopic: {
+  readonly schema: typeof Row;
+  readonly source?: {};
+};
 type InputFromPublicTopicConstraint<Topics extends ViewServerConfigTopicInputShape> =
   DefineViewServerConfigInput<Topics>;
 type MappedDefinitionOptions<SourceRow extends object> = {
@@ -882,7 +886,9 @@ describe("Source Adapter config type contracts", () => {
       },
     });
 
-    const nestedRouteSource = adapter.leasedSource(["metadata"], { stream: "nested-route" });
+    const nestedRouteSource = adapter.leasedSource(["metadata", "missing"], {
+      stream: "nested-route",
+    });
     type NestedRouteInput = DefineViewServerConfigInput<{
       readonly nestedRoute: {
         readonly schema: typeof NestedRow;
@@ -895,11 +901,17 @@ describe("Source Adapter config type contracts", () => {
       readonly __invalid: never;
       readonly topic: "nestedRoute";
       readonly reason: "leased source routeBy field is not a scalar topic row field";
-      readonly details: {
-        readonly field: "metadata";
-        readonly expected: FilterableScalar;
-        readonly received: typeof NestedRow.Type.metadata;
-      };
+      readonly details:
+        | {
+            readonly field: "metadata";
+            readonly expected: FilterableScalar;
+            readonly received: typeof NestedRow.Type.metadata;
+          }
+        | {
+            readonly field: "missing";
+            readonly expected: FilterableScalar;
+            readonly received: "missing";
+          };
     }>();
     defineViewServerConfig({
       topics: {
@@ -931,6 +943,35 @@ describe("Source Adapter config type contracts", () => {
         },
       },
     });
+
+    type OptionalMalformedSourceInput = DefineViewServerConfigInput<{
+      readonly optionalMalformedSource: typeof optionalMalformedSourceTopic;
+    }>;
+    expectTypeOf<
+      NonNullable<
+        OptionalMalformedSourceInput["topics"]["optionalMalformedSource"]["source"]
+      >["__viewServerConfigError"]
+    >().toEqualTypeOf<{
+      readonly __invalid: never;
+      readonly topic: "optionalMalformedSource";
+      readonly reason: "source must be created by SourceAdapter.make(...)";
+      readonly details: { readonly received: {} };
+    }>();
+    defineViewServerConfig({
+      topics: {
+        // @ts-expect-error Optional source properties validate their present value.
+        optionalMalformedSource: optionalMalformedSourceTopic,
+      },
+    });
+
+    const explicitUndefinedSourceConfig = defineViewServerConfig({
+      topics: {
+        explicitUndefinedSource: { schema: Row, source: undefined },
+      },
+    });
+    expectTypeOf(
+      explicitUndefinedSourceConfig.topics.explicitUndefinedSource.source,
+    ).toEqualTypeOf<undefined>();
 
     type MalformedSchemaInput = DefineViewServerConfigInput<{
       readonly malformedSchema: { readonly schema: {} };

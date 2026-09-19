@@ -136,6 +136,8 @@ export default defineConfig({
     coverage: {
       provider: "istanbul",
       include: [
+        "scripts/kafka-capacity-runner.mjs",
+        "packages/kafka/benchmarks/capacity-model.ts",
         "scripts/benchmark-artifact-mechanics.mjs",
         "scripts/benchmark-artifact-io.mjs",
         "scripts/benchmark-baseline.mjs",

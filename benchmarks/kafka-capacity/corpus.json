@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "seed": 494,
+  "topics": 10,
+  "rowsPerTopic": 50000000,
+  "minBytes": 200,
+  "maxBytes": 1024,
+  "protobuf": "google.protobuf.StringValue",
+  "partitionsPerTopic": 1
+}

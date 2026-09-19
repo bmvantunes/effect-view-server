@@ -21,6 +21,7 @@ import type {
 } from "@effect-view-server/config";
 import { validateDecodedRow } from "@effect-view-server/config/internal";
 import {
+  StringKeyIndex,
   captureSourceHealthInput,
   makeSchemaJsonIdentity,
   runAllFinalizers,
@@ -964,7 +965,7 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
     ...ReadonlyArray<SourceLaneRuntimeMetrics>,
   ] = initialLaneMetrics();
   let stableLaneIds: ReadonlyArray<string> | undefined;
-  const materializedRetainedIds = new Set<string>();
+  const materializedRetainedIds = new StringKeyIndex<true>();
   const scope = yield* Scope.fork(input.ownerScope, "sequential");
   const applicationStateRegistration =
     input.entry.lifecycle.applicationState === undefined
@@ -1646,7 +1647,7 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
     if (application.value._tag === "Upsert") {
       appliedUpsertCount += 1n;
       if (input.ownedStorageKeys === undefined) {
-        materializedRetainedIds.add(application.value.id);
+        materializedRetainedIds.set(application.value.id, true);
       }
       return;
     }

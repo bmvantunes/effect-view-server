@@ -280,7 +280,14 @@ const makeViewServerRuntimeFromResolvedOptions = Effect.fn(
         );
         const awaitShutdown = cachedShutdownFiber.pipe(Effect.flatMap(Fiber.join), Effect.asVoid);
         const fatalWatcher = yield* Effect.forkDetach(
-          runtimeCore.fatal.pipe(Effect.catchCause(() => awaitShutdown)),
+          runtimeCore.fatal.pipe(
+            Effect.catchCause((cause) =>
+              Effect.logError("View Server Runtime stopped after fatal failure.", cause).pipe(
+                Effect.ensuring(awaitShutdown),
+                Effect.uninterruptible,
+              ),
+            ),
+          ),
           { startImmediately: true },
         );
         const close: Effect.Effect<void> = Fiber.interrupt(fatalWatcher).pipe(

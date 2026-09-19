@@ -9,7 +9,7 @@ import { Baseline, Corpus, payload, report, topicNames, wireRow } from "../packa
 const corpus = Schema.decodeUnknownSync(Corpus)(JSON.parse(readFileSync("benchmarks/kafka-capacity/corpus.json", "utf8")));
 const current: Baseline = {
   corpus, node: "v26", platform: "linux", arch: "x64", cpu: "test", logicalCpus: 16,
-  totalMemoryBytes: 1024 ** 4, revision: "abc",
+  heapLimitBytes: 2048 * 1024 ** 2, totalMemoryBytes: 1024 ** 4, revision: "abc",
   scenarios: [1, 3, 10].map((topics) => ({
     topics: Schema.decodeUnknownSync(Schema.Literals([1, 3, 10]))(topics),
     rows: topics * corpus.rowsPerTopic, seconds: 100, messagesPerSecond: topics * 500_000,

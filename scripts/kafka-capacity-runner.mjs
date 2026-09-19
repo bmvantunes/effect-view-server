@@ -8,6 +8,7 @@ export function parseCapacityArguments(args) {
 const { values } = parseArgs({ args, options: {
   compare: { type: "boolean", default: false },
   rows: { type: "string", default: "50000000" },
+  "heap-mib": { type: "string" },
   output: { type: "string", default: "packages/kafka/.artifacts/capacity" },
   "timeout-seconds": { type: "string", default: "86400" },
   "skip-build": { type: "boolean", default: false },
@@ -19,7 +20,12 @@ const { values } = parseArgs({ args, options: {
   if (!Number.isSafeInteger(rows) || rows < 1 || rows > 50_000_000 || !Number.isSafeInteger(timeout) || timeout < 1 || timeout > 2_000_000) {
     throw new Error("Rows must be 1..50000000; timeout-seconds must be 1..2000000.");
   }
-  return { ...values, rows, timeout, output: resolve(values.output) };
+  const minimumHeapMiB = Math.ceil(2048 + rows * 10 * 2048 / 2 ** 20);
+  const heapMiB = values["heap-mib"] === undefined ? minimumHeapMiB : Number(values["heap-mib"]);
+  if (!Number.isSafeInteger(heapMiB) || heapMiB < minimumHeapMiB) {
+    throw new Error(`heap-mib must be an integer of at least ${minimumHeapMiB} (2 KiB per retained row across ten topics plus 2 GiB).`);
+  }
+  return { ...values, rows, timeout, heapMiB, output: resolve(values.output) };
 }
 
 export async function runCapacityBenchmark(options, {
@@ -28,10 +34,14 @@ export async function runCapacityBenchmark(options, {
   schedule,
   cancel,
   lockPath,
+  availableMemory,
 }) {
   const { rows, timeout, output } = options;
+  if (options.heapMiB * 2 ** 20 > availableMemory() * 0.8) {
+    throw new Error(`Requested ${options.heapMiB} MiB heap exceeds 80% of available memory. Use a larger machine or reduce --rows.`);
+  }
   if (options.compare) {
-    const baseline = Schema.decodeUnknownSync(Baseline)(JSON.parse(readFileSync(resolve(output, "benchmark-baseline.json"), "utf8")));
+    const baseline = Schema.decodeUnknownSync(Baseline)(JSON.parse(readFileSync(resolve(output, "current", "benchmark-baseline.json"), "utf8")));
     report(baseline);
     if (baseline.corpus.rowsPerTopic !== rows) {
       throw new Error("Comparison requires a completed baseline with the same corpus and row count.");
@@ -63,7 +73,7 @@ export async function runCapacityBenchmark(options, {
       else reject(new Error(`${command} failed: code=${code}, signal=${exitSignal}, timedOut=${timedOut}`));
     });
   });
-  const worker = (mode) => run(process.execPath, ["packages/kafka/benchmarks/capacity.ts", mode, String(rows), output]);
+  const worker = (mode) => run(process.execPath, [`--max-old-space-size=${options.heapMiB}`, "packages/kafka/benchmarks/capacity.ts", mode, String(rows), output]);
   try {
     if (!options["skip-build"]) await run("vp", ["run", "-t", "effect-view-server#build"]);
     await run("docker", ["compose", "-f", "benchmarks/kafka-capacity/compose.yaml", "up", "-d", "--wait"]);
@@ -75,7 +85,7 @@ export async function runCapacityBenchmark(options, {
       if (!existsSync(result)) throw new Error(`Scenario ${count} produced no result`);
     }
     await worker(options.compare ? "compare" : "report");
-    console.log(`Benchmark report: ${resolve(output, "benchmark.md")}`);
+    console.log(`Benchmark report: ${resolve(output, "current", "benchmark.md")}`);
   } finally {
     closeSync(handle);
     rmSync(lock);

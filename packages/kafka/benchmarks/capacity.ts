@@ -2,8 +2,10 @@ import { Admin, Producer } from "@platformatic/kafka";
 import { StringValueSchema } from "@bufbuild/protobuf/wkt";
 import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
-import { readFileSync, writeFileSync, renameSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, renameSync, existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { getHeapStatistics } from "node:v8";
+import { publishCapacityReport } from "./capacity-report.ts";
 import { arch, cpus, platform, totalmem } from "node:os";
 import { execFileSync } from "node:child_process";
 import { Clock, Effect, Schema } from "effect";
@@ -42,7 +44,14 @@ const writeJson = (path: string, value: unknown) =>
       renameSync(`${path}.tmp`, path);
     },
     catch: (cause) => new CapacityError({ message: `Cannot write ${path}`, cause }),
-  });
+  }).pipe(
+    Effect.ensuring(
+      Effect.try({
+        try: () => rmSync(`${path}.tmp`, { force: true }),
+        catch: (cause) => new CapacityError({ message: `Cannot remove temporary ${path}`, cause }),
+      }).pipe(Effect.orDie),
+    ),
+  );
 
 const bootstrapServers = `localhost:${process.env["CAPACITY_KAFKA_PORT"] ?? "9092"}`;
 
@@ -78,10 +87,11 @@ const main = Effect.gen(function* () {
       cpu: cpus()[0]?.model ?? "unknown",
       logicalCpus: cpus().length,
       totalMemoryBytes: totalmem(),
+      heapLimitBytes: getHeapStatistics().heap_size_limit,
       revision,
       scenarios,
     };
-    const baselinePath = join(directory, "benchmark-baseline.json");
+    const baselinePath = join(directory, "current", "benchmark-baseline.json");
     const previous =
       mode === "compare"
         ? yield* Schema.decodeUnknownEffect(Baseline)(yield* readJson(baselinePath))
@@ -90,12 +100,16 @@ const main = Effect.gen(function* () {
       try: () => report(current, previous),
       catch: (cause) => new CapacityError({ message: "Invalid benchmark comparison", cause }),
     });
-    yield* writeJson(join(directory, "benchmark.json"), current);
     yield* Effect.try({
-      try: () => writeFileSync(join(directory, "benchmark.md"), markdown),
-      catch: (cause) => new CapacityError({ message: "Cannot write report", cause }),
+      try: () =>
+        publishCapacityReport(
+          directory,
+          `${JSON.stringify(current, undefined, 2)}\n`,
+          markdown,
+          mode === "compare",
+        ),
+      catch: (cause) => new CapacityError({ message: "Cannot publish report set", cause }),
     });
-    if (mode === "report") yield* writeJson(baselinePath, current);
     return;
   }
   const admin = yield* Effect.acquireRelease(
@@ -157,6 +171,7 @@ const main = Effect.gen(function* () {
           new Producer<Buffer | null, Buffer | null, Buffer, Buffer>({
             bootstrapBrokers: [bootstrapServers],
             clientId: "evs-capacity-seed",
+            idempotent: true,
           }),
       ),
       (client) => attempt("Close Kafka producer", () => client.close()).pipe(Effect.orDie),

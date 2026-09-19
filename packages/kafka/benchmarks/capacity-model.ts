@@ -59,6 +59,7 @@ export const Baseline = Schema.Struct({
   cpu: Schema.String,
   logicalCpus: Schema.Number,
   totalMemoryBytes: Schema.Number,
+  heapLimitBytes: Schema.Number.check(Schema.isGreaterThan(0)),
   revision: Schema.String,
   scenarios: Schema.Array(Scenario),
 });
@@ -94,7 +95,7 @@ export function report(current: Baseline, previous?: Baseline): string {
   return [
     "# Kafka retained-capacity benchmark",
     "",
-    `Revision: ${current.revision}. Node ${current.node}; ${current.platform}/${current.arch}; ${current.cpu}; ${current.logicalCpus} logical CPUs; ${(current.totalMemoryBytes / 2 ** 30).toFixed(1)} GiB host RAM.`,
+    `Revision: ${current.revision}. Node ${current.node}; ${current.platform}/${current.arch}; ${current.cpu}; ${current.logicalCpus} logical CPUs; ${(current.totalMemoryBytes / 2 ** 30).toFixed(1)} GiB host RAM; ${(current.heapLimitBytes / 2 ** 30).toFixed(1)} GiB V8 heap limit.`,
     "",
     `Corpus v${current.corpus.version}, seed ${current.corpus.seed}: ${current.corpus.rowsPerTopic} distinct retained rows per topic; protobuf payloads 200–1024 bytes; one partition per topic.`,
     "",

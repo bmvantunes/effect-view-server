@@ -3,8 +3,8 @@
 Run on demand from the repository root:
 
 ```sh
-vp run -w benchmark:kafka
-vp run -w benchmark:kafka --compare
+vp run -w benchmark:kafka --heap-mib=1048576
+vp run -w benchmark:kafka --heap-mib=1048576 --compare
 ```
 
 The first command builds the public package, starts Apache Kafka with plaintext
@@ -14,17 +14,28 @@ View Server process and fresh consumer groups. Topics load concurrently within
 that process. Scenarios run serially. This measures the existing runtime's scaling;
 it does not introduce workers to make a single-process result look multicore.
 
-Outputs default to `packages/kafka/.artifacts/capacity/`:
+Reports default to `packages/kafka/.artifacts/capacity/current/`:
 
 - `benchmark-baseline.json`: successful non-comparison run, used by `--compare`.
 - `benchmark.json`: latest successful results.
 - `benchmark.md`: detailed results, throughput, scaling, CPU cores, peak RSS and comparison.
+
+The output root also contains:
+
 - `scenario-{1,3,10}.json`: completed scenario results for diagnosing partial runs.
 - `corpus-ready.json`: recipe for a completely seeded corpus, checked against broker offsets on reuse.
 
-`--compare` preserves the baseline. A failed child, timeout, signal, missing artifact,
-offset mismatch or retained-row mismatch fails the run without publishing a new report.
-An older successful report may still exist; consult the command's exit status.
+`--compare` preserves the baseline bytes. All three reports are staged in an immutable
+`.report-*` generation, then a single atomic rename switches the `current` symlink.
+Readers therefore see a complete previous or new report set, even if a write fails
+or the process is interrupted. This requires a POSIX filesystem with atomic rename
+and symlink support. Readers needing a consistent multi-file snapshot should resolve
+`current` once and read that generation directly. Prior generations remain available and may be removed between
+runs, except for the generation targeted by `current`.
+
+A failed child, timeout, signal, missing artifact, offset mismatch or retained-row
+mismatch fails the run. Check the exit status; an older report may still exist,
+and interruption immediately after publication may leave a complete new report.
 
 ## Small validation run
 
@@ -38,8 +49,15 @@ Use `CAPACITY_KAFKA_PORT=9096` when another local broker owns 9092. The dedicate
 Compose project is shared by runs and protected by a lock; do not change its port
 while another run is active. `--skip-build` reuses an already-built public package.
 `--timeout-seconds=86400` sets the maximum duration of each child, including seeding.
-`NODE_OPTIONS=--max-old-space-size=...` controls the runtime heap; record the same
-heap setting and Docker resource allocation for comparisons.
+`--heap-mib` explicitly controls every worker's Node old-space limit and overrides
+that setting in `NODE_OPTIONS`. The default/minimum budget is 2 KiB per retained row
+across ten topics plus 2 GiB (978,611 MiB for the full corpus). This is a planning
+estimate, not a measured full-capacity memory guarantee; increase it if needed.
+The runner rejects a heap budget above 80% of currently available host memory
+before building or seeding. The full example requests 1 TiB of heap and needs at
+least 1.25 TiB available host memory, plus sufficient Docker disk capacity. Reports
+record the effective V8 heap limit. Keep heap and Docker allocations the same when
+comparing runs.
 
 ## Dataset and resources
 

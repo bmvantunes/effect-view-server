@@ -94,6 +94,26 @@ type PartiallySharedUnionRow =
   | typeof LeftUnionSchema.Type
   | { readonly id: string; readonly other: boolean };
 declare const partiallySharedUnionInitial: PartiallySharedUnionRow;
+const VariantA = Schema.Struct({
+  id: ViewServerId,
+  kind: Schema.Literal("a"),
+  left: Schema.String,
+});
+const VariantB = Schema.Struct({
+  id: ViewServerId,
+  kind: Schema.Literal("b"),
+  right: Schema.Number,
+});
+declare const discriminatedUnionSchema: typeof VariantA | typeof VariantB;
+type MismatchedDiscriminatedUnionRow =
+  | { readonly id: string; readonly kind: "a"; readonly left: number }
+  | { readonly id: string; readonly kind: "b"; readonly right: string };
+declare const mismatchedDiscriminatedUnionInitial: MismatchedDiscriminatedUnionRow;
+type OptionalUndefinedNoteRow = {
+  readonly id: string;
+  readonly note?: string | undefined;
+};
+declare const indexedStringRow: Record<string, string>;
 declare const forgedNever: never;
 declare const optionalMalformedSourceTopic: {
   readonly schema: typeof Row;
@@ -832,7 +852,7 @@ describe("Source Adapter config type contracts", () => {
       readonly reason: "source row does not match topic schema row";
       readonly details: {
         readonly field: "note";
-        readonly expected: string | undefined;
+        readonly expected: string;
         readonly received: string | undefined;
         readonly expectedOptional: true;
         readonly receivedOptional: false;
@@ -933,6 +953,137 @@ describe("Source Adapter config type contracts", () => {
           // @ts-expect-error Shared union members do not pollute mismatch details.
           source: partiallySharedUnionSource,
         },
+      },
+    });
+
+    const mismatchedDiscriminatedUnionSource = mappedSource<MismatchedDiscriminatedUnionRow>(
+      "mismatched-discriminated-union",
+      mismatchedDiscriminatedUnionInitial,
+    );
+    type MismatchedDiscriminatedUnionInput = DefineViewServerConfigInput<{
+      readonly mismatched: {
+        readonly schema: typeof discriminatedUnionSchema;
+        readonly source: typeof mismatchedDiscriminatedUnionSource;
+      };
+    }>;
+    expectTypeOf<
+      MismatchedDiscriminatedUnionInput["topics"]["mismatched"]["source"]["__viewServerConfigError"]["details"]
+    >().toEqualTypeOf<
+      | { readonly field: "left"; readonly expected: string; readonly received: number }
+      | { readonly field: "right"; readonly expected: number; readonly received: string }
+    >();
+    defineViewServerConfig({
+      topics: {
+        mismatched: {
+          schema: discriminatedUnionSchema,
+          // @ts-expect-error Discriminated union diagnostics correlate matching variants.
+          source: mismatchedDiscriminatedUnionSource,
+        },
+      },
+    });
+
+    const OptionalUndefinedNoteSchema = Schema.Struct({
+      id: ViewServerId,
+      note: Schema.optionalKey(Schema.String),
+    });
+    const optionalUndefinedNoteSource = mappedSource<OptionalUndefinedNoteRow>(
+      "optional-undefined-note",
+      { id: "event-1" },
+    );
+    type OptionalUndefinedNoteInput = DefineViewServerConfigInput<{
+      readonly optionalUndefinedNote: {
+        readonly schema: typeof OptionalUndefinedNoteSchema;
+        readonly source: typeof optionalUndefinedNoteSource;
+      };
+    }>;
+    expectTypeOf<
+      OptionalUndefinedNoteInput["topics"]["optionalUndefinedNote"]["source"]["__viewServerConfigError"]["details"]
+    >().toEqualTypeOf<{
+      readonly field: "note";
+      readonly expected: string;
+      readonly received: string | undefined;
+    }>();
+    defineViewServerConfig({
+      topics: {
+        optionalUndefinedNote: {
+          schema: OptionalUndefinedNoteSchema,
+          // @ts-expect-error Explicit undefined differs from an absent optional property.
+          source: optionalUndefinedNoteSource,
+        },
+      },
+    });
+
+    const indexedStringSource = mappedSource<Record<string, string>>(
+      "indexed-string",
+      indexedStringRow,
+    );
+    type IndexedStringInput = DefineViewServerConfigInput<{
+      readonly indexed: {
+        readonly schema: typeof Row;
+        readonly source: typeof indexedStringSource;
+      };
+    }>;
+    type IndexedStringDetails =
+      IndexedStringInput["topics"]["indexed"]["source"]["__viewServerConfigError"]["details"];
+    expectTypeOf<IndexedStringDetails>().toEqualTypeOf<
+      | {
+          readonly field: "shard";
+          readonly expected: bigint;
+          readonly received: string;
+        }
+      | {
+          readonly field: string;
+          readonly expected: "absent";
+          readonly received: string;
+        }
+    >();
+    defineViewServerConfig({
+      topics: {
+        indexed: {
+          schema: Row,
+          // @ts-expect-error Indexed source rows preserve concrete schema-field diagnostics.
+          source: indexedStringSource,
+        },
+      },
+    });
+
+    const callableDefinition = Object.assign(() => undefined, { schema: Row });
+    type CallableDefinitionInput = DefineViewServerConfigInput<{
+      readonly callable: typeof callableDefinition;
+    }>;
+    expectTypeOf<
+      CallableDefinitionInput["topics"]["callable"]["__viewServerConfigError"]
+    >().toEqualTypeOf<{
+      readonly __invalid: never;
+      readonly topic: "callable";
+      readonly reason: "topic definition must not be a function value";
+      readonly details: { readonly received: typeof callableDefinition };
+    }>();
+    defineViewServerConfig({
+      topics: {
+        // @ts-expect-error Callable topic definitions are rejected with a localized diagnostic.
+        callable: callableDefinition,
+      },
+    });
+
+    class ConstructibleDefinition {
+      static readonly schema = Row;
+    }
+    type ConstructibleDefinitionInput = DefineViewServerConfigInput<{
+      readonly constructible: typeof ConstructibleDefinition;
+    }>;
+    expectTypeOf<
+      ConstructibleDefinitionInput["topics"]["constructible"]["__viewServerConfigError"]
+    >().toEqualTypeOf<{
+      readonly __invalid: never;
+      readonly topic: "constructible";
+      readonly reason: "topic definition must not be a function value";
+      readonly details: { readonly received: typeof ConstructibleDefinition };
+    }>();
+    defineViewServerConfig({
+      topics: {
+        // @ts-expect-error Constructible topic definitions are rejected with a localized diagnostic.
+        constructible: ConstructibleDefinition,
       },
     });
 

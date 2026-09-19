@@ -121,14 +121,21 @@ type TypeEquals<A, B> =
 
 type ValidateEngineTopics<Topics extends DecodableTopicDefinitions> = {
   readonly [Topic in keyof Topics]: Topics[Topic] extends {
-    readonly schema: infer S extends RowSchema & Schema.Codec<object, unknown, never, never>;
+    (...arguments_: infer _Arguments): unknown;
   }
-    ? S extends { readonly fields: { readonly id: infer Id } }
-      ? TypeEquals<Id, ViewServerIdSchema> extends true
-        ? Topics[Topic] & RejectExtraEngineTopicKeys<Topics[Topic]>
-        : never
-      : never
-    : never;
+    ? never
+    : Topics[Topic] extends abstract new (...arguments_: infer _Arguments) => unknown
+      ? never
+      : Topics[Topic] extends {
+            readonly schema: infer S extends RowSchema &
+              Schema.Codec<object, unknown, never, never>;
+          }
+        ? S extends { readonly fields: { readonly id: infer Id } }
+          ? TypeEquals<Id, ViewServerIdSchema> extends true
+            ? Topics[Topic] & RejectExtraEngineTopicKeys<Topics[Topic]>
+            : never
+          : never
+        : never;
 };
 
 export type ColumnLiveViewEngineConfig<Topics extends DecodableTopicDefinitions> = {

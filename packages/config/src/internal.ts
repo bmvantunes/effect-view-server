@@ -22,5 +22,4 @@ export {
   snapshotViewServerRowSchema,
   snapshotViewServerTopics,
   viewServerRowSchemaFieldsMatchAst,
-  viewServerTopicDefinitionPropertyIsIntrinsic,
 } from "./config-ownership";

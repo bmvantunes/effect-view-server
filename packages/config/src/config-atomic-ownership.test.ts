@@ -124,7 +124,7 @@ describe("View Server config atomic ownership", () => {
     expect(ownKeysCalls).toBe(1);
   });
 
-  it("snapshots callable topic definitions accepted by the structural config interface", () => {
+  it("rejects callable topic definitions at the ownership boundary", () => {
     const Row = Schema.Struct({ id: ViewServerId });
     const definition = Object.assign(
       function callableDefinition() {
@@ -133,197 +133,25 @@ describe("View Server config atomic ownership", () => {
       { schema: Row },
     );
 
-    const config = defineViewServerConfig({ topics: { callable: definition } });
+    expect(() =>
+      defineViewServerConfig({
+        topics: {
+          // @ts-expect-error Topic definitions must not be callable values.
+          callable: definition,
+        },
+      }),
+    ).toThrow("View Server topic callable definition must not be a function value.");
 
-    expect(config.topics.callable.schema.fields.id).toBe(ViewServerId);
-    expect(config.topics.callable()).toBe("called");
-    expect(config.topics.callable === definition).toBe(false);
-    expect(Object.isFrozen(config.topics.callable)).toBe(true);
-
-    const arrowDefinition = Object.assign(() => "arrow", { schema: Row });
-    const arrowConfig = defineViewServerConfig({ topics: { arrow: arrowDefinition } });
-    expect(arrowConfig.topics.arrow()).toBe("arrow");
-  });
-
-  it("preserves construct signatures on owned callable topic definitions", () => {
-    const Row = Schema.Struct({ id: ViewServerId });
     class ConstructibleDefinition {
       static readonly schema = Row;
-
-      constructor(readonly value: string) {}
     }
-    const definition: {
-      new (value: string): ConstructibleDefinition;
-      readonly schema: typeof Row;
-    } = ConstructibleDefinition;
-
-    const config = defineViewServerConfig({
-      topics: { constructible: definition },
-    });
-    const instance = new config.topics.constructible("value");
-    class ExtendedDefinition extends config.topics.constructible {}
-    const extendedInstance = new ExtendedDefinition("extended");
-
-    expect({
-      extendedInstanceOfDefinition: extendedInstance instanceof ConstructibleDefinition,
-      extendedInstanceOfExtended: extendedInstance instanceof ExtendedDefinition,
-      extendedValue: extendedInstance.value,
-      frozen: Object.isFrozen(config.topics.constructible),
-      instanceOfDefinition: instance instanceof ConstructibleDefinition,
-      value: instance.value,
-    }).toStrictEqual({
-      extendedInstanceOfDefinition: true,
-      extendedInstanceOfExtended: true,
-      extendedValue: "extended",
-      frozen: true,
-      instanceOfDefinition: true,
-      value: "value",
-    });
-
-    Object.defineProperty(ConstructibleDefinition.prototype, "constructor", {
-      value: Object,
-    });
-    const decoratedDefinition: {
-      new (value: string): ConstructibleDefinition;
-      readonly schema: typeof Row;
-    } = ConstructibleDefinition;
-    const decoratedConfig = defineViewServerConfig({
-      topics: { decorated: decoratedDefinition },
-    });
-    expect(new decoratedConfig.topics.decorated("decorated").value).toBe("decorated");
-
-    const BoundDefinition = ConstructibleDefinition.bind(null, "bound");
-    const boundDefinition = Object.assign(BoundDefinition, { schema: Row });
-    const boundConfig = defineViewServerConfig({
-      topics: { bound: boundDefinition },
-    });
-    const boundInstance = new boundConfig.topics.bound();
-    class ExtendedBoundDefinition extends boundConfig.topics.bound {}
-    const extendedBoundInstance = new ExtendedBoundDefinition();
-    expect({
-      extendedInstanceOfExtended: extendedBoundInstance instanceof ExtendedBoundDefinition,
-      extendedInstanceOfSnapshot: extendedBoundInstance instanceof boundConfig.topics.bound,
-      instanceOfBoundDefinition: boundInstance instanceof BoundDefinition,
-      instanceOfSnapshot: boundInstance instanceof boundConfig.topics.bound,
-      value: boundInstance.value,
-    }).toStrictEqual({
-      extendedInstanceOfExtended: true,
-      extendedInstanceOfSnapshot: true,
-      instanceOfBoundDefinition: true,
-      instanceOfSnapshot: true,
-      value: "bound",
-    });
-  });
-
-  it("preserves native generator callable topic definitions", async () => {
-    const Row = Schema.Struct({ id: ViewServerId });
-    const generatorDefinition = Object.assign(
-      function* generatorDefinition() {
-        yield "generated";
-      },
-      { schema: Row },
-    );
-    const asyncGeneratorDefinition = Object.assign(
-      async function* asyncGeneratorDefinition() {
-        yield "async-generated";
-      },
-      { schema: Row },
-    );
-
-    const config = defineViewServerConfig({
-      topics: {
-        asyncGenerator: asyncGeneratorDefinition,
-        generator: generatorDefinition,
-      },
-    });
-
-    expect(config.topics.generator().next()).toStrictEqual({
-      done: false,
-      value: "generated",
-    });
-    expect(await config.topics.asyncGenerator().next()).toStrictEqual({
-      done: false,
-      value: "async-generated",
-    });
-  });
-
-  it("rejects custom callable properties that use intrinsic names", () => {
-    const prototypeDefinition = Object.assign(() => undefined, {
-      schema: Schema.Struct({ id: ViewServerId }),
-    });
-    Object.defineProperty(prototypeDefinition, "prototype", { value: "metadata" });
-
-    expect(() => defineViewServerConfig({ topics: { callable: prototypeDefinition } })).toThrow(
-      "View Server topic callable contains unsupported property: prototype.",
-    );
-
-    const callerDefinition = Object.assign(() => undefined, {
-      schema: Schema.Struct({ id: ViewServerId }),
-    });
-    Object.defineProperty(callerDefinition, "caller", { value: "metadata" });
-
-    expect(() => defineViewServerConfig({ topics: { callable: callerDefinition } })).toThrow(
-      "View Server topic callable contains unsupported property: caller.",
-    );
-
-    const accessorCallerDefinition = Object.assign(() => undefined, {
-      schema: Schema.Struct({ id: ViewServerId }),
-    });
-    Object.defineProperty(accessorCallerDefinition, "caller", {
-      get: () => "metadata",
-    });
-
     expect(() =>
-      defineViewServerConfig({ topics: { callable: accessorCallerDefinition } }),
-    ).toThrow("View Server topic callable contains unsupported property: caller.");
-
-    const configurableCallerDefinition = Object.assign(() => undefined, {
-      schema: Schema.Struct({ id: ViewServerId }),
-    });
-    Object.defineProperty(configurableCallerDefinition, "caller", {
-      configurable: true,
-      value: null,
-    });
-
-    expect(() =>
-      defineViewServerConfig({ topics: { callable: configurableCallerDefinition } }),
-    ).toThrow("View Server topic callable contains unsupported property: caller.");
-
-    const writableCallerDefinition = Object.assign(() => undefined, {
-      schema: Schema.Struct({ id: ViewServerId }),
-    });
-    Object.defineProperty(writableCallerDefinition, "caller", {
-      configurable: false,
-      value: null,
-      writable: true,
-    });
-
-    expect(() =>
-      defineViewServerConfig({ topics: { callable: writableCallerDefinition } }),
-    ).toThrow("View Server topic callable contains unsupported property: caller.");
-
-    const configurablePrototypeDefinition = Object.assign(() => undefined, {
-      schema: Schema.Struct({ id: ViewServerId }),
-    });
-    Object.defineProperty(configurablePrototypeDefinition, "prototype", {
-      configurable: true,
-      value: { constructor: configurablePrototypeDefinition },
-    });
-
-    expect(() =>
-      defineViewServerConfig({ topics: { callable: configurablePrototypeDefinition } }),
-    ).toThrow("View Server topic callable contains unsupported property: prototype.");
-
-    const nonConstructiblePrototypeDefinition = Object.assign(() => undefined, {
-      schema: Schema.Struct({ id: ViewServerId }),
-    });
-    Object.defineProperty(nonConstructiblePrototypeDefinition, "prototype", {
-      configurable: false,
-      value: { constructor: nonConstructiblePrototypeDefinition },
-    });
-
-    expect(() =>
-      defineViewServerConfig({ topics: { callable: nonConstructiblePrototypeDefinition } }),
-    ).toThrow("View Server topic callable contains unsupported property: prototype.");
+      defineViewServerConfig({
+        topics: {
+          // @ts-expect-error Topic definitions must not be constructible values.
+          constructible: ConstructibleDefinition,
+        },
+      }),
+    ).toThrow("View Server topic constructible definition must not be a function value.");
   });
 });

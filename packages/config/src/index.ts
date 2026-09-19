@@ -11,7 +11,6 @@ import {
   isViewServerRowSchema,
   snapshotViewServerTopics,
   viewServerRowSchemaFieldsMatchAst,
-  viewServerTopicDefinitionPropertyIsIntrinsic,
 } from "./config-ownership";
 import type { ViewServerSystemTopicName } from "./health-contract";
 import type { RejectExtraKeys } from "./query-exact";
@@ -230,43 +229,54 @@ type WithViewServerConfigValidationError<
 type IsOptionalField<Row extends object, Field extends keyof Row> =
   {} extends Pick<Row, Field> ? true : false;
 
-type RowFieldDifferenceMember<ExpectedRow extends object, ReceivedRow extends object> = {
-  readonly [Field in keyof ExpectedRow | keyof ReceivedRow]: Field extends keyof ExpectedRow
-    ? Field extends keyof ReceivedRow
+type FieldPresentValue<Row extends object, Field extends keyof Row> = Required<
+  Pick<Row, Field>
+>[Field];
+
+type ExpectedRowFieldDifference<ExpectedRow extends object, ReceivedRow extends object> = {
+  readonly [Field in keyof ExpectedRow]-?: Field extends keyof ReceivedRow
+    ? TypeEquals<
+        IsOptionalField<ExpectedRow, Field>,
+        IsOptionalField<ReceivedRow, Field>
+      > extends true
       ? TypeEquals<
-          NormalizeRowMutability<ExpectedRow[Field]>,
-          NormalizeRowMutability<ReceivedRow[Field]>
+          NormalizeRowMutability<FieldPresentValue<ExpectedRow, Field>>,
+          NormalizeRowMutability<FieldPresentValue<ReceivedRow, Field>>
         > extends true
-        ? TypeEquals<
-            IsOptionalField<ExpectedRow, Field>,
-            IsOptionalField<ReceivedRow, Field>
-          > extends true
-          ? never
-          : {
-              readonly field: Field;
-              readonly expected: ExpectedRow[Field];
-              readonly received: ReceivedRow[Field];
-              readonly expectedOptional: IsOptionalField<ExpectedRow, Field>;
-              readonly receivedOptional: IsOptionalField<ReceivedRow, Field>;
-            }
+        ? never
         : {
             readonly field: Field;
-            readonly expected: ExpectedRow[Field];
-            readonly received: ReceivedRow[Field];
+            readonly expected: FieldPresentValue<ExpectedRow, Field>;
+            readonly received: FieldPresentValue<ReceivedRow, Field>;
           }
       : {
           readonly field: Field;
-          readonly expected: ExpectedRow[Field];
-          readonly received: "missing";
+          readonly expected: FieldPresentValue<ExpectedRow, Field>;
+          readonly received: FieldPresentValue<ReceivedRow, Field>;
+          readonly expectedOptional: IsOptionalField<ExpectedRow, Field>;
+          readonly receivedOptional: IsOptionalField<ReceivedRow, Field>;
         }
-    : Field extends keyof ReceivedRow
-      ? {
-          readonly field: Field;
-          readonly expected: "absent";
-          readonly received: ReceivedRow[Field];
-        }
-      : never;
-}[keyof ExpectedRow | keyof ReceivedRow];
+    : {
+        readonly field: Field;
+        readonly expected: FieldPresentValue<ExpectedRow, Field>;
+        readonly received: "missing";
+      };
+}[keyof ExpectedRow];
+
+type UnexpectedReceivedRowFieldDifference<
+  ExpectedRow extends object,
+  ReceivedRow extends object,
+> = {
+  readonly [Field in Exclude<keyof ReceivedRow, keyof ExpectedRow>]-?: {
+    readonly field: Field;
+    readonly expected: "absent";
+    readonly received: FieldPresentValue<ReceivedRow, Field>;
+  };
+}[Exclude<keyof ReceivedRow, keyof ExpectedRow>];
+
+type RowFieldDifferenceMember<ExpectedRow extends object, ReceivedRow extends object> =
+  | ExpectedRowFieldDifference<ExpectedRow, ReceivedRow>
+  | UnexpectedReceivedRowFieldDifference<ExpectedRow, ReceivedRow>;
 
 type UnionMemberHasExactMatch<
   Member extends object,
@@ -295,6 +305,98 @@ type DistributedRowFieldDifference<
     : never
   : never;
 
+type CorrelationField<
+  ExpectedMember extends object,
+  ReceivedMember extends object,
+  ExpectedUnion extends object,
+  ReceivedUnion extends object,
+> = {
+  readonly [
+    Field in keyof ExpectedMember & keyof ReceivedMember & keyof ExpectedUnion & keyof ReceivedUnion
+  ]: TypeEquals<
+    FieldPresentValue<ExpectedMember, Field>,
+    FieldPresentValue<ReceivedMember, Field>
+  > extends true
+    ? TypeEquals<
+        FieldPresentValue<ExpectedMember, Field>,
+        FieldPresentValue<ExpectedUnion, Field>
+      > extends true
+      ? TypeEquals<
+          FieldPresentValue<ReceivedMember, Field>,
+          FieldPresentValue<ReceivedUnion, Field>
+        > extends true
+        ? never
+        : Field
+      : Field
+    : never;
+}[keyof ExpectedMember & keyof ReceivedMember & keyof ExpectedUnion & keyof ReceivedUnion];
+
+type CorrelatedReceivedMembers<
+  ExpectedMember extends object,
+  ReceivedMembers extends object,
+  ExpectedUnion extends object,
+  ReceivedUnion extends object,
+> = ReceivedMembers extends unknown
+  ? [CorrelationField<ExpectedMember, ReceivedMembers, ExpectedUnion, ReceivedUnion>] extends [
+      never,
+    ]
+    ? never
+    : ReceivedMembers
+  : never;
+
+type CorrelatedExpectedMembers<
+  ReceivedMember extends object,
+  ExpectedMembers extends object,
+  ExpectedUnion extends object,
+  ReceivedUnion extends object,
+> = ExpectedMembers extends unknown
+  ? [CorrelationField<ExpectedMembers, ReceivedMember, ExpectedUnion, ReceivedUnion>] extends [
+      never,
+    ]
+    ? never
+    : ExpectedMembers
+  : never;
+
+type CorrelatedDifferencesFromExpected<
+  ExpectedMembers extends object,
+  ReceivedMembers extends object,
+  ExpectedUnion extends object = ExpectedMembers,
+  ReceivedUnion extends object = ReceivedMembers,
+> = ExpectedMembers extends unknown
+  ? CorrelatedReceivedMembers<
+      ExpectedMembers,
+      ReceivedMembers,
+      ExpectedUnion,
+      ReceivedUnion
+    > extends infer Correlated extends object
+    ? [Correlated] extends [never]
+      ? DistributedRowFieldDifference<ExpectedMembers, ReceivedMembers>
+      : DistributedRowFieldDifference<ExpectedMembers, Correlated>
+    : never
+  : never;
+
+type CorrelatedDifferencesFromReceived<
+  ExpectedMembers extends object,
+  ReceivedMembers extends object,
+  ExpectedUnion extends object = ExpectedMembers,
+  ReceivedUnion extends object = ReceivedMembers,
+> = ReceivedMembers extends unknown
+  ? CorrelatedExpectedMembers<
+      ReceivedMembers,
+      ExpectedMembers,
+      ExpectedUnion,
+      ReceivedUnion
+    > extends infer Correlated extends object
+    ? [Correlated] extends [never]
+      ? DistributedRowFieldDifference<ExpectedMembers, ReceivedMembers>
+      : DistributedRowFieldDifference<Correlated, ReceivedMembers>
+    : never
+  : never;
+
+type CorrelatedRowFieldDifference<ExpectedRow extends object, ReceivedRow extends object> =
+  | CorrelatedDifferencesFromExpected<ExpectedRow, ReceivedRow>
+  | CorrelatedDifferencesFromReceived<ExpectedRow, ReceivedRow>;
+
 type RowFieldDifferenceMembers<
   ExpectedRow extends object,
   ReceivedRow extends object,
@@ -304,7 +406,7 @@ type RowFieldDifferenceMembers<
   ? DistributedRowFieldDifference<ExpectedRow, UnmatchedReceived>
   : [UnmatchedReceived] extends [never]
     ? DistributedRowFieldDifference<UnmatchedExpected, ReceivedRow>
-    : DistributedRowFieldDifference<UnmatchedExpected, UnmatchedReceived>;
+    : CorrelatedRowFieldDifference<UnmatchedExpected, UnmatchedReceived>;
 
 type RowFieldDifference<
   ExpectedRow extends object,
@@ -407,26 +509,42 @@ type ValidateTopicSource<
   : {};
 
 type ValidateTopic<TopicName extends PropertyKey, Topic> = Topic extends {
-  readonly schema: infer TopicSchema extends RowSchema;
+  (...arguments_: infer _Arguments): unknown;
 }
-  ? HasCanonicalId<TopicSchema> extends true
-    ? Omit<Topic, "source"> &
-        RejectExtraKeys<Topic, ViewServerTopicShape> &
-        ValidateTopicSource<TopicName, Topic, RowFromSchema<TopicSchema>> & {
-          readonly schema: TopicSchema;
-        }
-    : Topic &
-        ViewServerConfigValidationError<
-          TopicName,
-          "topic schema must define id as ViewServerId",
-          CanonicalIdDetails<TopicSchema>
-        >
-  : WithViewServerConfigValidationError<
+  ? WithViewServerConfigValidationError<
       Topic,
       TopicName,
-      "topic schema must expose concrete struct fields",
+      "topic definition must not be a function value",
       { readonly received: Topic }
-    >;
+    >
+  : Topic extends abstract new (...arguments_: infer _Arguments) => unknown
+    ? WithViewServerConfigValidationError<
+        Topic,
+        TopicName,
+        "topic definition must not be a function value",
+        { readonly received: Topic }
+      >
+    : Topic extends {
+          readonly schema: infer TopicSchema extends RowSchema;
+        }
+      ? HasCanonicalId<TopicSchema> extends true
+        ? Omit<Topic, "source"> &
+            RejectExtraKeys<Topic, ViewServerTopicShape> &
+            ValidateTopicSource<TopicName, Topic, RowFromSchema<TopicSchema>> & {
+              readonly schema: TopicSchema;
+            }
+        : Topic &
+            ViewServerConfigValidationError<
+              TopicName,
+              "topic schema must define id as ViewServerId",
+              CanonicalIdDetails<TopicSchema>
+            >
+      : WithViewServerConfigValidationError<
+          Topic,
+          TopicName,
+          "topic schema must expose concrete struct fields",
+          { readonly received: Topic }
+        >;
 
 type ValidateTopicDefinitions<Topics> = {
   readonly [Topic in keyof Topics]: Topic extends ViewServerSystemTopicName
@@ -498,9 +616,7 @@ export function defineViewServerConfig(input: { readonly topics: ViewServerConfi
     const topicDefinition = topics[topic]!;
     const allowedTopicProperties = new Set<PropertyKey>(["schema", "source"]);
     const unsupportedTopicProperty = Reflect.ownKeys(topicDefinition).find(
-      (property) =>
-        !allowedTopicProperties.has(property) &&
-        !viewServerTopicDefinitionPropertyIsIntrinsic(topicDefinition, property),
+      (property) => !allowedTopicProperties.has(property),
     );
     if (unsupportedTopicProperty !== undefined) {
       throw new Error(

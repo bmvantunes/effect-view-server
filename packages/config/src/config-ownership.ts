@@ -77,17 +77,9 @@ export const viewServerRowSchemaFieldsMatchAst = (schema: RowSchema): boolean =>
   return true;
 };
 
-const snapshotOwnProperties = (topic: string, value: object): { [key: PropertyKey]: unknown } => {
+const snapshotOwnProperties = (value: object): { [key: PropertyKey]: unknown } => {
   const copied: { [key: PropertyKey]: unknown } = {};
   for (const property of Reflect.ownKeys(value)) {
-    if (viewServerTopicDefinitionPropertyIsIntrinsic(value, property)) {
-      continue;
-    }
-    if (typeof value === "function" && property !== "schema" && property !== "source") {
-      throw new Error(
-        `View Server topic ${topic} contains unsupported property: ${String(property)}.`,
-      );
-    }
     Object.defineProperty(copied, property, {
       configurable: true,
       enumerable: true,
@@ -98,100 +90,17 @@ const snapshotOwnProperties = (topic: string, value: object): { [key: PropertyKe
   return copied;
 };
 
-export const viewServerTopicDefinitionPropertyIsIntrinsic = (
-  value: object,
-  property: PropertyKey,
-): boolean => {
-  if (typeof value !== "function") {
-    return false;
-  }
-  const descriptor = Object.getOwnPropertyDescriptor(value, property);
-  if (descriptor === undefined || descriptor.enumerable || !("value" in descriptor)) {
-    return false;
-  }
-  if (property === "length") {
-    return typeof descriptor.value === "number" && descriptor.writable === false;
-  }
-  if (property === "name") {
-    return typeof descriptor.value === "string" && descriptor.writable === false;
-  }
-  if (property === "arguments" || property === "caller") {
-    return (
-      descriptor.value === null &&
-      descriptor.writable === false &&
-      descriptor.configurable === false
-    );
-  }
-  if (property !== "prototype" || descriptor.configurable !== false) {
-    return false;
-  }
-  try {
-    Reflect.construct(Object, [], value);
-    return true;
-  } catch {
-    if (descriptor.value === null || typeof descriptor.value !== "object") {
-      return false;
-    }
-    const functionTag = Object.prototype.toString.call(value);
-    const prototypeTag = Object.prototype.toString.call(descriptor.value);
-    return (
-      (functionTag === "[object GeneratorFunction]" && prototypeTag === "[object Generator]") ||
-      (functionTag === "[object AsyncGeneratorFunction]" &&
-        prototypeTag === "[object AsyncGenerator]")
-    );
-  }
-};
-
-const copySnapshotProperties = (
-  target: object,
-  properties: { [key: PropertyKey]: unknown },
-): void => {
-  for (const property of Reflect.ownKeys(properties)) {
-    Object.defineProperty(target, property, {
-      configurable: true,
-      enumerable: true,
-      value: Reflect.get(properties, property, properties),
-      writable: true,
-    });
-  }
-};
-
 const snapshotTopicDefinition = (topic: string, definition: unknown) => {
-  if (definition === null || (typeof definition !== "object" && typeof definition !== "function")) {
+  if (typeof definition === "function") {
+    throw new Error(`View Server topic ${topic} definition must not be a function value.`);
+  }
+  if (definition === null || typeof definition !== "object") {
     throw new Error(`View Server topic ${topic} row schema must be an Effect Schema Struct.`);
   }
-  const copied = snapshotOwnProperties(topic, definition);
+  const copied = snapshotOwnProperties(definition);
   const schema = copied["schema"];
   if (isViewServerRowSchema(schema)) {
     copied["schema"] = snapshotViewServerRowSchema(schema);
-  }
-  if (typeof definition === "function") {
-    const callableTarget = function (this: unknown, ...arguments_: ReadonlyArray<unknown>) {
-      return Reflect.apply(definition, this, arguments_);
-    };
-    if (Object.hasOwn(definition, "prototype")) {
-      Object.defineProperty(callableTarget, "prototype", {
-        value: Reflect.get(definition, "prototype", definition),
-      });
-    }
-    let callableSnapshot: typeof callableTarget;
-    const definitionHasInstance = (instance: unknown) =>
-      Function.prototype[Symbol.hasInstance].call(definition, instance) ||
-      Function.prototype[Symbol.hasInstance].call(callableTarget, instance);
-    callableSnapshot = new Proxy(callableTarget, {
-      construct: (_target, arguments_, newTarget) =>
-        Reflect.construct(
-          definition,
-          arguments_,
-          newTarget === callableSnapshot ? definition : newTarget,
-        ),
-      get: (target, property, receiver) =>
-        property === Symbol.hasInstance && receiver === callableSnapshot
-          ? definitionHasInstance
-          : Reflect.get(target, property, receiver),
-    });
-    copySnapshotProperties(callableSnapshot, copied);
-    return Object.freeze(callableSnapshot);
   }
   return Object.freeze({ ...copied });
 };

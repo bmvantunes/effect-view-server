@@ -469,6 +469,29 @@ describe("ColumnLiveViewEngine type contract", () => {
     void _invalidKeyConfig;
   });
 
+  it("rejects callable and constructible engine topic definitions", () => {
+    const callableDefinition = Object.assign(() => undefined, { schema: Order });
+    const _invalidCallableConfig = createColumnLiveViewEngine({
+      topics: {
+        // @ts-expect-error engine topic definitions must not be callable values.
+        orders: callableDefinition,
+      },
+    });
+
+    class ConstructibleDefinition {
+      static readonly schema = Order;
+    }
+    const _invalidConstructibleConfig = createColumnLiveViewEngine({
+      topics: {
+        // @ts-expect-error engine topic definitions must not be constructible values.
+        orders: ConstructibleDefinition,
+      },
+    });
+
+    void _invalidCallableConfig;
+    void _invalidConstructibleConfig;
+  });
+
   it("rejects plain string schemas at the engine topic boundary", () => {
     const PlainStringIdRow = Schema.Struct({
       id: Schema.String,

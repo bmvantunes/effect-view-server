@@ -13,7 +13,6 @@ import {
   snapshotViewServerTopics,
   isViewServerIdSchema,
   viewServerRowSchemaFieldsMatchAst,
-  viewServerTopicDefinitionPropertyIsIntrinsic,
 } from "@effect-view-server/config/internal";
 import { Effect, Latch, Result, Schema, Semaphore } from "effect";
 import type {
@@ -86,10 +85,7 @@ const inspectEngineTopics = <Topics extends DecodableTopicDefinitions>(
   const snapshot = snapshotViewServerTopics(topics);
   for (const [topic, definition] of Object.entries(snapshot)) {
     const unsupportedProperty = Reflect.ownKeys(definition).find(
-      (property) =>
-        property !== "schema" &&
-        property !== "source" &&
-        !viewServerTopicDefinitionPropertyIsIntrinsic(definition, property),
+      (property) => property !== "schema" && property !== "source",
     );
     if (unsupportedProperty !== undefined) {
       return {

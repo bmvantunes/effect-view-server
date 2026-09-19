@@ -49,6 +49,8 @@ const RightUnionSchema = Schema.Struct({
   right: Schema.Number,
 });
 declare const exclusiveUnionSchema: typeof LeftUnionSchema | typeof RightUnionSchema;
+const NumberIdSchema = Schema.Struct({ id: Schema.Number });
+declare const mixedCanonicalIdSchema: typeof Row | typeof NumberIdSchema;
 type MissingFieldRow = {
   readonly id: string;
   readonly region: string;
@@ -88,6 +90,10 @@ type ExclusiveUnionRow =
   | { readonly id: string; readonly left: string }
   | { readonly id: string; readonly right: number };
 declare const exclusiveUnionInitial: ExclusiveUnionRow;
+type PartiallySharedUnionRow =
+  | typeof LeftUnionSchema.Type
+  | { readonly id: string; readonly other: boolean };
+declare const partiallySharedUnionInitial: PartiallySharedUnionRow;
 declare const forgedNever: never;
 declare const optionalMalformedSourceTopic: {
   readonly schema: typeof Row;
@@ -900,6 +906,36 @@ describe("Source Adapter config type contracts", () => {
       },
     });
 
+    const partiallySharedUnionSource = mappedSource<PartiallySharedUnionRow>(
+      "partially-shared-union",
+      partiallySharedUnionInitial,
+    );
+    type PartiallySharedUnionInput = DefineViewServerConfigInput<{
+      readonly partiallySharedUnion: {
+        readonly schema: typeof exclusiveUnionSchema;
+        readonly source: typeof partiallySharedUnionSource;
+      };
+    }>;
+    expectTypeOf<
+      PartiallySharedUnionInput["topics"]["partiallySharedUnion"]["source"]["__viewServerConfigError"]
+    >().toEqualTypeOf<{
+      readonly __invalid: never;
+      readonly topic: "partiallySharedUnion";
+      readonly reason: "source row does not match topic schema row";
+      readonly details:
+        | { readonly field: "right"; readonly expected: number; readonly received: "missing" }
+        | { readonly field: "other"; readonly expected: "absent"; readonly received: boolean };
+    }>();
+    defineViewServerConfig({
+      topics: {
+        partiallySharedUnion: {
+          schema: exclusiveUnionSchema,
+          // @ts-expect-error Shared union members do not pollute mismatch details.
+          source: partiallySharedUnionSource,
+        },
+      },
+    });
+
     const neverSource = adapter.materializedSource<never>({ stream: "never" });
     type NeverSourceInput = DefineViewServerConfigInput<{
       readonly neverRow: { readonly schema: typeof Row; readonly source: typeof neverSource };
@@ -1120,6 +1156,28 @@ describe("Source Adapter config type contracts", () => {
       topics: {
         // @ts-expect-error Missing schemas receive the configured diagnostic.
         missingSchema: {},
+      },
+    });
+
+    type MixedCanonicalIdInput = DefineViewServerConfigInput<{
+      readonly mixedCanonicalId: { readonly schema: typeof mixedCanonicalIdSchema };
+    }>;
+    expectTypeOf<
+      MixedCanonicalIdInput["topics"]["mixedCanonicalId"]["__viewServerConfigError"]
+    >().toEqualTypeOf<{
+      readonly __invalid: never;
+      readonly topic: "mixedCanonicalId";
+      readonly reason: "topic schema must define id as ViewServerId";
+      readonly details: {
+        readonly field: "id";
+        readonly expected: typeof ViewServerId;
+        readonly received: typeof Schema.Number;
+      };
+    }>();
+    defineViewServerConfig({
+      topics: {
+        // @ts-expect-error Canonical-ID diagnostics exclude already-valid union members.
+        mixedCanonicalId: { schema: mixedCanonicalIdSchema },
       },
     });
 

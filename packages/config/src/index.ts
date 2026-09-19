@@ -11,7 +11,6 @@ import {
   isViewServerRowSchema,
   snapshotViewServerTopics,
   viewServerRowSchemaFieldsMatchAst,
-  viewServerTopicDefinitionPropertyIsIntrinsic,
 } from "./config-ownership";
 import type { ViewServerSystemTopicName } from "./health-contract";
 import type { RejectExtraKeys } from "./query-exact";
@@ -268,7 +267,25 @@ type RowFieldDifferenceMember<ExpectedRow extends object, ReceivedRow extends ob
       : never;
 }[keyof ExpectedRow | keyof ReceivedRow];
 
-type RowFieldDifference<
+type UnionMemberHasExactMatch<
+  Member extends object,
+  Candidates extends object,
+> = Candidates extends unknown
+  ? TypeEquals<NormalizeRowMutability<Member>, NormalizeRowMutability<Candidates>> extends true
+    ? true
+    : never
+  : never;
+
+type UnmatchedUnionMembers<
+  Members extends object,
+  Candidates extends object,
+> = Members extends unknown
+  ? [UnionMemberHasExactMatch<Members, Candidates>] extends [never]
+    ? Members
+    : never
+  : never;
+
+type DistributedRowFieldDifference<
   ExpectedRow extends object,
   ReceivedRow extends object,
 > = ExpectedRow extends unknown
@@ -277,16 +294,34 @@ type RowFieldDifference<
     : never
   : never;
 
+type RowFieldDifferenceMembers<
+  ExpectedRow extends object,
+  ReceivedRow extends object,
+  UnmatchedExpected extends object = UnmatchedUnionMembers<ExpectedRow, ReceivedRow>,
+  UnmatchedReceived extends object = UnmatchedUnionMembers<ReceivedRow, ExpectedRow>,
+> = [UnmatchedExpected] extends [never]
+  ? DistributedRowFieldDifference<ExpectedRow, UnmatchedReceived>
+  : [UnmatchedReceived] extends [never]
+    ? DistributedRowFieldDifference<UnmatchedExpected, ReceivedRow>
+    : DistributedRowFieldDifference<UnmatchedExpected, UnmatchedReceived>;
+
+type RowFieldDifference<
+  ExpectedRow extends object,
+  ReceivedRow extends object,
+> = RowFieldDifferenceMembers<ExpectedRow, ReceivedRow>;
+
 type CanonicalIdDetails<SchemaValue extends RowSchema> = SchemaValue extends {
   readonly fields: {
     readonly id: infer Id;
   };
 }
-  ? {
-      readonly field: "id";
-      readonly expected: typeof ViewServerId;
-      readonly received: Id;
-    }
+  ? TypeEquals<Id, typeof ViewServerId> extends true
+    ? never
+    : {
+        readonly field: "id";
+        readonly expected: typeof ViewServerId;
+        readonly received: Id;
+      }
   : {
       readonly field: "id";
       readonly expected: typeof ViewServerId;
@@ -464,7 +499,14 @@ export function defineViewServerConfig(input: { readonly topics: ViewServerConfi
     const unsupportedTopicProperty = Reflect.ownKeys(topicDefinition).find(
       (property) =>
         !allowedTopicProperties.has(property) &&
-        !viewServerTopicDefinitionPropertyIsIntrinsic(topicDefinition, property),
+        !(
+          typeof topicDefinition === "function" &&
+          (property === "length" ||
+            property === "name" ||
+            property === "arguments" ||
+            property === "caller" ||
+            property === "prototype")
+        ),
     );
     if (unsupportedTopicProperty !== undefined) {
       throw new Error(

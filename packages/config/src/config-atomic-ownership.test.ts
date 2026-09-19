@@ -126,7 +126,12 @@ describe("View Server config atomic ownership", () => {
 
   it("snapshots callable topic definitions accepted by the structural config interface", () => {
     const Row = Schema.Struct({ id: ViewServerId });
-    const definition = Object.assign(() => "called", { schema: Row });
+    const definition = Object.assign(
+      function callableDefinition() {
+        return "called";
+      },
+      { schema: Row },
+    );
 
     const config = defineViewServerConfig({ topics: { callable: definition } });
 
@@ -134,6 +139,10 @@ describe("View Server config atomic ownership", () => {
     expect(config.topics.callable()).toBe("called");
     expect(config.topics.callable === definition).toBe(false);
     expect(Object.isFrozen(config.topics.callable)).toBe(true);
+
+    const arrowDefinition = Object.assign(() => "arrow", { schema: Row });
+    const arrowConfig = defineViewServerConfig({ topics: { arrow: arrowDefinition } });
+    expect(arrowConfig.topics.arrow()).toBe("arrow");
   });
 
   it("preserves construct signatures on owned callable topic definitions", () => {
@@ -170,5 +179,117 @@ describe("View Server config atomic ownership", () => {
       instanceOfDefinition: true,
       value: "value",
     });
+  });
+
+  it("preserves native generator callable topic definitions", async () => {
+    const Row = Schema.Struct({ id: ViewServerId });
+    const generatorDefinition = Object.assign(
+      function* generatorDefinition() {
+        yield "generated";
+      },
+      { schema: Row },
+    );
+    const asyncGeneratorDefinition = Object.assign(
+      async function* asyncGeneratorDefinition() {
+        yield "async-generated";
+      },
+      { schema: Row },
+    );
+
+    const config = defineViewServerConfig({
+      topics: {
+        asyncGenerator: asyncGeneratorDefinition,
+        generator: generatorDefinition,
+      },
+    });
+
+    expect(config.topics.generator().next()).toStrictEqual({
+      done: false,
+      value: "generated",
+    });
+    expect(await config.topics.asyncGenerator().next()).toStrictEqual({
+      done: false,
+      value: "async-generated",
+    });
+  });
+
+  it("rejects custom callable properties that use intrinsic names", () => {
+    const prototypeDefinition = Object.assign(() => undefined, {
+      schema: Schema.Struct({ id: ViewServerId }),
+    });
+    Object.defineProperty(prototypeDefinition, "prototype", { value: "metadata" });
+
+    expect(() => defineViewServerConfig({ topics: { callable: prototypeDefinition } })).toThrow(
+      "View Server topic callable contains unsupported property: prototype.",
+    );
+
+    const callerDefinition = Object.assign(() => undefined, {
+      schema: Schema.Struct({ id: ViewServerId }),
+    });
+    Object.defineProperty(callerDefinition, "caller", { value: "metadata" });
+
+    expect(() => defineViewServerConfig({ topics: { callable: callerDefinition } })).toThrow(
+      "View Server topic callable contains unsupported property: caller.",
+    );
+
+    const accessorCallerDefinition = Object.assign(() => undefined, {
+      schema: Schema.Struct({ id: ViewServerId }),
+    });
+    Object.defineProperty(accessorCallerDefinition, "caller", {
+      get: () => "metadata",
+    });
+
+    expect(() =>
+      defineViewServerConfig({ topics: { callable: accessorCallerDefinition } }),
+    ).toThrow("View Server topic callable contains unsupported property: caller.");
+
+    const configurableCallerDefinition = Object.assign(() => undefined, {
+      schema: Schema.Struct({ id: ViewServerId }),
+    });
+    Object.defineProperty(configurableCallerDefinition, "caller", {
+      configurable: true,
+      value: null,
+    });
+
+    expect(() =>
+      defineViewServerConfig({ topics: { callable: configurableCallerDefinition } }),
+    ).toThrow("View Server topic callable contains unsupported property: caller.");
+
+    const writableCallerDefinition = Object.assign(() => undefined, {
+      schema: Schema.Struct({ id: ViewServerId }),
+    });
+    Object.defineProperty(writableCallerDefinition, "caller", {
+      configurable: false,
+      value: null,
+      writable: true,
+    });
+
+    expect(() =>
+      defineViewServerConfig({ topics: { callable: writableCallerDefinition } }),
+    ).toThrow("View Server topic callable contains unsupported property: caller.");
+
+    const configurablePrototypeDefinition = Object.assign(() => undefined, {
+      schema: Schema.Struct({ id: ViewServerId }),
+    });
+    Object.defineProperty(configurablePrototypeDefinition, "prototype", {
+      configurable: true,
+      value: { constructor: configurablePrototypeDefinition },
+    });
+
+    expect(() =>
+      defineViewServerConfig({ topics: { callable: configurablePrototypeDefinition } }),
+    ).toThrow("View Server topic callable contains unsupported property: prototype.");
+
+    const nonConstructiblePrototypeDefinition = Object.assign(() => undefined, {
+      schema: Schema.Struct({ id: ViewServerId }),
+    });
+    Object.defineProperty(nonConstructiblePrototypeDefinition, "prototype", {
+      configurable: false,
+      value: { constructor: nonConstructiblePrototypeDefinition },
+    });
+
+    expect(() =>
+      defineViewServerConfig({ topics: { callable: nonConstructiblePrototypeDefinition } }),
+    ).toThrow("View Server topic callable contains unsupported property: prototype.");
   });
 });

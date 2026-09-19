@@ -77,11 +77,16 @@ export const viewServerRowSchemaFieldsMatchAst = (schema: RowSchema): boolean =>
   return true;
 };
 
-const snapshotOwnProperties = (value: object): { [key: PropertyKey]: unknown } => {
+const snapshotOwnProperties = (topic: string, value: object): { [key: PropertyKey]: unknown } => {
   const copied: { [key: PropertyKey]: unknown } = {};
   for (const property of Reflect.ownKeys(value)) {
     if (viewServerTopicDefinitionPropertyIsIntrinsic(value, property)) {
       continue;
+    }
+    if (typeof value === "function" && property !== "schema" && property !== "source") {
+      throw new Error(
+        `View Server topic ${topic} contains unsupported property: ${String(property)}.`,
+      );
     }
     Object.defineProperty(copied, property, {
       configurable: true,
@@ -96,13 +101,59 @@ const snapshotOwnProperties = (value: object): { [key: PropertyKey]: unknown } =
 export const viewServerTopicDefinitionPropertyIsIntrinsic = (
   value: object,
   property: PropertyKey,
-): boolean =>
-  typeof value === "function" &&
-  (property === "length" ||
-    property === "name" ||
-    property === "arguments" ||
-    property === "caller" ||
-    property === "prototype");
+): boolean => {
+  if (typeof value !== "function") {
+    return false;
+  }
+  const descriptor = Object.getOwnPropertyDescriptor(value, property);
+  if (descriptor === undefined || descriptor.enumerable || !("value" in descriptor)) {
+    return false;
+  }
+  if (property === "length") {
+    return (
+      typeof descriptor.value === "number" &&
+      descriptor.writable === false &&
+      descriptor.configurable === true
+    );
+  }
+  if (property === "name") {
+    return (
+      typeof descriptor.value === "string" &&
+      descriptor.writable === false &&
+      descriptor.configurable === true
+    );
+  }
+  if (property === "arguments" || property === "caller") {
+    return (
+      descriptor.value === null &&
+      descriptor.writable === false &&
+      descriptor.configurable === false
+    );
+  }
+  if (
+    property !== "prototype" ||
+    descriptor.value === null ||
+    typeof descriptor.value !== "object" ||
+    descriptor.configurable
+  ) {
+    return false;
+  }
+  const functionTag = Object.prototype.toString.call(value);
+  const prototypeTag = Object.prototype.toString.call(descriptor.value);
+  if (
+    (functionTag === "[object GeneratorFunction]" && prototypeTag === "[object Generator]") ||
+    (functionTag === "[object AsyncGeneratorFunction]" &&
+      prototypeTag === "[object AsyncGenerator]")
+  ) {
+    return true;
+  }
+  try {
+    Reflect.construct(Object, [], value);
+  } catch {
+    return false;
+  }
+  return Reflect.get(descriptor.value, "constructor", descriptor.value) === value;
+};
 
 const copySnapshotProperties = (
   target: object,
@@ -122,7 +173,7 @@ const snapshotTopicDefinition = (topic: string, definition: unknown) => {
   if (definition === null || (typeof definition !== "object" && typeof definition !== "function")) {
     throw new Error(`View Server topic ${topic} row schema must be an Effect Schema Struct.`);
   }
-  const copied = snapshotOwnProperties(definition);
+  const copied = snapshotOwnProperties(topic, definition);
   const schema = copied["schema"];
   if (isViewServerRowSchema(schema)) {
     copied["schema"] = snapshotViewServerRowSchema(schema);

@@ -233,6 +233,13 @@ type FieldPresentValue<Row extends object, Field extends keyof Row> = Required<
   Pick<Row, Field>
 >[Field];
 
+type FunctionValue = {
+  readonly apply: unknown;
+  readonly bind: unknown;
+  readonly call: unknown;
+  readonly prototype: unknown;
+};
+
 type ExpectedRowFieldDifference<ExpectedRow extends object, ReceivedRow extends object> = {
   readonly [Field in keyof ExpectedRow]-?: Field extends keyof ReceivedRow
     ? TypeEquals<
@@ -260,6 +267,7 @@ type ExpectedRowFieldDifference<ExpectedRow extends object, ReceivedRow extends 
         readonly field: Field;
         readonly expected: FieldPresentValue<ExpectedRow, Field>;
         readonly received: "missing";
+        readonly receivedPresent: false;
       };
 }[keyof ExpectedRow];
 
@@ -270,6 +278,7 @@ type UnexpectedReceivedRowFieldDifference<
   readonly [Field in Exclude<keyof ReceivedRow, keyof ExpectedRow>]-?: {
     readonly field: Field;
     readonly expected: "absent";
+    readonly expectedPresent: false;
     readonly received: FieldPresentValue<ReceivedRow, Field>;
   };
 }[Exclude<keyof ReceivedRow, keyof ExpectedRow>];
@@ -429,14 +438,22 @@ type CanonicalIdDetails<SchemaValue extends RowSchema> = SchemaValue extends {
       readonly field: "id";
       readonly expected: typeof ViewServerId;
       readonly received: "missing";
+      readonly receivedPresent: false;
     };
 
 type InvalidRouteDetails<InvalidRoute, Row> = InvalidRoute extends PropertyKey
-  ? {
-      readonly field: InvalidRoute;
-      readonly expected: FilterableScalar;
-      readonly received: InvalidRoute extends keyof Row ? Row[InvalidRoute] : "missing";
-    }
+  ? InvalidRoute extends keyof Row
+    ? {
+        readonly field: InvalidRoute;
+        readonly expected: FilterableScalar;
+        readonly received: Row[InvalidRoute];
+      }
+    : {
+        readonly field: InvalidRoute;
+        readonly expected: FilterableScalar;
+        readonly received: "missing";
+        readonly receivedPresent: false;
+      }
   : never;
 
 type ValidateSourceRoute<Topic extends PropertyKey, Row, Source extends SourceDefinitionAny> =
@@ -524,38 +541,47 @@ type ValidateTopic<TopicName extends PropertyKey, Topic> = Topic extends {
         "topic definition must not be a function value",
         { readonly received: Topic }
       >
-    : Topic extends {
-          readonly schema: infer TopicSchema extends RowSchema;
-        }
-      ? HasCanonicalId<TopicSchema> extends true
-        ? Omit<Topic, "source"> &
-            RejectExtraKeys<Topic, ViewServerTopicShape> &
-            ValidateTopicSource<TopicName, Topic, RowFromSchema<TopicSchema>> & {
-              readonly schema: TopicSchema;
-            }
-        : Topic &
-            ViewServerConfigValidationError<
-              TopicName,
-              "topic schema must define id as ViewServerId",
-              CanonicalIdDetails<TopicSchema>
-            >
-      : WithViewServerConfigValidationError<
+    : Topic extends FunctionValue
+      ? WithViewServerConfigValidationError<
           Topic,
           TopicName,
-          "topic schema must expose concrete struct fields",
+          "topic definition must not be a function value",
           { readonly received: Topic }
-        >;
+        >
+      : Topic extends {
+            readonly schema: infer TopicSchema extends RowSchema;
+          }
+        ? HasCanonicalId<TopicSchema> extends true
+          ? Omit<Topic, "source"> &
+              RejectExtraKeys<Topic, ViewServerTopicShape> &
+              ValidateTopicSource<TopicName, Topic, RowFromSchema<TopicSchema>> & {
+                readonly schema: TopicSchema;
+              }
+          : Topic &
+              ViewServerConfigValidationError<
+                TopicName,
+                "topic schema must define id as ViewServerId",
+                CanonicalIdDetails<TopicSchema>
+              >
+        : WithViewServerConfigValidationError<
+            Topic,
+            TopicName,
+            "topic schema must expose concrete struct fields",
+            { readonly received: Topic }
+          >;
 
-type ValidateTopicDefinitions<Topics> = {
-  readonly [Topic in keyof Topics]: Topic extends ViewServerSystemTopicName
-    ? WithViewServerConfigValidationError<
-        Topics[Topic],
-        Topic,
-        "topic name is reserved for system health streams",
-        { readonly received: Topic }
-      >
-    : ValidateTopic<Topic, Topics[Topic]>;
-};
+type ValidateTopicDefinitions<Topics> = Topics extends unknown
+  ? {
+      readonly [Topic in keyof Topics]: Topic extends ViewServerSystemTopicName
+        ? WithViewServerConfigValidationError<
+            Topics[Topic],
+            Topic,
+            "topic name is reserved for system health streams",
+            { readonly received: Topic }
+          >
+        : ValidateTopic<Topic, Topics[Topic]>;
+    }
+  : never;
 
 type ViewServerConfigTopicsAreValid<Topics extends ViewServerConfigTopicShape> =
   string extends keyof Topics
@@ -601,6 +627,11 @@ const validateLeasedSourceRouteFields = (
   }
 };
 
+export function defineViewServerConfig<const Topics extends ViewServerConfigTopicShape>(
+  input: { readonly topics: Topics } & (ViewServerConfigTopicsAreValid<Topics> extends true
+    ? unknown
+    : never),
+): ViewServerConfig<Topics>;
 export function defineViewServerConfig<const Topics extends ViewServerConfigTopicCandidateShape>(
   input: DefineViewServerConfigInput<Topics>,
 ): Topics extends ViewServerConfigTopicShape ? ViewServerConfig<Topics> : never;

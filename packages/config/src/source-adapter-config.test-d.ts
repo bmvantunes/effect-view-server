@@ -159,6 +159,10 @@ const sourceFreeConfig = defineViewServerConfig({
     },
   },
 });
+declare const alternateValidTopics:
+  | { readonly orders: { readonly schema: typeof Row } }
+  | { readonly trades: { readonly schema: typeof Row } };
+const alternateValidConfig = defineViewServerConfig({ topics: alternateValidTopics });
 declare const useLeasedSource: boolean;
 declare const useRegionRoute: boolean;
 const mixedLifecycleConfig = defineViewServerConfig({
@@ -250,6 +254,7 @@ describe("Source Adapter config type contracts", () => {
     expectTypeOf(sourceFreeConfig.topics.manual.schema.fields.id).toEqualTypeOf<
       typeof ViewServerId
     >();
+    expectTypeOf(alternateValidConfig.topics).toEqualTypeOf<typeof alternateValidTopics>();
     // @ts-expect-error Topic configuration never exposes a configurable key.
     void config.topics.all.key;
     // @ts-expect-error Source-free Topic configuration never exposes a configurable key.
@@ -784,6 +789,7 @@ describe("Source Adapter config type contracts", () => {
         readonly field: "id";
         readonly expected: string;
         readonly received: "missing";
+        readonly receivedPresent: false;
       };
     }>();
     defineViewServerConfig({
@@ -886,8 +892,18 @@ describe("Source Adapter config type contracts", () => {
       readonly topic: "exclusiveUnion";
       readonly reason: "source row does not match topic schema row";
       readonly details:
-        | { readonly field: "left"; readonly expected: "absent"; readonly received: string }
-        | { readonly field: "right"; readonly expected: "absent"; readonly received: number };
+        | {
+            readonly field: "left";
+            readonly expected: "absent";
+            readonly expectedPresent: false;
+            readonly received: string;
+          }
+        | {
+            readonly field: "right";
+            readonly expected: "absent";
+            readonly expectedPresent: false;
+            readonly received: number;
+          };
     }>();
     defineViewServerConfig({
       topics: {
@@ -913,8 +929,18 @@ describe("Source Adapter config type contracts", () => {
       readonly topic: "unionSchema";
       readonly reason: "source row does not match topic schema row";
       readonly details:
-        | { readonly field: "left"; readonly expected: string; readonly received: "missing" }
-        | { readonly field: "right"; readonly expected: number; readonly received: "missing" };
+        | {
+            readonly field: "left";
+            readonly expected: string;
+            readonly received: "missing";
+            readonly receivedPresent: false;
+          }
+        | {
+            readonly field: "right";
+            readonly expected: number;
+            readonly received: "missing";
+            readonly receivedPresent: false;
+          };
     }>();
     defineViewServerConfig({
       topics: {
@@ -943,8 +969,18 @@ describe("Source Adapter config type contracts", () => {
       readonly topic: "partiallySharedUnion";
       readonly reason: "source row does not match topic schema row";
       readonly details:
-        | { readonly field: "right"; readonly expected: number; readonly received: "missing" }
-        | { readonly field: "other"; readonly expected: "absent"; readonly received: boolean };
+        | {
+            readonly field: "right";
+            readonly expected: number;
+            readonly received: "missing";
+            readonly receivedPresent: false;
+          }
+        | {
+            readonly field: "other";
+            readonly expected: "absent";
+            readonly expectedPresent: false;
+            readonly received: boolean;
+          };
     }>();
     defineViewServerConfig({
       topics: {
@@ -1034,6 +1070,7 @@ describe("Source Adapter config type contracts", () => {
       | {
           readonly field: string;
           readonly expected: "absent";
+          readonly expectedPresent: false;
           readonly received: string;
         }
     >();
@@ -1087,6 +1124,86 @@ describe("Source Adapter config type contracts", () => {
       },
     });
 
+    class PrivateConstructibleDefinition {
+      static readonly schema = Row;
+
+      private constructor() {}
+    }
+    type PrivateConstructibleDefinitionInput = DefineViewServerConfigInput<{
+      readonly privateConstructible: typeof PrivateConstructibleDefinition;
+    }>;
+    expectTypeOf<
+      PrivateConstructibleDefinitionInput["topics"]["privateConstructible"]["__viewServerConfigError"]
+    >().toEqualTypeOf<{
+      readonly __invalid: never;
+      readonly topic: "privateConstructible";
+      readonly reason: "topic definition must not be a function value";
+      readonly details: { readonly received: typeof PrivateConstructibleDefinition };
+    }>();
+    defineViewServerConfig({
+      topics: {
+        // @ts-expect-error Classes with non-public constructors are rejected as function values.
+        privateConstructible: PrivateConstructibleDefinition,
+      },
+    });
+
+    const LiteralMissingRow = Schema.Struct({
+      id: ViewServerId,
+      marker: Schema.Literal("missing"),
+    });
+    const missingLiteralFieldSource = mappedSource("missing-literal-field", { id: "id" });
+    type MissingLiteralFieldInput = DefineViewServerConfigInput<{
+      readonly missingLiteralField: {
+        readonly schema: typeof LiteralMissingRow;
+        readonly source: typeof missingLiteralFieldSource;
+      };
+    }>;
+    expectTypeOf<
+      MissingLiteralFieldInput["topics"]["missingLiteralField"]["source"]["__viewServerConfigError"]["details"]
+    >().toEqualTypeOf<{
+      readonly field: "marker";
+      readonly expected: "missing";
+      readonly received: "missing";
+      readonly receivedPresent: false;
+    }>();
+    defineViewServerConfig({
+      topics: {
+        missingLiteralField: {
+          schema: LiteralMissingRow,
+          // @ts-expect-error Presence metadata disambiguates a missing field from its literal type.
+          source: missingLiteralFieldSource,
+        },
+      },
+    });
+
+    const unexpectedAbsentLiteralSource = mappedSource<{
+      readonly id: string;
+      readonly marker: "absent";
+    }>("unexpected-absent-literal", { id: "id", marker: "absent" });
+    type UnexpectedAbsentLiteralInput = DefineViewServerConfigInput<{
+      readonly unexpectedAbsentLiteral: {
+        readonly schema: typeof IdOnlyRow;
+        readonly source: typeof unexpectedAbsentLiteralSource;
+      };
+    }>;
+    expectTypeOf<
+      UnexpectedAbsentLiteralInput["topics"]["unexpectedAbsentLiteral"]["source"]["__viewServerConfigError"]["details"]
+    >().toEqualTypeOf<{
+      readonly field: "marker";
+      readonly expected: "absent";
+      readonly expectedPresent: false;
+      readonly received: "absent";
+    }>();
+    defineViewServerConfig({
+      topics: {
+        unexpectedAbsentLiteral: {
+          schema: IdOnlyRow,
+          // @ts-expect-error Presence metadata disambiguates an unexpected field from its literal type.
+          source: unexpectedAbsentLiteralSource,
+        },
+      },
+    });
+
     const neverSource = adapter.materializedSource<never>({ stream: "never" });
     type NeverSourceInput = DefineViewServerConfigInput<{
       readonly neverRow: { readonly schema: typeof Row; readonly source: typeof neverSource };
@@ -1134,6 +1251,7 @@ describe("Source Adapter config type contracts", () => {
             readonly field: "missing";
             readonly expected: FilterableScalar;
             readonly received: "missing";
+            readonly receivedPresent: false;
           };
     }>();
     defineViewServerConfig({

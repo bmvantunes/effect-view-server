@@ -110,18 +110,10 @@ export const viewServerTopicDefinitionPropertyIsIntrinsic = (
     return false;
   }
   if (property === "length") {
-    return (
-      typeof descriptor.value === "number" &&
-      descriptor.writable === false &&
-      descriptor.configurable === true
-    );
+    return typeof descriptor.value === "number" && descriptor.writable === false;
   }
   if (property === "name") {
-    return (
-      typeof descriptor.value === "string" &&
-      descriptor.writable === false &&
-      descriptor.configurable === true
-    );
+    return typeof descriptor.value === "string" && descriptor.writable === false;
   }
   if (property === "arguments" || property === "caller") {
     return (
@@ -130,29 +122,24 @@ export const viewServerTopicDefinitionPropertyIsIntrinsic = (
       descriptor.configurable === false
     );
   }
-  if (
-    property !== "prototype" ||
-    descriptor.value === null ||
-    typeof descriptor.value !== "object" ||
-    descriptor.configurable
-  ) {
+  if (property !== "prototype" || descriptor.configurable !== false) {
     return false;
-  }
-  const functionTag = Object.prototype.toString.call(value);
-  const prototypeTag = Object.prototype.toString.call(descriptor.value);
-  if (
-    (functionTag === "[object GeneratorFunction]" && prototypeTag === "[object Generator]") ||
-    (functionTag === "[object AsyncGeneratorFunction]" &&
-      prototypeTag === "[object AsyncGenerator]")
-  ) {
-    return true;
   }
   try {
     Reflect.construct(Object, [], value);
+    return true;
   } catch {
-    return false;
+    if (descriptor.value === null || typeof descriptor.value !== "object") {
+      return false;
+    }
+    const functionTag = Object.prototype.toString.call(value);
+    const prototypeTag = Object.prototype.toString.call(descriptor.value);
+    return (
+      (functionTag === "[object GeneratorFunction]" && prototypeTag === "[object Generator]") ||
+      (functionTag === "[object AsyncGeneratorFunction]" &&
+        prototypeTag === "[object AsyncGenerator]")
+    );
   }
-  return Reflect.get(descriptor.value, "constructor", descriptor.value) === value;
 };
 
 const copySnapshotProperties = (
@@ -188,6 +175,9 @@ const snapshotTopicDefinition = (topic: string, definition: unknown) => {
       });
     }
     let callableSnapshot: typeof callableTarget;
+    const definitionHasInstance = (instance: unknown) =>
+      Function.prototype[Symbol.hasInstance].call(definition, instance) ||
+      Function.prototype[Symbol.hasInstance].call(callableTarget, instance);
     callableSnapshot = new Proxy(callableTarget, {
       construct: (_target, arguments_, newTarget) =>
         Reflect.construct(
@@ -195,6 +185,10 @@ const snapshotTopicDefinition = (topic: string, definition: unknown) => {
           arguments_,
           newTarget === callableSnapshot ? definition : newTarget,
         ),
+      get: (target, property, receiver) =>
+        property === Symbol.hasInstance && receiver === callableSnapshot
+          ? definitionHasInstance
+          : Reflect.get(target, property, receiver),
     });
     copySnapshotProperties(callableSnapshot, copied);
     return Object.freeze(callableSnapshot);

@@ -179,6 +179,40 @@ describe("View Server config atomic ownership", () => {
       instanceOfDefinition: true,
       value: "value",
     });
+
+    Object.defineProperty(ConstructibleDefinition.prototype, "constructor", {
+      value: Object,
+    });
+    const decoratedDefinition: {
+      new (value: string): ConstructibleDefinition;
+      readonly schema: typeof Row;
+    } = ConstructibleDefinition;
+    const decoratedConfig = defineViewServerConfig({
+      topics: { decorated: decoratedDefinition },
+    });
+    expect(new decoratedConfig.topics.decorated("decorated").value).toBe("decorated");
+
+    const BoundDefinition = ConstructibleDefinition.bind(null, "bound");
+    const boundDefinition = Object.assign(BoundDefinition, { schema: Row });
+    const boundConfig = defineViewServerConfig({
+      topics: { bound: boundDefinition },
+    });
+    const boundInstance = new boundConfig.topics.bound();
+    class ExtendedBoundDefinition extends boundConfig.topics.bound {}
+    const extendedBoundInstance = new ExtendedBoundDefinition();
+    expect({
+      extendedInstanceOfExtended: extendedBoundInstance instanceof ExtendedBoundDefinition,
+      extendedInstanceOfSnapshot: extendedBoundInstance instanceof boundConfig.topics.bound,
+      instanceOfBoundDefinition: boundInstance instanceof BoundDefinition,
+      instanceOfSnapshot: boundInstance instanceof boundConfig.topics.bound,
+      value: boundInstance.value,
+    }).toStrictEqual({
+      extendedInstanceOfExtended: true,
+      extendedInstanceOfSnapshot: true,
+      instanceOfBoundDefinition: true,
+      instanceOfSnapshot: true,
+      value: "bound",
+    });
   });
 
   it("preserves native generator callable topic definitions", async () => {

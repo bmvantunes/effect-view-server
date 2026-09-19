@@ -11,6 +11,7 @@ import {
   isViewServerRowSchema,
   snapshotViewServerTopics,
   viewServerRowSchemaFieldsMatchAst,
+  viewServerTopicDefinitionPropertyIsIntrinsic,
 } from "./config-ownership";
 import type { ViewServerSystemTopicName } from "./health-contract";
 import type { RejectExtraKeys } from "./query-exact";
@@ -499,14 +500,7 @@ export function defineViewServerConfig(input: { readonly topics: ViewServerConfi
     const unsupportedTopicProperty = Reflect.ownKeys(topicDefinition).find(
       (property) =>
         !allowedTopicProperties.has(property) &&
-        !(
-          typeof topicDefinition === "function" &&
-          (property === "length" ||
-            property === "name" ||
-            property === "arguments" ||
-            property === "caller" ||
-            property === "prototype")
-        ),
+        !viewServerTopicDefinitionPropertyIsIntrinsic(topicDefinition, property),
     );
     if (unsupportedTopicProperty !== undefined) {
       throw new Error(

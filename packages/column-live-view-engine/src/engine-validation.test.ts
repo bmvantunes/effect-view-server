@@ -13,6 +13,28 @@ import { makeEngine, order, Order, viewServer } from "../test-harness/public-eng
 import type { Topics } from "../test-harness/public-engine";
 
 describe("ColumnLiveViewEngine validation", () => {
+  it.effect("admits callable topic definitions accepted by config ownership", () =>
+    Effect.gen(function* () {
+      const CallableOrders = Object.assign(function CallableOrders() {}, {
+        schema: Order,
+      });
+      const engine = yield* createColumnLiveViewEngine({
+        topics: { orders: CallableOrders },
+      });
+
+      const snapshot = yield* engine.snapshot("orders", {
+        select: ["id"],
+      });
+      expect(snapshot).toStrictEqual({
+        rows: [],
+        status: "ready",
+        statusCode: "Ready",
+        totalRows: 0,
+        version: 0,
+      });
+    }),
+  );
+
   it.effect("fails invalid row publishes with a typed schema error", () =>
     Effect.gen(function* () {
       const engine = yield* makeEngine();

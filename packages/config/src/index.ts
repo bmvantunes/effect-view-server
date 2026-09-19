@@ -145,8 +145,8 @@ type ViewServerTopicShape = {
 export type ViewServerConfigTopicShape = Record<string, ViewServerTopicShape>;
 export type ViewServerConfigTopicInputShape = Record<string, ViewServerTopicShape>;
 type ViewServerTopicCandidateShape = {
-  readonly schema: object;
-  readonly source?: object | undefined;
+  readonly schema?: unknown;
+  readonly source?: unknown;
 };
 type ViewServerConfigTopicCandidateShape = Record<string, ViewServerTopicCandidateShape>;
 export type NormalizeViewServerTopicDefinitions<Topics> = Topics;
@@ -333,8 +333,14 @@ type ValidateSource<
               "source row does not match topic schema row",
               RowFieldDifference<Row, SourceDefinitionRow<Source>>
             >
-  : Source &
-      ViewServerConfigValidationError<
+  : Source extends object
+    ? Source &
+        ViewServerConfigValidationError<
+          Topic,
+          "source must be created by SourceAdapter.make(...)",
+          { readonly received: Source }
+        >
+    : ViewServerConfigValidationError<
         Topic,
         "source must be created by SourceAdapter.make(...)",
         { readonly received: Source }
@@ -364,7 +370,7 @@ type ValidateTopic<TopicName extends PropertyKey, Topic> = Topic extends {
   readonly schema: infer TopicSchema extends RowSchema;
 }
   ? HasCanonicalId<TopicSchema> extends true
-    ? Topic &
+    ? Omit<Topic, "source"> &
         RejectExtraKeys<Topic, ViewServerTopicShape> &
         ValidateTopicSource<TopicName, Topic, RowFromSchema<TopicSchema>> & {
           readonly schema: TopicSchema;
@@ -408,7 +414,7 @@ export type ViewServerConfig<Topics extends ViewServerConfigTopicShape> =
     : never;
 
 export type DefineViewServerConfigInput<Topics extends ViewServerConfigTopicCandidateShape> = {
-  readonly topics: Topics & ValidateTopicDefinitions<Topics>;
+  readonly topics: ValidateTopicDefinitions<Topics>;
 };
 
 const hasDefinedOwnProperty = (value: object, key: string): boolean =>

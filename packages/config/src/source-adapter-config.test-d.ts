@@ -944,6 +944,48 @@ describe("Source Adapter config type contracts", () => {
       },
     });
 
+    type PrimitiveSourceInput = DefineViewServerConfigInput<{
+      readonly primitiveSource: { readonly schema: typeof Row; readonly source: "kafka" };
+    }>;
+    expectTypeOf<
+      PrimitiveSourceInput["topics"]["primitiveSource"]["source"]["__viewServerConfigError"]
+    >().toEqualTypeOf<{
+      readonly __invalid: never;
+      readonly topic: "primitiveSource";
+      readonly reason: "source must be created by SourceAdapter.make(...)";
+      readonly details: { readonly received: "kafka" };
+    }>();
+    defineViewServerConfig({
+      topics: {
+        primitiveSource: {
+          schema: Row,
+          // @ts-expect-error Primitive sources receive the configured diagnostic.
+          source: "kafka",
+        },
+      },
+    });
+
+    type NullSourceInput = DefineViewServerConfigInput<{
+      readonly nullSource: { readonly schema: typeof Row; readonly source: null };
+    }>;
+    expectTypeOf<
+      NullSourceInput["topics"]["nullSource"]["source"]["__viewServerConfigError"]
+    >().toEqualTypeOf<{
+      readonly __invalid: never;
+      readonly topic: "nullSource";
+      readonly reason: "source must be created by SourceAdapter.make(...)";
+      readonly details: { readonly received: null };
+    }>();
+    defineViewServerConfig({
+      topics: {
+        nullSource: {
+          schema: Row,
+          // @ts-expect-error Null sources receive the configured diagnostic.
+          source: null,
+        },
+      },
+    });
+
     type OptionalMalformedSourceInput = DefineViewServerConfigInput<{
       readonly optionalMalformedSource: typeof optionalMalformedSourceTopic;
     }>;
@@ -988,6 +1030,60 @@ describe("Source Adapter config type contracts", () => {
       topics: {
         // @ts-expect-error Malformed schemas receive the configured diagnostic.
         malformedSchema: { schema: {} },
+      },
+    });
+
+    type PrimitiveSchemaInput = DefineViewServerConfigInput<{
+      readonly primitiveSchema: { readonly schema: "row" };
+    }>;
+    expectTypeOf<
+      PrimitiveSchemaInput["topics"]["primitiveSchema"]["__viewServerConfigError"]
+    >().toEqualTypeOf<{
+      readonly __invalid: never;
+      readonly topic: "primitiveSchema";
+      readonly reason: "topic schema must expose concrete struct fields";
+      readonly details: { readonly received: { readonly schema: "row" } };
+    }>();
+    defineViewServerConfig({
+      topics: {
+        // @ts-expect-error Primitive schemas receive the configured diagnostic.
+        primitiveSchema: { schema: "row" },
+      },
+    });
+
+    type NullSchemaInput = DefineViewServerConfigInput<{
+      readonly nullSchema: { readonly schema: null };
+    }>;
+    expectTypeOf<
+      NullSchemaInput["topics"]["nullSchema"]["__viewServerConfigError"]
+    >().toEqualTypeOf<{
+      readonly __invalid: never;
+      readonly topic: "nullSchema";
+      readonly reason: "topic schema must expose concrete struct fields";
+      readonly details: { readonly received: { readonly schema: null } };
+    }>();
+    defineViewServerConfig({
+      topics: {
+        // @ts-expect-error Null schemas receive the configured diagnostic.
+        nullSchema: { schema: null },
+      },
+    });
+
+    type MissingSchemaInput = DefineViewServerConfigInput<{
+      readonly missingSchema: {};
+    }>;
+    expectTypeOf<
+      MissingSchemaInput["topics"]["missingSchema"]["__viewServerConfigError"]
+    >().toEqualTypeOf<{
+      readonly __invalid: never;
+      readonly topic: "missingSchema";
+      readonly reason: "topic schema must expose concrete struct fields";
+      readonly details: { readonly received: {} };
+    }>();
+    defineViewServerConfig({
+      topics: {
+        // @ts-expect-error Missing schemas receive the configured diagnostic.
+        missingSchema: {},
       },
     });
 

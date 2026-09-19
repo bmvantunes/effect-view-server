@@ -1,4 +1,10 @@
-import { createFileRegistry, toBinary, type DescFile, type DescMessage } from "@bufbuild/protobuf";
+import {
+  clone,
+  createFileRegistry,
+  toBinary,
+  type DescFile,
+  type DescMessage,
+} from "@bufbuild/protobuf";
 import type { FileDescriptorProto } from "@bufbuild/protobuf/wkt";
 import { FileDescriptorProtoSchema } from "@bufbuild/protobuf/wkt";
 import { Effect, Exit, Option, Schema } from "effect";
@@ -194,6 +200,21 @@ const canonicalWellKnownTypes = new Set([
 ]);
 
 const canonicalWellKnownType = (name: string): boolean => canonicalWellKnownTypes.has(name);
+
+const descriptorAtReferenceName = (
+  descriptor: FileDescriptorProto,
+  referenceName: string,
+): FileDescriptorProto | undefined => {
+  if (descriptor.name === referenceName) {
+    return descriptor;
+  }
+  if (descriptor.name !== "default") {
+    return undefined;
+  }
+  const referenced = clone(FileDescriptorProtoSchema, descriptor);
+  referenced.name = referenceName;
+  return referenced;
+};
 
 const descriptorGraph = (root: DescFile): ReadonlyMap<string, DescFile> => {
   const files = new Map<string, DescFile>();
@@ -425,7 +446,8 @@ const validateDeclaration = Effect.fn("KafkaSchemaRegistry.contract.validateDecl
           if (reference !== undefined) {
             consumedReferences.add(dependency);
             const referenced = yield* loadGraph(reference.subject, reference.version);
-            if (referenced.root.proto.name !== dependency) {
+            const referencedRoot = descriptorAtReferenceName(referenced.root.proto, dependency);
+            if (referencedRoot === undefined) {
               return yield* Effect.fail(
                 issue(
                   declaration,
@@ -438,7 +460,8 @@ const validateDeclaration = Effect.fn("KafkaSchemaRegistry.contract.validateDecl
               );
             }
             for (const file of descriptorGraph(referenced.root).values()) {
-              const conflict = mergeFile(file.proto.name, file.proto);
+              const descriptor = file === referenced.root ? referencedRoot : file.proto;
+              const conflict = mergeFile(descriptor.name, descriptor);
               if (conflict !== undefined) {
                 return yield* Effect.fail(conflict);
               }

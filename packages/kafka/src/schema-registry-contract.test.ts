@@ -109,6 +109,12 @@ const referencedSchemaVersion = (
   descriptor,
 });
 
+const confluentSerializedDescriptor = (descriptor: FileDescriptorProto): FileDescriptorProto => {
+  const serialized = clone(FileDescriptorProtoSchema, descriptor);
+  serialized.name = "default";
+  return serialized;
+};
+
 const frame = (schemaId: number, messageIndex: number): Uint8Array => {
   const bytes = new Uint8Array(7);
   const view = new DataView(bytes.buffer);
@@ -564,7 +570,7 @@ describe("Kafka Schema Registry Protobuf contracts", () => {
         id: 50,
         schemaType: "PROTOBUF",
         references: [],
-        descriptor: child,
+        descriptor: confluentSerializedDescriptor(child),
       };
       const contracts = yield* resolveKafkaSchemaRegistryContracts(
         [{ ...declaration(), descriptor: generated }],
@@ -607,6 +613,82 @@ describe("Kafka Schema Registry Protobuf contracts", () => {
           { subject: "shared" },
         ),
       ]);
+    }),
+  );
+
+  it.effect("reconstructs recursive import names from Confluent references", () =>
+    Effect.gen(function* () {
+      const shared = create(FileDescriptorProtoSchema, {
+        name: "shared/v1/enums.proto",
+        package: "shared.v1",
+        syntax: "proto3",
+        enumType: [{ name: "Status", value: [{ name: "STATUS_UNSPECIFIED", number: 0 }] }],
+      });
+      const order = create(FileDescriptorProtoSchema, {
+        name: "orders/v1/order.proto",
+        package: "orders.v1",
+        syntax: "proto3",
+        dependency: [shared.name],
+        messageType: [{ name: "Order" }],
+      });
+      const events = clone(FileDescriptorProtoSchema, OrderValueSchema.file.proto);
+      events.dependency.push(order.name);
+      const generated = generatedMessage(
+        [shared, order, events],
+        events.name,
+        OrderValueSchema.typeName,
+      );
+      const contracts = yield* resolveKafkaSchemaRegistryContracts(
+        [{ ...declaration(), descriptor: generated }],
+        reader({
+          compatibility: {
+            "orders-value": "FULL_TRANSITIVE",
+            "orders.v1.order": "FULL_TRANSITIVE",
+            "shared.v1.enums": "FULL_TRANSITIVE",
+          },
+          active: {
+            "orders-value": [1],
+            "orders.v1.order": [1],
+            "shared.v1.enums": [1],
+          },
+          all: {
+            "orders-value": [1],
+            "orders.v1.order": [1],
+            "shared.v1.enums": [1],
+          },
+          schemas: {
+            "orders-value:1": referencedSchemaVersion(
+              "orders-value",
+              1,
+              41,
+              confluentSerializedDescriptor(events),
+              [{ name: order.name, subject: "orders.v1.order", version: 1 }],
+            ),
+            "orders.v1.order:1": referencedSchemaVersion(
+              "orders.v1.order",
+              1,
+              51,
+              confluentSerializedDescriptor(order),
+              [{ name: shared.name, subject: "shared.v1.enums", version: 1 }],
+            ),
+            "shared.v1.enums:1": referencedSchemaVersion(
+              "shared.v1.enums",
+              1,
+              52,
+              confluentSerializedDescriptor(shared),
+            ),
+          },
+        }),
+      );
+      expect(contracts[0]?.dependencySubjects).toStrictEqual([
+        "orders-value",
+        "orders.v1.order",
+        "shared.v1.enums",
+      ]);
+      expect(contracts[0]?.versions[0]?.root.dependencies[0]?.proto.name).toBe(order.name);
+      expect(contracts[0]?.versions[0]?.root.dependencies[0]?.dependencies[0]?.proto.name).toBe(
+        shared.name,
+      );
     }),
   );
 

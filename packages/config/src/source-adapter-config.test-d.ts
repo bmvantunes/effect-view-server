@@ -10,6 +10,7 @@ import { Schema } from "effect";
 import {
   defineViewServerConfig,
   ViewServerId,
+  type DefineViewServerConfigInput,
   type ExactLiveQueryInputForTopic,
   type TopicRow,
   type ViewServerHealth,
@@ -48,6 +49,25 @@ type DifferentFieldTypeRow = {
   readonly id: string;
   readonly region: string;
   readonly shard: number;
+};
+declare enum GeneratedStatus {
+  Pending = 0,
+  Complete = 1,
+}
+type GeneratedEnumRow = {
+  readonly id: string;
+  readonly status: GeneratedStatus;
+};
+type LiteralRegionRow = {
+  readonly id: string;
+  readonly region: "eu" | "us";
+};
+type MissingIdRow = {
+  readonly region: string;
+};
+type NarrowIdRow = {
+  readonly id: `user:${string}`;
+  readonly region: string;
 };
 type MappedDefinitionOptions<SourceRow extends object> = {
   readonly stream: string;
@@ -387,52 +407,52 @@ describe("Source Adapter config type contracts", () => {
   });
 
   it("rejects keys, invalid routes, and source-owner conflicts", () => {
-    // @ts-expect-error Every Topic rejects the removed configurable key.
     defineViewServerConfig({
       topics: {
         keyed: {
           schema: Row,
+          // @ts-expect-error Every Topic rejects the removed configurable key.
           key: "id",
           source: adapter.materializedSource({ stream: "all" }),
         },
       },
     });
 
-    // @ts-expect-error Leased Source routes must be row scalar fields.
     defineViewServerConfig({
       topics: {
         invalidRoute: {
           schema: Row,
+          // @ts-expect-error Reports topic "invalidRoute" and field "missing".
           source: adapter.leasedSource(["missing"], { stream: "routed" }),
         },
       },
     });
 
-    // @ts-expect-error Legacy source owners are removed.
     defineViewServerConfig({
       topics: {
         conflicting: {
           schema: Row,
           source: adapter.materializedSource({ stream: "all" }),
+          // @ts-expect-error Legacy source owners are removed.
           grpcSource: {},
         },
       },
     });
 
-    // @ts-expect-error Legacy Kafka source owners are removed.
     defineViewServerConfig({
       topics: {
         conflictingKafka: {
           schema: Row,
           source: adapter.materializedSource({ stream: "all" }),
+          // @ts-expect-error Legacy Kafka source owners are removed.
           kafkaSource: {},
         },
       },
     });
 
-    // @ts-expect-error canonical Source-owned rows require an id field.
     defineViewServerConfig({
       topics: {
+        // @ts-expect-error Reports topic "missingId" and the missing canonical "id" field.
         missingId: {
           schema: Schema.Struct({ region: Schema.String }),
           source: adapter.materializedSource({ stream: "all" }),
@@ -440,9 +460,9 @@ describe("Source Adapter config type contracts", () => {
       },
     });
 
-    // @ts-expect-error canonical Source-owned ids may not be optional.
     defineViewServerConfig({
       topics: {
+        // @ts-expect-error canonical Source-owned ids may not be optional.
         optionalId: {
           schema: Schema.Struct({
             id: Schema.optionalKey(Schema.String),
@@ -453,9 +473,9 @@ describe("Source Adapter config type contracts", () => {
       },
     });
 
-    // @ts-expect-error canonical Source-owned ids may not be numbers.
     defineViewServerConfig({
       topics: {
+        // @ts-expect-error canonical Source-owned ids may not be numbers.
         numberId: {
           schema: Schema.Struct({ id: Schema.Number, region: Schema.String }),
           source: adapter.materializedSource({ stream: "all" }),
@@ -463,9 +483,9 @@ describe("Source Adapter config type contracts", () => {
       },
     });
 
-    // @ts-expect-error canonical Source-owned ids may not be branded.
     defineViewServerConfig({
       topics: {
+        // @ts-expect-error canonical Source-owned ids may not be branded.
         brandedId: {
           schema: Schema.Struct({
             id: ViewServerId.pipe(Schema.brand("SourceId")),
@@ -476,9 +496,9 @@ describe("Source Adapter config type contracts", () => {
       },
     });
 
-    // @ts-expect-error canonical ids must use the nominal ViewServerId schema.
     defineViewServerConfig({
       topics: {
+        // @ts-expect-error canonical ids must use the nominal ViewServerId schema.
         plainStringId: {
           schema: Schema.Struct({ id: Schema.String, region: Schema.String }),
           source: adapter.materializedSource({ stream: "all" }),
@@ -486,9 +506,9 @@ describe("Source Adapter config type contracts", () => {
       },
     });
 
-    // @ts-expect-error canonical Source-owned ids may not be transformations.
     defineViewServerConfig({
       topics: {
+        // @ts-expect-error canonical Source-owned ids may not be transformations.
         transformedId: {
           schema: Schema.Struct({ id: Schema.Trim, region: Schema.String }),
           source: adapter.materializedSource({ stream: "all" }),
@@ -496,9 +516,9 @@ describe("Source Adapter config type contracts", () => {
       },
     });
 
-    // @ts-expect-error canonical Source-owned ids may not be refinements.
     defineViewServerConfig({
       topics: {
+        // @ts-expect-error canonical Source-owned ids may not be refinements.
         refinedId: {
           schema: Schema.Struct({ id: Schema.NonEmptyString, region: Schema.String }),
           source: adapter.materializedSource({ stream: "all" }),
@@ -506,60 +526,60 @@ describe("Source Adapter config type contracts", () => {
       },
     });
 
-    // @ts-expect-error Source-free Topics also require the canonical id.
     defineViewServerConfig({
       topics: {
+        // @ts-expect-error Source-free Topics also require the canonical id.
         missingManualId: {
           schema: Schema.Struct({ region: Schema.String }),
         },
       },
     });
 
-    // @ts-expect-error a bound Materialized Source row may not omit Topic Row fields.
     defineViewServerConfig({
       topics: {
         missingMaterializedField: {
           schema: Row,
+          // @ts-expect-error Reports topic "missingMaterializedField" and missing field "shard".
           source: adapter.materializedSource<MissingFieldRow>({ stream: "all" }),
         },
       },
     });
 
-    // @ts-expect-error an any-valued Materialized Source row cannot bind to a Topic.
     defineViewServerConfig({
       topics: {
         unsafeMaterializedRow: {
           schema: Row,
+          // @ts-expect-error Reports the unsafe row on topic "unsafeMaterializedRow".
           source: adapter.materializedSource<any>({ stream: "all" }),
         },
       },
     });
 
-    // @ts-expect-error a bound Materialized Source row may not add Topic Row fields.
     defineViewServerConfig({
       topics: {
         extraMaterializedField: {
           schema: Row,
+          // @ts-expect-error Reports topic "extraMaterializedField" and unexpected field "extra".
           source: adapter.materializedSource<ExtraFieldRow>({ stream: "all" }),
         },
       },
     });
 
-    // @ts-expect-error a bound Materialized Source row must preserve Topic Row field types.
     defineViewServerConfig({
       topics: {
         differentMaterializedFieldType: {
           schema: Row,
+          // @ts-expect-error Reports topic "differentMaterializedFieldType" and field "shard".
           source: adapter.materializedSource<DifferentFieldTypeRow>({ stream: "all" }),
         },
       },
     });
 
-    // @ts-expect-error a bound Leased Source row may not omit Topic Row fields.
     defineViewServerConfig({
       topics: {
         missingLeasedField: {
           schema: Row,
+          // @ts-expect-error Reports topic "missingLeasedField" and missing field "shard".
           source: adapter.leasedSource<readonly ["id"], MissingFieldRow>(["id"], {
             stream: "routed",
           }),
@@ -567,11 +587,11 @@ describe("Source Adapter config type contracts", () => {
       },
     });
 
-    // @ts-expect-error an any-valued Leased Source row cannot bind to a Topic.
     defineViewServerConfig({
       topics: {
         unsafeLeasedRow: {
           schema: Row,
+          // @ts-expect-error Reports the unsafe row on topic "unsafeLeasedRow".
           source: adapter.leasedSource<readonly ["id"], any>(["id"], {
             stream: "routed",
           }),
@@ -579,11 +599,11 @@ describe("Source Adapter config type contracts", () => {
       },
     });
 
-    // @ts-expect-error a bound Leased Source row may not add Topic Row fields.
     defineViewServerConfig({
       topics: {
         extraLeasedField: {
           schema: Row,
+          // @ts-expect-error Reports topic "extraLeasedField" and unexpected field "extra".
           source: adapter.leasedSource<readonly ["id"], ExtraFieldRow>(["id"], {
             stream: "routed",
           }),
@@ -591,14 +611,149 @@ describe("Source Adapter config type contracts", () => {
       },
     });
 
-    // @ts-expect-error a bound Leased Source row must preserve Topic Row field types.
     defineViewServerConfig({
       topics: {
         differentLeasedFieldType: {
           schema: Row,
+          // @ts-expect-error Reports topic "differentLeasedFieldType" and field "shard".
           source: adapter.leasedSource<readonly ["id"], DifferentFieldTypeRow>(["id"], {
             stream: "routed",
           }),
+        },
+      },
+    });
+  });
+
+  it("reports the topic and differing field for source row mismatches", () => {
+    const NumberStatusRow = Schema.Struct({
+      id: ViewServerId,
+      status: Schema.Number,
+    });
+    const enumStatusSource = mappedSource<GeneratedEnumRow>("enum-status", {
+      id: "event-1",
+      status: GeneratedStatus.Pending,
+    });
+    type EnumStatusInput = DefineViewServerConfigInput<{
+      readonly enumStatus: {
+        readonly schema: typeof NumberStatusRow;
+        readonly source: typeof enumStatusSource;
+      };
+    }>;
+    expectTypeOf<
+      EnumStatusInput["topics"]["enumStatus"]["source"]["__viewServerConfigError"]
+    >().toEqualTypeOf<{
+      readonly __invalid: never;
+      readonly topic: "enumStatus";
+      readonly reason: "source row does not match topic schema row";
+      readonly details: {
+        readonly field: "status";
+        readonly expected: number;
+        readonly received: GeneratedStatus;
+      };
+    }>();
+    defineViewServerConfig({
+      topics: {
+        enumStatus: {
+          schema: NumberStatusRow,
+          // @ts-expect-error Reports topic "enumStatus", field "status", expected number, and received GeneratedStatus.
+          source: enumStatusSource,
+        },
+      },
+    });
+
+    const StringRegionRow = Schema.Struct({
+      id: ViewServerId,
+      region: Schema.String,
+    });
+    const literalRegionSource = mappedSource<LiteralRegionRow>("literal-region", {
+      id: "event-1",
+      region: "eu",
+    });
+    type LiteralRegionInput = DefineViewServerConfigInput<{
+      readonly literalRegion: {
+        readonly schema: typeof StringRegionRow;
+        readonly source: typeof literalRegionSource;
+      };
+    }>;
+    expectTypeOf<
+      LiteralRegionInput["topics"]["literalRegion"]["source"]["__viewServerConfigError"]
+    >().toEqualTypeOf<{
+      readonly __invalid: never;
+      readonly topic: "literalRegion";
+      readonly reason: "source row does not match topic schema row";
+      readonly details: {
+        readonly field: "region";
+        readonly expected: string;
+        readonly received: "eu" | "us";
+      };
+    }>();
+    defineViewServerConfig({
+      topics: {
+        literalRegion: {
+          schema: StringRegionRow,
+          // @ts-expect-error Reports topic "literalRegion", field "region", expected string, and the received literal union.
+          source: literalRegionSource,
+        },
+      },
+    });
+
+    const missingIdSource = mappedSource<MissingIdRow>("missing-id", { region: "eu" });
+    type MissingIdInput = DefineViewServerConfigInput<{
+      readonly missingId: {
+        readonly schema: typeof StringRegionRow;
+        readonly source: typeof missingIdSource;
+      };
+    }>;
+    expectTypeOf<
+      MissingIdInput["topics"]["missingId"]["source"]["__viewServerConfigError"]
+    >().toEqualTypeOf<{
+      readonly __invalid: never;
+      readonly topic: "missingId";
+      readonly reason: "source row does not match topic schema row";
+      readonly details: {
+        readonly field: "id";
+        readonly expected: string;
+        readonly received: "missing";
+      };
+    }>();
+    defineViewServerConfig({
+      topics: {
+        missingId: {
+          schema: StringRegionRow,
+          // @ts-expect-error Reports topic "missingId" and the missing source row field "id".
+          source: missingIdSource,
+        },
+      },
+    });
+
+    const narrowIdSource = mappedSource<NarrowIdRow>("narrow-id", {
+      id: "user:1",
+      region: "eu",
+    });
+    type NarrowIdInput = DefineViewServerConfigInput<{
+      readonly narrowId: {
+        readonly schema: typeof StringRegionRow;
+        readonly source: typeof narrowIdSource;
+      };
+    }>;
+    expectTypeOf<
+      NarrowIdInput["topics"]["narrowId"]["source"]["__viewServerConfigError"]
+    >().toEqualTypeOf<{
+      readonly __invalid: never;
+      readonly topic: "narrowId";
+      readonly reason: "source row does not match topic schema row";
+      readonly details: {
+        readonly field: "id";
+        readonly expected: string;
+        readonly received: `user:${string}`;
+      };
+    }>();
+    defineViewServerConfig({
+      topics: {
+        narrowId: {
+          schema: StringRegionRow,
+          // @ts-expect-error Reports topic "narrowId", field "id", expected string, and the received template-literal type.
+          source: narrowIdSource,
         },
       },
     });

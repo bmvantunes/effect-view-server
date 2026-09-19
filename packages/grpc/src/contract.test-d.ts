@@ -1555,11 +1555,11 @@ const missingMappedField = sources.materialized({
     region: value.region,
   }),
 });
-// @ts-expect-error Mapping result must contain the complete Topic Row
 defineViewServerConfig({
   topics: {
     invalid: {
       schema: Row,
+      // @ts-expect-error Mapping result must contain the complete Topic Row
       source: missingMappedField,
     },
   },
@@ -1576,11 +1576,11 @@ const extraMappedField = sources.materialized({
     extra: true,
   }),
 });
-// @ts-expect-error Mapping result cannot exceed the exact Topic Row
 defineViewServerConfig({
   topics: {
     invalid: {
       schema: Row,
+      // @ts-expect-error Mapping result cannot exceed the exact Topic Row
       source: extraMappedField,
     },
   },
@@ -1596,11 +1596,11 @@ const incompatibleMappedField = sources.materialized({
     region: value.region,
   }),
 });
-// @ts-expect-error Mapping result field types must match the Topic Row
 defineViewServerConfig({
   topics: {
     invalid: {
       schema: Row,
+      // @ts-expect-error Mapping result field types must match the Topic Row
       source: incompatibleMappedField,
     },
   },
@@ -1616,11 +1616,11 @@ const missingLeasedMappedField = sources.leased({
     region: value.region,
   }),
 });
-// @ts-expect-error leased Mapping result must contain the complete Topic Row
 defineViewServerConfig({
   topics: {
     invalid: {
       schema: Row,
+      // @ts-expect-error leased Mapping result must contain the complete Topic Row
       source: missingLeasedMappedField,
     },
   },
@@ -1638,11 +1638,11 @@ const extraLeasedMappedField = sources.leased({
     extra: true,
   }),
 });
-// @ts-expect-error leased Mapping result cannot exceed the exact Topic Row
 defineViewServerConfig({
   topics: {
     invalid: {
       schema: Row,
+      // @ts-expect-error leased Mapping result cannot exceed the exact Topic Row
       source: extraLeasedMappedField,
     },
   },
@@ -1659,11 +1659,11 @@ const incompatibleLeasedMappedField = sources.leased({
     region: value.region,
   }),
 });
-// @ts-expect-error leased Mapping result field types must match the Topic Row
 defineViewServerConfig({
   topics: {
     invalid: {
       schema: Row,
+      // @ts-expect-error leased Mapping result field types must match the Topic Row
       source: incompatibleLeasedMappedField,
     },
   },
@@ -1680,11 +1680,11 @@ const unknownRouteField = sources.leased({
     region: value.region,
   }),
 });
-// @ts-expect-error Route Fields must be exact Topic Row fields
 defineViewServerConfig({
   topics: {
     invalid: {
       schema: Row,
+      // @ts-expect-error Route Fields must be exact Topic Row fields
       source: unknownRouteField,
     },
   },

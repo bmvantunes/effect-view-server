@@ -72,9 +72,9 @@ describe("viewSchema admission", () => {
     ).toBe("custom equivalence without canonical identity witness");
 
     expect(() =>
-      // @ts-expect-error Runtime admission protects structurally valid schemas with unsupported identity semantics.
       defineViewServerConfig({
         topics: {
+          // @ts-expect-error Runtime admission protects structurally valid schemas with unsupported identity semantics.
           rawClass: {
             schema: RawProfile,
           },

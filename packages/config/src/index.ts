@@ -172,25 +172,108 @@ type HasCanonicalId<SchemaValue extends RowSchema> = SchemaValue extends {
   ? TypeEquals<Id, typeof ViewServerId>
   : false;
 
-type ValidateSourceRoute<Row, Source extends SourceDefinitionAny> =
+type ViewServerConfigValidationError<Topic extends PropertyKey, Reason extends string, Details> = {
+  readonly __viewServerConfigError: {
+    readonly __invalid: never;
+    readonly topic: Topic;
+    readonly reason: Reason;
+    readonly details: Details;
+  };
+};
+
+type RowFieldDifference<ExpectedRow extends object, ReceivedRow extends object> = {
+  readonly [Field in keyof ExpectedRow | keyof ReceivedRow]: Field extends keyof ExpectedRow
+    ? Field extends keyof ReceivedRow
+      ? TypeEquals<
+          NormalizeRowMutability<ExpectedRow[Field]>,
+          NormalizeRowMutability<ReceivedRow[Field]>
+        > extends true
+        ? never
+        : {
+            readonly field: Field;
+            readonly expected: ExpectedRow[Field];
+            readonly received: ReceivedRow[Field];
+          }
+      : {
+          readonly field: Field;
+          readonly expected: ExpectedRow[Field];
+          readonly received: "missing";
+        }
+    : Field extends keyof ReceivedRow
+      ? {
+          readonly field: Field;
+          readonly expected: "absent";
+          readonly received: ReceivedRow[Field];
+        }
+      : never;
+}[keyof ExpectedRow | keyof ReceivedRow];
+
+type CanonicalIdDetails<SchemaValue extends RowSchema> = SchemaValue extends {
+  readonly fields: {
+    readonly id: infer Id;
+  };
+}
+  ? {
+      readonly field: "id";
+      readonly expected: typeof ViewServerId;
+      readonly received: Id;
+    }
+  : {
+      readonly field: "id";
+      readonly expected: typeof ViewServerId;
+      readonly received: "missing";
+    };
+
+type ValidateSourceRoute<Topic extends PropertyKey, Row, Source extends SourceDefinitionAny> =
   SourceDefinitionLifecycle<Source> extends "leased"
-    ? Exclude<SourceDefinitionRouteFields<Source>[number], RouteFieldKey<Row>> extends never
-      ? Source
+    ? Exclude<
+        SourceDefinitionRouteFields<Source>[number],
+        RouteFieldKey<Row>
+      > extends infer InvalidRoute
+      ? [InvalidRoute] extends [never]
+        ? Source
+        : Source &
+            ViewServerConfigValidationError<
+              Topic,
+              "leased source routeBy field is not a scalar topic row field",
+              { readonly field: InvalidRoute }
+            >
       : never
     : Source;
 
-type ValidateSource<Row, Source> = Source extends SourceDefinitionAny
+type ValidateSource<
+  Topic extends PropertyKey,
+  Row extends object,
+  Source,
+> = Source extends SourceDefinitionAny
   ? TypeEquals<SourceDefinitionRow<Source>, object> extends true
-    ? ValidateSourceRoute<Row, Source>
-    : TypeEquals<
-          NormalizeRowMutability<SourceDefinitionRow<Source>>,
-          NormalizeRowMutability<Row>
-        > extends true
-      ? ValidateSourceRoute<Row, Source>
-      : never
-  : never;
+    ? ValidateSourceRoute<Topic, Row, Source>
+    : [SourceDefinitionRow<Source>] extends [never]
+      ? Source &
+          ViewServerConfigValidationError<
+            Topic,
+            "source row type must not be any or unknown",
+            { readonly received: SourceDefinitionRow<Source> }
+          >
+      : TypeEquals<
+            NormalizeRowMutability<SourceDefinitionRow<Source>>,
+            NormalizeRowMutability<Row>
+          > extends true
+        ? ValidateSourceRoute<Topic, Row, Source>
+        : Source &
+            ViewServerConfigValidationError<
+              Topic,
+              "source row does not match topic schema row",
+              RowFieldDifference<Row, SourceDefinitionRow<Source>>
+            >
+  : Source &
+      ViewServerConfigValidationError<
+        Topic,
+        "source must be created by SourceAdapter.make(...)",
+        { readonly received: Source }
+      >;
 
-type ValidateTopic<Topic> = Topic extends {
+type ValidateTopic<TopicName extends PropertyKey, Topic> = Topic extends {
   readonly schema: infer TopicSchema extends RowSchema;
 }
   ? HasCanonicalId<TopicSchema> extends true
@@ -198,19 +281,34 @@ type ValidateTopic<Topic> = Topic extends {
       ? Topic &
           RejectExtraKeys<Topic, ViewServerTopicShape> & {
             readonly schema: TopicSchema;
-            readonly source: ValidateSource<RowFromSchema<TopicSchema>, Source>;
+            readonly source: ValidateSource<TopicName, RowFromSchema<TopicSchema>, Source>;
           }
       : Topic &
           RejectExtraKeys<Topic, ViewServerTopicShape> & {
             readonly schema: TopicSchema;
           }
-    : never
-  : never;
+    : Topic &
+        ViewServerConfigValidationError<
+          TopicName,
+          "topic schema must define id as ViewServerId",
+          CanonicalIdDetails<TopicSchema>
+        >
+  : Topic &
+      ViewServerConfigValidationError<
+        TopicName,
+        "topic schema must expose concrete struct fields",
+        { readonly received: Topic }
+      >;
 
 type ValidateTopicDefinitions<Topics extends ViewServerConfigTopicInputShape> = {
   readonly [Topic in keyof Topics]: Topic extends ViewServerSystemTopicName
-    ? never
-    : ValidateTopic<Topics[Topic]>;
+    ? Topics[Topic] &
+        ViewServerConfigValidationError<
+          Topic,
+          "topic name is reserved for system health streams",
+          { readonly received: Topic }
+        >
+    : ValidateTopic<Topic, Topics[Topic]>;
 };
 
 type ViewServerConfigTopicsAreValid<Topics extends ViewServerConfigTopicShape> =
@@ -230,15 +328,6 @@ export type ViewServerConfig<Topics extends ViewServerConfigTopicShape> =
 export type DefineViewServerConfigInput<Topics extends ViewServerConfigTopicInputShape> = {
   readonly topics: Topics & ValidateTopicDefinitions<Topics>;
 };
-
-type DefineViewServerConfigValidationArguments<Topics extends ViewServerConfigTopicInputShape> =
-  ViewServerConfigTopicsAreValid<Topics> extends true
-    ? readonly []
-    : readonly [
-        invalid: {
-          readonly __viewServerTopicDefinitionsInvalid: never;
-        },
-      ];
 
 const hasDefinedOwnProperty = (value: object, key: string): boolean =>
   Object.prototype.hasOwnProperty.call(value, key) && Reflect.get(value, key) !== undefined;
@@ -268,14 +357,10 @@ const validateLeasedSourceRouteFields = (
 
 export function defineViewServerConfig<const Topics extends ViewServerConfigTopicInputShape>(
   input: DefineViewServerConfigInput<Topics>,
-  ..._validation: DefineViewServerConfigValidationArguments<Topics>
 ): ViewServerConfig<Topics>;
-export function defineViewServerConfig(
-  input: {
-    readonly topics: ViewServerConfigTopicInputShape;
-  },
-  ..._validation: ReadonlyArray<unknown>
-) {
+export function defineViewServerConfig(input: {
+  readonly topics: ViewServerConfigTopicInputShape;
+}) {
   const unsupportedConfigProperty = ownPropertyNamesAreExact(input, new Set(["topics"]));
   if (unsupportedConfigProperty !== undefined) {
     throw new Error(

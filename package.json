@@ -4,7 +4,6 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "benchmark:kafka": "node scripts/benchmark-kafka-capacity.mjs",
     "bench:baseline": "vp run -w bench:baseline:smoke",
     "bench:baseline:active-query-sharing": "node scripts/run-benchmark-baseline.mjs --profile=active-query-sharing",
     "bench:baseline:active-query-sharing:update": "node scripts/run-benchmark-baseline.mjs --profile=active-query-sharing --update-baseline",

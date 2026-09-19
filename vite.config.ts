@@ -212,6 +212,10 @@ export default defineConfig({
   run: {
     cache: true,
     tasks: {
+      "benchmark:kafka": {
+        command: "node scripts/benchmark-kafka-capacity.mjs",
+        cache: false,
+      },
       ...declarationTasks,
       "build:effect-declarations": {
         command: "vp pack",

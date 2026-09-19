@@ -14,6 +14,7 @@ import {
   type ExactLiveQueryInputForTopic,
   type FilterableScalar,
   type TopicRow,
+  type ViewServerConfig,
   type ViewServerHealth,
   type ViewServerConfigTopicInputShape,
   type ViewServerSourceHealth,
@@ -109,6 +110,48 @@ type MismatchedDiscriminatedUnionRow =
   | { readonly id: string; readonly kind: "a"; readonly left: number }
   | { readonly id: string; readonly kind: "b"; readonly right: string };
 declare const mismatchedDiscriminatedUnionInitial: MismatchedDiscriminatedUnionRow;
+const RepeatedRegionVariantA = Schema.Struct({
+  id: ViewServerId,
+  kind: Schema.Literal("a"),
+  region: Schema.Literal("shared"),
+  left: Schema.String,
+});
+const RepeatedRegionVariantB = Schema.Struct({
+  id: ViewServerId,
+  kind: Schema.Literal("b"),
+  region: Schema.Literal("shared"),
+  right: Schema.Number,
+});
+const RepeatedRegionVariantC = Schema.Struct({
+  id: ViewServerId,
+  kind: Schema.Literal("c"),
+  region: Schema.Literal("other"),
+  tail: Schema.Boolean,
+});
+declare const repeatedRegionUnionSchema:
+  | typeof RepeatedRegionVariantA
+  | typeof RepeatedRegionVariantB
+  | typeof RepeatedRegionVariantC;
+type MismatchedRepeatedRegionUnionRow =
+  | {
+      readonly id: string;
+      readonly kind: "a";
+      readonly region: "shared";
+      readonly left: number;
+    }
+  | {
+      readonly id: string;
+      readonly kind: "b";
+      readonly region: "shared";
+      readonly right: string;
+    }
+  | {
+      readonly id: string;
+      readonly kind: "c";
+      readonly region: "other";
+      readonly tail: string;
+    };
+declare const mismatchedRepeatedRegionUnionInitial: MismatchedRepeatedRegionUnionRow;
 type OptionalUndefinedNoteRow = {
   readonly id: string;
   readonly note?: string | undefined;
@@ -163,6 +206,9 @@ declare const alternateValidTopics:
   | { readonly orders: { readonly schema: typeof Row } }
   | { readonly trades: { readonly schema: typeof Row } };
 const alternateValidConfig = defineViewServerConfig({ topics: alternateValidTopics });
+declare const widenedInvalidTopics: Record<string, { readonly schema: typeof NumberIdSchema }>;
+declare const widenedValidTopics: Record<string, { readonly schema: typeof Row }>;
+const widenedValidConfig = defineViewServerConfig({ topics: widenedValidTopics });
 declare const useLeasedSource: boolean;
 declare const useRegionRoute: boolean;
 const mixedLifecycleConfig = defineViewServerConfig({
@@ -255,6 +301,23 @@ describe("Source Adapter config type contracts", () => {
       typeof ViewServerId
     >();
     expectTypeOf(alternateValidConfig.topics).toEqualTypeOf<typeof alternateValidTopics>();
+    expectTypeOf(widenedValidConfig.topics).toEqualTypeOf<typeof widenedValidTopics>();
+    type WidenedInvalidInput = DefineViewServerConfigInput<typeof widenedInvalidTopics>;
+    expectTypeOf<ViewServerConfig<typeof widenedInvalidTopics>>().toEqualTypeOf<never>();
+    expectTypeOf<WidenedInvalidInput["topics"][string]["__viewServerConfigError"]>().toEqualTypeOf<{
+      readonly __invalid: never;
+      readonly topic: string;
+      readonly reason: "topic schema must define id as ViewServerId";
+      readonly details: {
+        readonly field: "id";
+        readonly expected: typeof ViewServerId;
+        readonly received: typeof NumberIdSchema.fields.id;
+      };
+    }>();
+    defineViewServerConfig({
+      // @ts-expect-error Widened registries still validate their topic value type.
+      topics: widenedInvalidTopics,
+    });
     // @ts-expect-error Topic configuration never exposes a configurable key.
     void config.topics.all.key;
     // @ts-expect-error Source-free Topic configuration never exposes a configurable key.
@@ -1014,6 +1077,33 @@ describe("Source Adapter config type contracts", () => {
           schema: discriminatedUnionSchema,
           // @ts-expect-error Discriminated union diagnostics correlate matching variants.
           source: mismatchedDiscriminatedUnionSource,
+        },
+      },
+    });
+
+    const mismatchedRepeatedRegionUnionSource = mappedSource<MismatchedRepeatedRegionUnionRow>(
+      "mismatched-repeated-region-union",
+      mismatchedRepeatedRegionUnionInitial,
+    );
+    type MismatchedRepeatedRegionUnionInput = DefineViewServerConfigInput<{
+      readonly mismatchedRepeatedRegion: {
+        readonly schema: typeof repeatedRegionUnionSchema;
+        readonly source: typeof mismatchedRepeatedRegionUnionSource;
+      };
+    }>;
+    expectTypeOf<
+      MismatchedRepeatedRegionUnionInput["topics"]["mismatchedRepeatedRegion"]["source"]["__viewServerConfigError"]["details"]
+    >().toEqualTypeOf<
+      | { readonly field: "left"; readonly expected: string; readonly received: number }
+      | { readonly field: "right"; readonly expected: number; readonly received: string }
+      | { readonly field: "tail"; readonly expected: boolean; readonly received: string }
+    >();
+    defineViewServerConfig({
+      topics: {
+        mismatchedRepeatedRegion: {
+          schema: repeatedRegionUnionSchema,
+          // @ts-expect-error Only unique discriminants correlate union variants.
+          source: mismatchedRepeatedRegionUnionSource,
         },
       },
     });

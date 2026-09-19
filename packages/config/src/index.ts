@@ -314,6 +314,18 @@ type DistributedRowFieldDifference<
     : never
   : never;
 
+type UnionMembersWithFieldValue<
+  Members extends object,
+  Field extends PropertyKey,
+  Value,
+> = Members extends unknown
+  ? Field extends keyof Members
+    ? TypeEquals<FieldPresentValue<Members, Field>, Value> extends true
+      ? Members
+      : never
+    : never
+  : never;
+
 type CorrelationField<
   ExpectedMember extends object,
   ReceivedMember extends object,
@@ -327,16 +339,20 @@ type CorrelationField<
     FieldPresentValue<ReceivedMember, Field>
   > extends true
     ? TypeEquals<
-        FieldPresentValue<ExpectedMember, Field>,
-        FieldPresentValue<ExpectedUnion, Field>
+        UnionMembersWithFieldValue<ExpectedUnion, Field, FieldPresentValue<ExpectedMember, Field>>,
+        ExpectedMember
       > extends true
       ? TypeEquals<
-          FieldPresentValue<ReceivedMember, Field>,
-          FieldPresentValue<ReceivedUnion, Field>
+          UnionMembersWithFieldValue<
+            ReceivedUnion,
+            Field,
+            FieldPresentValue<ReceivedMember, Field>
+          >,
+          ReceivedMember
         > extends true
-        ? never
-        : Field
-      : Field
+        ? Field
+        : never
+      : never
     : never;
 }[keyof ExpectedMember & keyof ReceivedMember & keyof ExpectedUnion & keyof ReceivedUnion];
 
@@ -583,12 +599,11 @@ type ValidateTopicDefinitions<Topics> = Topics extends unknown
     }
   : never;
 
-type ViewServerConfigTopicsAreValid<Topics extends ViewServerConfigTopicShape> =
-  string extends keyof Topics
-    ? true
-    : [Topics] extends [ValidateTopicDefinitions<Topics>]
-      ? true
-      : false;
+type ViewServerConfigTopicsAreValid<Topics extends ViewServerConfigTopicShape> = [Topics] extends [
+  ValidateTopicDefinitions<Topics>,
+]
+  ? true
+  : false;
 
 export type ViewServerConfig<Topics extends ViewServerConfigTopicShape> =
   ViewServerConfigTopicsAreValid<Topics> extends true
@@ -628,9 +643,11 @@ const validateLeasedSourceRouteFields = (
 };
 
 export function defineViewServerConfig<const Topics extends ViewServerConfigTopicShape>(
-  input: { readonly topics: Topics } & (ViewServerConfigTopicsAreValid<Topics> extends true
-    ? unknown
-    : never),
+  input: { readonly topics: Topics } & (string extends keyof Topics
+    ? never
+    : ViewServerConfigTopicsAreValid<Topics> extends true
+      ? unknown
+      : never),
 ): ViewServerConfig<Topics>;
 export function defineViewServerConfig<const Topics extends ViewServerConfigTopicCandidateShape>(
   input: DefineViewServerConfigInput<Topics>,

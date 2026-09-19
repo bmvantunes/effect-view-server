@@ -12,6 +12,7 @@ import type {
   TopicRow,
   ValidateLiveQuery,
   ViewServerIdSchema,
+  ViewServerSystemTopicName,
 } from "@effect-view-server/config";
 import type { Effect, Schema, Stream } from "effect";
 import type { ColumnLiveViewEngineHealth } from "./engine-health";
@@ -120,22 +121,24 @@ type TypeEquals<A, B> =
     : false;
 
 type ValidateEngineTopics<Topics extends DecodableTopicDefinitions> = {
-  readonly [Topic in keyof Topics]: Topics[Topic] extends {
-    (...arguments_: infer _Arguments): unknown;
-  }
+  readonly [Topic in keyof Topics]: Topic extends ViewServerSystemTopicName
     ? never
-    : Topics[Topic] extends abstract new (...arguments_: infer _Arguments) => unknown
+    : Topics[Topic] extends {
+          (...arguments_: infer _Arguments): unknown;
+        }
       ? never
-      : Topics[Topic] extends {
-            readonly schema: infer S extends RowSchema &
-              Schema.Codec<object, unknown, never, never>;
-          }
-        ? S extends { readonly fields: { readonly id: infer Id } }
-          ? TypeEquals<Id, ViewServerIdSchema> extends true
-            ? Topics[Topic] & RejectExtraEngineTopicKeys<Topics[Topic]>
+      : Topics[Topic] extends abstract new (...arguments_: infer _Arguments) => unknown
+        ? never
+        : Topics[Topic] extends {
+              readonly schema: infer S extends RowSchema &
+                Schema.Codec<object, unknown, never, never>;
+            }
+          ? S extends { readonly fields: { readonly id: infer Id } }
+            ? TypeEquals<Id, ViewServerIdSchema> extends true
+              ? Topics[Topic] & RejectExtraEngineTopicKeys<Topics[Topic]>
+              : never
             : never
-          : never
-        : never;
+          : never;
 };
 
 export type ColumnLiveViewEngineConfig<Topics extends DecodableTopicDefinitions> = {

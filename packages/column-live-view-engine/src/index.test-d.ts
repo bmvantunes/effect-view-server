@@ -492,6 +492,24 @@ describe("ColumnLiveViewEngine type contract", () => {
     void _invalidConstructibleConfig;
   });
 
+  it("rejects reserved system topic names at the engine boundary", () => {
+    const _invalidHealthConfig = createColumnLiveViewEngine({
+      topics: {
+        // @ts-expect-error engine topics must not use the reserved health topic name.
+        __view_server_health: { schema: Order },
+      },
+    });
+    const _invalidHealthSummaryConfig = createColumnLiveViewEngine({
+      topics: {
+        // @ts-expect-error engine topics must not use the reserved health-summary topic name.
+        __view_server_health_summary: { schema: Order },
+      },
+    });
+
+    void _invalidHealthConfig;
+    void _invalidHealthSummaryConfig;
+  });
+
   it("rejects plain string schemas at the engine topic boundary", () => {
     const PlainStringIdRow = Schema.Struct({
       id: Schema.String,

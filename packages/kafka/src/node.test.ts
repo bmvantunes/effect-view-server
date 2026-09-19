@@ -907,9 +907,7 @@ describe("Kafka Node Adapter", () => {
           typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
         requests.push(url);
         if (url.includes("/config/")) {
-          return Promise.resolve(
-            new Response(JSON.stringify({ compatibilityLevel: "FULL_TRANSITIVE" })),
-          );
+          return Promise.resolve(new Response(JSON.stringify({ compatibilityLevel: "NONE" })));
         }
         if (url.includes("/versions/1")) {
           const subject = url.includes("source-inventory-value")
@@ -938,7 +936,11 @@ describe("Kafka Node Adapter", () => {
             regions: {
               eu: {
                 bootstrapServers: "eu:9092",
-                schemaRegistry: { url: "https://registry.example.com/base", tls: {} },
+                schemaRegistry: {
+                  url: "https://registry.example.com/base",
+                  requiredCompatibility: "NONE",
+                  tls: {},
+                },
               },
             },
           }),
@@ -3550,6 +3552,7 @@ describe("Kafka Node Adapter", () => {
   it("validates and snapshots every Schema Registry Node option boundary", () => {
     const bearer = kafkaNodeInternals.snapshotSchemaRegistry({
       url: "https://registry.example.com/base",
+      requiredCompatibility: "NONE",
       auth: { token: "bearer-token" },
       headers: { "X-Tenant": "commerce" },
       timeout: 100,
@@ -3584,6 +3587,7 @@ describe("Kafka Node Adapter", () => {
     }).toStrictEqual({
       bearer: {
         url: "https://registry.example.com/base/",
+        requiredCompatibility: "NONE",
         auth: { token: "bearer-token" },
         headers: { "x-tenant": "commerce" },
         timeout: 100,
@@ -3603,6 +3607,7 @@ describe("Kafka Node Adapter", () => {
       },
       basic: {
         url: "https://registry.example.com/",
+        requiredCompatibility: "FULL_TRANSITIVE",
         auth: { username: "orders", password: "" },
         headers: {},
         timeout: 5_000,
@@ -3620,6 +3625,7 @@ describe("Kafka Node Adapter", () => {
       },
       defaults: {
         url: "http://registry.example.com/",
+        requiredCompatibility: "FULL_TRANSITIVE",
         headers: {},
         timeout: 5_000,
         retries: 3,
@@ -3681,6 +3687,8 @@ describe("Kafka Node Adapter", () => {
       null,
       [],
       { url: "https://registry.example.com", extra: true },
+      { url: "https://registry.example.com", requiredCompatibility: "ANY" },
+      { url: "https://registry.example.com", requiredCompatibility: null },
       { url: "" },
       { url: 1 },
       { url: "https://registry.example.com", timeout: "100" },

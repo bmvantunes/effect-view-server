@@ -17,6 +17,7 @@ import {
   type KafkaRequiredRegion,
   type KafkaNodeSchemaRegistryAuthOptions,
   type KafkaSchemaRegistryContractValidationFailure,
+  type KafkaSchemaRegistryCompatibility,
   type KafkaSchemaRegistryRequiredRegion,
 } from "./node";
 import { OrderValueSchema, type OrderValue } from "./test-fixtures/orders_pb";
@@ -95,6 +96,15 @@ const schemaRegistryConfig = defineViewServerConfig({
 const widenedRegistryValue: KafkaCodec<OrderValue, KafkaCodecError> =
   kafka.schemaRegistry.protobuf(OrderValueSchema);
 expectTypeOf(widenedRegistryValue).not.toBeAny();
+expectTypeOf<KafkaSchemaRegistryCompatibility>().toEqualTypeOf<
+  | "BACKWARD"
+  | "BACKWARD_TRANSITIVE"
+  | "FORWARD"
+  | "FORWARD_TRANSITIVE"
+  | "FULL"
+  | "FULL_TRANSITIVE"
+  | "NONE"
+>();
 const widenedSchemaRegistryConfig = defineViewServerConfig({
   topics: {
     orders: {
@@ -376,6 +386,7 @@ describe("Kafka Node type contract", () => {
           bootstrapServers: "eu:9092",
           schemaRegistry: {
             url: "https://registry.example.com",
+            requiredCompatibility: "NONE",
             auth: { token: "secret" },
             headers: { "x-tenant": "orders" },
             timeout: 5_000,
@@ -399,6 +410,19 @@ describe("Kafka Node type contract", () => {
       regions: {
         // @ts-expect-error Registry-backed Sources require a Region Schema Registry resource.
         eu: { bootstrapServers: "eu:9092" },
+      },
+    });
+    layer(schemaRegistryConfig, {
+      consumerGroupPrefix: "replica",
+      regions: {
+        eu: {
+          bootstrapServers: "eu:9092",
+          schemaRegistry: {
+            url: "https://registry.example.com",
+            // @ts-expect-error Registry compatibility must be a Confluent compatibility value.
+            requiredCompatibility: "ANY",
+          },
+        },
       },
     });
     layer(widenedSchemaRegistryConfig, {
@@ -486,6 +510,7 @@ describe("Kafka Node type contract", () => {
           bootstrapServers: Config.succeed("eu:9092"),
           schemaRegistry: {
             url: Config.succeed("https://registry.example.com"),
+            requiredCompatibility: Config.succeed<KafkaSchemaRegistryCompatibility>("NONE"),
             auth: Config.succeed({ token: "secret" }),
             monitorInterval: Config.succeed("30 seconds"),
           },

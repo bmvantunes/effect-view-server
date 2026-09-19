@@ -12,6 +12,8 @@ generated TypeScript types or moving dynamic Protobuf work onto the record hot p
 - Keys and values opt in independently. Configuring a Registry resource never changes another codec.
 - A Kafka Node Region accepts one optional `schemaRegistry` resource configuration. Every Region used
   by a registry-backed Source must provide it.
+- A Registry resource may select an exact required Confluent compatibility policy and defaults to
+  `FULL_TRANSITIVE`; changing it never disables concrete descriptor or history validation.
 - Version one uses Confluent's default Topic Name Strategy only: `<source-topic>-key` and
   `<source-topic>-value`.
 - There is no dynamic fallback, descriptor-free decoding, Avro, JSON Schema, subject override,
@@ -34,7 +36,8 @@ generated TypeScript types or moving dynamic Protobuf work onto the record hot p
 Before the Kafka aggregate Layer is provided, validate every configured registry-backed key/value
 subject and all recursively reachable reference subjects:
 
-1. Resolve the effective compatibility policy and require `FULL_TRANSITIVE`.
+1. Resolve the effective compatibility policy and require the configured value, defaulting to
+   `FULL_TRANSITIVE`.
 2. Require every active schema to be `PROTOBUF`.
 3. Load every active version, recursively resolve references, and reject soft-deleted versions.
 4. Reject detectable version gaps because hard-deleted live schema history is unsupported.

@@ -4,6 +4,7 @@ export {
   KafkaSchemaRegistryContractIssue,
   KafkaSchemaRegistryContractIssueCode,
   KafkaSchemaRegistryContractValidationFailure,
+  KafkaSchemaRegistryCompatibility,
 } from "./schema-registry-contract";
 export type {
   KafkaNodeLayerOptions,

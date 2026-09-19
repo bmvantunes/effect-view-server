@@ -18,7 +18,9 @@ descriptor. Each Kafka Region owns at most one scoped Registry resource shared b
 Region. Platformatic Kafka delivers raw bytes; the Kafka module validates Confluent framing and schema
 history, then Buf decodes the payload.
 
-Every used subject and custom reference subject must resolve to effective `FULL_TRANSITIVE` policy.
+Every used subject and custom reference subject must resolve to the Region's required compatibility
+policy. The requirement defaults to `FULL_TRANSITIVE` and may be configured to another Confluent
+compatibility value without disabling concrete schema-history or generated-reader validation.
 The generated descriptor must have one active registered mutually wire-compatible anchor, every
 active version's complete reachable message graph must be safely readable by the generated code, and
 active history is validated using Buf `WIRE` semantics. The application reads Registry state but

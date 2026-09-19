@@ -194,17 +194,35 @@ const KafkaLive = kafkaNode.layer(viewServer, {
 ```
 
 The adapter never mutates Schema Registry. Operators own schema publication,
-compatibility settings, and deletion policy. Configure every used subject and
-recursive custom reference subject with effective `FULL_TRANSITIVE`
-compatibility. A stricter producer-side Buf `FILE` check is compatible with
-this consumer contract and is recommended.
+compatibility settings, and deletion policy. By default, configure every used
+subject and recursive custom reference subject with effective
+`FULL_TRANSITIVE` compatibility. A stricter producer-side Buf `FILE` check is
+compatible with this consumer contract and is recommended.
+
+When an environment intentionally uses another Confluent compatibility policy,
+set the Region Registry's `requiredCompatibility` to that exact effective
+value. For example, a disposable development Registry may use:
+
+```ts
+schemaRegistry: {
+  url: "http://localhost:8081",
+  requiredCompatibility: "NONE",
+}
+```
+
+Supported values are `BACKWARD`, `BACKWARD_TRANSITIVE`, `FORWARD`,
+`FORWARD_TRANSITIVE`, `FULL`, `FULL_TRANSITIVE`, and `NONE`. Omitting the option
+requires `FULL_TRANSITIVE`. This option changes only the expected Registry
+policy; descriptor graphs, active history, references, generated-reader
+compatibility, schema IDs, and message indexes remain fully validated.
 
 ### Validation contract
 
 Validation is fail-early and wire-compatible, not descriptor-equality based.
 Before any Kafka consumer, listener, or server port starts, the Node Layer:
 
-1. requires effective `FULL_TRANSITIVE` compatibility;
+1. requires the configured effective compatibility policy, defaulting to
+   `FULL_TRANSITIVE`;
 2. loads every active Protobuf version and recursive reference;
 3. rejects soft deletion, detectable version gaps, and unsupported schema
    types;

@@ -4,6 +4,8 @@ import { source as contractSource } from "../contract.js";
 void contractSource;
 
 contractSource({ stream: "@ts-expect-error" });
+contractSource({ stream: "/* @ts-expect-error */" });
+contractSource({ stream: "// @ts-expect-error" });
 
 {
   contractSource({ stream: "orders" });

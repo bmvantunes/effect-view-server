@@ -344,18 +344,22 @@ const countExpectTypeOfCalls = (
 };
 
 const countExpectedContractErrors = (
+  commentDirectiveType: typeof import("typescript/unstable/ast").CommentDirectiveType,
+  createScanner: typeof import("typescript/unstable/ast/scanner").createScanner,
   isCallExpression: typeof import("typescript/unstable/ast/is").isCallExpression,
   isIdentifier: typeof import("typescript/unstable/ast/is").isIdentifier,
   sourceFile: SourceFile,
   bindings: ReadonlySet<TypeScriptSymbol>,
   checker: TypeScriptChecker,
+  syntaxKind: typeof import("typescript/unstable/ast").SyntaxKind,
 ): number => {
-  const expectedErrorPositions = Array.from(
-    sourceFile.text.matchAll(
-      /\/\/[^\r\n]*@ts-expect-error\b|\/\*[\s\S]*?@ts-expect-error\b[\s\S]*?\*\//gu,
-    ),
-    (match) => match.index,
-  );
+  const scanner = createScanner(false, undefined, sourceFile.text);
+  while (scanner.scan() !== syntaxKind.EndOfFile) {
+    // Scanning the complete source records only real TypeScript comment directives.
+  }
+  const expectedErrorPositions = (scanner.getCommentDirectives() ?? [])
+    .filter((directive) => directive.type === commentDirectiveType.ExpectError)
+    .map((directive) => directive.range.pos);
   return expectedErrorPositions.filter((position) => {
     let enclosingCall: CallExpression | undefined;
     const visit = (node: TypeScriptNode): void => {
@@ -420,11 +424,14 @@ type TypeScriptTooling = {
   readonly api: TypeScriptApi;
   readonly compilerCli: string;
   readonly compilerVersion: string;
+  readonly commentDirectiveType: typeof import("typescript/unstable/ast").CommentDirectiveType;
+  readonly createScanner: typeof import("typescript/unstable/ast/scanner").createScanner;
   readonly isCallExpression: typeof import("typescript/unstable/ast/is").isCallExpression;
   readonly isIdentifier: typeof import("typescript/unstable/ast/is").isIdentifier;
   readonly isImportDeclaration: typeof import("typescript/unstable/ast/is").isImportDeclaration;
   readonly isNamespaceImport: typeof import("typescript/unstable/ast/is").isNamespaceImport;
   readonly isStringLiteral: typeof import("typescript/unstable/ast/is").isStringLiteral;
+  readonly syntaxKind: typeof import("typescript/unstable/ast").SyntaxKind;
 };
 
 export const loadSourceAdapterOptionalTool = async <Module>(
@@ -476,7 +483,7 @@ const loadTypeScriptTooling = (): Effect.Effect<
       const toolingRequiredMessage =
         "Source Adapter package type tests require TypeScript 7 tooling. Install a compatible optional typescript peer dependency.";
       const packageJsonPath = fileURLToPath(import.meta.resolve("typescript/package.json"));
-      const [{ API }, ast, packageValue] = await Promise.all([
+      const [{ API }, ast, scanner, astApi, packageValue] = await Promise.all([
         loadSourceAdapterOptionalTool(
           () => import("typescript/unstable/sync"),
           toolingRequiredMessage,
@@ -485,17 +492,28 @@ const loadTypeScriptTooling = (): Effect.Effect<
           () => import("typescript/unstable/ast/is"),
           toolingRequiredMessage,
         ),
+        loadSourceAdapterOptionalTool(
+          () => import("typescript/unstable/ast/scanner"),
+          toolingRequiredMessage,
+        ),
+        loadSourceAdapterOptionalTool(
+          () => import("typescript/unstable/ast"),
+          toolingRequiredMessage,
+        ),
         parseJsonFile(fileURLToPath(import.meta.resolve("typescript/package.json"))),
       ]);
       const packageTooling = typeScriptPackageTooling(packageValue, packageJsonPath);
       return {
         api: new API(),
         ...packageTooling,
+        commentDirectiveType: astApi.CommentDirectiveType,
+        createScanner: scanner.createScanner,
         isCallExpression: ast.isCallExpression,
         isIdentifier: ast.isIdentifier,
         isImportDeclaration: ast.isImportDeclaration,
         isNamespaceImport: ast.isNamespaceImport,
         isStringLiteral: ast.isStringLiteral,
+        syntaxKind: astApi.SyntaxKind,
       };
     },
     catch: typeScriptToolingFailure,
@@ -563,11 +581,14 @@ const inspectTypeTests = (
               (count, contractSource) =>
                 count +
                 countExpectedContractErrors(
+                  tooling.commentDirectiveType,
+                  tooling.createScanner,
                   tooling.isCallExpression,
                   tooling.isIdentifier,
                   contractSource.sourceFile,
                   contractSource.bindings,
                   checker,
+                  tooling.syntaxKind,
                 ),
               0,
             ),

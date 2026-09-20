@@ -3,6 +3,7 @@ import { source as contractSource } from "../contract.js";
 
 void contractSource;
 
+// Ordinary comments are not negative type-test evidence.
 contractSource({ stream: "@ts-expect-error" });
 contractSource({ stream: "/* @ts-expect-error */" });
 contractSource({ stream: "// @ts-expect-error" });

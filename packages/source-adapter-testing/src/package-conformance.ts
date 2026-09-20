@@ -346,6 +346,7 @@ const countExpectTypeOfCalls = (
 const countExpectedContractErrors = (
   commentDirectiveType: typeof import("typescript/unstable/ast").CommentDirectiveType,
   createScanner: typeof import("typescript/unstable/ast/scanner").createScanner,
+  getLeadingCommentRanges: typeof import("typescript/unstable/ast/scanner").getLeadingCommentRanges,
   isCallExpression: typeof import("typescript/unstable/ast/is").isCallExpression,
   isIdentifier: typeof import("typescript/unstable/ast/is").isIdentifier,
   sourceFile: SourceFile,
@@ -353,13 +354,27 @@ const countExpectedContractErrors = (
   checker: TypeScriptChecker,
   syntaxKind: typeof import("typescript/unstable/ast").SyntaxKind,
 ): number => {
-  const scanner = createScanner(false, undefined, sourceFile.text);
-  while (scanner.scan() !== syntaxKind.EndOfFile) {
-    // Scanning the complete source records only real TypeScript comment directives.
-  }
-  const expectedErrorPositions = (scanner.getCommentDirectives() ?? [])
-    .filter((directive) => directive.type === commentDirectiveType.ExpectError)
-    .map((directive) => directive.range.pos);
+  const commentStarts = new Set<number>();
+  const expectedErrorPositions: Array<number> = [];
+  const collectDirectives = (node: TypeScriptNode): void => {
+    for (const range of getLeadingCommentRanges(sourceFile.text, node.pos) ?? []) {
+      if (commentStarts.has(range.pos)) {
+        continue;
+      }
+      commentStarts.add(range.pos);
+      const scanner = createScanner(false, undefined, sourceFile.text.slice(range.pos, range.end));
+      while (scanner.scan() !== syntaxKind.EndOfFile) {
+        // The isolated parser-derived trivia range cannot contain literal source text.
+      }
+      for (const directive of scanner.getCommentDirectives() ?? []) {
+        if (directive.type === commentDirectiveType.ExpectError) {
+          expectedErrorPositions.push(range.pos + directive.range.pos);
+        }
+      }
+    }
+    node.forEachChild(collectDirectives);
+  };
+  collectDirectives(sourceFile);
   return expectedErrorPositions.filter((position) => {
     let enclosingCall: CallExpression | undefined;
     const visit = (node: TypeScriptNode): void => {
@@ -426,6 +441,7 @@ type TypeScriptTooling = {
   readonly compilerVersion: string;
   readonly commentDirectiveType: typeof import("typescript/unstable/ast").CommentDirectiveType;
   readonly createScanner: typeof import("typescript/unstable/ast/scanner").createScanner;
+  readonly getLeadingCommentRanges: typeof import("typescript/unstable/ast/scanner").getLeadingCommentRanges;
   readonly isCallExpression: typeof import("typescript/unstable/ast/is").isCallExpression;
   readonly isIdentifier: typeof import("typescript/unstable/ast/is").isIdentifier;
   readonly isImportDeclaration: typeof import("typescript/unstable/ast/is").isImportDeclaration;
@@ -508,6 +524,7 @@ const loadTypeScriptTooling = (): Effect.Effect<
         ...packageTooling,
         commentDirectiveType: astApi.CommentDirectiveType,
         createScanner: scanner.createScanner,
+        getLeadingCommentRanges: scanner.getLeadingCommentRanges,
         isCallExpression: ast.isCallExpression,
         isIdentifier: ast.isIdentifier,
         isImportDeclaration: ast.isImportDeclaration,
@@ -583,6 +600,7 @@ const inspectTypeTests = (
                 countExpectedContractErrors(
                   tooling.commentDirectiveType,
                   tooling.createScanner,
+                  tooling.getLeadingCommentRanges,
                   tooling.isCallExpression,
                   tooling.isIdentifier,
                   contractSource.sourceFile,

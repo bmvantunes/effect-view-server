@@ -120,29 +120,43 @@ type TypeEquals<A, B> =
       : false
     : false;
 
-type ValidateEngineTopics<Topics extends DecodableTopicDefinitions> = {
-  readonly [Topic in keyof Topics]: Topic extends ViewServerSystemTopicName
-    ? never
-    : Topics[Topic] extends {
-          (...arguments_: infer _Arguments): unknown;
-        }
-      ? never
-      : Topics[Topic] extends abstract new (...arguments_: infer _Arguments) => unknown
+type ValidateEngineTopics<Topics extends DecodableTopicDefinitions> = Topics extends unknown
+  ? {
+      readonly [Topic in keyof Topics]: Topic extends ViewServerSystemTopicName
         ? never
         : Topics[Topic] extends {
-              readonly schema: infer S extends RowSchema &
-                Schema.Codec<object, unknown, never, never>;
+              (...arguments_: infer _Arguments): unknown;
             }
-          ? S extends { readonly fields: { readonly id: infer Id } }
-            ? TypeEquals<Id, ViewServerIdSchema> extends true
-              ? Topics[Topic] & RejectExtraEngineTopicKeys<Topics[Topic]>
-              : never
-            : never
-          : never;
-};
+          ? never
+          : Topics[Topic] extends abstract new (...arguments_: infer _Arguments) => unknown
+            ? never
+            : Topics[Topic] extends {
+                  readonly schema: infer S extends RowSchema &
+                    Schema.Codec<object, unknown, never, never>;
+                }
+              ? S extends { readonly fields: { readonly id: infer Id } }
+                ? TypeEquals<Id, ViewServerIdSchema> extends true
+                  ? Topics[Topic] & RejectExtraEngineTopicKeys<Topics[Topic]>
+                  : never
+                : never
+              : never;
+    }
+  : never;
+
+type InvalidEngineTopicRegistries<Topics extends DecodableTopicDefinitions> = Topics extends unknown
+  ? Topics extends ValidateEngineTopics<Topics>
+    ? never
+    : Topics
+  : never;
+
+type ValidateEngineTopicRegistries<Topics extends DecodableTopicDefinitions> = [
+  InvalidEngineTopicRegistries<Topics>,
+] extends [never]
+  ? unknown
+  : never;
 
 export type ColumnLiveViewEngineConfig<Topics extends DecodableTopicDefinitions> = {
-  readonly topics: Topics & ValidateEngineTopics<Topics>;
+  readonly topics: Topics & ValidateEngineTopicRegistries<Topics>;
   readonly groupedIncrementalAdmissionLimits?: Partial<GroupedIncrementalAdmissionLimits>;
   readonly subscriptionQueueCapacity?: number;
 };

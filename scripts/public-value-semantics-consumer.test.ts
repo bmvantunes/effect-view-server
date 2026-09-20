@@ -136,6 +136,10 @@ const PackageManifest = Schema.StructWithRest(
     dependencies: Schema.Record(Schema.String, Schema.String),
     exports: PackageExports,
     peerDependencies: PackagePeerDependencies,
+    peerDependenciesMeta: Schema.Record(
+      Schema.String,
+      Schema.Struct({ optional: Schema.Boolean }),
+    ),
   }),
   [Schema.Record(Schema.String, Schema.Unknown)],
 );
@@ -364,13 +368,20 @@ describe("published value semantics consumer", () => {
         );
       }
       expect(strictInstalledManifest.peerDependencies).toStrictEqual({
-        "@effect/atom-react": "4.0.0-rc.111",
-        "@effect/vitest": "4.0.0-rc.111",
-        effect: "4.0.0-rc.111",
-        react: "19.2.8",
-        "react-dom": "19.2.8",
+        "@effect/atom-react": "^4.0.0-rc.111",
+        "@effect/vitest": "^4.0.0-rc.111",
+        effect: "^4.0.0-rc.111",
+        react: ">=19.2.7 <20.0.0",
+        "react-dom": ">=19.2.7 <20.0.0",
         typescript: ">=7.0.0 <8.0.0",
-        vite: "*",
+        vite: ">=8.0.0 <9.0.0",
+      });
+      expect(strictInstalledManifest.peerDependenciesMeta).toStrictEqual({
+        "@effect/atom-react": { optional: true },
+        "@effect/vitest": { optional: true },
+        react: { optional: true },
+        "react-dom": { optional: true },
+        vite: { optional: true },
       });
       const strictLockfile = readFileSync(
         join(strictConsumerDirectory, "pnpm-lock.yaml"),
@@ -427,7 +438,7 @@ describe("published value semantics consumer", () => {
       const valueSemanticsExport = installedManifest.exports["./value-semantics"];
       const entryTarget = valueSemanticsExport.import;
       const declarationTarget = valueSemanticsExport.types;
-      expect(installedManifest.peerDependencies.effect).toBe("4.0.0-rc.111");
+      expect(installedManifest.peerDependencies.effect).toBe("^4.0.0-rc.111");
 
       const graph = collectStaticModuleGraph(
         join(installedPackageDirectory, entryTarget.replace(/^\.\//, "")),

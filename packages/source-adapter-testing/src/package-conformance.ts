@@ -9,10 +9,13 @@ import { isAbsolute, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { gzipSync } from "node:zlib";
 import { Cause, Context, Data, Effect, Exit, Layer, Option, Schema } from "effect";
-import ts from "typescript-compiler-api";
-import { version as typescriptVersion } from "typescript";
-import typescriptPackage from "typescript/package.json" with { type: "json" };
-import { build, type Plugin } from "vite";
+import type { CallExpression, Node as TypeScriptNode, SourceFile } from "typescript/unstable/ast";
+import type {
+  API as TypeScriptApi,
+  Checker as TypeScriptChecker,
+  Symbol as TypeScriptSymbol,
+} from "typescript/unstable/sync";
+import type { Plugin } from "vite";
 import { browserBuildChunks } from "./browser-build-output";
 import { sourceAdapterConformanceDefinitionIsLinked } from "./conformance";
 import { importPackageExportModule } from "./package-export-loader";
@@ -249,32 +252,28 @@ const moduleStem = (path: string): string =>
   path.replace(/(?:\.d)?\.(?:[cm]?ts|tsx|[cm]?js)$/u, "");
 
 const typeTestContractBindings = (
-  file: string,
-  sourceFile: ts.SourceFile,
-  options: ts.CompilerOptions,
+  isImportDeclaration: typeof import("typescript/unstable/ast/is").isImportDeclaration,
+  isStringLiteral: typeof import("typescript/unstable/ast/is").isStringLiteral,
+  isNamespaceImport: typeof import("typescript/unstable/ast/is").isNamespaceImport,
+  sourceFile: SourceFile,
   contractTarget: string,
-  checker: ts.TypeChecker,
-): ReadonlySet<ts.Symbol> => {
-  const bindings = new Set<ts.Symbol>();
+  checker: TypeScriptChecker,
+): ReadonlySet<TypeScriptSymbol> => {
+  const bindings = new Set<TypeScriptSymbol>();
   for (const statement of sourceFile.statements) {
-    if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) {
+    if (!isImportDeclaration(statement) || !isStringLiteral(statement.moduleSpecifier)) {
       continue;
     }
-    const resolved = ts.resolveModuleName(
-      statement.moduleSpecifier.text,
-      file,
-      options,
-      ts.sys,
-    ).resolvedModule;
-    const isContractImport =
-      resolved !== undefined &&
-      moduleStem(resolve(resolved.resolvedFileName)) === moduleStem(contractTarget);
+    const moduleSymbol = checker.getSymbolAtLocation(statement.moduleSpecifier);
+    const isContractImport = moduleSymbol?.declarations.some(
+      (declaration) => moduleStem(resolve(declaration.path)) === moduleStem(contractTarget),
+    );
     if (!isContractImport) {
       continue;
     }
     const namedBindings = statement.importClause?.namedBindings;
     if (namedBindings !== undefined) {
-      if (ts.isNamespaceImport(namedBindings)) {
+      if (isNamespaceImport(namedBindings)) {
         bindings.add(
           Option.getOrThrow(
             Option.fromUndefinedOr(checker.getSymbolAtLocation(namedBindings.name)),
@@ -293,13 +292,14 @@ const typeTestContractBindings = (
 };
 
 const nodeUsesContractBinding = (
-  node: ts.Node,
-  bindings: ReadonlySet<ts.Symbol>,
-  checker: ts.TypeChecker,
+  isIdentifier: typeof import("typescript/unstable/ast/is").isIdentifier,
+  node: TypeScriptNode,
+  bindings: ReadonlySet<TypeScriptSymbol>,
+  checker: TypeScriptChecker,
 ): boolean => {
   let usesBinding = false;
-  const visit = (candidate: ts.Node): void => {
-    if (ts.isIdentifier(candidate)) {
+  const visit = (candidate: TypeScriptNode): void => {
+    if (isIdentifier(candidate)) {
       const symbol = checker.getSymbolAtLocation(candidate);
       if (symbol !== undefined && bindings.has(symbol)) {
         usesBinding = true;
@@ -307,7 +307,7 @@ const nodeUsesContractBinding = (
       }
     }
     if (!usesBinding) {
-      ts.forEachChild(candidate, visit);
+      candidate.forEachChild(visit);
     }
   };
   visit(node);
@@ -315,51 +315,52 @@ const nodeUsesContractBinding = (
 };
 
 const countExpectTypeOfCalls = (
-  sourceFile: ts.SourceFile,
-  bindings: ReadonlySet<ts.Symbol>,
-  checker: ts.TypeChecker,
+  isCallExpression: typeof import("typescript/unstable/ast/is").isCallExpression,
+  isIdentifier: typeof import("typescript/unstable/ast/is").isIdentifier,
+  sourceFile: SourceFile,
+  bindings: ReadonlySet<TypeScriptSymbol>,
+  checker: TypeScriptChecker,
 ): number => {
   let count = 0;
-  const visit = (node: ts.Node): void => {
+  const visit = (node: TypeScriptNode): void => {
     if (
-      ts.isCallExpression(node) &&
-      ts.isIdentifier(node.expression) &&
+      isCallExpression(node) &&
+      isIdentifier(node.expression) &&
       node.expression.text === "expectTypeOf" &&
-      (node.arguments.some((argument) => nodeUsesContractBinding(argument, bindings, checker)) ||
+      (node.arguments.some((argument) =>
+        nodeUsesContractBinding(isIdentifier, argument, bindings, checker),
+      ) ||
         (node.typeArguments?.some((argument) =>
-          nodeUsesContractBinding(argument, bindings, checker),
+          nodeUsesContractBinding(isIdentifier, argument, bindings, checker),
         ) ??
           false))
     ) {
       count += 1;
     }
-    ts.forEachChild(node, visit);
+    node.forEachChild(visit);
   };
   visit(sourceFile);
   return count;
 };
 
 const countExpectedContractErrors = (
-  sourceFile: ts.SourceFile,
-  bindings: ReadonlySet<ts.Symbol>,
-  checker: ts.TypeChecker,
+  isCallExpression: typeof import("typescript/unstable/ast/is").isCallExpression,
+  isIdentifier: typeof import("typescript/unstable/ast/is").isIdentifier,
+  sourceFile: SourceFile,
+  bindings: ReadonlySet<TypeScriptSymbol>,
+  checker: TypeScriptChecker,
 ): number => {
-  const commentDirectives = Reflect.get(sourceFile, "commentDirectives");
-  const expectedErrorPositions = Array.isArray(commentDirectives)
-    ? commentDirectives.flatMap((directive) => {
-        const directiveObject = jsonObject(directive, "TypeScript comment directive");
-        if (directiveObject["type"] !== 0) {
-          return [];
-        }
-        const range = jsonObject(directiveObject["range"], "TypeScript comment directive range");
-        return [Number(range["pos"])];
-      })
-    : [];
+  const expectedErrorPositions = Array.from(
+    sourceFile.text.matchAll(
+      /\/\/[^\r\n]*@ts-expect-error\b|\/\*[\s\S]*?@ts-expect-error\b[\s\S]*?\*\//gu,
+    ),
+    (match) => match.index,
+  );
   return expectedErrorPositions.filter((position) => {
-    let enclosingCall: ts.CallExpression | undefined;
-    const visit = (node: ts.Node): void => {
+    let enclosingCall: CallExpression | undefined;
+    const visit = (node: TypeScriptNode): void => {
       if (
-        ts.isCallExpression(node) &&
+        isCallExpression(node) &&
         node.getFullStart() <= position &&
         position < node.end &&
         (enclosingCall === undefined ||
@@ -367,10 +368,13 @@ const countExpectedContractErrors = (
       ) {
         enclosingCall = node;
       }
-      ts.forEachChild(node, visit);
+      node.forEachChild(visit);
     };
     visit(sourceFile);
-    return enclosingCall !== undefined && nodeUsesContractBinding(enclosingCall, bindings, checker);
+    return (
+      enclosingCall !== undefined &&
+      nodeUsesContractBinding(isIdentifier, enclosingCall, bindings, checker)
+    );
   }).length;
 };
 
@@ -382,12 +386,6 @@ const executeSchemaProbe = (
     valid: Effect.exit(Schema.decodeUnknownEffect(schema)(probe.valid)),
     invalid: Effect.exit(Schema.decodeUnknownEffect(schema)(probe.invalid)),
   });
-
-const typescriptPackageRoot = resolve(
-  fileURLToPath(import.meta.resolve("typescript/package.json")),
-  "..",
-);
-const typescriptCompilerCli = resolve(typescriptPackageRoot, typescriptPackage.bin.tsc);
 
 type TypeScriptCompilerProcessResult = {
   readonly error?: Error;
@@ -409,79 +407,177 @@ export const typeScriptCompilerExitCode = (compiler: TypeScriptCompilerProcessRe
   return compiler.status === 0 ? 0 : 1;
 };
 
-const executeTypeScriptCompiler = (projectPath: string): number => {
+const executeTypeScriptCompiler = (compilerCli: string, projectPath: string): number => {
   const compiler = spawnSync(
     process.execPath,
-    [typescriptCompilerCli, "--project", projectPath, "--noEmit", "--pretty", "false"],
+    [compilerCli, "--project", projectPath, "--noEmit", "--pretty", "false"],
     { stdio: "ignore" },
   );
   return typeScriptCompilerExitCode(compiler);
 };
+
+type TypeScriptTooling = {
+  readonly api: TypeScriptApi;
+  readonly compilerCli: string;
+  readonly compilerVersion: string;
+  readonly isCallExpression: typeof import("typescript/unstable/ast/is").isCallExpression;
+  readonly isIdentifier: typeof import("typescript/unstable/ast/is").isIdentifier;
+  readonly isImportDeclaration: typeof import("typescript/unstable/ast/is").isImportDeclaration;
+  readonly isNamespaceImport: typeof import("typescript/unstable/ast/is").isNamespaceImport;
+  readonly isStringLiteral: typeof import("typescript/unstable/ast/is").isStringLiteral;
+};
+
+export const loadSourceAdapterOptionalTool = async <Module>(
+  load: () => Promise<Module>,
+  message: string,
+): Promise<Module> =>
+  load().catch((cause: unknown) => {
+    throw inspectionError(message, cause);
+  });
+
+export const sourceAdapterInspectionFailure = (
+  cause: unknown,
+  message: string,
+): SourceAdapterPackageInspectionError =>
+  cause instanceof SourceAdapterPackageInspectionError ? cause : inspectionError(message, cause);
+
+export const typeScriptToolingFailure = (cause: unknown): SourceAdapterPackageInspectionError =>
+  sourceAdapterInspectionFailure(
+    cause,
+    "Source Adapter package type tests require TypeScript 7 tooling. Install a compatible optional typescript peer dependency.",
+  );
+
+export const typeScriptPackageTooling = (
+  packageValue: unknown,
+  packageJsonPath: string,
+): {
+  readonly compilerCli: string;
+  readonly compilerVersion: string;
+} => {
+  const packageManifest = jsonObject(packageValue, "TypeScript package manifest");
+  const bin = jsonObject(packageManifest["bin"], "TypeScript package bin");
+  const compiler = bin["tsc"];
+  const compilerVersion = packageManifest["version"];
+  if (typeof compiler !== "string" || typeof compilerVersion !== "string") {
+    throw new TypeError("TypeScript package requires string version and bin.tsc fields.");
+  }
+  return {
+    compilerCli: resolve(packageJsonPath, "..", compiler),
+    compilerVersion,
+  };
+};
+
+const loadTypeScriptTooling = (): Effect.Effect<
+  TypeScriptTooling,
+  SourceAdapterPackageInspectionError
+> =>
+  Effect.tryPromise({
+    try: async () => {
+      const toolingRequiredMessage =
+        "Source Adapter package type tests require TypeScript 7 tooling. Install a compatible optional typescript peer dependency.";
+      const packageJsonPath = fileURLToPath(import.meta.resolve("typescript/package.json"));
+      const [{ API }, ast, packageValue] = await Promise.all([
+        loadSourceAdapterOptionalTool(
+          () => import("typescript/unstable/sync"),
+          toolingRequiredMessage,
+        ),
+        loadSourceAdapterOptionalTool(
+          () => import("typescript/unstable/ast/is"),
+          toolingRequiredMessage,
+        ),
+        parseJsonFile(fileURLToPath(import.meta.resolve("typescript/package.json"))),
+      ]);
+      const packageTooling = typeScriptPackageTooling(packageValue, packageJsonPath);
+      return {
+        api: new API(),
+        ...packageTooling,
+        isCallExpression: ast.isCallExpression,
+        isIdentifier: ast.isIdentifier,
+        isImportDeclaration: ast.isImportDeclaration,
+        isNamespaceImport: ast.isNamespaceImport,
+        isStringLiteral: ast.isStringLiteral,
+      };
+    },
+    catch: typeScriptToolingFailure,
+  });
 
 const inspectTypeTests = (
   packageRoot: string,
   project: string,
   contractTarget: string,
 ): Effect.Effect<SourceAdapterPackageTypeTestEvidence, SourceAdapterPackageInspectionError> =>
-  Effect.tryPromise({
-    try: async () => {
-      const projectPath = resolveWithinPackage(
-        packageRoot,
-        project,
-        "Source Adapter type-test project",
-      );
-      const compiler = executeTypeScriptCompiler(projectPath);
-      const config = ts.readConfigFile(projectPath, (path) => ts.sys.readFile(path));
-      if (config.error !== undefined) {
-        throw new Error(ts.flattenDiagnosticMessageText(config.error.messageText, "\n"));
-      }
-      const parsed = ts.parseJsonConfigFileContent(
-        config.config,
-        ts.sys,
-        resolve(projectPath, ".."),
-        {
-          noEmit: true,
-        },
-        projectPath,
-      );
-      const files = parsed.fileNames.filter((file) => file.endsWith(".test-d.ts"));
-      const program = ts.createProgram(parsed.fileNames, parsed.options);
-      const checker = program.getTypeChecker();
-      const contractSources = files.flatMap((file) => {
-        const sourceFile = Option.getOrThrow(Option.fromUndefinedOr(program.getSourceFile(file)));
-        const bindings = typeTestContractBindings(
-          file,
-          sourceFile,
-          parsed.options,
-          contractTarget,
-          checker,
-        );
-        return bindings.size === 0 ? [] : [{ sourceFile, bindings }];
-      });
-      return {
-        compilerExitCode: compiler,
-        compilerVersion: typescriptVersion,
-        contractFiles: contractSources.length,
-        positiveCases: contractSources.reduce(
-          (count, contractSource) =>
-            count +
-            countExpectTypeOfCalls(contractSource.sourceFile, contractSource.bindings, checker),
-          0,
-        ),
-        negativeCases: contractSources.reduce(
-          (count, contractSource) =>
-            count +
-            countExpectedContractErrors(
-              contractSource.sourceFile,
-              contractSource.bindings,
+  Effect.acquireUseRelease(
+    loadTypeScriptTooling(),
+    (tooling) =>
+      Effect.tryPromise({
+        try: async () => {
+          const projectPath = resolveWithinPackage(
+            packageRoot,
+            project,
+            "Source Adapter type-test project",
+          );
+          await readFile(projectPath);
+          const compiler = executeTypeScriptCompiler(tooling.compilerCli, projectPath);
+          const snapshot = tooling.api.updateSnapshot({ openProjects: [projectPath] });
+          const typeTestProject = Option.getOrThrow(
+            Option.fromUndefinedOr(snapshot.getProject(projectPath)),
+          );
+          const configDiagnostics = typeTestProject.program.getConfigFileParsingDiagnostics();
+          if (configDiagnostics.length > 0) {
+            throw new Error(configDiagnostics.map((diagnostic) => diagnostic.text).join("\n"));
+          }
+          const files = typeTestProject.rootFiles.filter((file) => file.endsWith(".test-d.ts"));
+          const program = typeTestProject.program;
+          const checker = typeTestProject.checker;
+          const contractSources = files.flatMap((file) => {
+            const sourceFile = Option.getOrThrow(
+              Option.fromUndefinedOr(program.getSourceFile(file)),
+            );
+            const bindings = typeTestContractBindings(
+              tooling.isImportDeclaration,
+              tooling.isStringLiteral,
+              tooling.isNamespaceImport,
+              sourceFile,
+              contractTarget,
               checker,
+            );
+            return bindings.size === 0 ? [] : [{ sourceFile, bindings }];
+          });
+          return {
+            compilerExitCode: compiler,
+            compilerVersion: tooling.compilerVersion,
+            contractFiles: contractSources.length,
+            positiveCases: contractSources.reduce(
+              (count, contractSource) =>
+                count +
+                countExpectTypeOfCalls(
+                  tooling.isCallExpression,
+                  tooling.isIdentifier,
+                  contractSource.sourceFile,
+                  contractSource.bindings,
+                  checker,
+                ),
+              0,
             ),
-          0,
-        ),
-      };
-    },
-    catch: (cause) => inspectionError("Source Adapter package type tests could not run.", cause),
-  });
+            negativeCases: contractSources.reduce(
+              (count, contractSource) =>
+                count +
+                countExpectedContractErrors(
+                  tooling.isCallExpression,
+                  tooling.isIdentifier,
+                  contractSource.sourceFile,
+                  contractSource.bindings,
+                  checker,
+                ),
+              0,
+            ),
+          };
+        },
+        catch: (cause) =>
+          inspectionError("Source Adapter package type tests could not run.", cause),
+      }),
+    (tooling) => Effect.sync(() => tooling.api.close()),
+  );
 
 const packageSpecifierMatches = (specifier: string, packageName: string): boolean =>
   specifier === packageName || specifier.startsWith(`${packageName}/`);
@@ -500,6 +596,10 @@ export const inspectSourceAdapterContractBrowserBundle = (
 > =>
   Effect.tryPromise({
     try: async () => {
+      const { build } = await loadSourceAdapterOptionalTool(
+        () => import("vite"),
+        "Source Adapter contract browser inspection requires Vite tooling. Install a compatible optional vite peer dependency.",
+      );
       const modules = new Set<string>();
       const dependencies = new Map<string, SourceAdapterContractBrowserDependency>();
       const captureResolvedContractGraph: Plugin = {
@@ -557,7 +657,10 @@ export const inspectSourceAdapterContractBrowserBundle = (
       };
     },
     catch: (cause) =>
-      inspectionError("Source Adapter contract browser bundle could not be built.", cause),
+      sourceAdapterInspectionFailure(
+        cause,
+        "Source Adapter contract browser bundle could not be built.",
+      ),
   });
 
 export const classifySourceAdapterContractBrowserModules = (

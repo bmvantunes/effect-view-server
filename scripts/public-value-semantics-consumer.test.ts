@@ -13,6 +13,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { gzipSync } from "node:zlib";
 import { describe, expect, it } from "@effect/vitest";
 import { Schema } from "effect";
 import { extract } from "tar";
@@ -367,6 +368,17 @@ describe("published value semantics consumer", () => {
           "typescript-compiler-api",
         );
       }
+      const sourceAdapterTesting = readFileSync(
+        join(strictInstalledPackageDirectory, "dist", "source-adapter-testing.js"),
+        "utf8",
+      );
+      expect(Buffer.byteLength(sourceAdapterTesting)).toBeLessThan(256 * 1024);
+      expect(gzipSync(sourceAdapterTesting).byteLength).toBeLessThan(64 * 1024);
+      expect(sourceAdapterTesting).toContain('import("typescript/unstable/sync")');
+      expect(sourceAdapterTesting).toContain('import("vite")');
+      expect(sourceAdapterTesting).not.toContain("getTypeAtLocation");
+      expect(sourceAdapterTesting).not.toContain("SolutionBuilder::beforeBuild");
+      expect(sourceAdapterTesting).not.toContain("createSourceFile");
       expect(strictInstalledManifest.peerDependencies).toStrictEqual({
         "@effect/atom-react": "^4.0.0-rc.111",
         "@effect/vitest": "^4.0.0-rc.111",
@@ -381,6 +393,7 @@ describe("published value semantics consumer", () => {
         "@effect/vitest": { optional: true },
         react: { optional: true },
         "react-dom": { optional: true },
+        typescript: { optional: true },
         vite: { optional: true },
       });
       const strictLockfile = readFileSync(

@@ -7,7 +7,11 @@ import {
   classifySourceAdapterContractBrowserModules,
   inspectSourceAdapterContractBrowserBundle,
   inspectSourceAdapterPackageConformance,
+  loadSourceAdapterOptionalTool,
+  sourceAdapterInspectionFailure,
   SourceAdapterPackageInspectionError,
+  typeScriptPackageTooling,
+  typeScriptToolingFailure,
   typeScriptCompilerExitCode,
   type SourceAdapterPackageInspectionOptions,
   type SourceAdapterPackageConformanceSnapshot,
@@ -32,6 +36,51 @@ describe("TypeScript compiler process results", () => {
     expect(() => typeScriptCompilerExitCode({ status: null, signal: null })).toThrow(
       "TypeScript compiler terminated without an exit code.",
     );
+  });
+
+  it("validates lazy optional tooling metadata and preserves actionable failures", async () => {
+    const packageJsonPath = "/tooling/typescript/package.json";
+    expect(
+      typeScriptPackageTooling({ bin: { tsc: "bin/tsc" }, version: "7.0.2" }, packageJsonPath),
+    ).toStrictEqual({
+      compilerCli: "/tooling/typescript/bin/tsc",
+      compilerVersion: "7.0.2",
+    });
+    expect(() =>
+      typeScriptPackageTooling({ bin: { tsc: 1 }, version: "7.0.2" }, packageJsonPath),
+    ).toThrow("TypeScript package requires string version and bin.tsc fields.");
+    expect(() =>
+      typeScriptPackageTooling({ bin: { tsc: "bin/tsc" }, version: 7 }, packageJsonPath),
+    ).toThrow("TypeScript package requires string version and bin.tsc fields.");
+
+    const missingTool = new Error("module not found");
+    const failure = await loadSourceAdapterOptionalTool(
+      () => Promise.reject(missingTool),
+      "Optional tool is required.",
+    ).then(
+      () => undefined,
+      (cause: unknown) => cause,
+    );
+    expect(failure).toBeInstanceOf(SourceAdapterPackageInspectionError);
+    expect(failure).toMatchObject({
+      _tag: "SourceAdapterPackageInspectionError",
+      message: "Optional tool is required.",
+      cause: missingTool,
+    });
+
+    const preserved = new SourceAdapterPackageInspectionError({ message: "preserved" });
+    expect(sourceAdapterInspectionFailure(preserved, "replacement")).toBe(preserved);
+    expect(sourceAdapterInspectionFailure(missingTool, "wrapped")).toMatchObject({
+      _tag: "SourceAdapterPackageInspectionError",
+      message: "wrapped",
+      cause: missingTool,
+    });
+    expect(typeScriptToolingFailure(missingTool)).toMatchObject({
+      _tag: "SourceAdapterPackageInspectionError",
+      message:
+        "Source Adapter package type tests require TypeScript 7 tooling. Install a compatible optional typescript peer dependency.",
+      cause: missingTool,
+    });
   });
 });
 

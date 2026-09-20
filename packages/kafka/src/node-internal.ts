@@ -34,6 +34,7 @@ import {
 import {
   type KafkaBrokerConfigResource,
   type KafkaBrokerContractDeclaration,
+  type KafkaBrokerContractIssue,
   type KafkaBrokerContractValidationFailure as KafkaBrokerContractValidationFailureType,
   type KafkaBrokerRegionDiscovery,
   type KafkaResolvedBrokerContract,
@@ -49,6 +50,7 @@ import {
 import {
   KafkaSchemaRegistryCompatibility,
   defaultKafkaSchemaRegistryCompatibility,
+  type KafkaSchemaRegistryContractIssue,
   type KafkaSchemaRegistryContractValidationFailure as KafkaSchemaRegistryContractValidationFailureType,
   type KafkaSchemaRegistryDeclaration,
   type KafkaSchemaRegistryCompatibility as KafkaSchemaRegistryCompatibilityType,
@@ -2432,6 +2434,67 @@ const makeManagedKafkaSchemaRegistry = Effect.fn("KafkaNode.schemaRegistry.manag
   },
 );
 
+const kafkaStartupValidationIssueLimit = 20;
+
+const renderKafkaBrokerContractIssue = (issue: KafkaBrokerContractIssue): string => {
+  const prefix = `[${issue.region}] ${issue.topic} ${issue._tag}`;
+  switch (issue._tag) {
+    case "BrokerConfigurationUnavailable":
+      return `${prefix}: broker configuration is unavailable.`;
+    case "MalformedBrokerConfiguration":
+      return `${prefix}: malformed ${issue.configuration}.`;
+    case "CleanupPolicyMismatch":
+      return `${prefix}: declared=${issue.declared} observed=${issue.observed}.`;
+    case "InvalidRetentionMs":
+      return `${prefix}: retention.ms is invalid.`;
+  }
+};
+
+const renderKafkaSchemaRegistryContractIssue = (
+  issue: KafkaSchemaRegistryContractIssue,
+): string => {
+  const version = issue.version === null ? "unknown" : String(issue.version);
+  const schemaId = issue.schemaId === null ? "unknown" : String(issue.schemaId);
+  return `[${issue.region}] ${issue.sourceTopic} ${issue.side} ${issue.subject} ${issue.code} version=${version} schemaId=${schemaId}: ${issue.message}`;
+};
+
+const renderKafkaStartupValidationFailure = (
+  failure:
+    | KafkaBrokerContractValidationFailureType
+    | KafkaSchemaRegistryContractValidationFailureType,
+): string => {
+  const lines =
+    failure._tag === "KafkaBrokerContractValidationFailure"
+      ? failure.issues
+          .slice(0, kafkaStartupValidationIssueLimit)
+          .map(renderKafkaBrokerContractIssue)
+      : failure.issues
+          .slice(0, kafkaStartupValidationIssueLimit)
+          .map(renderKafkaSchemaRegistryContractIssue);
+  const hiddenIssueCount = failure.issues.length - lines.length;
+  return [
+    `${failure.message} ${failure.issues.length} ${failure.issues.length === 1 ? "issue" : "issues"}:`,
+    ...lines.map((line) => `  ${line}`),
+    ...(hiddenIssueCount === 0 ? [] : [`  ... and ${hiddenIssueCount} more.`]),
+  ].join("\n");
+};
+
+const reportKafkaStartupValidationFailure = Effect.fn("KafkaNode.startup.validation.report")(
+  function* (
+    failure:
+      | KafkaBrokerContractValidationFailureType
+      | KafkaSchemaRegistryContractValidationFailureType,
+  ) {
+    yield* Effect.logError(renderKafkaStartupValidationFailure(failure)).pipe(
+      Effect.annotateLogs({
+        sourceAdapterName: "kafka",
+        kafkaStartupValidationFailure: failure._tag,
+        kafkaStartupValidationIssueCount: failure.issues.length,
+      }),
+    );
+  },
+);
+
 const makeLayerFromSnapshot = (snapshot: KafkaLayerSnapshot) =>
   Layer.unwrap(
     Effect.gen(function* () {
@@ -2467,7 +2530,7 @@ const makeLayerFromSnapshot = (snapshot: KafkaLayerSnapshot) =>
         brokerContracts: contracts,
         retentionSweepIntervalNanos: snapshot.retentionSweepIntervalNanos,
       });
-    }),
+    }).pipe(Effect.tapError(reportKafkaStartupValidationFailure)),
   );
 
 export const layer = <
@@ -2542,6 +2605,7 @@ export const kafkaNodeInternals = Object.freeze({
   offsetsForTopic,
   ownDataKeys,
   releaseFailure,
+  renderKafkaStartupValidationFailure,
   retentionSweepIntervalNanos,
   snapshotAdminResponse,
   schemaRegistryHttpAuth,

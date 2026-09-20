@@ -9,6 +9,11 @@ View Server sources. It has three public surfaces:
 - `effect-view-server/source-adapter/testing` provides the controllable fixture
   and reusable `@effect/vitest` conformance suites.
 
+Package-conformance inspection uses TypeScript 7 and Vite as optional tools.
+They are loaded only when the corresponding type-test or browser-bundle check
+runs, so importing the testing subpath does not load either compiler or
+bundler.
+
 There is no runtime plugin registry or adapter-name dispatch. A Source
 Definition and its runtime implementation are linked by the nominal
 `Context.Service` created by `SourceAdapter.make(...)`.

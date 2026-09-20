@@ -233,12 +233,7 @@ type FieldPresentValue<Row extends object, Field extends keyof Row> = Required<
   Pick<Row, Field>
 >[Field];
 
-type FunctionValue = {
-  readonly apply: unknown;
-  readonly bind: unknown;
-  readonly call: unknown;
-  readonly prototype: unknown;
-};
+type FunctionValue = Function;
 
 type ExpectedRowFieldDifference<ExpectedRow extends object, ReceivedRow extends object> = {
   readonly [Field in keyof ExpectedRow]-?: Field extends keyof ReceivedRow
@@ -458,18 +453,20 @@ type CanonicalIdDetails<SchemaValue extends RowSchema> = SchemaValue extends {
     };
 
 type InvalidRouteDetails<InvalidRoute, Row> = InvalidRoute extends PropertyKey
-  ? InvalidRoute extends keyof Row
-    ? {
-        readonly field: InvalidRoute;
-        readonly expected: FilterableScalar;
-        readonly received: Row[InvalidRoute];
-      }
-    : {
-        readonly field: InvalidRoute;
-        readonly expected: FilterableScalar;
-        readonly received: "missing";
-        readonly receivedPresent: false;
-      }
+  ? Row extends unknown
+    ? InvalidRoute extends keyof Row
+      ? {
+          readonly field: InvalidRoute;
+          readonly expected: FilterableScalar;
+          readonly received: Row[InvalidRoute];
+        }
+      : {
+          readonly field: InvalidRoute;
+          readonly expected: FilterableScalar;
+          readonly received: "missing";
+          readonly receivedPresent: false;
+        }
+    : never
   : never;
 
 type ValidateSourceRoute<Topic extends PropertyKey, Row, Source extends SourceDefinitionAny> =

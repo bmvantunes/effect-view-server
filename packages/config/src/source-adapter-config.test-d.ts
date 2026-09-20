@@ -152,6 +152,7 @@ type MismatchedRepeatedRegionUnionRow =
       readonly tail: string;
     };
 declare const mismatchedRepeatedRegionUnionInitial: MismatchedRepeatedRegionUnionRow;
+declare const usePartialRouteSchema: boolean;
 type OptionalUndefinedNoteRow = {
   readonly id: string;
   readonly note?: string | undefined;
@@ -1237,6 +1238,30 @@ describe("Source Adapter config type contracts", () => {
       },
     });
 
+    const structuralFunctionLookalike = {
+      schema: Row,
+      apply: 0,
+      bind: 0,
+      call: 0,
+      prototype: 0,
+    };
+    type StructuralFunctionLookalikeInput = DefineViewServerConfigInput<{
+      readonly structuralFunctionLookalike: typeof structuralFunctionLookalike;
+    }>;
+    expectTypeOf<
+      StructuralFunctionLookalikeInput["topics"]["structuralFunctionLookalike"]["apply"]
+    >().toEqualTypeOf<never>();
+    expectTypeOf<
+      // @ts-expect-error Plain objects with function-like property names use exact-key diagnostics.
+      StructuralFunctionLookalikeInput["topics"]["structuralFunctionLookalike"]["__viewServerConfigError"]
+    >();
+    defineViewServerConfig({
+      topics: {
+        // @ts-expect-error Plain objects retain their unsupported-property diagnostic.
+        structuralFunctionLookalike,
+      },
+    });
+
     const LiteralMissingRow = Schema.Struct({
       id: ViewServerId,
       marker: Schema.Literal("missing"),
@@ -1350,6 +1375,43 @@ describe("Source Adapter config type contracts", () => {
           schema: NestedRow,
           // @ts-expect-error Route diagnostics report expected and received field types.
           source: nestedRouteSource,
+        },
+      },
+    });
+
+    const RegionRouteRow = Schema.Struct({ id: ViewServerId, region: Schema.String });
+    const ShardRouteRow = Schema.Struct({ id: ViewServerId, shard: Schema.String });
+    const partialRouteUnionSchema = usePartialRouteSchema ? RegionRouteRow : ShardRouteRow;
+    const partialUnionRouteSource = adapter.leasedSource(["region"], {
+      stream: "partial-union-route",
+    });
+    type PartialUnionRouteInput = DefineViewServerConfigInput<{
+      readonly partialUnionRoute: {
+        readonly schema: typeof partialRouteUnionSchema;
+        readonly source: typeof partialUnionRouteSource;
+      };
+    }>;
+    expectTypeOf<
+      PartialUnionRouteInput["topics"]["partialUnionRoute"]["source"]["__viewServerConfigError"]["details"]
+    >().toEqualTypeOf<
+      | {
+          readonly field: "region";
+          readonly expected: FilterableScalar;
+          readonly received: string;
+        }
+      | {
+          readonly field: "region";
+          readonly expected: FilterableScalar;
+          readonly received: "missing";
+          readonly receivedPresent: false;
+        }
+    >();
+    defineViewServerConfig({
+      topics: {
+        partialUnionRoute: {
+          schema: partialRouteUnionSchema,
+          // @ts-expect-error Union route diagnostics retain present and missing member details.
+          source: partialUnionRouteSource,
         },
       },
     });

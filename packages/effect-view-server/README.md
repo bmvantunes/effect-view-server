@@ -20,7 +20,8 @@ import { inspectWireSafeBigDecimal } from "effect-view-server/value-semantics";
 Adapter tests and reusable conformance suites are exported from
 `effect-view-server/source-adapter/testing`. That optional testing surface
 requires the exact matching `@effect/vitest` peer. Its package-conformance
-checks use the required TypeScript and Vite peers. The portable
+checks load the optional TypeScript 7 and Vite peers only when those checks
+run; importing the testing surface does not require either tool. The portable
 `effect-view-server/source-adapter` surface is browser-safe and is verified
 against a 32 KiB gzipped fixture budget.
 

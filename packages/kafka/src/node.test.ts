@@ -36,7 +36,12 @@ import {
   type KafkaSourceRetryPolicy,
   type KafkaStartPosition,
 } from "./contract";
-import { layer, layerConfig, type KafkaBrokerContractValidationFailure } from "./node";
+import {
+  layer,
+  layerConfig,
+  type KafkaBrokerContractValidationFailure,
+  type KafkaSchemaRegistryContractValidationFailure,
+} from "./node";
 import { kafkaNodeInternals } from "./node-internal";
 import { OrderValueSchema } from "./test-fixtures/orders_pb";
 
@@ -1125,6 +1130,18 @@ describe("Kafka Node Adapter", () => {
     Effect.gen(function* () {
       platformatic.state.failNextDispatcherConstruction = true;
       const config = makeSchemaRegistryKeyValueConfig();
+      const validationMessages: Array<string> = [];
+      const logger = Logger.make<unknown, void>((options) => {
+        const messages = Array.isArray(options.message) ? options.message : [options.message];
+        for (const message of messages) {
+          if (
+            typeof message === "string" &&
+            message.startsWith("Kafka Schema Registry Protobuf validation failed")
+          ) {
+            validationMessages.push(message);
+          }
+        }
+      });
       const failure = yield* Effect.scoped(
         EffectLayer.build(
           layer(config, {
@@ -1140,7 +1157,7 @@ describe("Kafka Node Adapter", () => {
             },
           }),
         ),
-      ).pipe(Effect.flip);
+      ).pipe(Effect.flip, Effect.provide(Logger.layer([logger])));
 
       expect(failure).toStrictEqual({
         _tag: "KafkaSchemaRegistryContractValidationFailure",
@@ -1172,9 +1189,76 @@ describe("Kafka Node Adapter", () => {
           },
         ],
       });
+      expect(validationMessages).toStrictEqual([
+        [
+          "Kafka Schema Registry Protobuf validation failed before runtime startup. 2 issues:",
+          "  [eu] source-orders key source-orders-key RegistryUnavailable version=unknown schemaId=unknown: Schema Registry TLS dispatcher creation failed.",
+          "  [eu] source-orders value source-orders-value RegistryUnavailable version=unknown schemaId=unknown: Schema Registry TLS dispatcher creation failed.",
+        ].join("\n"),
+      ]);
       expect(platformatic.state.consumers).toStrictEqual([]);
     }),
   );
+
+  it("caps rendered startup validation details without changing the typed failure", () => {
+    const failure: KafkaBrokerContractValidationFailure = {
+      _tag: "KafkaBrokerContractValidationFailure",
+      message: "Kafka broker cleanup and retention validation failed before runtime startup.",
+      issues: [
+        {
+          _tag: "InvalidRetentionMs",
+          region: "r0",
+          topic: "orders-0",
+        },
+        ...Array.from({ length: 20 }, (_, index) => ({
+          _tag: "InvalidRetentionMs" as const,
+          region: `r${index + 1}`,
+          topic: `orders-${index + 1}`,
+        })),
+      ],
+    };
+
+    expect(kafkaNodeInternals.renderKafkaStartupValidationFailure(failure)).toBe(
+      [
+        "Kafka broker cleanup and retention validation failed before runtime startup. 21 issues:",
+        ...Array.from(
+          { length: 20 },
+          (_, index) =>
+            `  [r${index}] orders-${index} InvalidRetentionMs: retention.ms is invalid.`,
+        ),
+        "  ... and 1 more.",
+      ].join("\n"),
+    );
+    expect(failure.issues).toHaveLength(21);
+  });
+
+  it("renders Schema Registry version and schema identifiers", () => {
+    const failure: KafkaSchemaRegistryContractValidationFailure = {
+      _tag: "KafkaSchemaRegistryContractValidationFailure",
+      message: "Kafka Schema Registry Protobuf validation failed before runtime startup.",
+      issues: [
+        {
+          _tag: "KafkaSchemaRegistryContractIssue",
+          region: "eu",
+          viewServerTopic: "orders",
+          sourceTopic: "source-orders",
+          side: "value",
+          subject: "source-orders-value",
+          code: "GeneratedSchemaMismatch",
+          version: 4,
+          schemaId: 419,
+          message: "Generated reader schema does not match the registered schema.",
+        },
+      ],
+    };
+
+    expect(kafkaNodeInternals.renderKafkaStartupValidationFailure(failure)).toBe(
+      [
+        "Kafka Schema Registry Protobuf validation failed before runtime startup. 1 issue:",
+        "  [eu] source-orders value source-orders-value GeneratedSchemaMismatch version=4 schemaId=419: Generated reader schema does not match the registered schema.",
+      ].join("\n"),
+    );
+  });
 
   it.effect(
     "crashes composed production runtime startup before every listener and consumer on batched broker violations",
@@ -1190,11 +1274,18 @@ describe("Kafka Node Adapter", () => {
         });
         const config = makeBatchedBrokerConfig();
         const listenerMessages: Array<string> = [];
+        const validationMessages: Array<string> = [];
         const logger = Logger.make<unknown, void>((options) => {
-          const messages = Array.isArray(options.message) ? options.message : [];
+          const messages = Array.isArray(options.message) ? options.message : [options.message];
           for (const message of messages) {
             if (typeof message === "string" && message.includes("listening at")) {
               listenerMessages.push(message);
+            }
+            if (
+              typeof message === "string" &&
+              message.startsWith("Kafka broker cleanup and retention validation failed")
+            ) {
+              validationMessages.push(message);
             }
           }
         });
@@ -1212,7 +1303,7 @@ describe("Kafka Node Adapter", () => {
                   eu: { bootstrapServers: "eu:9092" },
                   us: { bootstrapServers: "us:9092" },
                 },
-              }),
+              }).pipe(EffectLayer.provide(Logger.layer([logger]))),
               Logger.layer([logger]),
               EffectLayer.succeed(References.MinimumLogLevel, "Trace"),
             ),
@@ -1253,11 +1344,20 @@ describe("Kafka Node Adapter", () => {
           consumers: platformatic.state.consumers.length,
           describeCalls: platformatic.state.describeConfigCalls.length,
           listenerMessages,
+          validationMessages,
         }).toStrictEqual({
           admins: [true, true],
           consumers: 0,
           describeCalls: 2,
           listenerMessages: [],
+          validationMessages: [
+            [
+              "Kafka broker cleanup and retention validation failed before runtime startup. 3 issues:",
+              "  [eu] source-inventory CleanupPolicyMismatch: declared=delete observed=compact.",
+              "  [eu] source-orders InvalidRetentionMs: retention.ms is invalid.",
+              "  [us] source-orders InvalidRetentionMs: retention.ms is invalid.",
+            ].join("\n"),
+          ],
         });
       }).pipe(Effect.provide(Logger.layer([Logger.defaultLogger]))),
   );

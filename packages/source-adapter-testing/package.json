@@ -21,7 +21,6 @@
     "@effect/vitest": "catalog:",
     "effect": "catalog:",
     "typescript": "catalog:",
-    "typescript-compiler-api": "catalog:",
     "vite": "catalog:"
   },
   "devDependencies": {

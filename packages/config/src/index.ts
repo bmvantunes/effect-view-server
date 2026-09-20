@@ -780,17 +780,12 @@ type ValidateTopicDefinitionRegistries<Topics> = [
 type ValidateTopicDefinitionRegistryUnion<Topics> =
   true extends IsUnion<Topics> ? ValidateTopicDefinitionRegistries<Topics> : unknown;
 
-type ValidateFiniteTopicRegistry<Topics> = string extends keyof Topics ? never : unknown;
-
-type ViewServerConfigTopicsAreValid<Topics extends ViewServerConfigTopicShape> =
-  string extends keyof Topics
-    ? false
-    : [InvalidTopicDefinitionRegistries<Topics>, InvalidSourceUnionTopics<Topics>] extends [
-          never,
-          never,
-        ]
-      ? true
-      : false;
+type ViewServerConfigTopicsAreValid<Topics extends ViewServerConfigTopicShape> = [
+  InvalidTopicDefinitionRegistries<Topics>,
+  InvalidSourceUnionTopics<Topics>,
+] extends [never, never]
+  ? true
+  : false;
 
 export type ViewServerConfig<Topics extends ViewServerConfigTopicShape> =
   ViewServerConfigTopicsAreValid<Topics> extends true
@@ -830,16 +825,13 @@ const validateLeasedSourceRouteFields = (
 };
 
 export function defineViewServerConfig<const Topics extends ViewServerConfigTopicShape>(
-  input: { readonly topics: Topics } & (string extends keyof Topics
-    ? never
-    : ViewServerConfigTopicsAreValid<Topics> extends true
-      ? unknown
-      : never),
+  input: { readonly topics: Topics } & (ViewServerConfigTopicsAreValid<Topics> extends true
+    ? unknown
+    : never),
 ): ViewServerConfig<Topics>;
 export function defineViewServerConfig<const Topics extends ViewServerConfigTopicCandidateShape>(
   input: {
     readonly topics: Topics &
-      ValidateFiniteTopicRegistry<Topics> &
       ValidateSourceUnions<Topics> &
       ValidateTopicDefinitionRegistryUnion<Topics>;
   } & DefineViewServerConfigInput<Topics>,

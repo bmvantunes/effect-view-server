@@ -286,6 +286,32 @@ declare const validOrCallableTopicValue: {
 };
 declare const widenedInvalidTopics: Record<string, { readonly schema: typeof NumberIdSchema }>;
 declare const widenedValidTopics: Record<string, { readonly schema: typeof Row }>;
+declare const widenedCallableTopics: Record<string, (() => void) & { readonly schema: typeof Row }>;
+declare const widenedExtraKeyTopics: Record<
+  string,
+  { readonly schema: typeof Row; readonly unsupported: true }
+>;
+const widenedValidSource = mappedSource("widened-valid", {
+  id: "valid",
+  region: "eu",
+  shard: 1n,
+});
+const widenedWrongRowSource = mappedSource("widened-wrong-row", {
+  id: "invalid",
+  region: "eu",
+  shard: 1,
+});
+declare const widenedWrongRowSourceTopics: Record<
+  string,
+  { readonly schema: typeof Row; readonly source: typeof widenedWrongRowSource }
+>;
+declare const widenedSourceUnionTopics: Record<
+  string,
+  {
+    readonly schema: typeof Row;
+    readonly source: typeof widenedValidSource | typeof widenedWrongRowSource;
+  }
+>;
 declare const useLeasedSource: boolean;
 declare const useRegionRoute: boolean;
 declare const useExtraFieldSource: boolean;
@@ -395,10 +421,30 @@ describe("Source Adapter config type contracts", () => {
         orders: validOrCallableTopicValue.orders,
       },
     });
-    expectTypeOf<ViewServerConfig<typeof widenedValidTopics>>().toEqualTypeOf<never>();
+    expectTypeOf<ViewServerConfig<typeof widenedValidTopics>>().toEqualTypeOf<{
+      readonly topics: typeof widenedValidTopics;
+    }>();
+    const widenedValidConfig = defineViewServerConfig({ topics: widenedValidTopics });
+    expectTypeOf(widenedValidConfig.topics).toEqualTypeOf<typeof widenedValidTopics>();
+    expectTypeOf<ViewServerConfig<typeof widenedCallableTopics>>().toEqualTypeOf<never>();
     defineViewServerConfig({
-      // @ts-expect-error Widened registries cannot exclude reserved system topic names.
-      topics: widenedValidTopics,
+      // @ts-expect-error Widened registries still reject callable topic definitions.
+      topics: widenedCallableTopics,
+    });
+    expectTypeOf<ViewServerConfig<typeof widenedExtraKeyTopics>>().toEqualTypeOf<never>();
+    defineViewServerConfig({
+      // @ts-expect-error Widened registries still reject unsupported topic properties.
+      topics: widenedExtraKeyTopics,
+    });
+    expectTypeOf<ViewServerConfig<typeof widenedWrongRowSourceTopics>>().toEqualTypeOf<never>();
+    defineViewServerConfig({
+      // @ts-expect-error Widened registries still validate source rows.
+      topics: widenedWrongRowSourceTopics,
+    });
+    expectTypeOf<ViewServerConfig<typeof widenedSourceUnionTopics>>().toEqualTypeOf<never>();
+    defineViewServerConfig({
+      // @ts-expect-error Every widened source-union member validates independently.
+      topics: widenedSourceUnionTopics,
     });
     type WidenedInvalidInput = DefineViewServerConfigInput<typeof widenedInvalidTopics>;
     expectTypeOf<ViewServerConfig<typeof widenedInvalidTopics>>().toEqualTypeOf<never>();

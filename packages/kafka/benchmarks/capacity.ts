@@ -201,27 +201,29 @@ const main = Effect.gen(function* () {
   const selected = topics.slice(0, count);
   const groupPrefix = `evs-capacity-${randomUUID()}`;
   const Row = Schema.Struct({ id: ViewServerId, payload: Schema.String });
-  const config = defineViewServerConfig({
-    topics: Object.fromEntries(
-      selected.map((topic) => [
-        topic,
-        {
-          schema: Row,
-          source: kafka.source({
-            topic,
-            regions: ["local"],
-            cleanupPolicy: "delete",
-            retentionPolicy: "Infinity",
-            key: kafka.string(),
-            value: kafka.protobuf(StringValueSchema),
-            localRowKey: ({ key }) => key,
-            map: ({ value }) => ({ payload: value.value }),
-            startFrom: "earliest",
-          }),
-        },
-      ]),
+  const topicDefinitions = Object.fromEntries(
+    selected.map(
+      (topic) =>
+        [
+          topic,
+          {
+            schema: Row,
+            source: kafka.source({
+              topic,
+              regions: ["local"],
+              cleanupPolicy: "delete",
+              retentionPolicy: "Infinity",
+              key: kafka.string(),
+              value: kafka.protobuf(StringValueSchema),
+              localRowKey: ({ key }) => key,
+              map: ({ value }) => ({ payload: value.value }),
+              startFrom: "earliest",
+            }),
+          },
+        ] as const,
     ),
-  });
+  );
+  const config = defineViewServerConfig({ topics: topicDefinitions });
   const cpuStart = process.cpuUsage();
   const started = yield* Clock.monotonicTimeNanos;
   const runtime = yield* Effect.acquireRelease(

@@ -485,6 +485,22 @@ describe("Topic schema admission", () => {
     expect(() =>
       defineViewServerConfig({
         topics: {
+          // @ts-expect-error Runtime admission rejects primitive topic definitions explicitly.
+          primitiveTopic: "topic",
+        },
+      }),
+    ).toThrow("View Server topic primitiveTopic row schema must be an Effect Schema Struct.");
+    expect(() =>
+      defineViewServerConfig({
+        topics: {
+          // @ts-expect-error Runtime admission rejects null topic definitions explicitly.
+          nullTopic: null,
+        },
+      }),
+    ).toThrow("View Server topic nullTopic row schema must be an Effect Schema Struct.");
+    expect(() =>
+      defineViewServerConfig({
+        topics: {
           invalidField: {
             schema: InvalidFieldRow,
           },

@@ -2,7 +2,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { SourceAdapter } from "@effect-view-server/source-adapter";
 import { Schema } from "effect";
 import { snapshotViewServerTopics } from "./config-ownership";
-import { ViewServerId, defineViewServerConfig } from "./index";
+import { VIEW_SERVER_HEALTH_TOPIC, ViewServerId, defineViewServerConfig } from "./index";
 
 const Failure = Schema.TaggedStruct("ConfigOwnershipFailure", {
   message: Schema.String,
@@ -103,5 +103,55 @@ describe("View Server config atomic ownership", () => {
         topics,
       }),
     ).toThrow("View Server topic rows contains unsupported property: grpcSource.");
+  });
+
+  it("enumerates topic names once while enforcing reserved names on the owned snapshot", () => {
+    const definition = { schema: Schema.Struct({ id: ViewServerId }) };
+    let ownKeysCalls = 0;
+    const topics = new Proxy(
+      { [VIEW_SERVER_HEALTH_TOPIC]: definition },
+      {
+        ownKeys: () => {
+          ownKeysCalls += 1;
+          return ownKeysCalls === 1 ? [VIEW_SERVER_HEALTH_TOPIC] : ["orders"];
+        },
+      },
+    );
+
+    expect(() => snapshotViewServerTopics(topics)).toThrow(
+      `View Server topic name is reserved for system health streams: ${VIEW_SERVER_HEALTH_TOPIC}`,
+    );
+    expect(ownKeysCalls).toBe(1);
+  });
+
+  it("rejects callable topic definitions at the ownership boundary", () => {
+    const Row = Schema.Struct({ id: ViewServerId });
+    const definition = Object.assign(
+      function callableDefinition() {
+        return "called";
+      },
+      { schema: Row },
+    );
+
+    expect(() =>
+      defineViewServerConfig({
+        topics: {
+          // @ts-expect-error Topic definitions must not be callable values.
+          callable: definition,
+        },
+      }),
+    ).toThrow("View Server topic callable definition must not be a function value.");
+
+    class ConstructibleDefinition {
+      static readonly schema = Row;
+    }
+    expect(() =>
+      defineViewServerConfig({
+        topics: {
+          // @ts-expect-error Topic definitions must not be constructible values.
+          constructible: ConstructibleDefinition,
+        },
+      }),
+    ).toThrow("View Server topic constructible definition must not be a function value.");
   });
 });

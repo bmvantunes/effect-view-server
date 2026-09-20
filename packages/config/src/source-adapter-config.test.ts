@@ -135,9 +135,9 @@ describe("Source Adapter config", () => {
     expect(() =>
       defineViewServerConfig({
         topics: {
-          // @ts-expect-error Source Definitions are nominal.
           structural: {
             schema: Row,
+            // @ts-expect-error Source Definitions are nominal.
             source: structuralSource,
           },
         },
@@ -145,11 +145,11 @@ describe("Source Adapter config", () => {
     ).toThrow("View Server topic structural source must be created by SourceAdapter.make(...).");
 
     expect(() =>
-      // @ts-expect-error every Topic rejects the removed configurable key.
       defineViewServerConfig({
         topics: {
           explicit: {
             schema: Row,
+            // @ts-expect-error every Topic rejects the removed configurable key.
             key: "id",
             source: adapter.materializedSource({ stream: "all" }),
           },
@@ -262,9 +262,9 @@ describe("Source Adapter config", () => {
     }
 
     expect(() =>
-      // @ts-expect-error Source-free Topics require the same exact canonical id.
       defineViewServerConfig({
         topics: {
+          // @ts-expect-error Source-free Topics require the same exact canonical id.
           invalid: {
             schema: Schema.Struct({ region: Schema.String }),
           },
@@ -273,11 +273,11 @@ describe("Source Adapter config", () => {
     ).toThrow("View Server topic invalid row schema must define canonical id as ViewServerId.");
 
     expect(() =>
-      // @ts-expect-error Leased route fields must exist in the row.
       defineViewServerConfig({
         topics: {
           invalidRoute: {
             schema: Row,
+            // @ts-expect-error Leased route fields must exist in the row.
             source: adapter.leasedSource(["missing"], { stream: "routed" }),
           },
         },

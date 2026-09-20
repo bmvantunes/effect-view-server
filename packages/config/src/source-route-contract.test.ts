@@ -123,11 +123,11 @@ describe("Source route contracts", () => {
         const RowWithoutInheritedRoute = Schema.Struct({ id: ViewServerId });
 
         expect(() =>
-          // @ts-expect-error Runtime admission protects untyped callers from inherited route fields.
           defineViewServerConfig({
             topics: {
               inherited: {
                 schema: RowWithoutInheritedRoute,
+                // @ts-expect-error Runtime admission protects untyped callers from inherited route fields.
                 source: adapter.leasedSource(["inheritedRoute"], {
                   stream: "inherited",
                 }),

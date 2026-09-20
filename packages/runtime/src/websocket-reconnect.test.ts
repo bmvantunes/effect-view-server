@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import { makeViewServerClient } from "@effect-view-server/client/remote";
 import { Deferred, Effect, Fiber, Schedule, Stream } from "effect";
-import { makeViewServerRuntime } from "./index";
+import { makeViewServerRuntime, type ViewServerRuntime } from "./index";
 import {
   closeTestTcpServer,
   reserveTcpPort,
@@ -24,7 +24,7 @@ const acquireRuntime = (port: number) =>
 const reconnectSettleDelay = "750 millis";
 
 const assertOneRecoveredStream = Effect.fn("WebSocketReconnect.test.assertOneRecoveredStream")(
-  function* (health: Effect.Success<ReturnType<typeof makeViewServerRuntime>>["client"]["health"]) {
+  function* (health: ViewServerRuntime<typeof viewServer.topics>["client"]["health"]) {
     yield* waitForTransportHealth(health, {
       activeClients: 1,
       activeStreams: 1,

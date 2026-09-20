@@ -39,6 +39,12 @@ const Position = Schema.Struct({
   quantity: Schema.Number,
 });
 
+const PlainStringIdOrder = Schema.Struct({
+  id: Schema.String,
+  customerId: Schema.String,
+});
+declare const mixedValidityEngineSchema: typeof Order | typeof PlainStringIdOrder;
+
 const viewServer = defineViewServerConfig({
   topics: {
     orders: {
@@ -84,6 +90,19 @@ declare const engine: Engine;
 declare const heterogeneousEngine: ColumnLiveViewEngine<typeof heterogeneousViewServer.topics>;
 declare const heterogeneousTopic: "orders" | "positions";
 declare const sourceOwnedEngine: ColumnLiveViewEngine<SourceOwnedEngineTopics>;
+declare const alternateEngineTopics:
+  | { readonly orders: { readonly schema: typeof Order } }
+  | { readonly __view_server_health: { readonly schema: typeof Order } };
+type CallableOrderDefinition = (() => void) & { readonly schema: typeof Order };
+declare const callableOrValidOrderDefinition:
+  | CallableOrderDefinition
+  | { readonly schema: typeof Order };
+declare const overlappingInvalidEngineTopics:
+  | { readonly orders: { readonly schema: typeof Order } }
+  | { readonly orders: CallableOrderDefinition };
+declare const validAlternateEngineTopics:
+  | { readonly orders: { readonly schema: typeof Order } }
+  | { readonly positions: { readonly schema: typeof Position } };
 declare const dynamicSingleField: "id" | "price";
 declare const optionalNarrowFieldsQuery: {
   readonly select?: readonly ["id"];
@@ -92,9 +111,13 @@ declare const optionalNarrowFieldsQuery: {
 describe("ColumnLiveViewEngine type contract", () => {
   it("types engine construction success and initialization errors", () => {
     const created = createColumnLiveViewEngine({ topics: viewServer.topics });
+    const alternateCreated = createColumnLiveViewEngine({ topics: validAlternateEngineTopics });
 
     expectTypeOf<Effect.Success<typeof created>>().toEqualTypeOf<Engine>();
     expectTypeOf<Effect.Error<typeof created>>().toEqualTypeOf<InvalidRowError>();
+    expectTypeOf<Effect.Success<typeof alternateCreated>>().toEqualTypeOf<
+      ColumnLiveViewEngine<typeof validAlternateEngineTopics>
+    >();
   });
 
   it("requires explicit selected-row snapshots and subscription events", () => {
@@ -457,8 +480,8 @@ describe("ColumnLiveViewEngine type contract", () => {
         readonly key: "missing";
       };
     }> = {
+      // @ts-expect-error engine topic definitions reject the removed key property.
       topics: {
-        // @ts-expect-error engine topic definitions reject the removed key property.
         orders: {
           schema: Order,
           key: "missing",
@@ -469,20 +492,87 @@ describe("ColumnLiveViewEngine type contract", () => {
     void _invalidKeyConfig;
   });
 
+  it("rejects callable and constructible engine topic definitions", () => {
+    const callableDefinition = Object.assign(() => undefined, { schema: Order });
+    const _invalidCallableConfig = createColumnLiveViewEngine({
+      // @ts-expect-error engine topic definitions must not be callable values.
+      topics: {
+        orders: callableDefinition,
+      },
+    });
+
+    class ConstructibleDefinition {
+      static readonly schema = Order;
+    }
+    const _invalidConstructibleConfig = createColumnLiveViewEngine({
+      // @ts-expect-error engine topic definitions must not be constructible values.
+      topics: {
+        orders: ConstructibleDefinition,
+      },
+    });
+    const _invalidOverlappingUnionConfig = createColumnLiveViewEngine({
+      // @ts-expect-error every overlapping-key union member must reject callable definitions.
+      topics: overlappingInvalidEngineTopics,
+    });
+    const _invalidTopicValueUnionConfig = createColumnLiveViewEngine({
+      // @ts-expect-error every topic-definition union member must be a valid object definition.
+      topics: {
+        orders: callableOrValidOrderDefinition,
+      },
+    });
+
+    void _invalidCallableConfig;
+    void _invalidConstructibleConfig;
+    void _invalidOverlappingUnionConfig;
+    void _invalidTopicValueUnionConfig;
+  });
+
+  it("rejects reserved system topic names at the engine boundary", () => {
+    const _invalidHealthConfig = createColumnLiveViewEngine({
+      // @ts-expect-error engine topics must not use the reserved health topic name.
+      topics: {
+        __view_server_health: { schema: Order },
+      },
+    });
+    const _invalidHealthSummaryConfig = createColumnLiveViewEngine({
+      // @ts-expect-error engine topics must not use the reserved health-summary topic name.
+      topics: {
+        __view_server_health_summary: { schema: Order },
+      },
+    });
+    const _invalidAlternateConfig = createColumnLiveViewEngine({
+      // @ts-expect-error every member of a topic-registry union must reject reserved names.
+      topics: alternateEngineTopics,
+    });
+
+    void _invalidHealthConfig;
+    void _invalidHealthSummaryConfig;
+    void _invalidAlternateConfig;
+  });
+
   it("rejects plain string schemas at the engine topic boundary", () => {
     const PlainStringIdRow = Schema.Struct({
       id: Schema.String,
     });
     const _invalidIdConfig = createColumnLiveViewEngine({
+      // @ts-expect-error engine topics require the nominal ViewServerId schema.
       topics: {
-        // @ts-expect-error engine topics require the nominal ViewServerId schema.
         rows: {
           schema: PlainStringIdRow,
         },
       },
     });
+    const _invalidSchemaUnionConfig = createColumnLiveViewEngine({
+      // @ts-expect-error every schema-union member must use the nominal ViewServerId schema.
+      topics: {
+        rows: {
+          schema: mixedValidityEngineSchema,
+        },
+      },
+    });
 
     void _invalidIdConfig;
+    void _invalidSchemaUnionConfig;
   });
 
   it("rejects invalid grouped incremental admission limit options", () => {

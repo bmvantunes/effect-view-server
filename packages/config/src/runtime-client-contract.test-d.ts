@@ -599,11 +599,11 @@ describe("Runtime client and configuration generic contracts", () => {
 
     expectTypeOf<ViewServerBackpressureError>().toMatchTypeOf<ViewServerRuntimeError>();
 
-    // @ts-expect-error Topic configuration no longer accepts a key property.
     defineViewServerConfig({
       topics: {
         invalid: {
           schema: Order,
+          // @ts-expect-error Topic configuration no longer accepts a key property.
           key: "missing",
         },
       },
@@ -618,9 +618,9 @@ describe("Runtime client and configuration generic contracts", () => {
       },
     });
 
-    // @ts-expect-error system health topic names are reserved
     defineViewServerConfig({
       topics: {
+        // @ts-expect-error system health topic names are reserved
         __view_server_health: {
           schema: Order,
         },

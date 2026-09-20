@@ -1,5 +1,5 @@
 import type { ViewServerLiveClient, ViewServerRuntimeLiveClient } from "@effect-view-server/client";
-import type { ViewServerConfig, ViewServerRuntimeError } from "@effect-view-server/config";
+import type { ViewServerRuntimeError, ViewServerTopicConfig } from "@effect-view-server/config";
 import { ignoreLoggedTypedFailuresPreserveNonTypedFailures } from "@effect-view-server/effect-utils";
 import type {
   ViewServerRuntimeCoreOptionsFor,
@@ -101,7 +101,7 @@ const runtimeFatalSignals = new WeakMap<object, Effect.Effect<never, ViewServerR
 type MakeViewServerRuntimeWithDependencies = {
   <const Topics extends ViewServerRuntimeTopicDefinitions>(
     dependencies: ViewServerRuntimeDependencies<Topics>,
-    config: ViewServerConfig<Topics>,
+    config: ViewServerTopicConfig<Topics>,
   ): Effect.Effect<
     ViewServerRuntime<Topics>,
     ViewServerRuntimeFactoryError,
@@ -112,7 +112,7 @@ type MakeViewServerRuntimeWithDependencies = {
     const Options extends object = ViewServerRuntimeOptions<Topics>,
   >(
     dependencies: ViewServerRuntimeDependencies<Topics>,
-    config: ViewServerConfig<Topics>,
+    config: ViewServerTopicConfig<Topics>,
     options: ViewServerRuntimeOptionsInput<Topics, Options>,
   ): Effect.Effect<
     ViewServerRuntime<Topics>,
@@ -127,7 +127,7 @@ export const makeViewServerRuntimeWithDependencies: MakeViewServerRuntimeWithDep
     const Options extends object = ViewServerRuntimeOptions<Topics>,
   >(
     dependencies: ViewServerRuntimeDependencies<Topics>,
-    config: ViewServerConfig<Topics>,
+    config: ViewServerTopicConfig<Topics>,
     options?: ViewServerRuntimeOptionsInput<Topics, Options>,
   ) {
     const runtimeOptions = yield* validateViewServerRuntimeOptions<Topics>(options ?? {});
@@ -142,7 +142,7 @@ const makeViewServerRuntimeFromResolvedOptions = Effect.fn(
   "ViewServerRuntime.makeFromResolvedOptions",
 )(function* <const Topics extends ViewServerRuntimeTopicDefinitions>(
   dependencies: ViewServerRuntimeDependencies<Topics>,
-  config: ViewServerConfig<Topics>,
+  config: ViewServerTopicConfig<Topics>,
   resolvedOptions: ResolvedViewServerRuntimeBaseOptions<Topics>,
 ) {
   return yield* Effect.uninterruptibleMask((restore) =>
@@ -342,7 +342,7 @@ const makeViewServerRuntimeLaunchLayer = <
   const Options extends object,
 >(
   dependencies: ViewServerRuntimeDependencies<Topics>,
-  config: ViewServerConfig<Topics>,
+  config: ViewServerTopicConfig<Topics>,
   options?: ViewServerRuntimeOptionsInput<Topics, Options>,
 ) =>
   Layer.effectDiscard(
@@ -365,7 +365,7 @@ export const runViewServerRuntimeWithDependencies: <
   const Options extends object = ViewServerRuntimeOptions<Topics>,
 >(
   dependencies: ViewServerRuntimeDependencies<Topics>,
-  config: ViewServerConfig<Topics>,
+  config: ViewServerTopicConfig<Topics>,
   options?: ViewServerRuntimeOptionsInput<Topics, Options>,
 ) => Effect.Effect<never, ViewServerRuntimeFactoryError, ViewServerSourceRequirements<Topics>> =
   Effect.fn("ViewServerRuntime.runWithDependencies")(function* <
@@ -373,7 +373,7 @@ export const runViewServerRuntimeWithDependencies: <
     const Options extends object,
   >(
     dependencies: ViewServerRuntimeDependencies<Topics>,
-    config: ViewServerConfig<Topics>,
+    config: ViewServerTopicConfig<Topics>,
     options?: ViewServerRuntimeOptionsInput<Topics, Options>,
   ) {
     return yield* makeViewServerRuntimeLaunchLayer(dependencies, config, options).pipe(

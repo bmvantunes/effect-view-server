@@ -1070,21 +1070,21 @@ describe("public effect-view-server subpath type contracts", () => {
     // @ts-expect-error string fields do not accept range predicates.
     react.useLiveQuery("orders", stringRangeFilterQuery);
 
-    // @ts-expect-error configurable Topic keys were removed; exact id is implicit.
     defineViewServerConfig({
       topics: {
         invalidOrders: {
           schema: Order,
+          // @ts-expect-error configurable Topic keys were removed; exact id is implicit.
           key: "id",
         },
       },
     });
 
-    // @ts-expect-error configurable Topic keys were removed for Schema.Class Topics too.
     defineViewServerConfig({
       topics: {
         invalidProfiles: {
           schema: PublicProfile,
+          // @ts-expect-error configurable Topic keys were removed for Schema.Class Topics too.
           key: "id",
         },
       },
@@ -1129,11 +1129,11 @@ describe("public effect-view-server subpath type contracts", () => {
     // @ts-expect-error retentionPolicy is mandatory through the publishable Kafka subpath.
     kafkaSourceAdapter.source(missingRetentionPolicySource);
 
-    // @ts-expect-error migrated Kafka Mapping must return every Topic Row field except id.
     defineViewServerConfig({
       topics: {
         missingKafkaMappingField: {
           schema: Order,
+          // @ts-expect-error migrated Kafka Mapping must return every Topic Row field except id.
           source: kafkaSourceAdapter.source({
             cleanupPolicy: "delete",
             retentionPolicy: "match-kafka-retention",
@@ -1153,11 +1153,11 @@ describe("public effect-view-server subpath type contracts", () => {
       },
     });
 
-    // @ts-expect-error migrated Kafka Mapping cannot return fields outside the Topic Row.
     defineViewServerConfig({
       topics: {
         extraKafkaMappingField: {
           schema: Order,
+          // @ts-expect-error migrated Kafka Mapping cannot return fields outside the Topic Row.
           source: kafkaSourceAdapter.source({
             cleanupPolicy: "delete",
             retentionPolicy: "match-kafka-retention",
@@ -1179,11 +1179,11 @@ describe("public effect-view-server subpath type contracts", () => {
       },
     });
 
-    // @ts-expect-error migrated Kafka Mapping field types must match the Topic Row.
     defineViewServerConfig({
       topics: {
         invalidKafkaMappingField: {
           schema: Order,
+          // @ts-expect-error migrated Kafka Mapping field types must match the Topic Row.
           source: kafkaSourceAdapter.source({
             cleanupPolicy: "delete",
             retentionPolicy: "match-kafka-retention",

@@ -1,4 +1,5 @@
 import { Schema, SchemaAST } from "effect";
+import { viewServerTopicNameIsReserved } from "./health-contract";
 import type { RowSchema } from "./topic-contract";
 
 type TopicRegistry = Record<
@@ -89,13 +90,19 @@ const snapshotOwnProperties = (value: object): { [key: PropertyKey]: unknown } =
   return copied;
 };
 
-const snapshotTopicDefinition = (definition: TopicRegistry[string]) => {
+const snapshotTopicDefinition = (topic: string, definition: unknown) => {
+  if (typeof definition === "function") {
+    throw new Error(`View Server topic ${topic} definition must not be a function value.`);
+  }
+  if (definition === null || typeof definition !== "object") {
+    throw new Error(`View Server topic ${topic} row schema must be an Effect Schema Struct.`);
+  }
   const copied = snapshotOwnProperties(definition);
   const schema = copied["schema"];
-  return Object.freeze({
-    ...copied,
-    ...(isViewServerRowSchema(schema) ? { schema: snapshotViewServerRowSchema(schema) } : {}),
-  });
+  if (isViewServerRowSchema(schema)) {
+    copied["schema"] = snapshotViewServerRowSchema(schema);
+  }
+  return Object.freeze({ ...copied });
 };
 
 export function snapshotViewServerTopics<const Topics extends TopicRegistry>(
@@ -104,10 +111,13 @@ export function snapshotViewServerTopics<const Topics extends TopicRegistry>(
 export function snapshotViewServerTopics(topics: TopicRegistry): TopicRegistry {
   const snapshot: TopicRegistry = Object.create(null);
   for (const topic of Object.keys(topics)) {
+    if (viewServerTopicNameIsReserved(topic)) {
+      throw new Error(`View Server topic name is reserved for system health streams: ${topic}`);
+    }
     Object.defineProperty(snapshot, topic, {
       configurable: false,
       enumerable: true,
-      value: snapshotTopicDefinition(topics[topic]!),
+      value: snapshotTopicDefinition(topic, topics[topic]),
       writable: false,
     });
   }

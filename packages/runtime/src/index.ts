@@ -1,4 +1,8 @@
-import type { ViewServerConfig, ViewServerRuntimeError } from "@effect-view-server/config";
+import type {
+  ViewServerConfig,
+  ViewServerRuntimeError,
+  ViewServerTopicConfig,
+} from "@effect-view-server/config";
 import type { ViewServerSourceRequirements } from "@effect-view-server/runtime-core";
 import { Effect } from "effect";
 import type { HttpServerError } from "effect/unstable/http";
@@ -32,7 +36,7 @@ export type { ViewServerTcpPublishIngressError } from "./tcp-publish-ingress";
 const makeViewServerRuntimeEffect = Effect.fn("ViewServerRuntime.make")(function* <
   const Topics extends ViewServerRuntimeTopicDefinitions,
   const Options extends object,
->(config: ViewServerConfig<Topics>, options?: ViewServerRuntimeOptionsInput<Topics, Options>) {
+>(config: ViewServerTopicConfig<Topics>, options?: ViewServerRuntimeOptionsInput<Topics, Options>) {
   if (options === undefined) {
     return yield* makeViewServerRuntimeWithDependencies(
       makeDefaultRuntimeDependencies<Topics>(),
@@ -65,7 +69,7 @@ export const createViewServerRuntime = makeViewServerRuntime;
 const runViewServerRuntimeEffect = Effect.fn("ViewServerRuntime.run")(function* <
   const Topics extends ViewServerRuntimeTopicDefinitions,
   const Options extends object,
->(config: ViewServerConfig<Topics>, options?: ViewServerRuntimeOptionsInput<Topics, Options>) {
+>(config: ViewServerTopicConfig<Topics>, options?: ViewServerRuntimeOptionsInput<Topics, Options>) {
   if (options === undefined) {
     return yield* runViewServerRuntimeWithDependencies(
       makeDefaultRuntimeDependencies<Topics>(),

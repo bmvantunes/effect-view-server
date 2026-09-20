@@ -673,11 +673,11 @@ describe("Source Adapter package conformance validation", () => {
           .map((issue) => issue.detail),
       ).toStrictEqual(["positiveTypeInference", "negativeTypeInference"]);
 
-      const regexMarkerEvidence = yield* inspectSourceAdapterPackageConformance({
+      const templateTailMarkerEvidence = yield* inspectSourceAdapterPackageConformance({
         ...options,
-        typeTestProject: "regex-marker-types/tsconfig.json",
+        typeTestProject: "template-tail-marker-types/tsconfig.json",
       });
-      expect(regexMarkerEvidence.contract.typeTests).toStrictEqual({
+      expect(templateTailMarkerEvidence.contract.typeTests).toStrictEqual({
         compilerExitCode: 0,
         compilerVersion: "7.0.2",
         contractFiles: 1,

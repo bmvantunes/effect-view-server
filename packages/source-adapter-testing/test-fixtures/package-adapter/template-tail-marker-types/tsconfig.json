@@ -7,5 +7,5 @@
     "skipLibCheck": true,
     "strict": true
   },
-  "include": ["contract-regex-markers.test-d.ts", "../contract.d.ts"]
+  "include": ["contract-template-tail-markers.test-d.ts", "../contract.d.ts"]
 }

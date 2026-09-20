@@ -14,6 +14,7 @@ describe("Reserved system topic validation", () => {
     const reservedTopicName: string = VIEW_SERVER_HEALTH_SUMMARY_TOPIC;
     expect(() =>
       defineViewServerConfig({
+        // @ts-expect-error Widened registries cannot prove reserved names are excluded.
         topics: {
           [reservedTopicName]: {
             schema: Order,

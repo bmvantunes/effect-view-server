@@ -166,6 +166,12 @@ type TypeEquals<A, B> =
       : false
     : false;
 
+type IsUnion<Value, Whole = Value> = Value extends unknown
+  ? [Whole] extends [Value]
+    ? false
+    : true
+  : never;
+
 type IsAny<Value> = 0 extends 1 & Value ? true : false;
 type IsUnknown<Value> = IsAny<Value> extends true ? false : unknown extends Value ? true : false;
 
@@ -363,12 +369,25 @@ type MatchingCorrelationFields<
   ReceivedUnion extends object,
   Field extends PropertyKey = UniqueCorrelationFields<ExpectedUnion, ReceivedUnion>,
 > = Field extends unknown
-  ? TypeEquals<
-      CorrelationFieldValues<ExpectedUnion, Field>,
-      CorrelationFieldValues<ReceivedUnion, Field>
-    > extends true
-    ? Field
-    : never
+  ? Field extends "_tag" | "kind" | "type" | "tag"
+    ? [
+        | Extract<
+            CorrelationFieldValues<ExpectedUnion, Field>,
+            CorrelationFieldValues<ReceivedUnion, Field>
+          >
+        | Extract<
+            CorrelationFieldValues<ReceivedUnion, Field>,
+            CorrelationFieldValues<ExpectedUnion, Field>
+          >,
+      ] extends [never]
+      ? never
+      : Field
+    : TypeEquals<
+          CorrelationFieldValues<ExpectedUnion, Field>,
+          CorrelationFieldValues<ReceivedUnion, Field>
+        > extends true
+      ? Field
+      : never
   : never;
 
 type UnionToIntersection<Union> = (Union extends unknown ? (value: Union) => void : never) extends (
@@ -438,6 +457,30 @@ type CorrelatedExpectedMembers<
     : ExpectedMembers
   : never;
 
+type UnmatchedExpectedCorrelationDifference<
+  ExpectedMember extends object,
+  ReceivedUnion extends object,
+  Field extends PropertyKey,
+> = Field extends keyof ExpectedMember
+  ? {
+      readonly field: Field;
+      readonly expected: FieldPresentValue<ExpectedMember, Field>;
+      readonly received: CorrelationFieldValues<ReceivedUnion, Field>;
+    }
+  : never;
+
+type UnmatchedReceivedCorrelationDifference<
+  ExpectedUnion extends object,
+  ReceivedMember extends object,
+  Field extends PropertyKey,
+> = Field extends keyof ReceivedMember
+  ? {
+      readonly field: Field;
+      readonly expected: CorrelationFieldValues<ExpectedUnion, Field>;
+      readonly received: FieldPresentValue<ReceivedMember, Field>;
+    }
+  : never;
+
 type CorrelatedDifferencesFromExpected<
   ExpectedMembers extends object,
   ReceivedMembers extends object,
@@ -451,7 +494,13 @@ type CorrelatedDifferencesFromExpected<
       ReceivedUnion
     > extends infer Correlated extends object
     ? [Correlated] extends [never]
-      ? DistributedRowFieldDifference<ExpectedMembers, ReceivedMembers>
+      ? [CorrelationDiscriminator<ExpectedUnion, ReceivedUnion>] extends [never]
+        ? DistributedRowFieldDifference<ExpectedMembers, ReceivedMembers>
+        : UnmatchedExpectedCorrelationDifference<
+            ExpectedMembers,
+            ReceivedUnion,
+            CorrelationDiscriminator<ExpectedUnion, ReceivedUnion>
+          >
       : DistributedRowFieldDifference<ExpectedMembers, Correlated>
     : never
   : never;
@@ -469,7 +518,13 @@ type CorrelatedDifferencesFromReceived<
       ReceivedUnion
     > extends infer Correlated extends object
     ? [Correlated] extends [never]
-      ? DistributedRowFieldDifference<ExpectedMembers, ReceivedMembers>
+      ? [CorrelationDiscriminator<ExpectedUnion, ReceivedUnion>] extends [never]
+        ? DistributedRowFieldDifference<ExpectedMembers, ReceivedMembers>
+        : UnmatchedReceivedCorrelationDifference<
+            ExpectedUnion,
+            ReceivedMembers,
+            CorrelationDiscriminator<ExpectedUnion, ReceivedUnion>
+          >
       : DistributedRowFieldDifference<Correlated, ReceivedMembers>
     : never
   : never;
@@ -599,12 +654,6 @@ type ValidateTopicSource<
       }
   : {};
 
-type IsUnion<Value, Whole = Value> = Value extends unknown
-  ? [Whole] extends [Value]
-    ? false
-    : true
-  : never;
-
 type ValidateTopicMember<TopicName extends PropertyKey, Topic> = Topic extends {
   (...arguments_: infer _Arguments): unknown;
 }
@@ -682,6 +731,40 @@ type ValidateTopicDefinitions<Topics, AllTopics = Topics> = Topics extends unkno
     }
   : never;
 
+type InvalidSourceDefinitions<
+  TopicName extends PropertyKey,
+  Row extends object,
+  Source,
+> = Source extends unknown
+  ? Source extends ValidateSource<TopicName, Row, Source>
+    ? never
+    : Source
+  : never;
+
+type InvalidSourceUnionTopic<TopicName extends PropertyKey, Topic> = Topic extends {
+  readonly schema: infer TopicSchema extends RowSchema;
+}
+  ? "source" extends keyof Topic
+    ? Exclude<Topic["source"], undefined> extends infer Source
+      ? TypeEquals<IsUnion<Source>, true> extends true
+        ? [InvalidSourceDefinitions<TopicName, RowFromSchema<TopicSchema>, Source>] extends [never]
+          ? never
+          : Topic
+        : never
+      : never
+    : never
+  : never;
+
+type InvalidSourceUnionTopics<Topics> = Topics extends unknown
+  ? {
+      readonly [TopicName in keyof Topics]: InvalidSourceUnionTopic<TopicName, Topics[TopicName]>;
+    }[keyof Topics]
+  : never;
+
+type ValidateSourceUnions<Topics> = [InvalidSourceUnionTopics<Topics>] extends [never]
+  ? unknown
+  : never;
+
 type InvalidTopicDefinitionRegistries<Topics> = Topics extends unknown
   ? Topics extends ValidateTopicDefinitions<Topics>
     ? never
@@ -697,11 +780,17 @@ type ValidateTopicDefinitionRegistries<Topics> = [
 type ValidateTopicDefinitionRegistryUnion<Topics> =
   true extends IsUnion<Topics> ? ValidateTopicDefinitionRegistries<Topics> : unknown;
 
-type ViewServerConfigTopicsAreValid<Topics extends ViewServerConfigTopicShape> = [
-  InvalidTopicDefinitionRegistries<Topics>,
-] extends [never]
-  ? true
-  : false;
+type ValidateFiniteTopicRegistry<Topics> = string extends keyof Topics ? never : unknown;
+
+type ViewServerConfigTopicsAreValid<Topics extends ViewServerConfigTopicShape> =
+  string extends keyof Topics
+    ? false
+    : [InvalidTopicDefinitionRegistries<Topics>, InvalidSourceUnionTopics<Topics>] extends [
+          never,
+          never,
+        ]
+      ? true
+      : false;
 
 export type ViewServerConfig<Topics extends ViewServerConfigTopicShape> =
   ViewServerConfigTopicsAreValid<Topics> extends true
@@ -749,7 +838,10 @@ export function defineViewServerConfig<const Topics extends ViewServerConfigTopi
 ): ViewServerConfig<Topics>;
 export function defineViewServerConfig<const Topics extends ViewServerConfigTopicCandidateShape>(
   input: {
-    readonly topics: Topics & ValidateTopicDefinitionRegistryUnion<Topics>;
+    readonly topics: Topics &
+      ValidateFiniteTopicRegistry<Topics> &
+      ValidateSourceUnions<Topics> &
+      ValidateTopicDefinitionRegistryUnion<Topics>;
   } & DefineViewServerConfigInput<Topics>,
 ): Topics extends ViewServerConfigTopicShape ? ViewServerConfig<Topics> : never;
 export function defineViewServerConfig(input: { readonly topics: ViewServerConfigTopicShape }) {

@@ -64,6 +64,7 @@ type DifferentFieldTypeRow = {
   readonly region: string;
   readonly shard: number;
 };
+declare const extraFieldInitial: ExtraFieldRow;
 declare enum GeneratedStatus {
   Pending = 0,
   Complete = 1,
@@ -110,6 +111,10 @@ type MismatchedDiscriminatedUnionRow =
   | { readonly id: string; readonly kind: "a"; readonly left: number }
   | { readonly id: string; readonly kind: "b"; readonly right: string };
 declare const mismatchedDiscriminatedUnionInitial: MismatchedDiscriminatedUnionRow;
+type MismatchedDiscriminatedUnionWithExtraVariantRow =
+  | MismatchedDiscriminatedUnionRow
+  | { readonly id: string; readonly kind: "c"; readonly tail: boolean };
+declare const mismatchedDiscriminatedUnionWithExtraVariantInitial: MismatchedDiscriminatedUnionWithExtraVariantRow;
 const RepeatedRegionVariantA = Schema.Struct({
   id: ViewServerId,
   kind: Schema.Literal("a"),
@@ -281,9 +286,9 @@ declare const validOrCallableTopicValue: {
 };
 declare const widenedInvalidTopics: Record<string, { readonly schema: typeof NumberIdSchema }>;
 declare const widenedValidTopics: Record<string, { readonly schema: typeof Row }>;
-const widenedValidConfig = defineViewServerConfig({ topics: widenedValidTopics });
 declare const useLeasedSource: boolean;
 declare const useRegionRoute: boolean;
+declare const useExtraFieldSource: boolean;
 const mixedLifecycleConfig = defineViewServerConfig({
   topics: {
     mixed: {
@@ -390,7 +395,11 @@ describe("Source Adapter config type contracts", () => {
         orders: validOrCallableTopicValue.orders,
       },
     });
-    expectTypeOf(widenedValidConfig.topics).toEqualTypeOf<typeof widenedValidTopics>();
+    expectTypeOf<ViewServerConfig<typeof widenedValidTopics>>().toEqualTypeOf<never>();
+    defineViewServerConfig({
+      // @ts-expect-error Widened registries cannot exclude reserved system topic names.
+      topics: widenedValidTopics,
+    });
     type WidenedInvalidInput = DefineViewServerConfigInput<typeof widenedInvalidTopics>;
     expectTypeOf<ViewServerConfig<typeof widenedInvalidTopics>>().toEqualTypeOf<never>();
     expectTypeOf<WidenedInvalidInput["topics"][string]["__viewServerConfigError"]>().toEqualTypeOf<{
@@ -1168,6 +1177,85 @@ describe("Source Adapter config type contracts", () => {
           source: mismatchedDiscriminatedUnionSource,
         },
       },
+    });
+
+    const mismatchedDiscriminatedUnionWithExtraVariantSource =
+      mappedSource<MismatchedDiscriminatedUnionWithExtraVariantRow>(
+        "mismatched-discriminated-union-with-extra-variant",
+        mismatchedDiscriminatedUnionWithExtraVariantInitial,
+      );
+    type MismatchedDiscriminatedUnionWithExtraVariantInput = DefineViewServerConfigInput<{
+      readonly mismatchedWithExtraVariant: {
+        readonly schema: typeof discriminatedUnionSchema;
+        readonly source: typeof mismatchedDiscriminatedUnionWithExtraVariantSource;
+      };
+    }>;
+    expectTypeOf<
+      MismatchedDiscriminatedUnionWithExtraVariantInput["topics"]["mismatchedWithExtraVariant"]["source"]["__viewServerConfigError"]["details"]
+    >().toEqualTypeOf<
+      | { readonly field: "left"; readonly expected: string; readonly received: number }
+      | { readonly field: "right"; readonly expected: number; readonly received: string }
+      | {
+          readonly field: "kind";
+          readonly expected: "a" | "b";
+          readonly received: "c";
+        }
+    >();
+    defineViewServerConfig({
+      topics: {
+        mismatchedWithExtraVariant: {
+          schema: discriminatedUnionSchema,
+          // @ts-expect-error Shared discriminator values correlate before reporting an extra variant.
+          source: mismatchedDiscriminatedUnionWithExtraVariantSource,
+        },
+      },
+    });
+
+    const exactRowSource = mappedSource<typeof Row.Type>("exact-row-union-member", {
+      id: "event-1",
+      region: "eu",
+      shard: 1n,
+    });
+    const extraFieldSource = mappedSource<ExtraFieldRow>(
+      "extra-field-union-member",
+      extraFieldInitial,
+    );
+    const exactOrExtraFieldSource = useExtraFieldSource ? extraFieldSource : exactRowSource;
+    type ExactOrExtraFieldSourceTopics = {
+      readonly mixedSource: {
+        readonly schema: typeof Row;
+        readonly source: typeof exactOrExtraFieldSource;
+      };
+    };
+    expectTypeOf<ViewServerConfig<ExactOrExtraFieldSourceTopics>>().toEqualTypeOf<never>();
+    defineViewServerConfig({
+      // @ts-expect-error Every source-union member must match the schema row exactly.
+      topics: {
+        mixedSource: {
+          schema: Row,
+          source: exactOrExtraFieldSource,
+        },
+      },
+    });
+    const exactOrUndefinedSource = useExtraFieldSource ? exactRowSource : undefined;
+    const exactOrUndefinedConfig = defineViewServerConfig({
+      topics: {
+        optionalSourceValue: {
+          schema: Row,
+          source: exactOrUndefinedSource,
+        },
+      },
+    });
+    expectTypeOf(exactOrUndefinedConfig.topics.optionalSourceValue.source).toEqualTypeOf<
+      typeof exactRowSource | undefined
+    >();
+    const optionalExactOrExtraSourceTopic: {
+      readonly schema: typeof Row;
+      readonly source?: typeof exactOrExtraFieldSource;
+    } = { schema: Row, source: exactOrExtraFieldSource };
+    defineViewServerConfig({
+      // @ts-expect-error Optional source unions still validate every present member.
+      topics: { optionalMixedSource: optionalExactOrExtraSourceTopic },
     });
 
     const mismatchedRepeatedRegionUnionSource = mappedSource<MismatchedRepeatedRegionUnionRow>(

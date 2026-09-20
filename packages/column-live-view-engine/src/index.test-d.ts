@@ -39,6 +39,12 @@ const Position = Schema.Struct({
   quantity: Schema.Number,
 });
 
+const PlainStringIdOrder = Schema.Struct({
+  id: Schema.String,
+  customerId: Schema.String,
+});
+declare const mixedValidityEngineSchema: typeof Order | typeof PlainStringIdOrder;
+
 const viewServer = defineViewServerConfig({
   topics: {
     orders: {
@@ -88,6 +94,9 @@ declare const alternateEngineTopics:
   | { readonly orders: { readonly schema: typeof Order } }
   | { readonly __view_server_health: { readonly schema: typeof Order } };
 type CallableOrderDefinition = (() => void) & { readonly schema: typeof Order };
+declare const callableOrValidOrderDefinition:
+  | CallableOrderDefinition
+  | { readonly schema: typeof Order };
 declare const overlappingInvalidEngineTopics:
   | { readonly orders: { readonly schema: typeof Order } }
   | { readonly orders: CallableOrderDefinition };
@@ -505,10 +514,17 @@ describe("ColumnLiveViewEngine type contract", () => {
       // @ts-expect-error every overlapping-key union member must reject callable definitions.
       topics: overlappingInvalidEngineTopics,
     });
+    const _invalidTopicValueUnionConfig = createColumnLiveViewEngine({
+      // @ts-expect-error every topic-definition union member must be a valid object definition.
+      topics: {
+        orders: callableOrValidOrderDefinition,
+      },
+    });
 
     void _invalidCallableConfig;
     void _invalidConstructibleConfig;
     void _invalidOverlappingUnionConfig;
+    void _invalidTopicValueUnionConfig;
   });
 
   it("rejects reserved system topic names at the engine boundary", () => {
@@ -546,8 +562,17 @@ describe("ColumnLiveViewEngine type contract", () => {
         },
       },
     });
+    const _invalidSchemaUnionConfig = createColumnLiveViewEngine({
+      // @ts-expect-error every schema-union member must use the nominal ViewServerId schema.
+      topics: {
+        rows: {
+          schema: mixedValidityEngineSchema,
+        },
+      },
+    });
 
     void _invalidIdConfig;
+    void _invalidSchemaUnionConfig;
   });
 
   it("rejects invalid grouped incremental admission limit options", () => {

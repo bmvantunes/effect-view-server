@@ -120,26 +120,57 @@ type TypeEquals<A, B> =
       : false
     : false;
 
+type InvalidEngineSchemas<SchemaValue> = SchemaValue extends unknown
+  ? SchemaValue extends { readonly fields: { readonly id: infer Id } }
+    ? TypeEquals<Id, ViewServerIdSchema> extends true
+      ? never
+      : SchemaValue
+    : SchemaValue
+  : never;
+
+type ValidateEngineSchemas<SchemaValue> = [InvalidEngineSchemas<SchemaValue>] extends [never]
+  ? unknown
+  : never;
+
+type ValidateEngineTopicMember<
+  TopicName extends PropertyKey,
+  Topic,
+> = TopicName extends ViewServerSystemTopicName
+  ? never
+  : Topic extends {
+        (...arguments_: infer _Arguments): unknown;
+      }
+    ? never
+    : Topic extends abstract new (...arguments_: infer _Arguments) => unknown
+      ? never
+      : Topic extends {
+            readonly schema: infer S extends RowSchema &
+              Schema.Codec<object, unknown, never, never>;
+          }
+        ? Topic & RejectExtraEngineTopicKeys<Topic> & ValidateEngineSchemas<S>
+        : never;
+
+type InvalidEngineTopicMembers<TopicName extends PropertyKey, Topic> = Topic extends unknown
+  ? Topic extends ValidateEngineTopicMember<TopicName, Topic>
+    ? never
+    : Topic
+  : never;
+
+type ValidateEngineTopicMembers<TopicName extends PropertyKey, Topic> = [
+  InvalidEngineTopicMembers<TopicName, Topic>,
+] extends [never]
+  ? unknown
+  : never;
+
+type ValidateEngineTopic<TopicName extends PropertyKey, Topic> = ValidateEngineTopicMember<
+  TopicName,
+  Topic
+> &
+  ValidateEngineTopicMembers<TopicName, Topic>;
+
 type ValidateEngineTopics<Topics extends DecodableTopicDefinitions> = Topics extends unknown
   ? {
-      readonly [Topic in keyof Topics]: Topic extends ViewServerSystemTopicName
-        ? never
-        : Topics[Topic] extends {
-              (...arguments_: infer _Arguments): unknown;
-            }
-          ? never
-          : Topics[Topic] extends abstract new (...arguments_: infer _Arguments) => unknown
-            ? never
-            : Topics[Topic] extends {
-                  readonly schema: infer S extends RowSchema &
-                    Schema.Codec<object, unknown, never, never>;
-                }
-              ? S extends { readonly fields: { readonly id: infer Id } }
-                ? TypeEquals<Id, ViewServerIdSchema> extends true
-                  ? Topics[Topic] & RejectExtraEngineTopicKeys<Topics[Topic]>
-                  : never
-                : never
-              : never;
+      readonly [Topic in keyof Topics]: ValidateEngineTopic<Topic, Topics[Topic]>;
     }
   : never;
 

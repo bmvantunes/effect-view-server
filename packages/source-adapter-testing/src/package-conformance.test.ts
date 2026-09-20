@@ -678,7 +678,7 @@ describe("Source Adapter package conformance validation", () => {
         typeTestProject: "regex-marker-types/tsconfig.json",
       });
       expect(regexMarkerEvidence.contract.typeTests).toStrictEqual({
-        compilerExitCode: 1,
+        compilerExitCode: 0,
         compilerVersion: "7.0.2",
         contractFiles: 1,
         positiveCases: 0,

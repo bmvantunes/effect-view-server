@@ -152,6 +152,35 @@ type MismatchedRepeatedRegionUnionRow =
       readonly tail: string;
     };
 declare const mismatchedRepeatedRegionUnionInitial: MismatchedRepeatedRegionUnionRow;
+const ConflictingDiscriminatorVariantA = Schema.Struct({
+  id: ViewServerId,
+  kind: Schema.Literal("a"),
+  code: Schema.Literal("x"),
+  left: Schema.String,
+});
+const ConflictingDiscriminatorVariantB = Schema.Struct({
+  id: ViewServerId,
+  kind: Schema.Literal("b"),
+  code: Schema.Literal("y"),
+  right: Schema.Number,
+});
+declare const conflictingDiscriminatorUnionSchema:
+  | typeof ConflictingDiscriminatorVariantA
+  | typeof ConflictingDiscriminatorVariantB;
+type MismatchedConflictingDiscriminatorUnionRow =
+  | {
+      readonly id: string;
+      readonly kind: "a";
+      readonly code: "y";
+      readonly left: number;
+    }
+  | {
+      readonly id: string;
+      readonly kind: "b";
+      readonly code: "x";
+      readonly right: string;
+    };
+declare const mismatchedConflictingDiscriminatorUnionInitial: MismatchedConflictingDiscriminatorUnionRow;
 declare const usePartialRouteSchema: boolean;
 type OptionalUndefinedNoteRow = {
   readonly id: string;
@@ -1105,6 +1134,35 @@ describe("Source Adapter config type contracts", () => {
           schema: repeatedRegionUnionSchema,
           // @ts-expect-error Only unique discriminants correlate union variants.
           source: mismatchedRepeatedRegionUnionSource,
+        },
+      },
+    });
+
+    const mismatchedConflictingDiscriminatorUnionSource =
+      mappedSource<MismatchedConflictingDiscriminatorUnionRow>(
+        "mismatched-conflicting-discriminator-union",
+        mismatchedConflictingDiscriminatorUnionInitial,
+      );
+    type MismatchedConflictingDiscriminatorUnionInput = DefineViewServerConfigInput<{
+      readonly mismatchedConflictingDiscriminator: {
+        readonly schema: typeof conflictingDiscriminatorUnionSchema;
+        readonly source: typeof mismatchedConflictingDiscriminatorUnionSource;
+      };
+    }>;
+    expectTypeOf<
+      MismatchedConflictingDiscriminatorUnionInput["topics"]["mismatchedConflictingDiscriminator"]["source"]["__viewServerConfigError"]["details"]
+    >().toEqualTypeOf<
+      | { readonly field: "code"; readonly expected: "x"; readonly received: "y" }
+      | { readonly field: "left"; readonly expected: string; readonly received: number }
+      | { readonly field: "code"; readonly expected: "y"; readonly received: "x" }
+      | { readonly field: "right"; readonly expected: number; readonly received: string }
+    >();
+    defineViewServerConfig({
+      topics: {
+        mismatchedConflictingDiscriminator: {
+          schema: conflictingDiscriminatorUnionSchema,
+          // @ts-expect-error A single preferred discriminator correlates every union member.
+          source: mismatchedConflictingDiscriminatorUnionSource,
         },
       },
     });

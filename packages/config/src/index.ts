@@ -321,35 +321,74 @@ type UnionMembersWithFieldValue<
     : never
   : never;
 
+type NonUniqueCorrelationMembers<
+  Members extends object,
+  Field extends PropertyKey,
+  AllMembers extends object = Members,
+> = Members extends unknown
+  ? Field extends keyof Members
+    ? TypeEquals<
+        UnionMembersWithFieldValue<AllMembers, Field, FieldPresentValue<Members, Field>>,
+        Members
+      > extends true
+      ? never
+      : Members
+    : Members
+  : never;
+
+type UniqueCorrelationFields<
+  ExpectedUnion extends object,
+  ReceivedUnion extends object,
+  SharedField extends PropertyKey = keyof ExpectedUnion & keyof ReceivedUnion,
+> = {
+  readonly [Field in SharedField]: [
+    NonUniqueCorrelationMembers<ExpectedUnion, Field>,
+    NonUniqueCorrelationMembers<ReceivedUnion, Field>,
+  ] extends [never, never]
+    ? Field
+    : never;
+}[SharedField];
+
+type UnionToIntersection<Union> = (Union extends unknown ? (value: Union) => void : never) extends (
+  value: infer Intersection,
+) => void
+  ? Intersection
+  : never;
+
+type LastUnionMember<Union> =
+  UnionToIntersection<Union extends unknown ? () => Union : never> extends () => infer Last
+    ? Last
+    : never;
+
+type PreferredCorrelationField<Fields extends PropertyKey> = "_tag" extends Fields
+  ? "_tag"
+  : "kind" extends Fields
+    ? "kind"
+    : "type" extends Fields
+      ? "type"
+      : "tag" extends Fields
+        ? "tag"
+        : Extract<LastUnionMember<Fields>, PropertyKey>;
+
+type CorrelationDiscriminator<
+  ExpectedUnion extends object,
+  ReceivedUnion extends object,
+> = PreferredCorrelationField<UniqueCorrelationFields<ExpectedUnion, ReceivedUnion>>;
+
 type CorrelationField<
   ExpectedMember extends object,
   ReceivedMember extends object,
   ExpectedUnion extends object,
   ReceivedUnion extends object,
-> = {
-  readonly [
-    Field in keyof ExpectedMember & keyof ReceivedMember & keyof ExpectedUnion & keyof ReceivedUnion
-  ]: TypeEquals<
-    FieldPresentValue<ExpectedMember, Field>,
-    FieldPresentValue<ReceivedMember, Field>
-  > extends true
-    ? TypeEquals<
-        UnionMembersWithFieldValue<ExpectedUnion, Field, FieldPresentValue<ExpectedMember, Field>>,
-        ExpectedMember
-      > extends true
-      ? TypeEquals<
-          UnionMembersWithFieldValue<
-            ReceivedUnion,
-            Field,
-            FieldPresentValue<ReceivedMember, Field>
-          >,
-          ReceivedMember
-        > extends true
-        ? Field
-        : never
-      : never
-    : never;
-}[keyof ExpectedMember & keyof ReceivedMember & keyof ExpectedUnion & keyof ReceivedUnion];
+  Field extends PropertyKey = CorrelationDiscriminator<ExpectedUnion, ReceivedUnion>,
+> = Field extends keyof ExpectedMember & keyof ReceivedMember
+  ? TypeEquals<
+      FieldPresentValue<ExpectedMember, Field>,
+      FieldPresentValue<ReceivedMember, Field>
+    > extends true
+    ? Field
+    : never
+  : never;
 
 type CorrelatedReceivedMembers<
   ExpectedMember extends object,

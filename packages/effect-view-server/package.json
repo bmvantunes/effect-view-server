@@ -170,13 +170,13 @@
     "vitest": "catalog:"
   },
   "peerDependencies": {
-    "@effect/atom-react": "4.0.0-rc.111",
-    "@effect/vitest": "4.0.0-rc.111",
-    "effect": "4.0.0-rc.111",
-    "react": "19.2.8",
-    "react-dom": "19.2.8",
+    "@effect/atom-react": "^4.0.0-rc.111",
+    "@effect/vitest": "^4.0.0-rc.111",
+    "effect": "^4.0.0-rc.111",
+    "react": ">=19.2.7 <20.0.0",
+    "react-dom": ">=19.2.7 <20.0.0",
     "typescript": ">=7.0.0 <8.0.0",
-    "vite": "*"
+    "vite": ">=8.0.0 <9.0.0"
   },
   "peerDependenciesMeta": {
     "@effect/atom-react": {
@@ -189,6 +189,9 @@
       "optional": true
     },
     "react-dom": {
+      "optional": true
+    },
+    "vite": {
       "optional": true
     }
   },

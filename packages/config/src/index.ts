@@ -349,6 +349,28 @@ type UniqueCorrelationFields<
     : never;
 }[SharedField];
 
+type CorrelationFieldValues<
+  Members extends object,
+  Field extends PropertyKey,
+> = Members extends unknown
+  ? Field extends keyof Members
+    ? FieldPresentValue<Members, Field>
+    : never
+  : never;
+
+type MatchingCorrelationFields<
+  ExpectedUnion extends object,
+  ReceivedUnion extends object,
+  Field extends PropertyKey = UniqueCorrelationFields<ExpectedUnion, ReceivedUnion>,
+> = Field extends unknown
+  ? TypeEquals<
+      CorrelationFieldValues<ExpectedUnion, Field>,
+      CorrelationFieldValues<ReceivedUnion, Field>
+    > extends true
+    ? Field
+    : never
+  : never;
+
 type UnionToIntersection<Union> = (Union extends unknown ? (value: Union) => void : never) extends (
   value: infer Intersection,
 ) => void
@@ -373,7 +395,7 @@ type PreferredCorrelationField<Fields extends PropertyKey> = "_tag" extends Fiel
 type CorrelationDiscriminator<
   ExpectedUnion extends object,
   ReceivedUnion extends object,
-> = PreferredCorrelationField<UniqueCorrelationFields<ExpectedUnion, ReceivedUnion>>;
+> = PreferredCorrelationField<MatchingCorrelationFields<ExpectedUnion, ReceivedUnion>>;
 
 type CorrelationField<
   ExpectedMember extends object,
@@ -577,7 +599,13 @@ type ValidateTopicSource<
       }
   : {};
 
-type ValidateTopic<TopicName extends PropertyKey, Topic> = Topic extends {
+type IsUnion<Value, Whole = Value> = Value extends unknown
+  ? [Whole] extends [Value]
+    ? false
+    : true
+  : never;
+
+type ValidateTopicMember<TopicName extends PropertyKey, Topic> = Topic extends {
   (...arguments_: infer _Arguments): unknown;
 }
   ? WithViewServerConfigValidationError<
@@ -622,7 +650,24 @@ type ValidateTopic<TopicName extends PropertyKey, Topic> = Topic extends {
             { readonly received: Topic }
           >;
 
-type ValidateTopicDefinitions<Topics> = Topics extends unknown
+type InvalidTopicMembers<TopicName extends PropertyKey, Topic> = Topic extends unknown
+  ? Topic extends ValidateTopicMember<TopicName, Topic>
+    ? never
+    : Topic
+  : never;
+
+type ValidateTopicMembers<TopicName extends PropertyKey, Topic> = [
+  InvalidTopicMembers<TopicName, Topic>,
+] extends [never]
+  ? unknown
+  : never;
+
+type ValidateTopic<TopicName extends PropertyKey, Topic> = ValidateTopicMember<TopicName, Topic> &
+  (true extends IsUnion<Topic> ? ValidateTopicMembers<TopicName, Topic> : unknown);
+
+type UnionKeys<Union> = Union extends unknown ? keyof Union : never;
+
+type ValidateTopicDefinitions<Topics, AllTopics = Topics> = Topics extends unknown
   ? {
       readonly [Topic in keyof Topics]: Topic extends ViewServerSystemTopicName
         ? WithViewServerConfigValidationError<
@@ -632,12 +677,29 @@ type ValidateTopicDefinitions<Topics> = Topics extends unknown
             { readonly received: Topic }
           >
         : ValidateTopic<Topic, Topics[Topic]>;
+    } & {
+      readonly [Topic in Exclude<UnionKeys<AllTopics>, keyof Topics>]?: never;
     }
   : never;
 
-type ViewServerConfigTopicsAreValid<Topics extends ViewServerConfigTopicShape> = [Topics] extends [
-  ValidateTopicDefinitions<Topics>,
-]
+type InvalidTopicDefinitionRegistries<Topics> = Topics extends unknown
+  ? Topics extends ValidateTopicDefinitions<Topics>
+    ? never
+    : Topics
+  : never;
+
+type ValidateTopicDefinitionRegistries<Topics> = [
+  InvalidTopicDefinitionRegistries<Topics>,
+] extends [never]
+  ? unknown
+  : never;
+
+type ValidateTopicDefinitionRegistryUnion<Topics> =
+  true extends IsUnion<Topics> ? ValidateTopicDefinitionRegistries<Topics> : unknown;
+
+type ViewServerConfigTopicsAreValid<Topics extends ViewServerConfigTopicShape> = [
+  InvalidTopicDefinitionRegistries<Topics>,
+] extends [never]
   ? true
   : false;
 
@@ -686,7 +748,9 @@ export function defineViewServerConfig<const Topics extends ViewServerConfigTopi
       : never),
 ): ViewServerConfig<Topics>;
 export function defineViewServerConfig<const Topics extends ViewServerConfigTopicCandidateShape>(
-  input: DefineViewServerConfigInput<Topics>,
+  input: {
+    readonly topics: Topics & ValidateTopicDefinitionRegistryUnion<Topics>;
+  } & DefineViewServerConfigInput<Topics>,
 ): Topics extends ViewServerConfigTopicShape ? ViewServerConfig<Topics> : never;
 export function defineViewServerConfig(input: { readonly topics: ViewServerConfigTopicShape }) {
   const unsupportedConfigProperty = ownPropertyNamesAreExact(input, new Set(["topics"]));

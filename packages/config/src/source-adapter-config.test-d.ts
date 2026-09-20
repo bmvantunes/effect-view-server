@@ -181,6 +181,33 @@ type MismatchedConflictingDiscriminatorUnionRow =
       readonly right: string;
     };
 declare const mismatchedConflictingDiscriminatorUnionInitial: MismatchedConflictingDiscriminatorUnionRow;
+const NonMatchingPreferredVariantA = Schema.TaggedStruct("expected-a", {
+  id: ViewServerId,
+  kind: Schema.Literal("a"),
+  left: Schema.String,
+});
+const NonMatchingPreferredVariantB = Schema.TaggedStruct("expected-b", {
+  id: ViewServerId,
+  kind: Schema.Literal("b"),
+  right: Schema.Number,
+});
+declare const nonMatchingPreferredUnionSchema:
+  | typeof NonMatchingPreferredVariantA
+  | typeof NonMatchingPreferredVariantB;
+type MismatchedNonMatchingPreferredUnionRow =
+  | {
+      readonly id: string;
+      readonly _tag: "received-a";
+      readonly kind: "a";
+      readonly left: number;
+    }
+  | {
+      readonly id: string;
+      readonly _tag: "received-b";
+      readonly kind: "b";
+      readonly right: string;
+    };
+declare const mismatchedNonMatchingPreferredUnionInitial: MismatchedNonMatchingPreferredUnionRow;
 declare const usePartialRouteSchema: boolean;
 type OptionalUndefinedNoteRow = {
   readonly id: string;
@@ -236,6 +263,22 @@ declare const alternateValidTopics:
   | { readonly orders: { readonly schema: typeof Row } }
   | { readonly trades: { readonly schema: typeof Row } };
 const alternateValidConfig = defineViewServerConfig({ topics: alternateValidTopics });
+declare const validOrMalformedSupersetTopics:
+  | {
+      readonly good: { readonly schema: typeof Row };
+      readonly bad: null;
+    }
+  | { readonly good: { readonly schema: typeof Row } };
+declare const validOrCallableSameKeyTopics:
+  | {
+      readonly orders: (() => void) & { readonly schema: typeof Row };
+    }
+  | { readonly orders: { readonly schema: typeof Row } };
+declare const validOrCallableTopicValue: {
+  readonly orders:
+    | ((() => void) & { readonly schema: typeof Row })
+    | { readonly schema: typeof Row };
+};
 declare const widenedInvalidTopics: Record<string, { readonly schema: typeof NumberIdSchema }>;
 declare const widenedValidTopics: Record<string, { readonly schema: typeof Row }>;
 const widenedValidConfig = defineViewServerConfig({ topics: widenedValidTopics });
@@ -331,6 +374,22 @@ describe("Source Adapter config type contracts", () => {
       typeof ViewServerId
     >();
     expectTypeOf(alternateValidConfig.topics).toEqualTypeOf<typeof alternateValidTopics>();
+    defineViewServerConfig({
+      // @ts-expect-error Every union registry branch must be valid independently.
+      topics: validOrMalformedSupersetTopics,
+    });
+    expectTypeOf<ViewServerConfig<typeof validOrCallableSameKeyTopics>>().toEqualTypeOf<never>();
+    defineViewServerConfig({
+      // @ts-expect-error Same-key union registry branches validate independently.
+      topics: validOrCallableSameKeyTopics,
+    });
+    expectTypeOf<ViewServerConfig<typeof validOrCallableTopicValue>>().toEqualTypeOf<never>();
+    defineViewServerConfig({
+      topics: {
+        // @ts-expect-error Every union member of one topic value validates independently.
+        orders: validOrCallableTopicValue.orders,
+      },
+    });
     expectTypeOf(widenedValidConfig.topics).toEqualTypeOf<typeof widenedValidTopics>();
     type WidenedInvalidInput = DefineViewServerConfigInput<typeof widenedInvalidTopics>;
     expectTypeOf<ViewServerConfig<typeof widenedInvalidTopics>>().toEqualTypeOf<never>();
@@ -1167,6 +1226,43 @@ describe("Source Adapter config type contracts", () => {
       },
     });
 
+    const mismatchedNonMatchingPreferredUnionSource =
+      mappedSource<MismatchedNonMatchingPreferredUnionRow>(
+        "mismatched-non-matching-preferred-union",
+        mismatchedNonMatchingPreferredUnionInitial,
+      );
+    type MismatchedNonMatchingPreferredUnionInput = DefineViewServerConfigInput<{
+      readonly mismatchedNonMatchingPreferred: {
+        readonly schema: typeof nonMatchingPreferredUnionSchema;
+        readonly source: typeof mismatchedNonMatchingPreferredUnionSource;
+      };
+    }>;
+    expectTypeOf<
+      MismatchedNonMatchingPreferredUnionInput["topics"]["mismatchedNonMatchingPreferred"]["source"]["__viewServerConfigError"]["details"]
+    >().toEqualTypeOf<
+      | {
+          readonly field: "_tag";
+          readonly expected: "expected-a";
+          readonly received: "received-a";
+        }
+      | { readonly field: "left"; readonly expected: string; readonly received: number }
+      | {
+          readonly field: "_tag";
+          readonly expected: "expected-b";
+          readonly received: "received-b";
+        }
+      | { readonly field: "right"; readonly expected: number; readonly received: string }
+    >();
+    defineViewServerConfig({
+      topics: {
+        mismatchedNonMatchingPreferred: {
+          schema: nonMatchingPreferredUnionSchema,
+          // @ts-expect-error Correlation skips unique fields without matching values.
+          source: mismatchedNonMatchingPreferredUnionSource,
+        },
+      },
+    });
+
     const OptionalUndefinedNoteSchema = Schema.Struct({
       id: ViewServerId,
       note: Schema.optionalKey(Schema.String),
@@ -1527,13 +1623,11 @@ describe("Source Adapter config type contracts", () => {
       readonly reason: "source must be created by SourceAdapter.make(...)";
       readonly details: { readonly received: null };
     }>();
+    const nullSourceTopic = { schema: Row, source: null };
     defineViewServerConfig({
       topics: {
-        nullSource: {
-          schema: Row,
-          // @ts-expect-error Null sources receive the configured diagnostic.
-          source: null,
-        },
+        // @ts-expect-error Null sources receive the configured diagnostic.
+        nullSource: nullSourceTopic,
       },
     });
 

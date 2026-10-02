@@ -225,12 +225,15 @@ describe("useLiveQueryViewport", () => {
         source: UseLiveQueryViewportResult<typeof viewServer.topics, "orders">;
       }>,
     ) {
-      const facet = props.source.useWholeResult(facetQuery);
       return (
-        <output role="status">
-          {facet.status}:
-          {facet.rows.map((row) => `${row.status}-${String(row.rowCount)}`).join("|")}
-        </output>
+        <props.source.wholeResult.Renderer query={facetQuery}>
+          {(facet) => (
+            <output role="status">
+              {facet.status}:
+              {facet.rows.map((row) => `${row.status}-${String(row.rowCount)}`).join("|")}
+            </output>
+          )}
+        </props.source.wholeResult.Renderer>
       );
     }
 
@@ -258,7 +261,7 @@ describe("useLiveQueryViewport", () => {
         </ViewServerClientProvider>
       </StrictMode>,
     );
-    await expect.element(view.getByRole("status")).toHaveTextContent("ready:closed-1|open-1");
+    await expect.element(view.getByRole("status")).toHaveTextContent(/^ready:closed-1\|open-1$/);
     await expect.poll(() => Object.keys(grid.rows()).length).toBe(2);
     await expect
       .poll(async () => {
@@ -270,15 +273,15 @@ describe("useLiveQueryViewport", () => {
     await Effect.runPromise(
       runtime.client.publish("orders", { id: "order-3", status: "open", price: 30 }),
     );
-    await expect.element(view.getByRole("status")).toHaveTextContent("ready:closed-1|open-2");
+    await expect.element(view.getByRole("status")).toHaveTextContent(/^ready:closed-1\|open-2$/);
 
     await Effect.runPromise(
       runtime.client.publish("orders", { id: "order-1", status: "closed", price: 40 }),
     );
-    await expect.element(view.getByRole("status")).toHaveTextContent("ready:closed-2|open-1");
+    await expect.element(view.getByRole("status")).toHaveTextContent(/^ready:closed-2\|open-1$/);
 
     await Effect.runPromise(runtime.client.delete("orders", "order-2"));
-    await expect.element(view.getByRole("status")).toHaveTextContent("ready:closed-1|open-1");
+    await expect.element(view.getByRole("status")).toHaveTextContent(/^ready:closed-1\|open-1$/);
 
     await view.rerender(
       <StrictMode>
@@ -301,7 +304,7 @@ describe("useLiveQueryViewport", () => {
         </ViewServerClientProvider>
       </StrictMode>,
     );
-    await expect.element(view.getByRole("status")).toHaveTextContent("ready:closed-1|open-1");
+    await expect.element(view.getByRole("status")).toHaveTextContent(/^ready:closed-1\|open-1$/);
     await expect
       .poll(async () => {
         const health = await Effect.runPromise(runtime.client.health());

@@ -63,6 +63,9 @@ import {
   type LiveQueryViewportQuery,
   type UseLiveQueryViewportHook,
   type UseLiveQueryViewportResult,
+  type LiveQueryViewportWholeResultAdapter,
+  type LiveQueryViewportWholeResultRenderer,
+  type LiveQueryViewportWholeResultRendererProps,
 } from "./live-query-viewport";
 
 export type {
@@ -74,9 +77,11 @@ export type {
   LiveQueryViewportSemanticKey,
   LiveQueryViewportSink,
   LiveQueryViewportWindow,
+  LiveQueryViewportWholeResultAdapter,
+  LiveQueryViewportWholeResultRenderer,
+  LiveQueryViewportWholeResultRendererProps,
   UseLiveQueryViewportHook,
   UseLiveQueryViewportResult,
-  UseLiveQueryViewportWholeResultHook,
 } from "./live-query-viewport";
 
 export type ViewServerReactBindings<Topics extends TopicDefinitions> = {
@@ -368,6 +373,18 @@ export const createViewServerReact = <const Topics extends TopicDefinitions>(
     );
   }
 
+  function createLiveQueryViewportWholeResultRenderer<Topic extends Extract<keyof Topics, string>>(
+    topic: Topic,
+  ): LiveQueryViewportWholeResultRenderer<Topics, Topic> {
+    function LiveQueryViewportWholeResultRenderer<
+      const Query extends LiveQueryViewportQuery<TopicRow<Topics, NoInfer<Topic>>>,
+    >(props: LiveQueryViewportWholeResultRendererProps<Topics, Topic, Query>): ReactNode {
+      const result = useLiveQuery<Topic, Query>(topic, props.query);
+      return props.children(result);
+    }
+    return LiveQueryViewportWholeResultRenderer;
+  }
+
   function useSourceHealth<
     const Input extends {
       readonly topic: ViewServerSourceOwnedTopic<Topics>;
@@ -442,14 +459,15 @@ export const createViewServerReact = <const Topics extends TopicDefinitions>(
   function useLiveQueryViewport<Topic extends Extract<keyof Topics, string>>(
     topic: Topic,
   ): UseLiveQueryViewportResult<Topics, Topic> {
-    function useWholeResult<
-      const Query extends LiveQueryViewportQuery<TopicRow<Topics, NoInfer<Topic>>>,
-    >(
-      query: ExactLiveQueryInputForTopic<Topics, NoInfer<Topic>, Query>,
-    ): LiveQueryResult<LiveQueryRow<TopicRow<Topics, Topic>, Query>> {
-      return useLiveQuery(topic, query);
-    }
     const client = useClient();
+    const wholeResult: LiveQueryViewportWholeResultAdapter<Topics, Topic> = useMemo(
+      () =>
+        Object.freeze({
+          topic,
+          Renderer: createLiveQueryViewportWholeResultRenderer(topic),
+        }),
+      [topic],
+    );
     // Topic identity owns the public facade. Client changes replace the installed
     // controller below without invalidating viewport references held by the grid.
     // Installation stays in insertion effect so descendant layout effects can connect
@@ -493,7 +511,7 @@ export const createViewServerReact = <const Topics extends TopicDefinitions>(
     const chrome = viewportState.read(result);
     return {
       viewport: binding.viewport,
-      useWholeResult,
+      wholeResult,
       completeRawSelect: completeRawSelectForTopic(topic),
       totalRows: chrome.totalRows,
       version: chrome.version,

@@ -183,20 +183,30 @@ const regional = useLiveQuery("regionalOrders", {
 pushes sparse rows and their authoritative keys into a caller-owned sink while
 React retains only chrome such as status, version, and total rows.
 
-The source's `useWholeResult(query)` hook opens an independently scoped live
-subscription for complete projections such as grouped facets. It preserves the
-topic's exact Feed Route contract, rejects `offset` and `limit`, never replaces
-the sparse viewport generation, and releases with the component that called it.
+The source's `wholeResult` Adapter provides a declarative `Renderer` for complete
+projections such as grouped facets. The Renderer owns the independently scoped
+live hook and returns its result through `children`, so consumers do not call a
+hook discovered from a source object. It preserves the topic's exact Feed Route
+contract, rejects `offset` and `limit`, never replaces the sparse viewport
+generation, and releases with the rendered Adapter component.
 
 ```tsx
 const source = useLiveQueryViewport("regionalOrders");
-const statuses = source.useWholeResult({
-  routeBy: { region: "eu" },
-  groupBy: ["status"],
-  aggregates: { rowCount: { aggFunc: "count" } },
-  where: [],
-  orderBy: [{ field: "status", direction: "asc" }],
-});
+const wholeResult = source.wholeResult;
+
+return (
+  <wholeResult.Renderer
+    query={{
+      routeBy: { region: "eu" },
+      groupBy: ["status"],
+      aggregates: { rowCount: { aggFunc: "count" } },
+      where: [],
+      orderBy: [{ field: "status", direction: "asc" }],
+    }}
+  >
+    {(statuses) => <StatusFacet statuses={statuses} />}
+  </wholeResult.Renderer>
+);
 ```
 
 `viewport.semanticKey(query)` returns an opaque, source-owned identity for the same exact

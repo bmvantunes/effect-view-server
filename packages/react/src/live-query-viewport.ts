@@ -14,6 +14,7 @@ import type {
   ViewServerTransportError,
   Where,
 } from "@effect-view-server/config";
+import type { ReactNode } from "react";
 // This type-only internal seam keeps complete-projection authority source-owned and erases at runtime.
 import type {
   LiveQueryViewportCompleteRawSelectForRow,
@@ -280,7 +281,7 @@ export type UseLiveQueryViewportResult<
   Topic extends Extract<keyof Topics, string>,
 > = {
   readonly viewport: LiveQueryViewport<Topics, Topic>;
-  readonly useWholeResult: UseLiveQueryViewportWholeResultHook<Topics, Topic>;
+  readonly wholeResult: LiveQueryViewportWholeResultAdapter<Topics, Topic>;
   readonly completeRawSelect: LiveQueryViewportCompleteRawSelectForRow<TopicRow<Topics, Topic>>;
   readonly totalRows: number;
   readonly version: number;
@@ -289,12 +290,31 @@ export type UseLiveQueryViewportResult<
   readonly message?: string | undefined;
 };
 
-export type UseLiveQueryViewportWholeResultHook<
+export type LiveQueryViewportWholeResultRendererProps<
+  Topics extends TopicDefinitions,
+  Topic extends Extract<keyof Topics, string>,
+  Query extends LiveQueryViewportQuery<TopicRow<Topics, Topic>>,
+> = Readonly<{
+  readonly query: ExactLiveQueryInputForTopic<Topics, NoInfer<Topic>, Query>;
+  readonly children: (
+    result: LiveQueryResult<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
+  ) => ReactNode;
+}>;
+
+export type LiveQueryViewportWholeResultRenderer<
   Topics extends TopicDefinitions,
   Topic extends Extract<keyof Topics, string>,
 > = <const Query extends LiveQueryViewportQuery<TopicRow<Topics, NoInfer<Topic>>>>(
-  query: ExactLiveQueryInputForTopic<Topics, NoInfer<Topic>, Query>,
-) => LiveQueryResult<LiveQueryRow<TopicRow<Topics, Topic>, Query>>;
+  props: LiveQueryViewportWholeResultRendererProps<Topics, Topic, Query>,
+) => ReactNode;
+
+export type LiveQueryViewportWholeResultAdapter<
+  Topics extends TopicDefinitions,
+  Topic extends Extract<keyof Topics, string>,
+> = Readonly<{
+  readonly topic: Topic;
+  readonly Renderer: LiveQueryViewportWholeResultRenderer<Topics, Topic>;
+}>;
 
 export type UseLiveQueryViewportHook<Topics extends TopicDefinitions> = <
   Topic extends Extract<keyof Topics, string>,

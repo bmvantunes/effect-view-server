@@ -146,6 +146,23 @@ describe("React type contracts", () => {
     expectTypeOf(invalid).not.toBeAny();
   });
 
+  it("binds a whole-result Renderer to the selected dynamic topic", () => {
+    const source = heterogeneousReact.useLiveQueryViewport(heterogeneousTopic);
+    void source.wholeResult.Renderer({
+      query: { select: ["id"], where: [], orderBy: [] },
+      children: (result) => {
+        expectTypeOf(result.rows[0]).toEqualTypeOf<{ readonly id: string } | undefined>();
+        return null;
+      },
+    });
+    void source.wholeResult.Renderer({
+      // @ts-expect-error The source-owned Renderer does not accept a consumer-selected topic.
+      topic: "positions",
+      query: { select: ["id"], where: [], orderBy: [] },
+      children: () => null,
+    });
+  });
+
   it("requires explicit selected row result types", () => {
     const selectedRows = useLiveQuery("orders", {
       select: ["id", "customerId", "status", "price", "region", "updatedAt"],
@@ -357,58 +374,77 @@ describe("React type contracts", () => {
 
   it("binds exact whole-result queries to one Viewport Source topic", () => {
     const source = leasedReact.useLiveQueryViewport("orders");
-    const facet = source.useWholeResult({
-      routeBy: { region: "UsÁ", status: "open" },
-      groupBy: ["status"],
-      aggregates: { rowCount: { aggFunc: "count" } },
-      where: [{ field: "customerId", type: "startsWith", filter: "customer-" }],
-      orderBy: [{ field: "status", direction: "asc" }],
+    void source.wholeResult.Renderer({
+      query: {
+        routeBy: { region: "UsÁ", status: "open" },
+        groupBy: ["status"],
+        aggregates: { rowCount: { aggFunc: "count" } },
+        where: [{ field: "customerId", type: "startsWith", filter: "customer-" }],
+        orderBy: [{ field: "status", direction: "asc" }],
+      },
+      children: (facet) => {
+        expectTypeOf(facet).toEqualTypeOf<
+          LiveQueryResult<{
+            readonly status: "open" | "closed" | "cancelled";
+            readonly rowCount: bigint;
+          }>
+        >();
+        return null;
+      },
     });
 
-    expectTypeOf(facet).toEqualTypeOf<
-      LiveQueryResult<{
-        readonly status: "open" | "closed" | "cancelled";
-        readonly rowCount: bigint;
-      }>
-    >();
-
-    // @ts-expect-error the topic-bound whole-result query requires every Route Field.
-    source.useWholeResult({
-      routeBy: { region: "UsÁ" },
-      groupBy: ["status"],
-      aggregates: { rowCount: { aggFunc: "count" } },
+    void source.wholeResult.Renderer({
+      // @ts-expect-error the topic-bound whole-result query requires every Route Field.
+      query: {
+        routeBy: { region: "UsÁ" },
+        groupBy: ["status"],
+        aggregates: { rowCount: { aggFunc: "count" } },
+      },
+      children: () => null,
     });
-    // @ts-expect-error the topic-bound whole-result query rejects extra Route Fields.
-    source.useWholeResult({
-      routeBy: { region: "UsÁ", status: "open", desk: "north" },
-      groupBy: ["status"],
-      aggregates: { rowCount: { aggFunc: "count" } },
+    void source.wholeResult.Renderer({
+      // @ts-expect-error the topic-bound whole-result query rejects extra Route Fields.
+      query: {
+        routeBy: { region: "UsÁ", status: "open", desk: "north" },
+        groupBy: ["status"],
+        aggregates: { rowCount: { aggFunc: "count" } },
+      },
+      children: () => null,
     });
-    // @ts-expect-error the topic-bound whole-result query preserves exact Route values.
-    source.useWholeResult({
-      routeBy: { region: 1, status: "open" },
-      groupBy: ["status"],
-      aggregates: { rowCount: { aggFunc: "count" } },
-      where: [],
-      orderBy: [],
+    void source.wholeResult.Renderer({
+      // @ts-expect-error the topic-bound whole-result query preserves exact Route values.
+      query: {
+        routeBy: { region: 1, status: "open" },
+        groupBy: ["status"],
+        aggregates: { rowCount: { aggFunc: "count" } },
+        where: [],
+        orderBy: [],
+      },
+      children: () => null,
     });
-    // @ts-expect-error a whole-result query cannot truncate with offset.
-    source.useWholeResult({
-      routeBy: { region: "UsÁ", status: "open" },
-      groupBy: ["status"],
-      aggregates: { rowCount: { aggFunc: "count" } },
-      where: [],
-      orderBy: [],
-      offset: 1,
+    void source.wholeResult.Renderer({
+      // @ts-expect-error a whole-result query cannot truncate with offset.
+      query: {
+        routeBy: { region: "UsÁ", status: "open" },
+        groupBy: ["status"],
+        aggregates: { rowCount: { aggFunc: "count" } },
+        where: [],
+        orderBy: [],
+        offset: 1,
+      },
+      children: () => null,
     });
-    // @ts-expect-error a whole-result query cannot truncate with limit.
-    source.useWholeResult({
-      routeBy: { region: "UsÁ", status: "open" },
-      groupBy: ["status"],
-      aggregates: { rowCount: { aggFunc: "count" } },
-      where: [],
-      orderBy: [],
-      limit: 10,
+    void source.wholeResult.Renderer({
+      // @ts-expect-error a whole-result query cannot truncate with limit.
+      query: {
+        routeBy: { region: "UsÁ", status: "open" },
+        groupBy: ["status"],
+        aggregates: { rowCount: { aggFunc: "count" } },
+        where: [],
+        orderBy: [],
+        limit: 10,
+      },
+      children: () => null,
     });
   });
 

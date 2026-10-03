@@ -1,6 +1,6 @@
 // Import Vitest directly so @effect/vitest's eager test-runtime module graph does not
 // distort the heap, JIT, and GC behavior this benchmark is measuring.
-import { afterAll, beforeAll, bench, describe, expect } from "vitest";
+import { afterAll, beforeAll, test, describe, expect } from "vite-plus/test";
 import { ViewServerId, defineViewServerConfig } from "@effect-view-server/config";
 import { Cause, Effect, Exit, Schema, Scope, Stream } from "effect";
 import {
@@ -1115,9 +1115,8 @@ afterAll(async () => {
 }, 0);
 
 describe(`grouped write engine benchmark: ${profile.rowCount} rows`, () => {
-  bench(
-    "grouped publishMany append batch",
-    async () => {
+  test("grouped publishMany append batch", async ({ bench: runBenchmark }) => {
+    await runBenchmark("grouped publishMany append batch", async () => {
       const engine = profileEngine(profile);
       const startIndex = profile.nextAppendIndex;
       const rows = appendedRows(startIndex, startIndex);
@@ -1126,13 +1125,11 @@ describe(`grouped write engine benchmark: ${profile.rowCount} rows`, () => {
       profile.rowMutationCount += rows.length;
       await Effect.runPromise(engine.publishMany("orders", rows));
       await drainDeltas(profile, "grouped publishMany append batch");
-    },
-    benchOptions,
-  );
+    }).run(benchOptions);
+  });
 
-  bench(
-    "grouped publishMany replace extrema batch",
-    async () => {
+  test("grouped publishMany replace extrema batch", async ({ bench: runBenchmark }) => {
+    await runBenchmark("grouped publishMany replace extrema batch", async () => {
       const engine = profileEngine(profile);
       const start = profile.nextExtremeReplaceIndex;
       const indexes = profile.extremeReplaceIndexes.slice(start, start + mutationBatchSize);
@@ -1146,13 +1143,11 @@ describe(`grouped write engine benchmark: ${profile.rowCount} rows`, () => {
         engine.publishMany("orders", extremeReplacementRows(indexes, profile.rowMutationCount)),
       );
       await drainDeltas(profile, "grouped publishMany replace extrema batch");
-    },
-    benchOptions,
-  );
+    }).run(benchOptions);
+  });
 
-  bench(
-    "grouped patch aggregate values",
-    async () => {
+  test("grouped patch aggregate values", async ({ bench: runBenchmark }) => {
+    await runBenchmark("grouped patch aggregate values", async () => {
       const engine = profileEngine(profile);
       for (let offset = 0; offset < mutationBatchSize; offset += 1) {
         const key = profile.sameGroupPatchKeys[profile.nextSameGroupPatchKeyIndex];
@@ -1171,13 +1166,11 @@ describe(`grouped write engine benchmark: ${profile.rowCount} rows`, () => {
         );
         await drainDeltas(profile, "grouped patch aggregate values");
       }
-    },
-    benchOptions,
-  );
+    }).run(benchOptions);
+  });
 
-  bench(
-    "grouped patch group moves",
-    async () => {
+  test("grouped patch group moves", async ({ bench: runBenchmark }) => {
+    await runBenchmark("grouped patch group moves", async () => {
       const engine = profileEngine(profile);
       for (let offset = 0; offset < mutationBatchSize; offset += 1) {
         const key = profile.groupMoveKeys[profile.nextGroupMoveKeyIndex];
@@ -1195,13 +1188,11 @@ describe(`grouped write engine benchmark: ${profile.rowCount} rows`, () => {
         );
         await drainDeltas(profile, "grouped patch group moves");
       }
-    },
-    benchOptions,
-  );
+    }).run(benchOptions);
+  });
 
-  bench(
-    "grouped delete existing rows",
-    async () => {
+  test("grouped delete existing rows", async ({ bench: runBenchmark }) => {
+    await runBenchmark("grouped delete existing rows", async () => {
       const engine = profileEngine(profile);
       for (let offset = 0; offset < mutationBatchSize; offset += 1) {
         const key = profile.deleteKeys[profile.nextDeleteKeyIndex];
@@ -1214,13 +1205,11 @@ describe(`grouped write engine benchmark: ${profile.rowCount} rows`, () => {
         await Effect.runPromise(engine.delete("orders", key));
         await drainDeltas(profile, "grouped delete existing rows");
       }
-    },
-    benchOptions,
-  );
+    }).run(benchOptions);
+  });
 
-  bench(
-    "grouped patch non-aggregate values",
-    async () => {
+  test("grouped patch non-aggregate values", async ({ bench: runBenchmark }) => {
+    await runBenchmark("grouped patch non-aggregate values", async () => {
       const engine = profileEngine(profile);
       for (let offset = 0; offset < mutationBatchSize; offset += 1) {
         const key = profile.nonAggregatePatchKeys[profile.nextNonAggregatePatchKeyIndex];
@@ -1235,7 +1224,6 @@ describe(`grouped write engine benchmark: ${profile.rowCount} rows`, () => {
           }),
         );
       }
-    },
-    benchOptions,
-  );
+    }).run(benchOptions);
+  });
 });

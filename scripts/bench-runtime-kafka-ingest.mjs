@@ -188,7 +188,8 @@ export const createKafkaIngestBenchmarkRunner = ({
               "--run",
               "--testTimeout",
               "0",
-              "--outputJson",
+              "--reporter=json",
+    "--outputFile",
               outputJsonPath,
             ],
             {

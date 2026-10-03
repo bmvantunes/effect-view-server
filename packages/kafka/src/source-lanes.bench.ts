@@ -1,6 +1,6 @@
 // Import Vitest directly so the Effect test-runtime graph does not distort
 // Kafka Source Lane hot-path measurements.
-import { afterAll, beforeAll, bench, describe } from "vitest";
+import { afterAll, beforeAll, test, describe } from "vite-plus/test";
 import { create, toBinary } from "@bufbuild/protobuf";
 import { ViewServerId, defineViewServerConfig } from "@effect-view-server/config";
 import { makeViewServerRuntimeCore } from "@effect-view-server/runtime-core";
@@ -674,9 +674,8 @@ const protobufBatch = (
   }));
 
 describe("Kafka Source Adapter lanes", () => {
-  bench(
-    benchmarkCaseNames[0],
-    async () => {
+  test(benchmarkCaseNames[0], async ({ bench: runBenchmark }) => {
+    await runBenchmark(benchmarkCaseNames[0], async () => {
       const current = requireState();
       acceptedRevision += 1;
       await Effect.runPromise(
@@ -687,13 +686,11 @@ describe("Kafka Source Adapter lanes", () => {
         ),
       );
       successfulMutationCount += laneBatchSize;
-    },
-    benchmarkOptions,
-  );
+    }).run(benchmarkOptions);
+  });
 
-  bench(
-    benchmarkCaseNames[1],
-    async () => {
+  test(benchmarkCaseNames[1], async ({ bench: runBenchmark }) => {
+    await runBenchmark(benchmarkCaseNames[1], async () => {
       const current = requireState();
       protobufRevision += 1;
       await Effect.runPromise(
@@ -704,13 +701,11 @@ describe("Kafka Source Adapter lanes", () => {
         ),
       );
       successfulMutationCount += laneBatchSize;
-    },
-    benchmarkOptions,
-  );
+    }).run(benchmarkOptions);
+  });
 
-  bench(
-    benchmarkCaseNames[2],
-    async () => {
+  test(benchmarkCaseNames[2], async ({ bench: runBenchmark }) => {
+    await runBenchmark(benchmarkCaseNames[2], async () => {
       const current = requireState();
       mixedRevision += 1;
       const half = laneBatchSize / 2;
@@ -732,13 +727,11 @@ describe("Kafka Source Adapter lanes", () => {
         ),
       );
       successfulMutationCount += laneBatchSize;
-    },
-    benchmarkOptions,
-  );
+    }).run(benchmarkOptions);
+  });
 
-  bench(
-    benchmarkCaseNames[3],
-    async () => {
+  test(benchmarkCaseNames[3], async ({ bench: runBenchmark }) => {
+    await runBenchmark(benchmarkCaseNames[3], async () => {
       const current = requireState();
       for (let wave = 0; wave < 8; wave += 1) {
         sustainedRevision += 1;
@@ -762,13 +755,11 @@ describe("Kafka Source Adapter lanes", () => {
         );
       }
       successfulMutationCount += laneBatchSize * 8;
-    },
-    benchmarkOptions,
-  );
+    }).run(benchmarkOptions);
+  });
 
-  bench(
-    benchmarkCaseNames[4],
-    async () => {
+  test(benchmarkCaseNames[4], async ({ bench: runBenchmark }) => {
+    await runBenchmark(benchmarkCaseNames[4], async () => {
       const current = requireState();
       poisonedRevision += 1;
       const valid = validBatch("poisoned", poisonedRevision, laneBatchSize - 1);
@@ -782,13 +773,11 @@ describe("Kafka Source Adapter lanes", () => {
         ]),
       );
       successfulMutationCount += laneBatchSize - 1;
-    },
-    benchmarkOptions,
-  );
+    }).run(benchmarkOptions);
+  });
 
-  bench(
-    benchmarkCaseNames[5],
-    async () => {
+  test(benchmarkCaseNames[5], async ({ bench: runBenchmark }) => {
+    await runBenchmark(benchmarkCaseNames[5], async () => {
       const current = requireState();
       multiRegionRevision += 1;
       await Effect.runPromise(
@@ -804,9 +793,8 @@ describe("Kafka Source Adapter lanes", () => {
         ),
       );
       successfulMutationCount += laneBatchSize;
-    },
-    benchmarkOptions,
-  );
+    }).run(benchmarkOptions);
+  });
 
   const metrics = kafkaNodeInternals.emptyMutableMetrics();
   const offsets = Array.from({ length: metricsPartitionCount }, (_, partition) => ({
@@ -831,9 +819,8 @@ describe("Kafka Source Adapter lanes", () => {
     ],
   ]);
 
-  bench(
-    benchmarkCaseNames[6],
-    () => {
+  test(benchmarkCaseNames[6], async ({ bench: runBenchmark }) => {
+    await runBenchmark(benchmarkCaseNames[6], () => {
       kafkaNodeInternals.resetAttemptAssignments(metrics, offsets, latestOffsets);
       for (const partition of partitions) {
         kafkaNodeInternals.updateCommit(metrics, initial, partition, BigInt(partition + 1));
@@ -841,13 +828,11 @@ describe("Kafka Source Adapter lanes", () => {
       kafkaNodeInternals.updateLag(metrics, "source-orders", lag);
       kafkaNodeInternals.updateAssignmentOffsets(metrics, offsets, latestOffsets, partitions);
       kafkaNodeInternals.snapshotMetrics("benchmark", metrics);
-    },
-    benchmarkOptions,
-  );
+    }).run(benchmarkOptions);
+  });
 
-  bench(
-    benchmarkCaseNames[7],
-    async () => {
+  test(benchmarkCaseNames[7], async ({ bench: runBenchmark }) => {
+    await runBenchmark(benchmarkCaseNames[7], async () => {
       const current = requireState();
       retentionRevision += 1;
       await Effect.runPromise(
@@ -858,13 +843,11 @@ describe("Kafka Source Adapter lanes", () => {
         ),
       );
       successfulMutationCount += retentionCohortSize;
-    },
-    benchmarkOptions,
-  );
+    }).run(benchmarkOptions);
+  });
 
-  bench(
-    benchmarkCaseNames[8],
-    async () => {
+  test(benchmarkCaseNames[8], async ({ bench: runBenchmark }) => {
+    await runBenchmark(benchmarkCaseNames[8], async () => {
       const current = requireState();
       retentionRevision += 1;
       await Effect.runPromise(
@@ -886,7 +869,6 @@ describe("Kafka Source Adapter lanes", () => {
         }),
       );
       successfulMutationCount += retentionCohortSize * 2;
-    },
-    benchmarkOptions,
-  );
+    }).run(benchmarkOptions);
+  });
 });

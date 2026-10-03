@@ -1,7 +1,7 @@
 // Import Vitest directly so @effect/vitest's eager test-runtime module graph does not
 // distort the heap, JIT, and GC behavior this benchmark is measuring.
-import { afterAll, beforeAll, bench, describe, expect } from "vitest";
-import { commands, server } from "vitest/browser";
+import { afterAll, beforeEach, test, describe, expect } from "vite-plus/test";
+import { commands, server } from "vite-plus/test/browser";
 import {
   ViewServerId,
   defineViewServerConfig,
@@ -324,7 +324,7 @@ function OrdersView() {
   );
 }
 
-beforeAll(async () => {
+beforeEach(async () => {
   const runtime = createBenchmarkRuntime();
   profile.runtime = runtime;
   await Effect.runPromise(publishSeedRows(runtime.client, profile.rowCount));
@@ -408,9 +408,8 @@ afterAll(async () => {
 }, 0);
 
 describe(`React in-memory useLiveQuery browser benchmark: ${profile.rowCount} rows`, () => {
-  bench(
-    "publish matching row -> rendered top row",
-    async () => {
+  test("publish matching row -> rendered top row", async ({ bench: runBenchmark }) => {
+    await runBenchmark("publish matching row -> rendered top row", async () => {
       const row = deltaOrder(profile.nextDeltaIndex);
       const expectedTotalRows = profile.rowCount + profile.renderedMutationCount + 1;
       const expectedText = `top: ${row.id} total: ${expectedTotalRows}`;
@@ -423,7 +422,6 @@ describe(`React in-memory useLiveQuery browser benchmark: ${profile.rowCount} ro
         .findElement({ timeout: 5_000 });
       expect(element.textContent).toBe(expectedText);
       profile.renderedMutationCount += 1;
-    },
-    benchOptions,
-  );
+    }).run(benchOptions);
+  });
 });

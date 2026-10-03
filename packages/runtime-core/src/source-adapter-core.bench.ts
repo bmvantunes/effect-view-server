@@ -1,6 +1,6 @@
 // Import Vitest directly so the Effect test-runtime graph does not distort
 // the Source Adapter hot-path measurements.
-import { afterAll, beforeAll, bench, describe } from "vitest";
+import { afterAll, beforeAll, test, describe } from "vite-plus/test";
 import {
   ViewServerId,
   defineViewServerConfig,
@@ -157,9 +157,8 @@ afterAll(async () => {
 });
 
 describe("Source Adapter core", () => {
-  bench(
-    "Source Lane Event processing (16 ordered Upserts)",
-    async () => {
+  test("Source Lane Event processing (16 ordered Upserts)", async ({ bench: runBenchmark }) => {
+    await runBenchmark("Source Lane Event processing (16 ordered Upserts)", async () => {
       const current = requireState();
       const batch = nextId;
       nextId += 1;
@@ -186,13 +185,13 @@ describe("Source Adapter core", () => {
           yield* Deferred.await(settled);
         }),
       );
-    },
-    benchmarkOptions,
-  );
+    }).run(benchmarkOptions);
+  });
 
-  bench(
-    "Source Item Rejection recording and valid-item continuation",
-    async () => {
+  test("Source Item Rejection recording and valid-item continuation", async ({
+    bench: runBenchmark,
+  }) => {
+    await runBenchmark("Source Item Rejection recording and valid-item continuation", async () => {
       const current = requireState();
       const item = nextId;
       nextId += 1;
@@ -221,13 +220,13 @@ describe("Source Adapter core", () => {
           yield* Deferred.await(deliverySettled);
         }),
       );
-    },
-    benchmarkOptions,
-  );
+    }).run(benchmarkOptions);
+  });
 
-  bench(
-    "one-second adapter metrics sampling across 32 active sources",
-    async () => {
+  test("one-second adapter metrics sampling across 32 active sources", async ({
+    bench: runBenchmark,
+  }) => {
+    await runBenchmark("one-second adapter metrics sampling across 32 active sources", async () => {
       const current = requireState();
       const before = current.manyFixture.controls.metricReads();
       await Effect.runPromise(
@@ -237,20 +236,22 @@ describe("Source Adapter core", () => {
       if (sampled < BigInt(manySourceCount)) {
         throw new Error(`Expected ${manySourceCount} metric samples, received ${sampled}.`);
       }
-    },
-    benchmarkOptions,
-  );
+    }).run(benchmarkOptions);
+  });
 
-  bench(
-    "O(1) nominal adapter runtime lookup across 1,024 Source Definitions",
-    async () => {
-      const entries = await Effect.runPromise(requireState().lookup);
-      if (entries.size !== lookupSourceCount) {
-        throw new Error(
-          `Expected ${lookupSourceCount} resolved sources, received ${entries.size}.`,
-        );
-      }
-    },
-    benchmarkOptions,
-  );
+  test("O(1) nominal adapter runtime lookup across 1,024 Source Definitions", async ({
+    bench: runBenchmark,
+  }) => {
+    await runBenchmark(
+      "O(1) nominal adapter runtime lookup across 1,024 Source Definitions",
+      async () => {
+        const entries = await Effect.runPromise(requireState().lookup);
+        if (entries.size !== lookupSourceCount) {
+          throw new Error(
+            `Expected ${lookupSourceCount} resolved sources, received ${entries.size}.`,
+          );
+        }
+      },
+    ).run(benchmarkOptions);
+  });
 });

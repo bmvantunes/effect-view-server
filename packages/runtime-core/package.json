@@ -33,7 +33,6 @@
     "@effect-view-server/source-adapter-testing": "workspace:*",
     "@effect/vitest": "catalog:",
     "@vitest/coverage-istanbul": "catalog:",
-    "@vitest/runner": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }

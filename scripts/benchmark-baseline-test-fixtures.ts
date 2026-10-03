@@ -20,6 +20,36 @@ export const vitestOutput = {
   ],
 };
 
+export const vitest5Output = {
+  testResults: [
+    {
+      name: "/workspace/packages/example/src/example.bench.ts",
+      assertionResults: [
+        {
+          ancestorTitles: ["example benchmark group"],
+          benchmarks: [
+            {
+              name: "example benchmark group > case a",
+              tasks: [
+                {
+                  name: "case a",
+                  latency: {
+                    max: 3,
+                    mean: 2,
+                    min: 1,
+                    p99: 3,
+                    samplesCount: 7,
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    },
+  ],
+};
+
 export const summary = {
   artifactKind: "engine-benchmark-summary",
   backpressureCount: 0,

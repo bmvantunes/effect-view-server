@@ -31,7 +31,7 @@ describe("leased gRPC React example", () => {
     await expect
       .element(screen.getByRole("heading", { name: "Strategy alpha orders", exact: true }))
       .toBeVisible();
-    await expect.element(screen.getByRole("status")).toHaveTextContent(/^Runtime status: ready$/);
+    await expect.element(screen.getByRole("status")).toMatchTextContent(/^Runtime status: ready$/);
     await expect
       .element(
         screen.getByText("leased-order-browser / customer-leased-browser / 77", { exact: true }),

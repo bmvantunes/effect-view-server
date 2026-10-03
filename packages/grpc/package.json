@@ -22,7 +22,7 @@
     }
   },
   "scripts": {
-    "bench:adapter": "sh -c 'output=${VIEW_SERVER_RUNTIME_BENCH_OUTPUT_JSON:-.artifacts/grpc-source-adapter-${VIEW_SERVER_RUNTIME_BENCH_GRPC_SOURCE_ADAPTER_BATCH_SIZE:-32}batch-${VIEW_SERVER_RUNTIME_BENCH_GRPC_SOURCE_ADAPTER_ROUTE_COUNT:-32}routes-${VIEW_SERVER_RUNTIME_BENCH_GRPC_SOURCE_ADAPTER_RETAINED_ROWS:-50000}retained.json}; mkdir -p .artifacts; VIEW_SERVER_RUNTIME_BENCH_OUTPUT_JSON=\"$output\" vp test bench src/grpc.bench.ts --run --testTimeout 0 --outputJson \"$output\"'",
+    "bench:adapter": "sh -c 'output=${VIEW_SERVER_RUNTIME_BENCH_OUTPUT_JSON:-.artifacts/grpc-source-adapter-${VIEW_SERVER_RUNTIME_BENCH_GRPC_SOURCE_ADAPTER_BATCH_SIZE:-32}batch-${VIEW_SERVER_RUNTIME_BENCH_GRPC_SOURCE_ADAPTER_ROUTE_COUNT:-32}routes-${VIEW_SERVER_RUNTIME_BENCH_GRPC_SOURCE_ADAPTER_RETAINED_ROWS:-50000}retained.json}; mkdir -p .artifacts; VIEW_SERVER_RUNTIME_BENCH_OUTPUT_JSON=\"$output\" vp test bench src/grpc.bench.ts --run --testTimeout 0 --reporter=json --outputFile \"$output\"'",
     "test": "vp run -t @effect-view-server/config#build && vp run -t @effect-view-server/protocol#build && vp run -t @effect-view-server/runtime-core#build && vp run -t @effect-view-server/server#build && vp run -t @effect-view-server/source-adapter-conformance-host#build && vp test run --coverage --typecheck"
   },
   "dependencies": {
@@ -41,7 +41,6 @@
     "@effect/vitest": "catalog:",
     "@types/node": "catalog:",
     "@vitest/coverage-istanbul": "catalog:",
-    "@vitest/runner": "catalog:",
     "effect": "4.0.0-rc.111",
     "effect-view-server": "0.0.6",
     "typescript": "catalog:",

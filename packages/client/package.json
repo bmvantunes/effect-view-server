@@ -36,7 +36,6 @@
     "@effect/platform-node": "catalog:",
     "@effect/vitest": "catalog:",
     "@vitest/coverage-istanbul": "catalog:",
-    "@vitest/runner": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }

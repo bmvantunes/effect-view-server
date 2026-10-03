@@ -33,7 +33,7 @@ describe("materialized gRPC React example", () => {
     await expect
       .element(screen.getByRole("heading", { name: "Active strategies", exact: true }))
       .toBeVisible();
-    await expect.element(screen.getByRole("status")).toHaveTextContent(/^Runtime status: ready$/);
+    await expect.element(screen.getByRole("status")).toMatchTextContent(/^Runtime status: ready$/);
     await expect
       .element(screen.getByText("strategy-browser / usa / 1000", { exact: true }))
       .toBeVisible();

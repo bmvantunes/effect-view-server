@@ -117,7 +117,7 @@ describe("repository lint policy", () => {
     const rootPackage = JSON.parse(readFileSync("package.json", "utf8"));
 
     expect(rootPackage.scripts["check:react-compiler"]).toBe(
-      "vp exec oxlint --deny react/react-compiler --deny react/rules-of-hooks --deny react/exhaustive-deps --react-plugin --deny-warnings examples",
+      "vp lint examples --deny react/react-compiler --deny react/rules-of-hooks --deny react/exhaustive-deps --react-plugin --deny-warnings",
     );
   });
 });

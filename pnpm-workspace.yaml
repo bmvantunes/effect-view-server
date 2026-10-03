@@ -13,19 +13,17 @@ catalog:
   "@bufbuild/protobuf": 2.13.0
   "@effect/platform-browser": 4.0.0-rc.111
   "@effect/platform-node": 4.0.0-rc.111
-  "@effect/tsgo": 0.37.0
+  "@effect/tsgo": 0.46.1
   "@effect/vitest": 4.0.0-rc.111
   "@types/node": 26.2.0
-  "@vitest/browser": 4.1.11
-  "@vitest/browser-playwright": 4.1.11
-  "@vitest/coverage-istanbul": 4.1.11
-  "@vitest/runner": 4.1.11
+  "@vitest/browser-playwright": 5.0.1
+  "@vitest/coverage-istanbul": 5.0.1
   effect: 4.0.0-rc.111
   typescript: 7.0.2
   typescript-compiler-api: npm:typescript@6.0.3
-  vite: npm:@voidzero-dev/vite-plus-core@0.3.0
-  vitest: 4.1.11
-  vite-plus: 0.3.0
+  vite: npm:@voidzero-dev/vite-plus-core@1.0.0
+  vitest: 5.0.1
+  vite-plus: 1.0.0
   "@effect/atom-react": 4.0.0-rc.111
   scheduler: 0.27.0
   vitest-browser-react: 2.2.0
@@ -43,20 +41,22 @@ catalog:
   "@changesets/cli": 3.0.0
   markdown-it: ^15.0.0
   tar: ^7.5.22
-  oxlint: 1.79.0
-  oxlint-tsgolint: 7.0.2001
-  "@oxlint/plugins": 1.79.0
+  oxlint: 1.85.0
+  "@oxlint/plugins": 1.85.0
   oxc-transform-react: 0.145.0
 overrides:
   "@effect-view-server/grpc>effect-view-server": "workspace:0.0.6"
   "@effect-view-server/kafka>effect-view-server": "workspace:0.0.6"
   undici: 8.5.0
-  vite: npm:@voidzero-dev/vite-plus-core@0.3.0
+  vite@*: "catalog:"
+  vitest@*: "catalog:"
 peerDependencyRules:
   allowAny:
     - vite
+    - vitest
   allowedVersions:
     vite: "*"
+    vitest: "*"
 allowBuilds:
   esbuild: true
   msgpackr-extract: true
@@ -81,11 +81,23 @@ minimumReleaseAgeExclude:
   - "@tanstack/start-server-core@1.169.26"
   - "@tanstack/start-storage-context@1.167.24"
   - "@vitejs/plugin-react@6.1.0"
-  - "@effect/tsgo-darwin-arm64@0.37.0"
-  - "@effect/tsgo-darwin-x64@0.37.0"
-  - "@effect/tsgo-linux-arm64@0.37.0"
-  - "@effect/tsgo-linux-arm@0.37.0"
-  - "@effect/tsgo-linux-x64@0.37.0"
-  - "@effect/tsgo-win32-arm64@0.37.0"
-  - "@effect/tsgo-win32-x64@0.37.0"
-  - "@effect/tsgo@0.37.0"
+  - "@effect/tsgo-darwin-arm64@0.46.1"
+  - "@effect/tsgo-darwin-x64@0.46.1"
+  - "@effect/tsgo-linux-arm64@0.46.1"
+  - "@effect/tsgo-linux-arm@0.46.1"
+  - "@effect/tsgo-linux-x64@0.46.1"
+  - "@effect/tsgo-win32-arm64@0.46.1"
+  - "@effect/tsgo-win32-x64@0.46.1"
+  - "@effect/tsgo@0.46.1"
+  - "@voidzero-dev/vite-plus-core@1.0.0"
+  - "@voidzero-dev/vite-plus-darwin-arm64@1.0.0"
+  - "@voidzero-dev/vite-plus-darwin-x64@1.0.0"
+  - "@voidzero-dev/vite-plus-linux-arm64-gnu@1.0.0"
+  - "@voidzero-dev/vite-plus-linux-arm64-musl@1.0.0"
+  - "@voidzero-dev/vite-plus-linux-x64-gnu@1.0.0"
+  - "@voidzero-dev/vite-plus-linux-x64-musl@1.0.0"
+  - "@voidzero-dev/vite-plus-win32-arm64-msvc@1.0.0"
+  - "@voidzero-dev/vite-plus-win32-x64-msvc@1.0.0"
+  - "@oxlint/plugins@1.85.0"
+  - oxlint@1.85.0
+  - vite-plus@1.0.0

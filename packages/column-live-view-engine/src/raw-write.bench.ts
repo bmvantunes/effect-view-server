@@ -1,6 +1,6 @@
 // Import Vitest directly so @effect/vitest's eager test-runtime module graph does not
 // distort the heap, JIT, and GC behavior this benchmark is measuring.
-import { afterAll, beforeAll, bench, describe } from "vitest";
+import { afterAll, beforeAll, test, describe } from "vite-plus/test";
 import { ViewServerId, defineViewServerConfig } from "@effect-view-server/config";
 import { Effect, Schema } from "effect";
 import { fromStringUnsafe } from "effect/BigDecimal";
@@ -482,6 +482,8 @@ describe(`raw write engine benchmark: ${profile.rowCount} rows`, () => {
   ];
 
   for (const benchmarkCase of benchmarkDefinitions) {
-    bench(benchmarkCase.name, benchmarkCase.run, benchOptions);
+    test(benchmarkCase.name, async ({ bench: runBenchmark }) => {
+      await runBenchmark(benchmarkCase.name, benchmarkCase.run).run(benchOptions);
+    });
   }
 });

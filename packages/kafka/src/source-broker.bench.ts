@@ -1,6 +1,6 @@
 // Import Vitest directly so the Effect test-runtime graph does not distort
 // the broker-backed Kafka Source Adapter measurement.
-import { afterAll, beforeAll, bench, describe } from "vitest";
+import { afterAll, beforeAll, test, describe } from "vite-plus/test";
 import { Admin, Producer } from "@platformatic/kafka";
 import { ViewServerId, defineViewServerConfig } from "@effect-view-server/config";
 import { makeViewServerRuntimeCore } from "@effect-view-server/runtime-core";
@@ -355,14 +355,12 @@ afterAll(async () => {
 });
 
 describe("Kafka Source Adapter production broker", () => {
-  bench(
-    benchmarkCaseNames[0],
-    async () => {
+  test(benchmarkCaseNames[0], async ({ bench: runBenchmark }) => {
+    await runBenchmark(benchmarkCaseNames[0], async () => {
       const current = requireState();
       const batch = nextBatch;
       nextBatch += 1;
       await Effect.runPromise(current.ingest(batch));
-    },
-    benchmarkOptions,
-  );
+    }).run(benchmarkOptions);
+  });
 });

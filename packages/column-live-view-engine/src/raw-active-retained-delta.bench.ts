@@ -1,6 +1,6 @@
 // Import Vitest directly so @effect/vitest's eager test-runtime module graph does not
 // distort the heap, JIT, and GC behavior this benchmark is measuring.
-import { afterAll, beforeAll, bench, describe, expect } from "vitest";
+import { afterAll, beforeAll, test, describe, expect } from "vite-plus/test";
 import { ViewServerId, defineViewServerConfig } from "@effect-view-server/config";
 import { Cause, Effect, Exit, Schema, Scope, Stream } from "effect";
 import {
@@ -1321,11 +1321,9 @@ afterAll(async () => {
 }, 0);
 
 describe(`raw active retained delta benchmark: ${profile.retainedCaseName}, ${profile.rowCount} rows`, () => {
-  bench(
-    retainedCase.benchmarkLabel,
-    async () => {
+  test(retainedCase.benchmarkLabel, async ({ bench: runBenchmark }) => {
+    await runBenchmark(retainedCase.benchmarkLabel, async () => {
       await Effect.runPromise(retainedCase.run(profile));
-    },
-    benchOptions,
-  );
+    }).run(benchOptions);
+  });
 });

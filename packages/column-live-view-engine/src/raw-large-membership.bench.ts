@@ -1,7 +1,7 @@
 import { ViewServerId } from "@effect-view-server/config";
 // Import Vitest directly so @effect/vitest's eager test-runtime module graph does not
 // distort the heap, JIT, and GC behavior this benchmark is measuring.
-import { afterAll, beforeAll, bench, describe, expect } from "vitest";
+import { afterAll, beforeAll, test, describe, expect } from "vite-plus/test";
 import { Effect, Schema } from "effect";
 import {
   activeRawQueryExecutionCount,
@@ -206,9 +206,8 @@ afterAll(() => {
 });
 
 describe("raw nested membership callback benchmark (localhost CPU/GC partition stress)", () => {
-  bench(
-    evaluationBenchmarkCase,
-    () => {
+  test(evaluationBenchmarkCase, async ({ bench: runBenchmark }) => {
+    await runBenchmark(evaluationBenchmarkCase, () => {
       const predicate = compiledPredicate();
       let matches = 0;
       for (const partition of partitions) {
@@ -219,22 +218,18 @@ describe("raw nested membership callback benchmark (localhost CPU/GC partition s
         }
       }
       lastEvaluationMatches = matches;
-    },
-    benchOptions,
-  );
+    }).run(benchOptions);
+  });
 
-  bench(
-    compilationBenchmarkCase,
-    () => {
+  test(compilationBenchmarkCase, async ({ bench: runBenchmark }) => {
+    await runBenchmark(compilationBenchmarkCase, () => {
       lastCompilationCallbackRequired =
         prepareLargeMembershipQuery().plan.predicate.plan.callbackRequired;
-    },
-    benchOptions,
-  );
+    }).run(benchOptions);
+  });
 
-  bench(
-    sharedPlanBenchmarkCase,
-    () => {
+  test(sharedPlanBenchmarkCase, async ({ bench: runBenchmark }) => {
+    await runBenchmark(sharedPlanBenchmarkCase, () => {
       const result = Effect.runSync(
         Effect.gen(function* () {
           const resources = topicStoreQueryResources(subscriptionStore);
@@ -265,7 +260,6 @@ describe("raw nested membership callback benchmark (localhost CPU/GC partition s
       lastPreparedPlanCompilationCount = result.preparedPlanCompilationCount;
       lastSharedActivePlanCount = result.activePlanCount;
       lastSharedCleanupLeakCount = result.cleanupLeakCount;
-    },
-    benchOptions,
-  );
+    }).run(benchOptions);
+  });
 });

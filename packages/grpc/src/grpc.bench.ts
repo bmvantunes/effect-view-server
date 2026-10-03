@@ -1,6 +1,6 @@
 // Import Vitest directly so the Effect test runtime does not distort the
 // adapter hot-path measurements.
-import { afterAll, beforeAll, bench, describe } from "vitest";
+import { afterAll, beforeAll, test, describe } from "vite-plus/test";
 import { create, toBinary, type Message } from "@bufbuild/protobuf";
 import { fileDesc, messageDesc, serviceDesc } from "@bufbuild/protobuf/codegenv2";
 import { FieldDescriptorProto_Type, FileDescriptorProtoSchema } from "@bufbuild/protobuf/wkt";
@@ -619,9 +619,8 @@ afterAll(async () => {
 }, 120_000);
 
 describe("gRPC Source Adapter focused overhead", () => {
-  bench(
-    mappedBenchmarkName,
-    async () => {
+  test(mappedBenchmarkName, async ({ bench: runBenchmark }) => {
+    await runBenchmark(mappedBenchmarkName, async () => {
       const current = requireState();
       const invocation = Option.getOrThrow(
         Option.fromUndefinedOr(current.controlled.invocations[0]),
@@ -640,13 +639,11 @@ describe("gRPC Source Adapter focused overhead", () => {
         awaitCondition("mapped gRPC response convergence", () => current.committedIds.has(lastId)),
       );
       successfulMutationCount += batchSize;
-    },
-    benchmarkOptions,
-  );
+    }).run(benchmarkOptions);
+  });
 
-  bench(
-    rejectionBenchmarkName,
-    async () => {
+  test(rejectionBenchmarkName, async ({ bench: runBenchmark }) => {
+    await runBenchmark(rejectionBenchmarkName, async () => {
       const current = requireState();
       const invocation = Option.getOrThrow(
         Option.fromUndefinedOr(current.controlled.invocations[0]),
@@ -681,13 +678,11 @@ describe("gRPC Source Adapter focused overhead", () => {
       );
       nextRejectedItemCount = expectedRejectedItemCount;
       successfulMutationCount += 1;
-    },
-    benchmarkOptions,
-  );
+    }).run(benchmarkOptions);
+  });
 
-  bench(
-    leasedHealthBenchmarkName,
-    async () => {
+  test(leasedHealthBenchmarkName, async ({ bench: runBenchmark }) => {
+    await runBenchmark(leasedHealthBenchmarkName, async () => {
       const current = requireState();
       const expectedSampleCounts = current.leasedHealthSampleCounts.map((count) => count + 1);
       await Effect.runPromise(
@@ -704,13 +699,11 @@ describe("gRPC Source Adapter focused overhead", () => {
             ),
           ),
       );
-    },
-    benchmarkOptions,
-  );
+    }).run(benchmarkOptions);
+  });
 
-  bench(
-    leasedRetainedCapacityBenchmarkName,
-    async () => {
+  test(leasedRetainedCapacityBenchmarkName, async ({ bench: runBenchmark }) => {
+    await runBenchmark(leasedRetainedCapacityBenchmarkName, async () => {
       const current = requireState();
       const rowsPerRoute = Math.ceil(batchSize / routeCount);
       const expectedIds: Array<string> = [];
@@ -742,7 +735,6 @@ describe("gRPC Source Adapter focused overhead", () => {
         ),
       );
       successfulMutationCount += batchSize;
-    },
-    benchmarkOptions,
-  );
+    }).run(benchmarkOptions);
+  });
 });

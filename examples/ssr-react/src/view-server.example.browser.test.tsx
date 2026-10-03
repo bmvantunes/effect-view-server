@@ -1,4 +1,4 @@
-/// <reference types="vitest/globals" />
+/// <reference types="vite-plus/test/globals" />
 
 import { describe, expect, it } from "@effect/vitest";
 import { createInMemoryViewServerReact } from "effect-view-server/react/testing";

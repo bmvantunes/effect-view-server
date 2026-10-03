@@ -1,6 +1,6 @@
 // Import Vitest directly so @effect/vitest's eager test-runtime module graph does not
 // distort the heap, JIT, and GC behavior this benchmark is measuring.
-import { afterAll, beforeAll, bench, describe, expect } from "vitest";
+import { afterAll, beforeAll, test, describe, expect } from "vite-plus/test";
 import { ViewServerId, defineViewServerConfig } from "@effect-view-server/config";
 import { format as formatBigDecimal, isBigDecimal, type BigDecimal } from "effect/BigDecimal";
 import { Cause, Effect, Exit, Schema, Scope, Stream } from "effect";
@@ -738,57 +738,46 @@ afterAll(async () => {
 }, 0);
 
 describe(`grouped aggregate engine benchmark: ${profile.rowCount} rows`, () => {
-  bench(
-    "status grouped count/sum/min/max/avg",
-    async () => {
+  test("status grouped count/sum/min/max/avg", async ({ bench: runBenchmark }) => {
+    await runBenchmark("status grouped count/sum/min/max/avg", async () => {
       await Effect.runPromise(profileEngine(profile).snapshot("orders", statusAggregateQuery()));
-    },
-    benchOptions,
-  );
+    }).run(benchOptions);
+  });
 
-  bench(
-    "region+status grouped count/sum/min/max/avg",
-    async () => {
+  test("region+status grouped count/sum/min/max/avg", async ({ bench: runBenchmark }) => {
+    await runBenchmark("region+status grouped count/sum/min/max/avg", async () => {
       await Effect.runPromise(
         profileEngine(profile).snapshot("orders", regionStatusAggregateQuery()),
       );
-    },
-    benchOptions,
-  );
+    }).run(benchOptions);
+  });
 
-  bench(
-    "high-cardinality desk grouped aggregates",
-    async () => {
+  test("high-cardinality desk grouped aggregates", async ({ bench: runBenchmark }) => {
+    await runBenchmark("high-cardinality desk grouped aggregates", async () => {
       await Effect.runPromise(
         profileEngine(profile).snapshot("orders", highCardinalityDeskQuery()),
       );
-    },
-    benchOptions,
-  );
+    }).run(benchOptions);
+  });
 
-  bench(
-    "high-cardinality desk group count via zero-row window",
-    async () => {
+  test("high-cardinality desk group count via zero-row window", async ({ bench: runBenchmark }) => {
+    await runBenchmark("high-cardinality desk group count via zero-row window", async () => {
       await Effect.runPromise(
         profileEngine(profile).snapshot("orders", highCardinalityDeskCountOnlyQuery()),
       );
-    },
-    benchOptions,
-  );
+    }).run(benchOptions);
+  });
 
-  bench(
-    "filtered status grouped aggregates",
-    async () => {
+  test("filtered status grouped aggregates", async ({ bench: runBenchmark }) => {
+    await runBenchmark("filtered status grouped aggregates", async () => {
       await Effect.runPromise(
         profileEngine(profile).snapshot("orders", filteredStatusAggregateQuery()),
       );
-    },
-    benchOptions,
-  );
+    }).run(benchOptions);
+  });
 
-  bench(
-    "live grouped aggregate delta after publish",
-    async () => {
+  test("live grouped aggregate delta after publish", async ({ bench: runBenchmark }) => {
+    await runBenchmark("live grouped aggregate delta after publish", async () => {
       const engine = profileEngine(profile);
       const readEvent = profileEventReader(profile);
       const row = liveDeltaOrder(profile.nextLiveIndex);
@@ -796,7 +785,6 @@ describe(`grouped aggregate engine benchmark: ${profile.rowCount} rows`, () => {
       await Effect.runPromise(engine.publish("orders", row));
       const events = await Effect.runPromise(readEvent(1));
       profile.liveDeltaValidations.push(liveDeltaValidation(events));
-    },
-    liveBenchOptions,
-  );
+    }).run(liveBenchOptions);
+  });
 });

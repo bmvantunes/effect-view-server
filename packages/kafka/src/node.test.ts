@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it } from "@effect/vitest";
 // Vitest's mock transform requires this API to come directly from "vitest";
 // the @effect/vitest re-export cannot be hoisted.
-import { vi } from "vitest";
+import { vi } from "vite-plus/test";
 import { ViewServerId, defineViewServerConfig } from "@effect-view-server/config";
 import { makeViewServerRuntimeCore } from "@effect-view-server/runtime-core";
 import type {

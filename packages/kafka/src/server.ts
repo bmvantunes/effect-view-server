@@ -813,18 +813,8 @@ const recordEvent = Effect.fn("KafkaSourceAdapter.record.event")(function* <
     mappingFailure(region, sourceTopic, "Kafka Mapping threw."),
   ).pipe(
     Effect.flatMap((candidate) =>
-      captureCompleteMappedRow(id, candidate).pipe(
-        Option.match({
-          onNone: () =>
-            Effect.fail(
-              mappingFailure(
-                region,
-                sourceTopic,
-                "Kafka Mapping must return a plain exact non-ID row.",
-              ),
-            ),
-          onSome: Effect.succeed,
-        }),
+      Effect.fromOption(captureCompleteMappedRow(id, candidate), () =>
+        mappingFailure(region, sourceTopic, "Kafka Mapping must return a plain exact non-ID row."),
       ),
     ),
     Effect.matchEffect({

@@ -23,7 +23,7 @@ import type {
   SourceDefinitionRow,
   SourceDefinitionRouteFields,
 } from "effect-view-server/source-adapter";
-import { expectTypeOf } from "@effect/vitest";
+import { expectTypeOf, it } from "@effect/vitest";
 import { Config, Context, Effect, Option, Schema } from "effect";
 import {
   GrpcSourceAdapter,
@@ -331,7 +331,6 @@ const sources = grpc.topicSources({
   strategies: StrategiesService,
 });
 
-expectTypeOf<GrpcServerStreamingMethodName<typeof OrdersService>>().toEqualTypeOf<"streamOrders">();
 type ExpectedOrdersRequest = {
   readonly region?: string;
   readonly filter?: {
@@ -365,15 +364,6 @@ type ExpectedOrdersRequest = {
       };
 };
 
-expectTypeOf<
-  GrpcMethodRequest<typeof OrdersService, "streamOrders">
->().toExtend<ExpectedOrdersRequest>();
-expectTypeOf<ExpectedOrdersRequest>().toExtend<
-  GrpcMethodRequest<typeof OrdersService, "streamOrders">
->();
-expectTypeOf<
-  NonNullable<GrpcMethodRequest<typeof OrdersService, "streamOrders">["metadata"]>[string]
->().toEqualTypeOf<JsonValue>();
 const invalidMetadataEntry: NonNullable<
   GrpcMethodRequest<typeof OrdersService, "streamOrders">["metadata"]
 > = {
@@ -381,10 +371,6 @@ const invalidMetadataEntry: NonNullable<
   invalid: undefined,
 };
 void invalidMetadataEntry;
-expectTypeOf<
-  GrpcMethodValue<typeof OrdersService, "streamOrders">
->().toEqualTypeOf<OrderEventMessage>();
-
 const materialized = sources.materialized({
   client: "orders",
   method: "streamOrders",
@@ -635,27 +621,6 @@ grpc.topicSources({});
 // @ts-expect-error message descriptors are not service descriptors
 grpc.topicSources({ orders: OrderRequestSchema });
 
-expectTypeOf(materialized.adapter).toEqualTypeOf(GrpcSourceAdapter);
-expectTypeOf<SourceDefinitionRow<typeof materialized>>().toEqualTypeOf<{
-  readonly id: string;
-  readonly price: number;
-  readonly region: string;
-}>();
-expectTypeOf<SourceDefinitionRow<typeof leased>>().toEqualTypeOf<{
-  readonly id: string;
-  readonly price: number;
-  readonly region: string;
-}>();
-expectTypeOf<SourceDefinitionRouteFields<typeof leased>>().toEqualTypeOf<readonly ["region"]>();
-expectTypeOf<SourceDefinitionRetryServices<typeof materialized>>().toEqualTypeOf<never>();
-expectTypeOf<SourceDefinitionRetryServices<typeof leased>>().toEqualTypeOf<never>();
-expectTypeOf<ViewServerSourceRequirements<typeof viewServer.topics>>().toEqualTypeOf<
-  Context.Service.Identifier<typeof GrpcSourceAdapter.runtimeService>
->();
-expectTypeOf<Effect.Services<typeof runtimeCoreEffect>>().toEqualTypeOf<
-  Context.Service.Identifier<typeof GrpcSourceAdapter.runtimeService>
->();
-expectTypeOf<GrpcNodeClientNames<typeof viewServer>>().toEqualTypeOf<"orders">();
 type ExpectedGrpcNodeClientOptions = {
   readonly baseUrl: string;
   readonly interceptors?: ReadonlyArray<import("@connectrpc/connect").Interceptor>;
@@ -664,19 +629,57 @@ type ExpectedGrpcNodeClientOptions = {
     "baseUrl" | "interceptors"
   >;
 };
-expectTypeOf<GrpcNodeOptions<typeof viewServer>>().toEqualTypeOf<{
-  readonly orders: ExpectedGrpcNodeClientOptions;
-}>();
-expectTypeOf<GrpcNodeClientNames<typeof multiClientViewServer>>().toEqualTypeOf<
-  "orders" | "strategies"
->();
-expectTypeOf<GrpcNodeOptions<typeof multiClientViewServer>>().toEqualTypeOf<{
-  readonly orders: ExpectedGrpcNodeClientOptions;
-  readonly strategies: ExpectedGrpcNodeClientOptions;
-}>();
-expectTypeOf<GrpcAdapterFailure>().not.toBeAny();
-expectTypeOf<GrpcMaterializedMetrics>().not.toBeAny();
-expectTypeOf<GrpcRejectionLocation>().not.toBeAny();
+it("types protobuf requests, source definitions, and gRPC node options", () => {
+  expectTypeOf<
+    GrpcServerStreamingMethodName<typeof OrdersService>
+  >().toEqualTypeOf<"streamOrders">();
+  expectTypeOf<
+    GrpcMethodRequest<typeof OrdersService, "streamOrders">
+  >().toExtend<ExpectedOrdersRequest>();
+  expectTypeOf<ExpectedOrdersRequest>().toExtend<
+    GrpcMethodRequest<typeof OrdersService, "streamOrders">
+  >();
+  expectTypeOf<
+    NonNullable<GrpcMethodRequest<typeof OrdersService, "streamOrders">["metadata"]>[string]
+  >().toEqualTypeOf<JsonValue>();
+  expectTypeOf<
+    GrpcMethodValue<typeof OrdersService, "streamOrders">
+  >().toEqualTypeOf<OrderEventMessage>();
+  expectTypeOf(materialized.adapter).toEqualTypeOf(GrpcSourceAdapter);
+  expectTypeOf<SourceDefinitionRow<typeof materialized>>().toEqualTypeOf<{
+    readonly id: string;
+    readonly price: number;
+    readonly region: string;
+  }>();
+  expectTypeOf<SourceDefinitionRow<typeof leased>>().toEqualTypeOf<{
+    readonly id: string;
+    readonly price: number;
+    readonly region: string;
+  }>();
+  expectTypeOf<SourceDefinitionRouteFields<typeof leased>>().toEqualTypeOf<readonly ["region"]>();
+  expectTypeOf<SourceDefinitionRetryServices<typeof materialized>>().toEqualTypeOf<never>();
+  expectTypeOf<SourceDefinitionRetryServices<typeof leased>>().toEqualTypeOf<never>();
+  expectTypeOf<ViewServerSourceRequirements<typeof viewServer.topics>>().toEqualTypeOf<
+    Context.Service.Identifier<typeof GrpcSourceAdapter.runtimeService>
+  >();
+  expectTypeOf<Effect.Services<typeof runtimeCoreEffect>>().toEqualTypeOf<
+    Context.Service.Identifier<typeof GrpcSourceAdapter.runtimeService>
+  >();
+  expectTypeOf<GrpcNodeClientNames<typeof viewServer>>().toEqualTypeOf<"orders">();
+  expectTypeOf<GrpcNodeOptions<typeof viewServer>>().toEqualTypeOf<{
+    readonly orders: ExpectedGrpcNodeClientOptions;
+  }>();
+  expectTypeOf<GrpcNodeClientNames<typeof multiClientViewServer>>().toEqualTypeOf<
+    "orders" | "strategies"
+  >();
+  expectTypeOf<GrpcNodeOptions<typeof multiClientViewServer>>().toEqualTypeOf<{
+    readonly orders: ExpectedGrpcNodeClientOptions;
+    readonly strategies: ExpectedGrpcNodeClientOptions;
+  }>();
+  expectTypeOf<GrpcAdapterFailure>().not.toBeAny();
+  expectTypeOf<GrpcMaterializedMetrics>().not.toBeAny();
+  expectTypeOf<GrpcRejectionLocation>().not.toBeAny();
+});
 
 grpcNode.layer(viewServer, {
   orders: {

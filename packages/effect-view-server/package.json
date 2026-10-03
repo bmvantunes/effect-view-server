@@ -163,7 +163,6 @@
     "@types/react": "19.2.18",
     "@types/react-dom": "19.2.4",
     "@vitest/coverage-istanbul": "catalog:",
-    "@vitest/runner": "catalog:",
     "effect": "catalog:",
     "typescript": "catalog:",
     "vite": "catalog:",

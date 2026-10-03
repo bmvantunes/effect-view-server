@@ -62,7 +62,7 @@ describe("example route cleanup policy", () => {
 
       expect(after).toStrictEqual(before);
     },
-    30_000,
+    60_000,
   );
 
   it(

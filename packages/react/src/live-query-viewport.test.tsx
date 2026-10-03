@@ -552,7 +552,7 @@ describe("useLiveQueryViewport", () => {
           return health.engine.topics.orders.activeSubscriptions;
         })
         .toBe(1);
-      await expect.element(view.getByRole("status")).toHaveTextContent(/^ready:0$/);
+      await expect.element(view.getByRole("status")).toMatchTextContent(/^ready:0$/);
 
       await Effect.runPromise(
         runtime.client.publish("orders", { id: "future", status: "open", price: 1 }),
@@ -611,7 +611,7 @@ describe("useLiveQueryViewport", () => {
           return health.engine.topics.orders.activeSubscriptions;
         })
         .toBe(1);
-      await expect.element(view.getByRole("status")).toHaveTextContent(/^ready:0$/);
+      await expect.element(view.getByRole("status")).toMatchTextContent(/^ready:0$/);
 
       await Effect.runPromise(
         runtime.client.publish("orders", { id: "future-group", status: "open", price: 1 }),

@@ -1,7 +1,7 @@
 import { ViewServerId } from "@effect-view-server/config";
 // Import Vitest directly so @effect/vitest's eager test-runtime module graph does not
 // distort the heap, JIT, and GC behavior this benchmark is measuring.
-import { afterAll, beforeAll, bench, describe, expect } from "vitest";
+import { afterAll, beforeAll, test, describe, expect } from "vite-plus/test";
 import { Schema } from "effect";
 import { benchmarkOutputJsonPath, writeBenchmarkArtifact } from "./benchmark-artifact";
 import { makeBenchmarkMemoryRecorder } from "./benchmark-memory-recorder";
@@ -647,12 +647,10 @@ afterAll(() => {
 
 describe(`raw predicate candidate index benchmark: ${rowCount} rows`, () => {
   for (const benchmarkCase of benchmarkCases()) {
-    bench(
-      benchmarkCase.name,
-      () => {
+    test(benchmarkCase.name, async ({ bench: runBenchmark }) => {
+      await runBenchmark(benchmarkCase.name, () => {
         runBenchmarkCase(benchmarkCase);
-      },
-      benchOptions,
-    );
+      }).run(benchOptions);
+    });
   }
 });

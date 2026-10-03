@@ -2,6 +2,7 @@ import {
   isSourceAdapterHandle,
   isSourceDefinition,
 } from "@effect-view-server/source-adapter/internal";
+import { realpathSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import { builtinModules } from "node:module";
@@ -248,7 +249,7 @@ const contractProbeValue = <Value>(
     catch: (cause) => inspectionError(`${label} failed.`, cause),
   });
 
-const moduleStem = (path: string): string =>
+export const sourceAdapterModuleStem = (path: string): string =>
   path.replace(/(?:\.d)?\.(?:[cm]?ts|tsx|[cm]?js)$/u, "");
 
 const typeTestContractBindings = (
@@ -266,7 +267,9 @@ const typeTestContractBindings = (
     }
     const moduleSymbol = checker.getSymbolAtLocation(statement.moduleSpecifier);
     const isContractImport = moduleSymbol?.declarations.some(
-      (declaration) => moduleStem(resolve(declaration.path)) === moduleStem(contractTarget),
+      (declaration) =>
+        sourceAdapterModuleStem(realpathSync.native(resolve(declaration.path))) ===
+        sourceAdapterModuleStem(realpathSync.native(contractTarget)),
     );
     if (!isContractImport) {
       continue;

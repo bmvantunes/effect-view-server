@@ -2,7 +2,7 @@
 // distort the allocation and latency profile this hot-path benchmark measures.
 // This is a Chromium browser CPU/GC stress microbenchmark over a synthetic
 // in-memory Queue. It is not network-shaped or production-like.
-import { afterAll, bench, describe } from "vitest";
+import { afterAll, test, describe } from "vite-plus/test";
 import type {
   ViewServerLiveClient,
   ViewServerLiveEvent,
@@ -344,17 +344,45 @@ afterAll(async () => {
 });
 
 describe("Live Query Viewport subscription-to-sink projection", () => {
-  bench("single-row update in a 100-row viewport", () => update100Rows.update());
-  bench("single-row update in a 10000-row viewport", () => update10000Rows.update());
-  bench("full replacement in a 1000-row viewport", () => replace1000Rows.replaceAll());
-  bench("full replacement in a 10000-row viewport", () => replace10000Rows.replaceAll());
-  bench("full reorder in a 1000-row viewport", () => move1000Rows.moveAll());
-  bench("full reorder in a 10000-row viewport", () => move10000Rows.moveAll());
-  bench("tail replacement in a 10000-row viewport", () => replaceTail10000Rows.replaceTail());
-  bench("schedule 10000 pre-activation scroll windows", () => schedulePreActivationScrollBurst(), {
-    iterations: 5,
-    time: 0,
-    warmupIterations: 0,
-    warmupTime: 0,
+  test("single-row update in a 100-row viewport", async ({ bench: runBenchmark }) => {
+    await runBenchmark("single-row update in a 100-row viewport", () =>
+      update100Rows.update(),
+    ).run();
+  });
+  test("single-row update in a 10000-row viewport", async ({ bench: runBenchmark }) => {
+    await runBenchmark("single-row update in a 10000-row viewport", () =>
+      update10000Rows.update(),
+    ).run();
+  });
+  test("full replacement in a 1000-row viewport", async ({ bench: runBenchmark }) => {
+    await runBenchmark("full replacement in a 1000-row viewport", () =>
+      replace1000Rows.replaceAll(),
+    ).run();
+  });
+  test("full replacement in a 10000-row viewport", async ({ bench: runBenchmark }) => {
+    await runBenchmark("full replacement in a 10000-row viewport", () =>
+      replace10000Rows.replaceAll(),
+    ).run();
+  });
+  test("full reorder in a 1000-row viewport", async ({ bench: runBenchmark }) => {
+    await runBenchmark("full reorder in a 1000-row viewport", () => move1000Rows.moveAll()).run();
+  });
+  test("full reorder in a 10000-row viewport", async ({ bench: runBenchmark }) => {
+    await runBenchmark("full reorder in a 10000-row viewport", () => move10000Rows.moveAll()).run();
+  });
+  test("tail replacement in a 10000-row viewport", async ({ bench: runBenchmark }) => {
+    await runBenchmark("tail replacement in a 10000-row viewport", () =>
+      replaceTail10000Rows.replaceTail(),
+    ).run();
+  });
+  test("schedule 10000 pre-activation scroll windows", async ({ bench: runBenchmark }) => {
+    await runBenchmark("schedule 10000 pre-activation scroll windows", () =>
+      schedulePreActivationScrollBurst(),
+    ).run({
+      iterations: 5,
+      time: 0,
+      warmupIterations: 0,
+      warmupTime: 0,
+    });
   });
 });

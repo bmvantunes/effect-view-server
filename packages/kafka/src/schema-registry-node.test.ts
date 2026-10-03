@@ -3,7 +3,7 @@ import { FileDescriptorProtoSchema } from "@bufbuild/protobuf/wkt";
 import { afterEach, beforeEach, describe, expect, it } from "@effect/vitest";
 // Vitest's mock transform requires this API to come directly from "vitest";
 // the @effect/vitest re-export cannot be hoisted.
-import { vi } from "vitest";
+import { vi } from "vite-plus/test";
 import { Duration, Effect, Fiber } from "effect";
 import { TestClock } from "effect/testing";
 import {

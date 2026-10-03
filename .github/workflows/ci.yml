@@ -25,10 +25,10 @@ jobs:
           submodules: true
 
       - name: Setup Vite+
-        uses: voidzero-dev/setup-vp@v1
+        uses: voidzero-dev/setup-vp@v1.21.1
         with:
           node-version: "26"
-          version: "0.2.1"
+          version: "1.0.0"
           cache: true
           run-install: false
 
@@ -72,10 +72,10 @@ jobs:
           submodules: true
 
       - name: Setup Vite+
-        uses: voidzero-dev/setup-vp@v1
+        uses: voidzero-dev/setup-vp@v1.21.1
         with:
           node-version: "26"
-          version: "0.2.1"
+          version: "1.0.0"
           cache: true
           run-install: false
 
@@ -122,10 +122,10 @@ jobs:
           submodules: true
 
       - name: Setup Vite+
-        uses: voidzero-dev/setup-vp@v1
+        uses: voidzero-dev/setup-vp@v1.21.1
         with:
           node-version: "26"
-          version: "0.2.1"
+          version: "1.0.0"
           cache: false
           run-install: false
 

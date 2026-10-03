@@ -1,4 +1,4 @@
-import type { OxlintConfig } from "oxlint";
+import type { OxlintConfig } from "vite-plus/lint";
 
 export const strictLintOptions = {
   denyWarnings: true,

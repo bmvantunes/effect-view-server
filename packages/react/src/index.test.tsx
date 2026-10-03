@@ -30,14 +30,6 @@ import {
   type ViewServerInMemoryOptions,
 } from "./testing";
 
-declare module "vitest" {
-  export interface ProvidedContext {
-    readonly viewServerRemoteUrl: string;
-    readonly viewServerSourceRemoteUrl: string;
-    readonly viewServerDiagnosticRemoteUrl: string;
-  }
-}
-
 describe("Source Health cache entry helpers", () => {
   it("keeps a newer cache entry when an older finalizer runs late", () => {
     const original = {};
@@ -1108,13 +1100,13 @@ describe("createViewServerReact", () => {
     );
     await expect
       .element(view.getByRole("status", { name: "first source health" }))
-      .toHaveTextContent(/^Inactive:eu$/);
+      .toMatchTextContent(/^Inactive:eu$/);
     await expect
       .element(view.getByRole("status", { name: "second source health" }))
-      .toHaveTextContent(/^Inactive:eu$/);
+      .toMatchTextContent(/^Inactive:eu$/);
     await expect
       .element(view.getByRole("status", { name: "us source health" }))
-      .toHaveTextContent(/^Inactive:us$/);
+      .toMatchTextContent(/^Inactive:us$/);
     await expect.poll(() => subscribeCount).toBe(2);
     await expect.poll(() => leaseState.active).toBe(0);
 
@@ -1126,12 +1118,12 @@ describe("createViewServerReact", () => {
     );
     await expect
       .element(view.getByRole("status", { name: "first source health" }))
-      .toHaveTextContent(/^Active:react-browser-source$/);
+      .toMatchTextContent(/^Active:react-browser-source$/);
     await expect.poll(() => leaseState.active).toBe(1);
     await Effect.runPromise(liveSubscription.close());
     await expect
       .element(view.getByRole("status", { name: "second source health" }))
-      .toHaveTextContent(/^Inactive:eu$/);
+      .toMatchTextContent(/^Inactive:eu$/);
     await expect.poll(() => leaseState.active).toBe(0);
 
     await view.rerender(
@@ -1150,7 +1142,7 @@ describe("createViewServerReact", () => {
     );
     await expect
       .element(view.getByRole("status", { name: "remounted eu source health" }))
-      .toHaveTextContent(/^Inactive:eu$/);
+      .toMatchTextContent(/^Inactive:eu$/);
     await expect.poll(() => subscribeCount).toBe(3);
 
     await view.rerender(<SourceHealthClientProvider client={trackedClient} />);
@@ -1207,7 +1199,7 @@ describe("createViewServerReact", () => {
         </Suspense>
       </SourceHealthClientProvider>,
     );
-    await expect.element(view.getByRole("status")).toHaveTextContent(/^Suspended$/);
+    await expect.element(view.getByRole("status")).toMatchTextContent(/^Suspended$/);
     expect(subscribedInputKeys).toStrictEqual([]);
 
     await view.rerender(
@@ -1216,7 +1208,7 @@ describe("createViewServerReact", () => {
       </SourceHealthClientProvider>,
     );
     await expect.poll(() => subscribedInputKeys.length).toBe(1);
-    await expect.element(view.getByRole("status")).toHaveTextContent(/^eu$/);
+    await expect.element(view.getByRole("status")).toMatchTextContent(/^eu$/);
     expect(subscribedInputKeys).toStrictEqual(["topic|routeBy"]);
 
     await view.unmount();
@@ -1290,7 +1282,7 @@ describe("createViewServerReact", () => {
     );
     await expect
       .element(accessorView.getByRole("status", { name: "accessor source health" }))
-      .toHaveTextContent(/^error:InvalidQuery$/);
+      .toMatchTextContent(/^error:InvalidQuery$/);
     expect(getterReads).toBe(0);
     await accessorView.unmount();
 
@@ -1303,7 +1295,7 @@ describe("createViewServerReact", () => {
     );
     await expect
       .element(proxyView.getByRole("status", { name: "proxy source health" }))
-      .toHaveTextContent(/^error:InvalidQuery$/);
+      .toMatchTextContent(/^error:InvalidQuery$/);
     await proxyView.unmount();
 
     expect(leaseState.active).toBe(0);
@@ -1357,7 +1349,7 @@ describe("createViewServerReact", () => {
       .toBeVisible();
     await expect
       .element(view.getByRole("status", { name: "source rows" }))
-      .toHaveTextContent(/^ready$/);
+      .toMatchTextContent(/^ready$/);
     expect(leaseState.active).toBe(1);
 
     await view.unmount();
@@ -1484,12 +1476,12 @@ describe("createViewServerReact", () => {
     );
     await expect
       .element(view.getByRole("status"))
-      .toHaveTextContent(/^Degraded:SourceItemRejection\+AdapterMaintenanceFailure$/);
+      .toMatchTextContent(/^Degraded:SourceItemRejection\+AdapterMaintenanceFailure$/);
 
     await Effect.runPromise(Queue.offer(advanceDiagnostics, undefined));
     await expect
       .element(view.getByRole("status"))
-      .toHaveTextContent(/^Exhausted:InvalidSourceSettlement$/);
+      .toMatchTextContent(/^Exhausted:InvalidSourceSettlement$/);
 
     await view.unmount();
     await Effect.runPromise(runtime.close);
@@ -1590,21 +1582,21 @@ describe("createViewServerReact", () => {
     const status = view.getByRole("status");
     await expect
       .element(status)
-      .toHaveTextContent(
+      .toMatchTextContent(
         /^Degraded:100:AdapterMaintenanceFailure:backlog=1:failure=Kafka retention expiration Delete failed\.:retries=2$/,
       );
     await expect
       .element(status)
-      .toHaveTextContent(
+      .toMatchTextContent(
         /^Degraded:100:SourceItemRejection\+AdapterMaintenanceFailure:backlog=1:failure=Kafka retention expiration Delete failed\.:retries=2$/,
       );
-    await expect.element(status).toHaveTextContent(/^Ready:150$/);
+    await expect.element(status).toMatchTextContent(/^Ready:150$/);
     await expect
       .element(status)
-      .toHaveTextContent(
+      .toMatchTextContent(
         /^Degraded:200:AdapterMaintenanceFailure:backlog=1:failure=Kafka retention expiration Delete failed\.:retries=2$/,
       );
-    await expect.element(status).toHaveTextContent(/^Exhausted:InvalidSourceSettlement$/);
+    await expect.element(status).toMatchTextContent(/^Exhausted:InvalidSourceSettlement$/);
     await view.unmount();
   });
 

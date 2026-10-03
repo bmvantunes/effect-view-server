@@ -39,6 +39,11 @@ const installStrictly = (directory: string): void => {
       "allowBuilds:",
       "  msgpackr-extract: true",
       "",
+      "peerDependencyRules:",
+      "  allowedVersions:",
+      '    vite: "*"',
+      '    vitest: "*"',
+      "",
     ].join("\n"),
   );
   execFileSync("vp", ["install"], {
@@ -200,8 +205,8 @@ describe("downstream viewport declaration bundle", () => {
         "react-dom": "19.2.8",
         redis: "6.2.1",
         typescript: "7.0.2",
-        vite: "8.0.0",
-        "vite-plus": "0.2.8",
+        vite: "npm:@voidzero-dev/vite-plus-core@1.0.0",
+        "vite-plus": "1.0.0",
       },
     });
     writeFileSync(
@@ -212,7 +217,7 @@ describe("downstream viewport declaration bundle", () => {
         "export default defineConfig({",
         "  pack: {",
         '    entry: { effect: "src/effect.ts", index: "src/index.ts" },',
-        "    dts: { tsgo: true },",
+        '    dts: { generator: "tsgo" },',
         "  },",
         "});",
         "",
@@ -423,7 +428,7 @@ describe("downstream viewport declaration bundle", () => {
           "react-dom": "19.2.8",
           redis: "6.2.1",
           typescript: "7.0.2",
-          vite: "8.0.0",
+          vite: "npm:@voidzero-dev/vite-plus-core@1.0.0",
         },
       });
       writeJson(join(integrationDirectory, "tsconfig.json"), {

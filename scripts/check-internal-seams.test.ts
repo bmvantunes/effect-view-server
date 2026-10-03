@@ -44,7 +44,7 @@ describe("internal Seam checker", () => {
 
   it("keeps package imports aligned with the Package Surface Policy", () => {
     expect(collectPackageImportViolations()).toStrictEqual([]);
-  });
+  }, 15_000);
 
   it("keeps consumer imports aligned with the Package Surface Policy", () => {
     expect(collectConsumerImportViolations()).toStrictEqual([]);

@@ -25,7 +25,8 @@ const child = spawn(
     "--run",
     "--testTimeout",
     "0",
-    "--outputJson",
+    "--reporter=json",
+    "--outputFile",
     configuredOutput,
   ],
   {

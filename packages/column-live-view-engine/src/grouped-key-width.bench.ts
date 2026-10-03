@@ -1,6 +1,6 @@
 // Import Vitest directly so @effect/vitest's eager test-runtime module graph does not
 // distort the heap, JIT, and GC behavior this benchmark is measuring.
-import { afterAll, beforeAll, bench, describe, expect } from "vitest";
+import { afterAll, beforeAll, test, describe, expect } from "vite-plus/test";
 import { ViewServerId, defineViewServerConfig } from "@effect-view-server/config";
 import { Effect, Schema } from "effect";
 import { createColumnLiveViewEngine, type ColumnLiveViewEngine } from "./index";
@@ -456,45 +456,35 @@ afterAll(async () => {
 }, 0);
 
 describe(`grouped key width engine benchmark: ${benchmarkRowCount} rows`, () => {
-  bench(
-    "groupBy one key",
-    async () => {
+  test("groupBy one key", async ({ bench: runBenchmark }) => {
+    await runBenchmark("groupBy one key", async () => {
       await Effect.runPromise(profileEngine(profile).snapshot("orders", groupByOneQuery()));
-    },
-    benchOptions,
-  );
+    }).run(benchOptions);
+  });
 
-  bench(
-    "groupBy two keys",
-    async () => {
+  test("groupBy two keys", async ({ bench: runBenchmark }) => {
+    await runBenchmark("groupBy two keys", async () => {
       await Effect.runPromise(profileEngine(profile).snapshot("orders", groupByTwoQuery()));
-    },
-    benchOptions,
-  );
+    }).run(benchOptions);
+  });
 
-  bench(
-    "groupBy four keys",
-    async () => {
+  test("groupBy four keys", async ({ bench: runBenchmark }) => {
+    await runBenchmark("groupBy four keys", async () => {
       await Effect.runPromise(profileEngine(profile).snapshot("orders", groupByFourQuery()));
-    },
-    benchOptions,
-  );
+    }).run(benchOptions);
+  });
 
-  bench(
-    "groupBy eight keys",
-    async () => {
+  test("groupBy eight keys", async ({ bench: runBenchmark }) => {
+    await runBenchmark("groupBy eight keys", async () => {
       await Effect.runPromise(profileEngine(profile).snapshot("orders", groupByEightQuery()));
-    },
-    benchOptions,
-  );
+    }).run(benchOptions);
+  });
 
-  bench(
-    "groupBy eight ordered keys",
-    async () => {
+  test("groupBy eight ordered keys", async ({ bench: runBenchmark }) => {
+    await runBenchmark("groupBy eight ordered keys", async () => {
       await Effect.runPromise(
         profileEngine(profile).snapshot("orders", groupByEightOrderedQuery()),
       );
-    },
-    benchOptions,
-  );
+    }).run(benchOptions);
+  });
 });

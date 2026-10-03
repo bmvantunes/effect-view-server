@@ -25,6 +25,7 @@ import {
 
 import {
   vitestOutput,
+  vitest5Output,
   summary,
   runtimeHealth,
   runtimeKafkaIngestLanes,
@@ -169,6 +170,20 @@ const invalidPostGcTotalDeltaFixture = (memoryField: PostGcMemoryField) => {
 describe("benchmark baseline artifacts", () => {
   it("extracts comparable benchmark metrics from Vitest output", () => {
     expect(comparableBenchmarksFromVitestOutput(vitestOutput)).toStrictEqual([
+      {
+        maxMs: 3,
+        meanMs: 2,
+        minMs: 1,
+        groupName: "src/example.bench.ts > example benchmark group",
+        name: "case a",
+        p99Ms: 3,
+        sampleCount: 7,
+      },
+    ]);
+  });
+
+  it("extracts comparable benchmark metrics from Vitest 5 output", () => {
+    expect(comparableBenchmarksFromVitestOutput(vitest5Output)).toStrictEqual([
       {
         maxMs: 3,
         meanMs: 2,

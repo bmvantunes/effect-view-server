@@ -1,6 +1,6 @@
 // Import Vitest directly so @effect/vitest's eager test-runtime module graph does not
 // distort the heap, JIT, and GC behavior this benchmark is measuring.
-import { bench, describe } from "vitest";
+import { test, describe } from "vite-plus/test";
 import { ViewServerId, defineViewServerConfig } from "@effect-view-server/config";
 import { Effect, Schema } from "effect";
 import {
@@ -73,15 +73,17 @@ const runPartitionedWriteSample = (routeCount: number): Promise<void> =>
 
 describe("partitioned raw and grouped live-write scaling", () => {
   for (const routeCount of benchmarkRouteCounts) {
-    bench(
-      `${routeCount} active route${routeCount === 1 ? "" : "s"}`,
-      () => runPartitionedWriteSample(routeCount),
-      {
+    test(`${routeCount} active route${routeCount === 1 ? "" : "s"}`, async ({
+      bench: runBenchmark,
+    }) => {
+      await runBenchmark(`${routeCount} active route${routeCount === 1 ? "" : "s"}`, () =>
+        runPartitionedWriteSample(routeCount),
+      ).run({
         iterations: 5,
         time: 0,
         warmupIterations: 0,
         warmupTime: 0,
-      },
-    );
+      });
+    });
   }
 });

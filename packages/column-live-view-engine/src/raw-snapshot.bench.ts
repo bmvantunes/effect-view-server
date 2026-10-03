@@ -1,6 +1,6 @@
 // Import Vitest directly so @effect/vitest's eager test-runtime module graph does not
 // distort the heap, JIT, and GC behavior this benchmark is measuring.
-import { afterAll, beforeAll, bench, describe } from "vitest";
+import { afterAll, beforeAll, test, describe } from "vite-plus/test";
 import { ViewServerId, defineViewServerConfig } from "@effect-view-server/config";
 import { Cause, Effect, Exit, Schema, Scope, Stream } from "effect";
 import { fromStringUnsafe } from "effect/BigDecimal";
@@ -363,9 +363,8 @@ afterAll(async () => {
 }, 0);
 
 describe(`raw snapshot and delta engine benchmark: ${profile.rowCount} rows`, () => {
-  bench(
-    "equality filter + top-k sort",
-    async () => {
+  test("equality filter + top-k sort", async ({ bench: runBenchmark }) => {
+    await runBenchmark("equality filter + top-k sort", async () => {
       await Effect.runPromise(
         profileEngine(profile).snapshot("orders", {
           select: ["id", "price", "status", "updatedAt"],
@@ -374,13 +373,11 @@ describe(`raw snapshot and delta engine benchmark: ${profile.rowCount} rows`, ()
           limit: 50,
         }),
       );
-    },
-    benchOptions,
-  );
+    }).run(benchOptions);
+  });
 
-  bench(
-    "selective equality filter + different ordered index",
-    async () => {
+  test("selective equality filter + different ordered index", async ({ bench: runBenchmark }) => {
+    await runBenchmark("selective equality filter + different ordered index", async () => {
       await Effect.runPromise(
         profileEngine(profile).snapshot("orders", {
           select: ["id", "price", "status", "updatedAt"],
@@ -395,13 +392,11 @@ describe(`raw snapshot and delta engine benchmark: ${profile.rowCount} rows`, ()
           limit: 50,
         }),
       );
-    },
-    benchOptions,
-  );
+    }).run(benchOptions);
+  });
 
-  bench(
-    "ordered equality filter + indexed seek",
-    async () => {
+  test("ordered equality filter + indexed seek", async ({ bench: runBenchmark }) => {
+    await runBenchmark("ordered equality filter + indexed seek", async () => {
       await Effect.runPromise(
         profileEngine(profile).snapshot("orders", {
           select: ["id", "price", "status", "updatedAt"],
@@ -416,13 +411,11 @@ describe(`raw snapshot and delta engine benchmark: ${profile.rowCount} rows`, ()
           limit: 50,
         }),
       );
-    },
-    benchOptions,
-  );
+    }).run(benchOptions);
+  });
 
-  bench(
-    "ordered in filter + indexed seek",
-    async () => {
+  test("ordered in filter + indexed seek", async ({ bench: runBenchmark }) => {
+    await runBenchmark("ordered in filter + indexed seek", async () => {
       await Effect.runPromise(
         profileEngine(profile).snapshot("orders", {
           select: ["id", "price", "status", "updatedAt"],
@@ -437,13 +430,11 @@ describe(`raw snapshot and delta engine benchmark: ${profile.rowCount} rows`, ()
           limit: 50,
         }),
       );
-    },
-    benchOptions,
-  );
+    }).run(benchOptions);
+  });
 
-  bench(
-    "range filter + top-k sort",
-    async () => {
+  test("range filter + top-k sort", async ({ bench: runBenchmark }) => {
+    await runBenchmark("range filter + top-k sort", async () => {
       await Effect.runPromise(
         profileEngine(profile).snapshot("orders", {
           select: ["id", "price", "region", "updatedAt"],
@@ -452,13 +443,11 @@ describe(`raw snapshot and delta engine benchmark: ${profile.rowCount} rows`, ()
           limit: 100,
         }),
       );
-    },
-    benchOptions,
-  );
+    }).run(benchOptions);
+  });
 
-  bench(
-    "bigint range filter + indexed seek",
-    async () => {
+  test("bigint range filter + indexed seek", async ({ bench: runBenchmark }) => {
+    await runBenchmark("bigint range filter + indexed seek", async () => {
       await Effect.runPromise(
         profileEngine(profile).snapshot("orders", {
           select: ["id", "quantity", "status", "updatedAt"],
@@ -467,13 +456,11 @@ describe(`raw snapshot and delta engine benchmark: ${profile.rowCount} rows`, ()
           limit: 100,
         }),
       );
-    },
-    benchOptions,
-  );
+    }).run(benchOptions);
+  });
 
-  bench(
-    "BigDecimal range filter + indexed seek",
-    async () => {
+  test("BigDecimal range filter + indexed seek", async ({ bench: runBenchmark }) => {
+    await runBenchmark("BigDecimal range filter + indexed seek", async () => {
       await Effect.runPromise(
         profileEngine(profile).snapshot("orders", {
           select: ["id", "decimalPrice", "status", "updatedAt"],
@@ -488,13 +475,11 @@ describe(`raw snapshot and delta engine benchmark: ${profile.rowCount} rows`, ()
           limit: 100,
         }),
       );
-    },
-    benchOptions,
-  );
+    }).run(benchOptions);
+  });
 
-  bench(
-    "selective range filter + fallback top-k sort",
-    async () => {
+  test("selective range filter + fallback top-k sort", async ({ bench: runBenchmark }) => {
+    await runBenchmark("selective range filter + fallback top-k sort", async () => {
       const priceDomainSize = Math.min(profile.rowCount, 1_000_000);
       await Effect.runPromise(
         profileEngine(profile).snapshot("orders", {
@@ -513,13 +498,11 @@ describe(`raw snapshot and delta engine benchmark: ${profile.rowCount} rows`, ()
           limit: 100,
         }),
       );
-    },
-    benchOptions,
-  );
+    }).run(benchOptions);
+  });
 
-  bench(
-    "compound filter + top-k sort",
-    async () => {
+  test("compound filter + top-k sort", async ({ bench: runBenchmark }) => {
+    await runBenchmark("compound filter + top-k sort", async () => {
       await Effect.runPromise(
         profileEngine(profile).snapshot("orders", {
           select: ["id", "price", "region", "status", "updatedAt"],
@@ -532,13 +515,11 @@ describe(`raw snapshot and delta engine benchmark: ${profile.rowCount} rows`, ()
           limit: 50,
         }),
       );
-    },
-    benchOptions,
-  );
+    }).run(benchOptions);
+  });
 
-  bench(
-    "nested OR filter + top-k sort",
-    async () => {
+  test("nested OR filter + top-k sort", async ({ bench: runBenchmark }) => {
+    await runBenchmark("nested OR filter + top-k sort", async () => {
       await Effect.runPromise(
         profileEngine(profile).snapshot("orders", {
           select: ["id", "price", "region", "status", "updatedAt"],
@@ -560,13 +541,11 @@ describe(`raw snapshot and delta engine benchmark: ${profile.rowCount} rows`, ()
           limit: 50,
         }),
       );
-    },
-    benchOptions,
-  );
+    }).run(benchOptions);
+  });
 
-  bench(
-    "narrow scalar projection + top-k sort",
-    async () => {
+  test("narrow scalar projection + top-k sort", async ({ bench: runBenchmark }) => {
+    await runBenchmark("narrow scalar projection + top-k sort", async () => {
       await Effect.runPromise(
         profileEngine(profile).snapshot("orders", {
           select: ["id", "price", "updatedAt"],
@@ -575,13 +554,11 @@ describe(`raw snapshot and delta engine benchmark: ${profile.rowCount} rows`, ()
           limit: 200,
         }),
       );
-    },
-    benchOptions,
-  );
+    }).run(benchOptions);
+  });
 
-  bench(
-    "wide scalar projection + top-k sort",
-    async () => {
+  test("wide scalar projection + top-k sort", async ({ bench: runBenchmark }) => {
+    await runBenchmark("wide scalar projection + top-k sort", async () => {
       await Effect.runPromise(
         profileEngine(profile).snapshot("orders", {
           select: [
@@ -599,13 +576,11 @@ describe(`raw snapshot and delta engine benchmark: ${profile.rowCount} rows`, ()
           limit: 200,
         }),
       );
-    },
-    benchOptions,
-  );
+    }).run(benchOptions);
+  });
 
-  bench(
-    "filtered totalRows via zero-row window",
-    async () => {
+  test("filtered totalRows via zero-row window", async ({ bench: runBenchmark }) => {
+    await runBenchmark("filtered totalRows via zero-row window", async () => {
       await Effect.runPromise(
         profileEngine(profile).snapshot("orders", {
           select: ["id"],
@@ -616,20 +591,17 @@ describe(`raw snapshot and delta engine benchmark: ${profile.rowCount} rows`, ()
           limit: 0,
         }),
       );
-    },
-    benchOptions,
-  );
+    }).run(benchOptions);
+  });
 
-  bench(
-    "live subscription delta after publish",
-    async () => {
+  test("live subscription delta after publish", async ({ bench: runBenchmark }) => {
+    await runBenchmark("live subscription delta after publish", async () => {
       const readEvent = profileEventReader(profile);
       const engine = profileEngine(profile);
       const row = deltaOrder(profile.nextDeltaIndex);
       profile.nextDeltaIndex += 1;
       await Effect.runPromise(engine.publish("orders", row));
       await Effect.runPromise(readEvent(1));
-    },
-    liveBenchOptions,
-  );
+    }).run(liveBenchOptions);
+  });
 });

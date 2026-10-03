@@ -1,6 +1,6 @@
 // Import Vitest directly so @effect/vitest's eager test-runtime module graph does not
 // distort the heap, JIT, and GC behavior this benchmark is measuring.
-import { afterAll, beforeAll, bench, describe, expect } from "vitest";
+import { afterAll, beforeAll, test, describe, expect } from "vite-plus/test";
 import { ViewServerId, defineViewServerConfig } from "@effect-view-server/config";
 import { Cause, Effect, Exit, Schema, Scope, Stream } from "effect";
 import {
@@ -533,11 +533,11 @@ afterAll(async () => {
 }, 0);
 
 describe(`raw live fanout benchmark: ${profile.rowCount} rows, ${profile.subscriberCount} subscribers, ${profile.fanoutCaseName}`, () => {
-  bench(
-    `${profile.fanoutCaseName} subscribers publish + delta fanout`,
-    async () => {
+  test(`${profile.fanoutCaseName} subscribers publish + delta fanout`, async ({
+    bench: runBenchmark,
+  }) => {
+    await runBenchmark(`${profile.fanoutCaseName} subscribers publish + delta fanout`, async () => {
       await Effect.runPromise(publishAndRead(profile, profile.fanoutCase));
-    },
-    benchOptions,
-  );
+    }).run(benchOptions);
+  });
 });

@@ -12,8 +12,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 type RuleSeverity = "error" | "warn";
-type LintMode = "isolated" | "repository";
-
 type LintFixtureResult = {
   readonly error: Error | undefined;
   readonly output: string;
@@ -26,33 +24,40 @@ const lintFixture = (
   rules: Readonly<Record<string, RuleSeverity>> = {
     "anti-slop/no-unsafe-dictionary-type": "error",
   },
-  mode: LintMode = "isolated",
+  _mode: "isolated" | "repository" = "isolated",
 ): LintFixtureResult => {
-  const directory = mkdtempSync(join(tmpdir(), "effect-view-server-anti-slop-"));
+  const directory = mkdtempSync(join(process.cwd(), ".tmp-anti-slop-"));
   const file = join(directory, "fixture.ts");
-  const config = join(directory, "oxlint.config.json");
   writeFileSync(file, source);
-  writeFileSync(
-    config,
-    JSON.stringify({
-      jsPlugins: [
-        {
-          name: "anti-slop",
-          specifier: join(process.cwd(), "tools/oxlint/anti-slop/index.ts"),
-        },
-      ],
-      rules,
-    }),
-  );
   for (const [name, contents] of Object.entries(additionalFiles)) {
     writeFileSync(join(directory, name), contents);
   }
-  const args =
-    mode === "repository"
-      ? ["lint", "--format", "json", file]
-      : ["exec", "oxlint", "--config", config, "--format", "json", file];
+  if (_mode === "isolated") {
+    writeFileSync(
+      join(directory, "vite.config.ts"),
+      [
+        'import { defineConfig } from "vite-plus";',
+        "export default defineConfig({",
+        "  lint: {",
+        `    jsPlugins: [{ name: "anti-slop", specifier: ${JSON.stringify(join(process.cwd(), "tools/oxlint/anti-slop/index.ts"))} }],`,
+        `    rules: ${JSON.stringify(rules)},`,
+        "  },",
+        "});",
+      ].join("\n"),
+    );
+  }
+  const args = [
+    "lint",
+    "--format",
+    "json",
+    ...Object.entries(rules).flatMap(([name, severity]) => [
+      severity === "error" ? "--deny" : "--warn",
+      name,
+    ]),
+    file,
+  ];
   const result = spawnSync("vp", args, {
-    cwd: process.cwd(),
+    cwd: _mode === "repository" ? process.cwd() : directory,
     encoding: "utf8",
     timeout: 120_000,
   });

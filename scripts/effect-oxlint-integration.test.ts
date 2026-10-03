@@ -48,7 +48,7 @@ describe("aggressive Effect Oxlint integration", () => {
     }).toStrictEqual({
       configuredRuleNames: effectRuleNames,
       configuredPresets: effectPresets,
-      configuredSeverities: { error: 65, off: 30 },
+      configuredSeverities: { error: 80, off: 36 },
       lintOptions: { denyWarnings: true, typeAware: true, typeCheck: true },
     });
   });
@@ -86,7 +86,7 @@ describe("aggressive Effect Oxlint integration", () => {
       commandLineDiagnostics: [],
       editorDiagnostics: false,
       examplesUseStandaloneDiagnostics: false,
-      explicitTsgolintDependency: "catalog:",
+      explicitTsgolintDependency: undefined,
       installPatch: "vp config && effect-tsgo patch --typescript --oxlint",
       readyUsesOxlintGate: true,
       readyUsesReactCompilerGate: true,

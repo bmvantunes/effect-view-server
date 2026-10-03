@@ -1,6 +1,6 @@
 // Import Vitest directly so @effect/vitest's eager test-runtime module graph does not
 // distort the heap, JIT, and GC behavior this benchmark is measuring.
-import { afterAll, beforeAll, bench, describe, expect } from "vitest";
+import { afterAll, beforeAll, test, describe, expect } from "vite-plus/test";
 import {
   makeViewServerClient,
   type ViewServerRemoteClient,
@@ -778,11 +778,9 @@ afterAll(async () => {
 }, 0);
 
 describe(`WebSocket firehose runtime benchmark: ${caseName}, ${rowCount} rows, ${subscriberCount} subscribers`, () => {
-  bench(
-    `${caseName} remote websocket publish + fanout`,
-    async () => {
+  test(`${caseName} remote websocket publish + fanout`, async ({ bench: runBenchmark }) => {
+    await runBenchmark(`${caseName} remote websocket publish + fanout`, async () => {
       await Effect.runPromise(benchmarkRuntime());
-    },
-    benchOptions,
-  );
+    }).run(benchOptions);
+  });
 });

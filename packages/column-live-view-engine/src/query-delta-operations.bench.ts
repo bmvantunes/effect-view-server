@@ -1,6 +1,6 @@
 // Import Vitest directly so @effect/vitest's eager test-runtime module graph does not
 // distort the heap, JIT, and GC behavior this benchmark is measuring.
-import { afterAll, bench, describe, expect } from "vitest";
+import { afterAll, test, describe, expect } from "vite-plus/test";
 import { Schema } from "effect";
 import { benchmarkOutputJsonPath, writeBenchmarkArtifact } from "./benchmark-artifact";
 import { memorySnapshot } from "./benchmark-memory-recorder";
@@ -276,5 +276,7 @@ afterAll(() => {
 });
 
 describe(`query delta operations benchmark: ${deltaOperationCaseName}, ${benchmarkRowCount} rows`, () => {
-  bench(benchmarkCase.label, runCase, benchOptions);
+  test(benchmarkCase.label, async ({ bench: runBenchmark }) => {
+    await runBenchmark(benchmarkCase.label, runCase).run(benchOptions);
+  });
 });

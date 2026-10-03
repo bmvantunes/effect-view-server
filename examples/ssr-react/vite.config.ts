@@ -1,6 +1,6 @@
 import tailwindcss from "@tailwindcss/vite";
 import viteReact from "@vitejs/plugin-react";
-import { playwright } from "@vitest/browser-playwright";
+import { playwright } from "vite-plus/test/browser-playwright";
 import { adaptTanStackStart, defineTanStackReactExampleConfig } from "../vite.config.shared";
 
 export default defineTanStackReactExampleConfig({

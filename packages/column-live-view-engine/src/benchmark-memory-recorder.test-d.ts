@@ -1,4 +1,4 @@
-import { expectTypeOf } from "@effect/vitest";
+import { expectTypeOf, it } from "@effect/vitest";
 import type {
   BenchmarkArtifactMemoryInput,
   BenchmarkMemorySnapshot,
@@ -25,9 +25,6 @@ const peakMemory: BenchmarkArtifactMemoryInput = {
   samplingPolicy,
 };
 
-expectTypeOf(endpointMemory).toMatchTypeOf<BenchmarkArtifactMemoryInput>();
-expectTypeOf(peakMemory).toMatchTypeOf<BenchmarkArtifactMemoryInput>();
-
 // @ts-expect-error A sampling policy must carry its matching process-peak checkpoints.
 const policyWithoutPeak: BenchmarkArtifactMemoryInput = {
   memoryAfterBenchmark,
@@ -44,5 +41,9 @@ const peakWithoutPolicy: BenchmarkArtifactMemoryInput = {
   processPeakRss,
 };
 
-expectTypeOf(policyWithoutPeak).toMatchTypeOf<BenchmarkArtifactMemoryInput>();
-expectTypeOf(peakWithoutPolicy).toMatchTypeOf<BenchmarkArtifactMemoryInput>();
+it("types benchmark memory artifact inputs", () => {
+  expectTypeOf(endpointMemory).toMatchTypeOf<BenchmarkArtifactMemoryInput>();
+  expectTypeOf(peakMemory).toMatchTypeOf<BenchmarkArtifactMemoryInput>();
+  expectTypeOf(policyWithoutPeak).toMatchTypeOf<BenchmarkArtifactMemoryInput>();
+  expectTypeOf(peakWithoutPolicy).toMatchTypeOf<BenchmarkArtifactMemoryInput>();
+});

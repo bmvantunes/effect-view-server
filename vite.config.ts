@@ -107,6 +107,7 @@ const deferredEffectTsgoRules = new Set([
   "effecttsgo/prefer-unsafe-constructor",
   "effecttsgo/process-env",
   "effecttsgo/redundant-map-error",
+  "effecttsgo/schema-sync",
   "effecttsgo/schema-number",
   "effecttsgo/schema-sync-in-effect",
   "effecttsgo/service-not-as-class",
@@ -114,6 +115,11 @@ const deferredEffectTsgoRules = new Set([
   "effecttsgo/strict-effect-provide",
   "effecttsgo/unnecessary-arrow-block",
   "effecttsgo/unnecessary-typeof-type",
+  "effecttsgo/flat-map-ignored-param-to-and-then",
+  "effecttsgo/flat-map-conditional-to-filter-or-fail",
+  "effecttsgo/all-of-map-to-for-each",
+  "effecttsgo/timeout-catch-tag-to-timeout-or-else",
+  "effecttsgo/prefer-succeed-some-or-none",
 ]);
 
 const aggressiveEffectTsgoRules = Object.fromEntries(
@@ -131,6 +137,11 @@ const deferredEffectTsgoAuditFlags = [...deferredEffectTsgoRules]
 
 export default defineConfig({
   test: {
+    // Vitest v4 compatibility: preserve mock call history.
+    // Remove after tests no longer rely on calls from setup or earlier tests.
+    // https://viteplus.dev/guide/vitest-v5#remove-unneeded-compatibility-settings
+    // https://vitest.dev/guide/migration/#clearmocks-is-enabled-by-default
+    clearMocks: false,
     globalSetup: ["./scripts/repository-test-global-setup.ts"],
     include: ["scripts/**/*.test.ts"],
     coverage: {

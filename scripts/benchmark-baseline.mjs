@@ -846,21 +846,69 @@ const validateRuntimeSummaryIngestCompleteness = (summary, path, mutationCount) 
 };
 
 export const comparableBenchmarksFromVitestOutput = (vitestOutput) =>
-  arrayValue(objectValue(vitestOutput, "vitestOutput").files, "vitestOutput.files").flatMap(
-    (file, fileIndex) =>
-      arrayValue(objectValue(file, `files[${fileIndex}]`).groups, `files[${fileIndex}].groups`)
-        .flatMap((group, groupIndex) => {
-          const groupPath = `files[${fileIndex}].groups[${groupIndex}]`;
-          const groupName = stringValue(
-            objectValue(group, groupPath).fullName,
-            `${groupPath}.fullName`,
-          );
+  (() => {
+    const output = objectValue(vitestOutput, "vitestOutput");
+    if (output.files !== undefined) {
+      return arrayValue(output.files, "vitestOutput.files").flatMap((file, fileIndex) =>
+        arrayValue(objectValue(file, `files[${fileIndex}]`).groups, `files[${fileIndex}].groups`)
+          .flatMap((group, groupIndex) => {
+            const groupPath = `files[${fileIndex}].groups[${groupIndex}]`;
+            const groupName = stringValue(
+              objectValue(group, groupPath).fullName,
+              `${groupPath}.fullName`,
+            );
+            return arrayValue(
+              objectValue(group, groupPath).benchmarks,
+              `${groupPath}.benchmarks`,
+            ).map((benchmark) => comparableBenchmark(groupName, benchmark));
+          }),
+      );
+    }
+    return arrayValue(output.testResults, "vitestOutput.testResults").flatMap(
+      (testResult, resultIndex) => {
+        const resultPath = `testResults[${resultIndex}]`;
+        const reportedFileName = stringValue(
+          objectValue(testResult, resultPath).name,
+          `${resultPath}.name`,
+        ).replaceAll("\\", "/");
+        const fileName = reportedFileName.replace(/^.*(?=src\/)/u, "");
+        return arrayValue(
+          objectValue(testResult, resultPath).assertionResults,
+          `${resultPath}.assertionResults`,
+        ).flatMap((assertion, assertionIndex) => {
+          const assertionPath = `${resultPath}.assertionResults[${assertionIndex}]`;
+          const assertionObject = objectValue(assertion, assertionPath);
+          const suiteName = stringArrayValue(
+            assertionObject.ancestorTitles,
+            `${assertionPath}.ancestorTitles`,
+          ).join(" > ");
+          const groupName = `${fileName} > ${suiteName}`;
           return arrayValue(
-            objectValue(group, `files[${fileIndex}].groups[${groupIndex}]`).benchmarks,
-            `files[${fileIndex}].groups[${groupIndex}].benchmarks`,
-          ).map((benchmark) => comparableBenchmark(groupName, benchmark));
-        }),
-  );
+            assertionObject.benchmarks,
+            `${assertionPath}.benchmarks`,
+          ).flatMap((benchmark, benchmarkIndex) => {
+            const benchmarkPath = `${assertionPath}.benchmarks[${benchmarkIndex}]`;
+            return arrayValue(
+              objectValue(benchmark, benchmarkPath).tasks,
+              `${benchmarkPath}.tasks`,
+            ).map((task, taskIndex) => {
+              const taskPath = `${benchmarkPath}.tasks[${taskIndex}]`;
+              const taskObject = objectValue(task, taskPath);
+              const latency = objectValue(taskObject.latency, `${taskPath}.latency`);
+              return comparableBenchmark(groupName, {
+                max: latency.max,
+                mean: latency.mean,
+                min: latency.min,
+                name: taskObject.name,
+                p99: latency.p99,
+                sampleCount: latency.samplesCount,
+              });
+            });
+          });
+        });
+      },
+    );
+  })();
 
 export const decodeBenchmarkObservation = (task, summaryArtifact, vitestOutput) => {
   const summary = objectValue(summaryArtifact, task.summaryPath);

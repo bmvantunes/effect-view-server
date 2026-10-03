@@ -1,4 +1,4 @@
-import { expectTypeOf } from "@effect/vitest";
+import { expectTypeOf, it } from "@effect/vitest";
 import type {
   BenchmarkArtifactInput,
   BenchmarkArtifactMeasurementInput,
@@ -60,12 +60,6 @@ const primingArtifactMeasurement: BenchmarkArtifactMeasurementInput = {
   },
 };
 
-expectTypeOf(memoryCheckpointProtocol).toMatchTypeOf<BenchmarkMeasurementProtocol>();
-expectTypeOf(primingProtocol).toMatchTypeOf<BenchmarkMeasurementProtocol>();
-expectTypeOf(combinedProtocol).toMatchTypeOf<BenchmarkMeasurementProtocol>();
-expectTypeOf(postGcArtifactMeasurement).toMatchTypeOf<BenchmarkArtifactMeasurementInput>();
-expectTypeOf(primingArtifactMeasurement).toMatchTypeOf<BenchmarkArtifactMeasurementInput>();
-
 // @ts-expect-error A measurement protocol must contain at least one supported protocol field.
 const emptyProtocol: BenchmarkMeasurementProtocol = {};
 
@@ -116,17 +110,28 @@ const postGcSamplesWithOriginalCheckpoint: BenchmarkArtifactMeasurementInput = {
   postGcEventLoopSamples: [],
 };
 
-expectTypeOf(emptyProtocol).toMatchTypeOf<BenchmarkMeasurementProtocol>();
-expectTypeOf(undefinedMemoryCheckpoint).toMatchTypeOf<BenchmarkMeasurementProtocol>();
-expectTypeOf(undefinedPriming).toMatchTypeOf<BenchmarkMeasurementProtocol>();
-expectTypeOf(postGcTurnsWithoutMemoryCheckpoint).toMatchTypeOf<BenchmarkMeasurementProtocol>();
-expectTypeOf(postGcTurnsWithOriginalMemoryCheckpoint).toMatchTypeOf<BenchmarkMeasurementProtocol>();
-expectTypeOf(postGcCheckpointWithoutTurns).toMatchTypeOf<BenchmarkMeasurementProtocol>();
-expectTypeOf(postGcCheckpointWithWrongTurns).toMatchTypeOf<BenchmarkMeasurementProtocol>();
-expectTypeOf(postGcArtifactWithoutSamples).toMatchTypeOf<BenchmarkArtifactMeasurementInput>();
-expectTypeOf(postGcSamplesWithoutProtocol).toMatchTypeOf<BenchmarkArtifactMeasurementInput>();
-expectTypeOf(
-  postGcSamplesWithOriginalCheckpoint,
-).toMatchTypeOf<BenchmarkArtifactMeasurementInput>();
-expectTypeOf(missingRawLargeMembershipParameters).toMatchTypeOf<RawLargeMembershipArtifactInput>();
-expectTypeOf(rawSnapshotWithLargeMembershipParameters).toMatchTypeOf<RawSnapshotArtifactInput>();
+it("types benchmark artifacts and measurement protocols", () => {
+  expectTypeOf(memoryCheckpointProtocol).toMatchTypeOf<BenchmarkMeasurementProtocol>();
+  expectTypeOf(primingProtocol).toMatchTypeOf<BenchmarkMeasurementProtocol>();
+  expectTypeOf(combinedProtocol).toMatchTypeOf<BenchmarkMeasurementProtocol>();
+  expectTypeOf(postGcArtifactMeasurement).toMatchTypeOf<BenchmarkArtifactMeasurementInput>();
+  expectTypeOf(primingArtifactMeasurement).toMatchTypeOf<BenchmarkArtifactMeasurementInput>();
+  expectTypeOf(emptyProtocol).toMatchTypeOf<BenchmarkMeasurementProtocol>();
+  expectTypeOf(undefinedMemoryCheckpoint).toMatchTypeOf<BenchmarkMeasurementProtocol>();
+  expectTypeOf(undefinedPriming).toMatchTypeOf<BenchmarkMeasurementProtocol>();
+  expectTypeOf(postGcTurnsWithoutMemoryCheckpoint).toMatchTypeOf<BenchmarkMeasurementProtocol>();
+  expectTypeOf(
+    postGcTurnsWithOriginalMemoryCheckpoint,
+  ).toMatchTypeOf<BenchmarkMeasurementProtocol>();
+  expectTypeOf(postGcCheckpointWithoutTurns).toMatchTypeOf<BenchmarkMeasurementProtocol>();
+  expectTypeOf(postGcCheckpointWithWrongTurns).toMatchTypeOf<BenchmarkMeasurementProtocol>();
+  expectTypeOf(postGcArtifactWithoutSamples).toMatchTypeOf<BenchmarkArtifactMeasurementInput>();
+  expectTypeOf(postGcSamplesWithoutProtocol).toMatchTypeOf<BenchmarkArtifactMeasurementInput>();
+  expectTypeOf(
+    postGcSamplesWithOriginalCheckpoint,
+  ).toMatchTypeOf<BenchmarkArtifactMeasurementInput>();
+  expectTypeOf(
+    missingRawLargeMembershipParameters,
+  ).toMatchTypeOf<RawLargeMembershipArtifactInput>();
+  expectTypeOf(rawSnapshotWithLargeMembershipParameters).toMatchTypeOf<RawSnapshotArtifactInput>();
+});

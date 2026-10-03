@@ -9,6 +9,7 @@ import {
   inspectSourceAdapterPackageConformance,
   loadSourceAdapterOptionalTool,
   sourceAdapterInspectionFailure,
+  sourceAdapterModuleStem,
   SourceAdapterPackageInspectionError,
   typeScriptPackageTooling,
   typeScriptToolingFailure,
@@ -19,6 +20,11 @@ import {
 } from "./package-conformance";
 
 describe("TypeScript compiler process results", () => {
+  it("preserves module path case when removing source extensions", () => {
+    expect(sourceAdapterModuleStem("/package/Contract.ts")).toBe("/package/Contract");
+    expect(sourceAdapterModuleStem("C:\\package\\Contract.ts")).toBe("C:\\package\\Contract");
+  });
+
   it("preserves normal compiler exits", () => {
     expect(typeScriptCompilerExitCode({ status: 0, signal: null })).toBe(0);
     expect(typeScriptCompilerExitCode({ status: 2, signal: null })).toBe(1);

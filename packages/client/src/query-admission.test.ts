@@ -1,11 +1,13 @@
 import { describe, expect, it } from "@effect/vitest";
 import { ViewServerId, defineViewServerConfig } from "@effect-view-server/config";
-import { Schema } from "effect";
+import { BigDecimal, Schema } from "effect";
 import { admitViewServerLiveQuery } from "./query-admission";
 
 const Order = Schema.Struct({
   id: ViewServerId,
   status: Schema.Literals(["open", "closed"]),
+  quantity: Schema.BigInt,
+  amount: Schema.BigDecimal,
 });
 
 const config = defineViewServerConfig({
@@ -15,6 +17,46 @@ const config = defineViewServerConfig({
 });
 
 describe("query admission", () => {
+  it("owns native exact numeric ranges through the topic codec", () => {
+    const amount = BigDecimal.fromStringUnsafe("1.000000000000000000000000000001");
+    const query = {
+      select: ["id"],
+      where: [
+        {
+          field: "quantity",
+          type: "inRange",
+          filter: 90071992547409931234567891n,
+          filterTo: 90071992547409931234567892n,
+        },
+        {
+          field: "amount",
+          type: "inRange",
+          filter: amount,
+          filterTo: BigDecimal.fromStringUnsafe("1.000000000000000000000000000002"),
+        },
+      ],
+    };
+    const admitted = admitViewServerLiveQuery(config, "orders", query);
+    query.where.length = 0;
+    Reflect.set(amount, "value", 0n);
+    expect(admitted).toStrictEqual({
+      select: ["id"],
+      where: [
+        {
+          field: "quantity",
+          type: "inRange",
+          filter: 90071992547409931234567891n,
+          filterTo: 90071992547409931234567892n,
+        },
+        {
+          field: "amount",
+          type: "inRange",
+          filter: BigDecimal.fromStringUnsafe("1.000000000000000000000000000001"),
+          filterTo: BigDecimal.fromStringUnsafe("1.000000000000000000000000000002"),
+        },
+      ],
+    });
+  });
   it("returns the owned admitted query and rejects invalid field values", () => {
     expect(
       admitViewServerLiveQuery(config, "orders", {

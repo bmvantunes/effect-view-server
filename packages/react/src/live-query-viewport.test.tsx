@@ -184,6 +184,89 @@ const makeExternalStore = () => {
 };
 
 describe("useLiveQueryViewport", () => {
+  it("admits native exact bounds for semantic identity and viewport replacement", async () => {
+    const ExactOrder = Schema.Struct({
+      id: ViewServerId,
+      quantity: Schema.BigInt,
+      amount: Schema.BigDecimal,
+    });
+    const exactConfig = defineViewServerConfig({ topics: { orders: { schema: ExactOrder } } });
+    const exactReact = createViewServerReact(exactConfig);
+    const Provider = exactReact[ViewServerReactClientProvider];
+    const runtime = createInMemoryViewServer(exactConfig);
+    await Effect.runPromise(
+      runtime.client.publishMany("orders", [
+        {
+          id: "below",
+          quantity: 90071992547409931234567890n,
+          amount: BigDecimal.fromStringUnsafe("1"),
+        },
+        {
+          id: "middle",
+          quantity: 90071992547409931234567891n,
+          amount: BigDecimal.fromStringUnsafe("1.000000000000000000000000000001"),
+        },
+        {
+          id: "upper",
+          quantity: 90071992547409931234567892n,
+          amount: BigDecimal.fromStringUnsafe("1.000000000000000000000000000002"),
+        },
+      ]),
+    );
+    const grid = makeGridModel<{ readonly id: string }>();
+    const keys: unknown[] = [];
+    const query = () =>
+      ({
+        select: ["id"],
+        orderBy: [{ field: "id", direction: "asc" }],
+        where: [
+          {
+            field: "quantity",
+            type: "inRange",
+            filter: 90071992547409931234567891n,
+            filterTo: 90071992547409931234567892n,
+          },
+          {
+            field: "amount",
+            type: "inRange",
+            filter: BigDecimal.fromStringUnsafe("1.000000000000000000000000000001"),
+            filterTo: BigDecimal.fromStringUnsafe("1.000000000000000000000000000002"),
+          },
+        ],
+      }) as const satisfies RawQuery<typeof ExactOrder.Type>;
+    function ExactViewport() {
+      const result = exactReact.useLiveQueryViewport("orders");
+      return (
+        <button
+          type="button"
+          onClick={() => {
+            keys.push(result.viewport.semanticKey(query()), result.viewport.semanticKey(query()));
+            result.viewport.replace({
+              query: query(),
+              window: { firstRow: 0, lastRow: 17 },
+              sink: grid.sink,
+            });
+          }}
+        >
+          load exact viewport
+        </button>
+      );
+    }
+    const view = await render(
+      <Provider client={runtime.liveClient}>
+        <ExactViewport />
+      </Provider>,
+    );
+    await view.getByRole("button", { name: "load exact viewport" }).click();
+    expect(keys).toHaveLength(2);
+    expect(keys[0]).toBe(keys[1]);
+    await expect.poll(grid.rows).toStrictEqual({ 0: { id: "middle" } });
+    expect(grid.rowCount()).toBe(1);
+    expect(grid.rowKeys()).toStrictEqual({ 0: "middle" });
+    await view.unmount();
+    await Effect.runPromise(runtime.close);
+  });
+
   it("renders loading chrome during SSR without starting a subscription", async () => {
     const runtime = createInMemoryViewServer(viewServer);
 

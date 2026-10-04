@@ -73,5 +73,17 @@ describe("query admission", () => {
         where: [{ field: "status", type: "equals", filter: "missing" }],
       }),
     ).toThrow("status");
+    expect(() =>
+      admitViewServerLiveQuery(config, "orders", {
+        select: ["id"],
+        where: [{ field: "quantity", type: "equals", filter: "90071992547409931234567891" }],
+      }),
+    ).toThrow("quantity");
+    expect(() =>
+      admitViewServerLiveQuery(config, "orders", {
+        select: ["id"],
+        where: [{ field: "amount", type: "equals", filter: "1.000000000000000000000000000001" }],
+      }),
+    ).toThrow("amount");
   });
 });

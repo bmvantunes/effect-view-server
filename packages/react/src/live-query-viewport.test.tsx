@@ -202,6 +202,16 @@ describe("useLiveQueryViewport", () => {
           amount: BigDecimal.fromStringUnsafe("1"),
         },
         {
+          id: "quantity-only",
+          quantity: 90071992547409931234567891n,
+          amount: BigDecimal.fromStringUnsafe("1"),
+        },
+        {
+          id: "amount-only",
+          quantity: 90071992547409931234567890n,
+          amount: BigDecimal.fromStringUnsafe("1.000000000000000000000000000001"),
+        },
+        {
           id: "middle",
           quantity: 90071992547409931234567891n,
           amount: BigDecimal.fromStringUnsafe("1.000000000000000000000000000001"),

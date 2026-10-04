@@ -1,5 +1,5 @@
 import type { TopicDefinitions } from "@effect-view-server/config";
-import { viewServerDecodeLiveQuery } from "@effect-view-server/protocol";
+import { viewServerDecodeLiveQuery, viewServerEncodeLiveQuery } from "@effect-view-server/protocol";
 import { Effect, Result } from "effect";
 
 export const admitViewServerLiveQuery = <
@@ -11,7 +11,10 @@ export const admitViewServerLiveQuery = <
   query: object,
 ): object => {
   const admitted = Effect.runSync(
-    viewServerDecodeLiveQuery(config, topic, query).pipe(Effect.result),
+    Effect.gen(function* () {
+      const encoded = yield* viewServerEncodeLiveQuery(config, topic, query);
+      return yield* viewServerDecodeLiveQuery(config, topic, encoded);
+    }).pipe(Effect.result),
   );
   if (Result.isFailure(admitted)) {
     throw new TypeError(admitted.failure.message);
